@@ -39,6 +39,14 @@ export interface Project {
   cwd: string;
 }
 
+export interface ModelEntry {
+  id: string;
+  provider: string;
+  model: string;
+  label: string;
+  supportsVision: boolean;
+}
+
 interface RawToolCallInfo {
   id: string;
   name: string;
@@ -166,6 +174,33 @@ function mapTurnsToMessages(turns: RawTurn[]): ChatMessage[] {
 const PROJECTS_KEY = "cn-codex-projects";
 const THREAD_PROJECT_KEY = "cn-codex-thread-projects";
 const ACTIVE_PROJECT_KEY = "cn-codex-active-project";
+const CONFIGURED_MODELS_KEY = "cn-codex-configured-models";
+const ACTIVE_MODEL_KEY = "cn-codex-active-model";
+
+function loadConfiguredModels(): ModelEntry[] {
+  try {
+    const raw = localStorage.getItem(CONFIGURED_MODELS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveConfiguredModels(models: ModelEntry[]) {
+  localStorage.setItem(CONFIGURED_MODELS_KEY, JSON.stringify(models));
+}
+
+function loadActiveModelId(): string | null {
+  return localStorage.getItem(ACTIVE_MODEL_KEY);
+}
+
+function saveActiveModelId(id: string | null) {
+  if (id) {
+    localStorage.setItem(ACTIVE_MODEL_KEY, id);
+  } else {
+    localStorage.removeItem(ACTIVE_MODEL_KEY);
+  }
+}
 
 function loadProjects(): Project[] {
   try {
@@ -228,6 +263,9 @@ interface AppState {
   configDir: string | null;
   configPath: string | null;
 
+  configuredModels: ModelEntry[];
+  activeModelId: string | null;
+
   projects: Project[];
   currentProjectId: string | null;
   threadProjectMap: Record<string, string>;
@@ -246,6 +284,9 @@ interface AppState {
   startNewThreadWithMessage: (threadId: string, message: ChatMessage) => void;
   setCurrentTurnId: (id: string | null) => void;
   setCurrentModel: (model: string | null) => void;
+  setConfiguredModels: (models: ModelEntry[]) => void;
+  setActiveModelId: (id: string | null) => void;
+  getActiveModel: () => ModelEntry | null;
   setServerRuntime: (runtime: {
     cwd: string;
     configDir: string;
@@ -280,6 +321,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentThreadId: null,
   currentTurnId: null,
   currentModel: null,
+  configuredModels: loadConfiguredModels(),
+  activeModelId: loadActiveModelId(),
   workspaceCwd: _restoredActive?.cwd ?? null,
   configDir: null,
   configPath: null,
@@ -308,6 +351,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setCurrentTurnId: (id) => set({ currentTurnId: id }),
   setCurrentModel: (model) => set({ currentModel: model }),
+  setConfiguredModels: (models) => {
+    saveConfiguredModels(models);
+    set({ configuredModels: models });
+  },
+  setActiveModelId: (id) => {
+    saveActiveModelId(id);
+    const models = get().configuredModels;
+    const entry = models.find((m) => m.id === id);
+    set({ activeModelId: id, currentModel: entry?.model ?? id });
+  },
+  getActiveModel: () => {
+    const { configuredModels, activeModelId } = get();
+    return configuredModels.find((m) => m.id === activeModelId) ?? null;
+  },
   setServerRuntime: (runtime) =>
     set((s) => ({
       workspaceCwd: s.currentProjectId ? s.workspaceCwd : runtime.cwd,

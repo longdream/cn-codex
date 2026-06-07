@@ -4,7 +4,7 @@ import {
   standaloneConfigRead,
   standaloneConfigWrite,
 } from "../../api";
-import { useAppStore } from "../../stores/appStore";
+import { useAppStore, type ModelEntry } from "../../stores/appStore";
 import type { ConfigEdit } from "../../types";
 
 type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
@@ -31,6 +31,7 @@ interface ProviderFormState {
   approvalPolicy: ApprovalPolicy;
   wireApi: string;
   requiresOpenAIAuth: boolean;
+  supportsVision: boolean;
 }
 
 type ProviderConfig = Record<string, unknown>;
@@ -178,6 +179,7 @@ const DEFAULT_FORM: ProviderFormState = {
   approvalPolicy: "on-request",
   wireApi: "",
   requiresOpenAIAuth: true,
+  supportsVision: false,
 };
 
 const PROVIDER_BASE_URL_KEYS = [
@@ -410,6 +412,7 @@ export function ProviderPanel() {
             preset.requiresOpenAIAuth,
             PROVIDER_AUTH_KEYS,
           ),
+          supportsVision: readBoolean(false, providerConfig.supports_vision, providerConfig.supportsVision),
         });
       } catch (error) {
         console.error("Failed to load provider config:", error);
@@ -455,6 +458,7 @@ export function ProviderPanel() {
             nextPreset.requiresOpenAIAuth,
             PROVIDER_AUTH_KEYS,
           ),
+          supportsVision: readBoolean(false, storedProviderConfig.supports_vision, storedProviderConfig.supportsVision),
           apiKey: "",
         };
       });
@@ -536,6 +540,8 @@ export function ProviderPanel() {
         );
       }
 
+      providerOverride.supports_vision = form.supportsVision;
+
       if (currentPreset.providerKind === "custom") {
         providerOverride.name = providerOverride.name || currentPreset.label || form.modelProvider;
       }
@@ -568,6 +574,26 @@ export function ProviderPanel() {
       }));
       setForm((current) => ({ ...current, apiKey: "" }));
       useAppStore.getState().setCurrentModel(trimmedModel);
+
+      const modelId = `${form.modelProvider}:${trimmedModel}`;
+      const newEntry: ModelEntry = {
+        id: modelId,
+        provider: form.modelProvider,
+        model: trimmedModel,
+        label: `${currentPreset.label} / ${trimmedModel}`,
+        supportsVision: form.supportsVision,
+      };
+      const store = useAppStore.getState();
+      const existing = store.configuredModels;
+      const idx = existing.findIndex((m) => m.id === modelId);
+      const updated = idx >= 0
+        ? existing.map((m, i) => (i === idx ? newEntry : m))
+        : [...existing, newEntry];
+      store.setConfiguredModels(updated);
+      if (!store.activeModelId) {
+        store.setActiveModelId(modelId);
+      }
+
       setFeedback({
         kind: "success",
         text: intl.formatMessage({ id: "settings.provider.saveSuccess" }),
@@ -794,6 +820,26 @@ export function ProviderPanel() {
               placeholder={intl.formatMessage({ id: "settings.provider.wireApiPlaceholder" })}
               className="app-input"
             />
+          </div>
+        </div>
+
+        <div className="mt-3 flex items-center gap-2.5">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.supportsVision}
+            onClick={() => setForm((c) => ({ ...c, supportsVision: !c.supportsVision }))}
+            className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors ${form.supportsVision ? "bg-[var(--accent)]" : "bg-[var(--surface-contrast)]"}`}
+          >
+            <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${form.supportsVision ? "translate-x-4" : "translate-x-0.5"}`} />
+          </button>
+          <div>
+            <span className="text-sm text-[var(--text-strong)]">
+              {intl.formatMessage({ id: "settings.provider.supportsVision" })}
+            </span>
+            <p className="text-xs text-[var(--text-faint)]">
+              {intl.formatMessage({ id: "settings.provider.supportsVisionHint" })}
+            </p>
           </div>
         </div>
       </section>
