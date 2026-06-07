@@ -1,0 +1,86 @@
+=== CN-Codex UI Test Results ===
+Started: 2026-06-07 14:22:21
+==================================================
+
+[14:22:21] [INFO] Test suite starting - URL=http://localhost:1420, headed=False
+[14:22:21] [INFO] Browser - Using system browser: C:\Users\longd\AppData\Local\Google\Chrome\Application\chrome.exe
+[14:22:22] [INFO] Test 1: Page Load
+[14:22:22] [INFO] Console - [debug] [vite] connecting...
+[14:22:22] [INFO] Console - [debug] [vite] connected.
+[14:22:23] [INFO] Console - [info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[14:22:23] [INFO] Console - [error] Server init failed: TypeError: Cannot read properties of undefined (reading 'invoke')
+    at invoke (http://localhost:1420/node_modules/.vite/deps/chunk-SNETGTVY.js?v=15386def:109:37)
+    at initializeServer (http://localhost:1420/src/api/server.ts:3:10)
+    at init (http://localhost:1420/src/App.tsx:57:15)
+    at http://localhost:1420/src/App.tsx:82:5
+    at commitHookEffectListMount (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:16963:34)
+    at commitPassiveMountOnFiber (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18206:19)
+    at commitPassiveMountEffects_complete (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18179:17)
+    at commitPassiveMountEffects_begin (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18169:15)
+    at commitPassiveMountEffects (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18159:11)
+    at flushPassiveEffectsImpl (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19543:11)
+[14:22:23] [INFO] Console - [error] Server init failed: TypeError: Cannot read properties of undefined (reading 'invoke')
+    at invoke (http://localhost:1420/node_modules/.vite/deps/chunk-SNETGTVY.js?v=15386def:109:37)
+    at initializeServer (http://localhost:1420/src/api/server.ts:3:10)
+    at init (http://localhost:1420/src/App.tsx:57:15)
+    at http://localhost:1420/src/App.tsx:82:5
+    at commitHookEffectListMount (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:16963:34)
+    at invokePassiveEffectMountInDEV (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18374:19)
+    at invokeEffectsInDev (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19754:19)
+    at commitDoubleInvokeEffectsInDEV (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19739:15)
+    at flushPassiveEffectsImpl (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19556:13)
+    at flushPassiveEffects (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19500:22)
+[14:22:25] [INFO] Screenshot: 01_page_loaded - D:\rustwork\cn-codex\tests\ui\screenshots\01_page_loaded.png
+[14:22:25] [PASS] Test 1: Page Load - title='CN-Codex'
+[14:22:25] [INFO] Test 2: Sidebar Renders
+[14:22:25] [PASS] Test 2: Sidebar Renders - Brand text: 'CN-Codex'
+[14:22:25] [INFO] Test 3: Connection Status
+[14:22:28] [INFO] Screenshot: 03_connection_status - D:\rustwork\cn-codex\tests\ui\screenshots\03_connection_status.png
+[14:22:28] [PASS] Test 3: Connection Status - Status indicator found
+[14:22:28] [INFO] Test 4: Empty State Page
+[14:22:29] [INFO] Screenshot: 04_empty_state - D:\rustwork\cn-codex\tests\ui\screenshots\04_empty_state.png
+[14:22:29] [PASS] Test 4: Empty State Page - Heading: '新对话'
+[14:22:29] [INFO] Test 5: Chat Input Renders
+[14:22:29] [PASS] Test 5: Chat Input Renders - Placeholder: '输入消息... 输入 / 查看命令'
+[14:22:29] [INFO] Test 6: Slash Command Panel
+[14:22:29] [PASS] Test 6: Slash Command Panel - SKIPPED - textarea disabled (no Tauri runtime in browser)
+[14:22:29] [INFO] Test 7: Settings Panel Opens
+[14:22:29] [INFO] Console - [error] Failed to load provider config: TypeError: Cannot read properties of undefined (reading 'invoke')
+    at invoke (http://localhost:1420/node_modules/.vite/deps/chunk-SNETGTVY.js?v=15386def:109:37)
+    at configRead (http://localhost:1420/src/api/config.ts:3:10)
+    at load (http://localhost:1420/src/components/settings/ProviderPanel.tsx:231:32)
+    at http://localhost:1420/src/components/settings/ProviderPanel.tsx:267:10
+    at commitHookEffectListMount (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:16963:34)
+    at commitPassiveMountOnFiber (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18206:19)
+    at commitPassiveMountEffects_complete (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18179:17)
+    at commitPassiveMountEffects_begin (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18169:15)
+    at commitPassiveMountEffects (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18159:11)
+    at flushPassiveEffectsImpl (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19543:11)
+[14:22:29] [INFO] Console - [error] Failed to load provider config: TypeError: Cannot read properties of undefined (reading 'invoke')
+    at invoke (http://localhost:1420/node_modules/.vite/deps/chunk-SNETGTVY.js?v=15386def:109:37)
+    at configRead (http://localhost:1420/src/api/config.ts:3:10)
+    at load (http://localhost:1420/src/components/settings/ProviderPanel.tsx:231:32)
+    at http://localhost:1420/src/components/settings/ProviderPanel.tsx:267:10
+    at commitHookEffectListMount (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:16963:34)
+    at invokePassiveEffectMountInDEV (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:18374:19)
+    at invokeEffectsInDev (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19754:19)
+    at commitDoubleInvokeEffectsInDEV (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19739:15)
+    at flushPassiveEffectsImpl (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19556:13)
+    at flushPassiveEffects (http://localhost:1420/node_modules/.vite/deps/chunk-BH4GTE34.js?v=15386def:19500:22)
+[14:22:29] [INFO] Console - [verbose] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o
+[14:22:30] [INFO] Screenshot: 07_settings_panel - D:\rustwork\cn-codex\tests\ui\screenshots\07_settings_panel.png
+[14:22:30] [PASS] Test 7: Settings Panel Opens - Settings panel opened
+[14:22:30] [INFO] Test 8: Send Message
+[14:22:30] [PASS] Test 8: Send Message - SKIPPED - textarea disabled (no Tauri runtime in browser)
+[14:22:30] [INFO] Test 9: Status Bar
+[14:22:30] [PASS] Test 9: Status Bar - Version info found
+[14:22:30] [INFO] Test 10: Theme Baseline
+[14:22:30] [INFO] Screenshot: 10_theme_baseline - D:\rustwork\cn-codex\tests\ui\screenshots\10_theme_baseline.png
+[14:22:30] [PASS] Test 10: Theme Baseline - Current theme: dark
+
+==================================================
+RESULTS: 10/10 passed, 0 failed
+Elapsed: 9.2s
+Screenshots: D:\rustwork\cn-codex\tests\ui\screenshots
+Log: D:\rustwork\cn-codex\tests\ui\test_results.log
+==================================================

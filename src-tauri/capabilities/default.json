@@ -1,0 +1,16 @@
+{
+  "identifier": "default",
+  "description": "CN-Codex default capabilities",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "shell:allow-open",
+    "shell:allow-execute",
+    "dialog:default",
+    "fs:default",
+    "notification:default",
+    "opener:default",
+    "process:default"
+  ]
+}

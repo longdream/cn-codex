@@ -1,0 +1,21 @@
+# Build output
+build/
+dist/
+
+# Rust
+src-tauri/target/
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local

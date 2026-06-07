@@ -1,0 +1,5 @@
+{"type":"thread_meta","thread_id":"14130e89-2a1e-453a-8678-4fbf74693b89","name":null,"created_at":1780822089,"model":"deepseek-v4-flash-260425"}
+{"type":"turn_start","turn_id":"ba3a6027-7b5c-4be0-8a68-36fbf2697cd8","started_at":1780822089}
+{"type":"message","id":"4e077d8d-bc85-4c10-8feb-92635ec216f7","role":"user","content":"你好","timestamp":1780822089,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"message","id":"da83f36f-c5ad-4008-976c-55984008214a","role":"assistant","content":"你好！有什么我可以帮你的吗？😊\n\n如果你需要编写代码、调试程序、分析项目结构，或者有任何编程相关的问题，请随时告诉我！","timestamp":1780822091,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"turn_end","turn_id":"ba3a6027-7b5c-4be0-8a68-36fbf2697cd8","completed_at":1780822091}
