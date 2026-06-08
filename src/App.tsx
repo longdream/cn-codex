@@ -7,6 +7,7 @@ import {
 } from "./api";
 import { ChatPage } from "./components/chat/ChatPage";
 import { Sidebar } from "./components/layout/Sidebar";
+import { TitleBar } from "./components/layout/TitleBar";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import enUS from "./i18n/en-US/common.json";
@@ -117,6 +118,7 @@ function App() {
       defaultLocale="zh-CN"
     >
       <div className="app-frame">
+        <TitleBar />
         <div className="app-workbench">
           <Sidebar />
           <div className="app-main">

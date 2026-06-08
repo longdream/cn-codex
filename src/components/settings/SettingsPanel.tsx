@@ -6,12 +6,13 @@ import { ProviderPanel } from "./ProviderPanel";
 import { LlmTiersPanel } from "./LlmTiersPanel";
 import { IntegrationPanel } from "./IntegrationPanel";
 import { HooksPanel } from "./HooksPanel";
+import { UsageDashboard } from "./UsageDashboard";
 
 interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "llm" | "integration" | "hooks";
+type SettingsTab = "general" | "provider" | "llm" | "usage" | "integration" | "hooks";
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const intl = useIntl();
@@ -36,6 +37,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       id: "llm",
       label: intl.formatMessage({ id: "settings.llmTier" }),
       detail: intl.formatMessage({ id: "settings.llmTier.description" }),
+    },
+    {
+      id: "usage",
+      label: intl.formatMessage({ id: "settings.usage", defaultMessage: "用量追踪" }),
+      detail: intl.formatMessage({ id: "settings.usage.description", defaultMessage: "查看 Token 用量和费用统计" }),
     },
     {
       id: "integration",
@@ -134,6 +140,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
             {tab === "provider" && <ProviderPanel />}
             {tab === "llm" && <LlmTiersPanel />}
+            {tab === "usage" && <UsageDashboard />}
             {tab === "integration" && <IntegrationPanel />}
             {tab === "hooks" && <HooksPanel />}
           </div>

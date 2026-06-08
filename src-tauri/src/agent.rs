@@ -2,16 +2,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
+use crate::adapter::{self, types::{InternalMessage, InternalToolCall, InternalFunctionCall, StreamEvent, UsageInfo}};
 use crate::config_system::ConfigToml;
 use crate::error::{AppError, AppResult};
 use crate::thread_store::{ThreadMessage, ThreadStore, ToolCallInfo};
 use crate::tool_executor::ToolExecutor;
+use crate::usage::UsageRecorder;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRequest {
@@ -20,80 +21,13 @@ pub struct ToolCallRequest {
     pub arguments: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct ApiMessage {
-    role: String,
-    content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<ApiToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ApiToolCall {
-    id: String,
-    #[serde(rename = "type")]
-    call_type: String,
-    function: ApiFunctionCall,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ApiFunctionCall {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ChatCompletionRequest {
-    model: String,
-    messages: Vec<ApiMessage>,
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<serde_json::Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct StreamChunk {
-    choices: Option<Vec<StreamChoice>>,
-    #[serde(default)]
-    usage: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct StreamChoice {
-    delta: Option<DeltaContent>,
-    finish_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeltaContent {
-    content: Option<String>,
-    tool_calls: Option<Vec<DeltaToolCall>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeltaToolCall {
-    index: Option<usize>,
-    id: Option<String>,
-    function: Option<DeltaFunction>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeltaFunction {
-    name: Option<String>,
-    arguments: Option<String>,
-}
-
 pub struct AgentEngine {
     http: reqwest::Client,
     thread_store: Arc<ThreadStore>,
     tool_executor: Arc<RwLock<ToolExecutor>>,
     cwd: PathBuf,
+    /// 用量记录器（每次 LLM 调用后自动记录）
+    usage_recorder: Option<Arc<UsageRecorder>>,
 }
 
 impl AgentEngine {
@@ -112,7 +46,13 @@ impl AgentEngine {
             thread_store,
             tool_executor: Arc::new(RwLock::new(tool_executor)),
             cwd,
+            usage_recorder: None,
         })
+    }
+
+    /// 设置用量记录器
+    pub fn set_usage_recorder(&mut self, recorder: Arc<UsageRecorder>) {
+        self.usage_recorder = Some(recorder);
     }
 
     pub async fn run_turn(
@@ -133,6 +73,8 @@ impl AgentEngine {
             ))
         })?;
         let api_key = provider.resolve_api_key().unwrap_or_default();
+        // 获取 wire_api 格式（决定使用哪个 adapter）
+        let wire_api = provider.wire_api.as_deref().unwrap_or("chat").to_string();
 
         let user_msg = ThreadMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -170,7 +112,7 @@ impl AgentEngine {
             info!("Agent loop iteration {iteration} for turn {turn_id}");
 
             let history = self.thread_store.get_thread_messages(thread_id).await;
-            let api_messages = self.build_api_messages(config, &history, &effective_cwd);
+            let internal_messages = self.build_internal_messages(config, &history, &effective_cwd);
             let tools = self.tool_executor.read().await.tool_specs();
 
             let result = self
@@ -179,14 +121,21 @@ impl AgentEngine {
                     &base_url,
                     &api_key,
                     &model,
-                    api_messages,
+                    &wire_api,
+                    internal_messages,
                     if tools.is_empty() { None } else { Some(tools) },
                 )
                 .await;
 
             match result {
-                Ok(CompletionResult::Message(ref text)) => {
-                    info!("Iteration {iteration}: Message ({} chars)", text.len());
+                Ok(CompletionResult::Message { ref text, ref usage }) => {
+                    info!("Iteration {iteration}: Message ({} chars), usage={:?}", text.len(), usage);
+                    // 记录用量到 SQLite
+                    if let Some(u) = usage {
+                        if let Some(ref recorder) = self.usage_recorder {
+                            recorder.record(&provider_id, &model, thread_id, u);
+                        }
+                    }
                     if text.is_empty() && iteration > 0 {
                         info!("Empty message after tool execution, sending minimal signal");
                         app_handle
@@ -215,8 +164,14 @@ impl AgentEngine {
                     }
                     break;
                 }
-                Ok(CompletionResult::ToolCalls { calls, preceding_text }) => {
-                    info!("Iteration {iteration}: ToolCalls ({}): {:?}, preceding_text={} chars", calls.len(), calls.iter().map(|c| &c.name).collect::<Vec<_>>(), preceding_text.len());
+                Ok(CompletionResult::ToolCalls { calls, preceding_text, usage }) => {
+                    info!("Iteration {iteration}: ToolCalls ({}): {:?}, preceding_text={} chars, usage={:?}", calls.len(), calls.iter().map(|c| &c.name).collect::<Vec<_>>(), preceding_text.len(), usage);
+                    // 记录用量到 SQLite
+                    if let Some(ref u) = usage {
+                        if let Some(ref recorder) = self.usage_recorder {
+                            recorder.record(&provider_id, &model, thread_id, u);
+                        }
+                    }
 
                     if !preceding_text.is_empty() {
                         let text_msg = ThreadMessage {
@@ -383,15 +338,17 @@ impl AgentEngine {
         )
     }
 
-    fn build_api_messages(
+    /// 将线程历史消息转换为 adapter 层统一的 InternalMessage 格式
+    fn build_internal_messages(
         &self,
         config: &ConfigToml,
         history: &[ThreadMessage],
         effective_cwd: &Path,
-    ) -> Vec<ApiMessage> {
+    ) -> Vec<InternalMessage> {
         let mut messages = Vec::new();
 
-        messages.push(ApiMessage {
+        // system prompt
+        messages.push(InternalMessage {
             role: "system".to_string(),
             content: Some(self.build_system_prompt(config, effective_cwd)),
             tool_calls: None,
@@ -400,12 +357,12 @@ impl AgentEngine {
         });
 
         for msg in history {
-            let api_tool_calls = msg.tool_calls.as_ref().map(|tcs| {
+            let internal_tool_calls = msg.tool_calls.as_ref().map(|tcs| {
                 tcs.iter()
-                    .map(|tc| ApiToolCall {
+                    .map(|tc| InternalToolCall {
                         id: tc.id.clone(),
                         call_type: "function".to_string(),
-                        function: ApiFunctionCall {
+                        function: InternalFunctionCall {
                             name: tc.name.clone(),
                             arguments: tc.arguments.clone(),
                         },
@@ -413,16 +370,16 @@ impl AgentEngine {
                     .collect()
             });
 
-            let content = if msg.role == "assistant" && api_tool_calls.is_some() && msg.content.is_empty() {
+            let content = if msg.role == "assistant" && internal_tool_calls.is_some() && msg.content.is_empty() {
                 None
             } else {
                 Some(msg.content.clone())
             };
 
-            messages.push(ApiMessage {
+            messages.push(InternalMessage {
                 role: msg.role.clone(),
                 content,
-                tool_calls: api_tool_calls,
+                tool_calls: internal_tool_calls,
                 tool_call_id: msg.tool_call_id.clone(),
                 name: msg.tool_name.clone(),
             });
@@ -431,35 +388,27 @@ impl AgentEngine {
         messages
     }
 
+    /// 使用 adapter 执行流式 LLM 调用
+    /// wire_api 决定使用哪个 adapter（chat/responses/anthropic/gemini）
     async fn stream_completion(
         &self,
         app_handle: &AppHandle,
         base_url: &str,
         api_key: &str,
         model: &str,
-        messages: Vec<ApiMessage>,
+        wire_api: &str,
+        messages: Vec<InternalMessage>,
         tools: Option<Vec<serde_json::Value>>,
     ) -> AppResult<CompletionResult> {
-        let url = build_chat_url(base_url);
+        // 根据 wire_api 选择 adapter
+        let adapter = adapter::get_adapter(wire_api);
 
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, "application/json".parse().unwrap());
-        if !api_key.is_empty() {
-            headers.insert(
-                AUTHORIZATION,
-                format!("Bearer {api_key}").parse().map_err(|e| {
-                    AppError::Custom(format!("Invalid API key: {e}"))
-                })?,
-            );
-        }
+        let url = adapter.build_url(base_url, model);
+        let headers = adapter.build_headers(api_key);
+        let tools_slice = tools.as_deref();
+        let body = adapter.build_body(model, &messages, tools_slice);
 
-        let body = ChatCompletionRequest {
-            model: model.to_string(),
-            messages,
-            stream: true,
-            tools,
-            temperature: None,
-        };
+        info!("LLM request: wire_api={wire_api}, url={url}, model={model}");
 
         let response = self
             .http
@@ -476,9 +425,11 @@ impl AgentEngine {
             return Err(AppError::Custom(format!("LLM API error ({status}): {body_text}")));
         }
 
+        // 流式解析
         let mut full_text = String::new();
         let mut tool_calls: Vec<ToolCallAccumulator> = Vec::new();
         let mut finish_reason: Option<String> = None;
+        let mut usage_info: Option<UsageInfo> = None;
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
 
@@ -491,61 +442,58 @@ impl AgentEngine {
                 let line = buffer[..line_end].trim().to_string();
                 buffer = buffer[line_end + 1..].to_string();
 
-                if line.is_empty() || line == "data: [DONE]" {
+                if line.is_empty() {
                     continue;
                 }
 
-                if let Some(data) = line.strip_prefix("data: ") {
-                    debug!("SSE chunk: {data}");
-                    match serde_json::from_str::<StreamChunk>(data) {
-                        Ok(chunk) => {
-                            if chunk.usage.is_some() && chunk.choices.is_none() {
-                                debug!("Skipping usage-only chunk");
-                                continue;
+                // 使用 adapter 检测是否结束
+                if adapter.is_stream_done(&line) {
+                    if finish_reason.is_none() {
+                        finish_reason = Some("stop".to_string());
+                    }
+                    continue;
+                }
+
+                // 使用 adapter 解析 SSE 行
+                let events = adapter.parse_stream_line(&line);
+                for event in events {
+                    match event {
+                        StreamEvent::TextDelta(text) => {
+                            full_text.push_str(&text);
+                            app_handle
+                                .emit(
+                                    "agent-message-delta",
+                                    serde_json::json!({ "delta": text }),
+                                )
+                                .ok();
+                        }
+                        StreamEvent::ToolCallDelta { index, id, name, arguments } => {
+                            while tool_calls.len() <= index {
+                                tool_calls.push(ToolCallAccumulator::default());
                             }
-                            if let Some(choices) = chunk.choices {
-                                for choice in choices {
-                                    if let Some(ref reason) = choice.finish_reason {
-                                        finish_reason = Some(reason.clone());
-                                    }
-                                    if let Some(delta) = choice.delta {
-                                        if let Some(ref content) = delta.content {
-                                            if !content.is_empty() {
-                                                full_text.push_str(content);
-                                                app_handle
-                                                    .emit(
-                                                        "agent-message-delta",
-                                                        serde_json::json!({ "delta": content }),
-                                                    )
-                                                    .ok();
-                                            }
-                                        }
-                                        if let Some(tc) = delta.tool_calls {
-                                            for dtc in tc {
-                                                let idx = dtc.index.unwrap_or(0);
-                                                while tool_calls.len() <= idx {
-                                                    tool_calls.push(ToolCallAccumulator::default());
-                                                }
-                                                let acc = &mut tool_calls[idx];
-                                                if let Some(id) = dtc.id {
-                                                    acc.id = id;
-                                                }
-                                                if let Some(f) = dtc.function {
-                                                    if let Some(name) = f.name {
-                                                        acc.name = name;
-                                                    }
-                                                    if let Some(args) = f.arguments {
-                                                        acc.arguments.push_str(&args);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                            let acc = &mut tool_calls[index];
+                            if let Some(id) = id {
+                                acc.id = id;
+                            }
+                            if let Some(name) = name {
+                                acc.name = name;
+                            }
+                            if let Some(args) = arguments {
+                                acc.arguments.push_str(&args);
                             }
                         }
-                        Err(e) => {
-                            debug!("Failed to parse SSE chunk: {e}, data: {data}");
+                        StreamEvent::Done { finish_reason: reason } => {
+                            finish_reason = reason.or(finish_reason);
+                        }
+                        StreamEvent::Usage(usage) => {
+                            // 累加 usage（Anthropic 分两次返回 input/output tokens）
+                            if let Some(ref mut existing) = usage_info {
+                                existing.prompt_tokens = existing.prompt_tokens.max(usage.prompt_tokens);
+                                existing.completion_tokens = existing.completion_tokens.max(usage.completion_tokens);
+                                existing.total_tokens = existing.prompt_tokens + existing.completion_tokens;
+                            } else {
+                                usage_info = Some(usage);
+                            }
                         }
                     }
                 }
@@ -563,23 +511,29 @@ impl AgentEngine {
             .collect();
 
         info!(
-            "stream_completion done: finish_reason={:?}, tool_calls={}, text_len={}",
+            "stream_completion done: wire_api={wire_api}, finish_reason={:?}, tool_calls={}, text_len={}, usage={:?}",
             finish_reason,
             valid_tool_calls.len(),
-            full_text.len()
+            full_text.len(),
+            usage_info,
         );
 
         if !valid_tool_calls.is_empty() {
             Ok(CompletionResult::ToolCalls {
                 calls: valid_tool_calls,
                 preceding_text: full_text,
+                usage: usage_info,
             })
         } else {
-            Ok(CompletionResult::Message(full_text))
+            Ok(CompletionResult::Message {
+                text: full_text,
+                usage: usage_info,
+            })
         }
     }
 }
 
+/// tool call 累积器（逐步拼接 SSE 中的碎片）
 #[derive(Default)]
 struct ToolCallAccumulator {
     id: String,
@@ -587,24 +541,19 @@ struct ToolCallAccumulator {
     arguments: String,
 }
 
+/// LLM 调用完成后的结果
 enum CompletionResult {
-    Message(String),
+    /// 纯文本回复
+    Message {
+        text: String,
+        usage: Option<UsageInfo>,
+    },
+    /// 包含 tool call 的回复
     ToolCalls {
         calls: Vec<ToolCallRequest>,
         preceding_text: String,
+        usage: Option<UsageInfo>,
     },
-}
-
-fn build_chat_url(base_url: &str) -> String {
-    let base = base_url.trim_end_matches('/');
-    if base.ends_with("/chat/completions") {
-        return base.to_string();
-    }
-    if base.ends_with("/responses") {
-        let prefix = &base[..base.len() - "/responses".len()];
-        return format!("{prefix}/chat/completions");
-    }
-    format!("{base}/chat/completions")
 }
 
 fn now_secs() -> i64 {

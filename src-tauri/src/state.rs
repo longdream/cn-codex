@@ -5,15 +5,16 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::agent::AgentEngine;
 use crate::config_system::ConfigManager;
-use crate::jsonrpc_client::JsonRpcClient;
 use crate::llm_tiers::LlmTiersManager;
 use crate::protocol::{JSONRPCErrorError, RequestId};
 use crate::standalone::StandaloneState;
 use crate::thread_store::ThreadStore;
 use crate::tool_executor::ToolExecutor;
+use crate::usage::{UsageDb, UsageRecorder, PricingTable};
 
 const WORKSPACE_CONFIG_DIR: &str = "codey";
 
+/// 用户批准/拒绝操作（保留以兼容 approval 前端组件）
 pub enum ApprovalAction {
     Resolve {
         request_id: RequestId,
@@ -28,7 +29,6 @@ pub enum ApprovalAction {
 pub struct AppState {
     pub locale: RwLock<String>,
     pub llm_tiers: RwLock<LlmTiersManager>,
-    pub client: RwLock<Option<Arc<JsonRpcClient>>>,
     pub current_thread_id: RwLock<Option<String>>,
     pub project_root: PathBuf,
     pub workspace_config_dir: PathBuf,
@@ -40,6 +40,12 @@ pub struct AppState {
     pub config_manager: ConfigManager,
     pub thread_store: Arc<ThreadStore>,
     pub agent_engine: AgentEngine,
+    /// 用量数据库
+    pub usage_db: Arc<UsageDb>,
+    /// 用量记录器
+    pub usage_recorder: UsageRecorder,
+    /// 价格表
+    pub pricing_table: Arc<std::sync::RwLock<PricingTable>>,
 }
 
 fn canonicalize_or_keep(path: PathBuf) -> PathBuf {
@@ -107,13 +113,24 @@ impl AppState {
         let config_manager = ConfigManager::new(config_path.clone());
         let thread_store = Arc::new(ThreadStore::new(&workspace_config_dir));
         let tool_executor = ToolExecutor::new(project_root.clone());
-        let agent_engine = AgentEngine::new(thread_store.clone(), tool_executor, project_root.clone())
+        let mut agent_engine = AgentEngine::new(thread_store.clone(), tool_executor, project_root.clone())
             .expect("failed to create agent engine");
+
+        // 初始化用量追踪
+        let db_path = workspace_config_dir.join("usage.db");
+        let usage_db = Arc::new(
+            UsageDb::open(&db_path).expect("failed to open usage database")
+        );
+        let pricing_table = Arc::new(std::sync::RwLock::new(PricingTable::new()));
+        let usage_recorder = UsageRecorder::new(usage_db.clone(), pricing_table.clone());
+
+        // 将 recorder 注入 agent engine
+        let recorder_arc = Arc::new(UsageRecorder::new(usage_db.clone(), pricing_table.clone()));
+        agent_engine.set_usage_recorder(recorder_arc);
 
         Self {
             locale: RwLock::new("zh-CN".to_string()),
             llm_tiers: RwLock::new(LlmTiersManager::default()),
-            client: RwLock::new(None),
             current_thread_id: RwLock::new(None),
             project_root,
             workspace_config_dir,
@@ -125,6 +142,9 @@ impl AppState {
             config_manager,
             thread_store,
             agent_engine,
+            usage_db,
+            usage_recorder,
+            pricing_table,
         }
     }
 }

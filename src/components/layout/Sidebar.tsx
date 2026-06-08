@@ -178,6 +178,7 @@ export function Sidebar() {
                 }
                 void loadThread(threadId);
               }}
+              onThreadDelete={(threadId) => useAppStore.getState().deleteThread(threadId)}
               locale={intl.locale}
             />
           ))
@@ -213,6 +214,7 @@ function ProjectGroup({
   onSelect,
   onRemove,
   onThreadClick,
+  onThreadDelete,
   locale,
 }: {
   project: Project;
@@ -222,20 +224,22 @@ function ProjectGroup({
   onSelect: () => void;
   onRemove: () => void;
   onThreadClick: (threadId: string) => void;
+  onThreadDelete: (threadId: string) => void;
   locale: string;
 }) {
   const intl = useIntl();
   const [expanded, setExpanded] = useState(true);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   return (
     <div className="mb-1">
       {/* Project header */}
-      <button
+      <div
         onClick={() => {
           onSelect();
           setExpanded(true);
         }}
-        className={`flex w-full items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs transition-colors ${
+        className={`group flex w-full cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs transition-colors ${
           isActive
             ? "bg-[var(--accent-soft)] text-[var(--accent)]"
             : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
@@ -262,14 +266,37 @@ function ProjectGroup({
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onRemove();
+            setConfirmRemove(true);
           }}
-          className="flex-shrink-0 opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:text-[var(--danger)]"
+          className="flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-60 hover:!opacity-100 hover:text-[var(--danger)]"
           title={intl.formatMessage({ id: "project.remove" })}
         >
           <IconTrash size={12} stroke={1.8} />
         </button>
-      </button>
+      </div>
+
+      {/* 确认删除项目弹窗 */}
+      {confirmRemove && (
+        <div className="mx-2 mt-1 rounded-md border border-[rgba(220,92,92,0.35)] bg-[rgba(220,92,92,0.08)] p-2 text-xs">
+          <p className="text-[var(--text-strong)]">
+            {intl.formatMessage({ id: "project.confirmRemove" })}
+          </p>
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              onClick={() => { onRemove(); setConfirmRemove(false); }}
+              className="rounded-sm bg-[var(--danger)] px-2 py-0.5 text-[11px] text-white hover:opacity-90"
+            >
+              {intl.formatMessage({ id: "common.confirm" })}
+            </button>
+            <button
+              onClick={() => setConfirmRemove(false)}
+              className="rounded-sm px-2 py-0.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-strong)]"
+            >
+              {intl.formatMessage({ id: "common.cancel" })}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Thread list */}
       {expanded && (
@@ -282,25 +309,65 @@ function ProjectGroup({
             threads.map((thread) => {
               const title = thread.name || thread.preview || intl.formatMessage({ id: "chat.threadUntitled" });
               return (
-                <button
+                <ThreadItem
                   key={thread.id}
+                  thread={thread}
+                  title={title}
+                  isCurrent={currentThreadId === thread.id}
+                  locale={locale}
                   onClick={() => onThreadClick(thread.id)}
-                  className={`flex w-full items-center justify-between gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left transition-colors ${
-                    currentThreadId === thread.id
-                      ? "bg-[var(--surface-elevated)] text-[var(--text-strong)]"
-                      : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-base)]"
-                  }`}
-                >
-                  <p className="min-w-0 truncate text-xs">{title}</p>
-                  <span className="shrink-0 text-[11px] text-[var(--text-faint)]">
-                    {formatThreadTime(thread.updatedAt, locale)}
-                  </span>
-                </button>
+                  onDelete={() => onThreadDelete(thread.id)}
+                />
               );
             })
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 单个对话项，支持 hover 删除 */
+function ThreadItem({
+  thread,
+  title,
+  isCurrent,
+  locale,
+  onClick,
+  onDelete,
+}: {
+  thread: { id: string; updatedAt: number };
+  title: string;
+  isCurrent: boolean;
+  locale: string;
+  onClick: () => void;
+  onDelete: () => void;
+}) {
+  const intl = useIntl();
+
+  return (
+    <div
+      className={`group/thread flex w-full items-center justify-between gap-1 rounded-[var(--radius-sm)] px-2 py-1.5 text-left transition-colors cursor-pointer ${
+        isCurrent
+          ? "bg-[var(--surface-elevated)] text-[var(--text-strong)]"
+          : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-base)]"
+      }`}
+      onClick={onClick}
+    >
+      <p className="min-w-0 flex-1 truncate text-xs">{title}</p>
+      <span className="shrink-0 text-[11px] text-[var(--text-faint)] group-hover/thread:hidden">
+        {formatThreadTime(thread.updatedAt, locale)}
+      </span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+        className="hidden shrink-0 items-center justify-center rounded-sm p-0.5 text-[var(--text-faint)] transition-colors hover:text-[var(--danger)] group-hover/thread:flex"
+        title={intl.formatMessage({ id: "thread.delete" })}
+      >
+        <IconTrash size={11} stroke={1.8} />
+      </button>
     </div>
   );
 }

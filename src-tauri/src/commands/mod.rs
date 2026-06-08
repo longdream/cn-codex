@@ -6,12 +6,12 @@ pub mod model;
 pub mod skill;
 pub mod thread;
 pub mod turn;
+pub mod usage;
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::State;
 
 use crate::error::AppResult;
-use crate::server_bridge::initialize_app_server;
 use crate::state::AppState;
 
 pub use account::*;
@@ -22,10 +22,12 @@ pub use model::*;
 pub use skill::*;
 pub use thread::*;
 pub use turn::*;
+pub use usage::*;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerStatus {
+    /// standalone 模式始终为 true
     pub initialized: bool,
     pub current_thread_id: Option<String>,
     pub cwd: String,
@@ -40,22 +42,9 @@ pub fn greet(name: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn initialize_server(
-    app_handle: AppHandle,
-    state: State<'_, AppState>,
-) -> AppResult<String> {
-    if state.client.read().await.is_some() {
-        return Ok("server already initialized".to_string());
-    }
-
-    initialize_app_server(app_handle, state.inner()).await?;
-    Ok("server initialized".to_string())
-}
-
-#[tauri::command]
 pub async fn get_server_status(state: State<'_, AppState>) -> AppResult<ServerStatus> {
     Ok(ServerStatus {
-        initialized: state.client.read().await.is_some(),
+        initialized: true,
         current_thread_id: state.current_thread_id.read().await.clone(),
         cwd: state.cwd.read().await.clone(),
         locale: state.locale.read().await.clone(),

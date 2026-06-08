@@ -35,6 +35,9 @@ toml = "0.8"
 futures-util = "0.3.32"
 uuid = { version = "1.23.2", features = ["v4"] }
 reqwest = { version = "0.13.4", features = ["json", "stream"] }
+async-trait = "0.1"
+rusqlite = { version = "0.34", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [profile.dev]
 opt-level = 0

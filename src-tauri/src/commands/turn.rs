@@ -1,19 +1,21 @@
 use tauri::State;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::protocol::*;
 use crate::state::AppState;
 
-use super::thread::get_client;
+/// 旧 codex 桥接模式的遗留接口，standalone 模式下不可用。
+fn not_supported() -> AppError {
+    AppError::Custom("This command is not available in standalone mode".to_string())
+}
 
 #[tauri::command]
 pub async fn turn_start(
     state: State<'_, AppState>,
     params: TurnStartParams,
 ) -> AppResult<TurnStartResponse> {
-    let client = get_client(&state).await?;
-    let rpc = turn_start_rpc(&params);
-    client.request_typed(rpc.method, rpc.params).await
+    let _ = (state, params);
+    Err(not_supported())
 }
 
 #[tauri::command]
@@ -21,9 +23,8 @@ pub async fn turn_steer(
     state: State<'_, AppState>,
     params: TurnSteerParams,
 ) -> AppResult<TurnSteerResponse> {
-    let client = get_client(&state).await?;
-    let rpc = turn_steer_rpc(&params);
-    client.request_typed(rpc.method, rpc.params).await
+    let _ = (state, params);
+    Err(not_supported())
 }
 
 #[tauri::command]
@@ -31,7 +32,6 @@ pub async fn turn_interrupt(
     state: State<'_, AppState>,
     params: TurnInterruptParams,
 ) -> AppResult<TurnInterruptResponse> {
-    let client = get_client(&state).await?;
-    let rpc = turn_interrupt_rpc(&params);
-    client.request_typed(rpc.method, rpc.params).await
+    let _ = (state, params);
+    Err(not_supported())
 }

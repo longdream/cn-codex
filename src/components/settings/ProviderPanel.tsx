@@ -1,869 +1,487 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useIntl } from "react-intl";
 import {
-  standaloneConfigRead,
+  IconCheck,
+  IconPlus,
+  IconTrash,
+  IconX,
+  IconBolt,
+  IconExternalLink,
+} from "@tabler/icons-react";
+import {
   standaloneConfigWrite,
 } from "../../api";
-import { useAppStore, type ModelEntry } from "../../stores/appStore";
+import { useAppStore, PROVIDER_PRESETS, createProviderFromPreset } from "../../stores/appStore";
+import type { ProviderConfig, ProviderPreset, ProviderModel } from "../../types/provider";
 import type { ConfigEdit } from "../../types";
 
-type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
-type WebSearchMode = "live" | "cached" | "disabled";
-type ApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never";
-
-interface ProviderPreset {
-  label: string;
-  descriptionId: string;
-  defaultModel: string;
-  defaultBaseUrl: string;
-  wireApi: string;
-  requiresOpenAIAuth: boolean;
-  providerKind: "builtin" | "custom";
-}
-
-interface ProviderFormState {
-  modelProvider: string;
-  model: string;
-  baseUrl: string;
-  apiKey: string;
-  reasoningEffort: ReasoningEffort;
-  webSearch: WebSearchMode;
-  approvalPolicy: ApprovalPolicy;
-  wireApi: string;
-  requiresOpenAIAuth: boolean;
-  supportsVision: boolean;
-}
-
-type ProviderConfig = Record<string, unknown>;
-type ProviderConfigMap = Record<string, ProviderConfig>;
-
-interface ProviderCategory {
-  label: string;
-  providers: string[];
-}
-
-const PROVIDER_CATEGORIES: ProviderCategory[] = [
-  { label: "Global", providers: ["openai", "anthropic", "google"] },
-  { label: "China", providers: ["deepseek", "volcengine", "qwen", "zhipu", "moonshot", "siliconflow", "baichuan"] },
-  { label: "Local", providers: ["ollama", "lmstudio"] },
-  { label: "Other", providers: ["custom"] },
-];
-
-const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
-  openai: {
-    label: "OpenAI",
-    descriptionId: "settings.provider.preset.openaiDescription",
-    defaultModel: "gpt-5",
-    defaultBaseUrl: "",
-    wireApi: "",
-    requiresOpenAIAuth: true,
-    providerKind: "builtin",
-  },
-  anthropic: {
-    label: "Anthropic",
-    descriptionId: "settings.provider.preset.anthropicDescription",
-    defaultModel: "claude-sonnet-4-20250514",
-    defaultBaseUrl: "https://api.anthropic.com/v1",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-  google: {
-    label: "Google Gemini",
-    descriptionId: "settings.provider.preset.googleDescription",
-    defaultModel: "gemini-2.5-pro",
-    defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-  deepseek: {
-    label: "DeepSeek",
-    descriptionId: "settings.provider.preset.deepseekDescription",
-    defaultModel: "deepseek-chat",
-    defaultBaseUrl: "https://api.deepseek.com/v1",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-  volcengine: {
-    label: "Volcengine Ark",
-    descriptionId: "settings.provider.preset.volcengineDescription",
-    defaultModel: "deepseek-v4-pro-260425",
-    defaultBaseUrl: "https://ark.cn-beijing.volces.com/api/v3",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-  qwen: {
-    label: "Qwen (Tongyi)",
-    descriptionId: "settings.provider.preset.qwenDescription",
-    defaultModel: "qwen-max",
-    defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-  zhipu: {
-    label: "Zhipu AI",
-    descriptionId: "settings.provider.preset.zhipuDescription",
-    defaultModel: "glm-4-plus",
-    defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-  moonshot: {
-    label: "Moonshot AI",
-    descriptionId: "settings.provider.preset.moonshotDescription",
-    defaultModel: "moonshot-v1-128k",
-    defaultBaseUrl: "https://api.moonshot.cn/v1",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-  siliconflow: {
-    label: "SiliconFlow",
-    descriptionId: "settings.provider.preset.siliconflowDescription",
-    defaultModel: "deepseek-ai/DeepSeek-V3",
-    defaultBaseUrl: "https://api.siliconflow.cn/v1",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-  baichuan: {
-    label: "Baichuan",
-    descriptionId: "settings.provider.preset.baichuanDescription",
-    defaultModel: "Baichuan4",
-    defaultBaseUrl: "https://api.baichuan-ai.com/v1",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-  ollama: {
-    label: "Ollama",
-    descriptionId: "settings.provider.preset.ollamaDescription",
-    defaultModel: "qwen2.5-coder:7b",
-    defaultBaseUrl: "",
-    wireApi: "",
-    requiresOpenAIAuth: false,
-    providerKind: "builtin",
-  },
-  lmstudio: {
-    label: "LM Studio",
-    descriptionId: "settings.provider.preset.lmstudioDescription",
-    defaultModel: "local-model",
-    defaultBaseUrl: "",
-    wireApi: "",
-    requiresOpenAIAuth: false,
-    providerKind: "builtin",
-  },
-  custom: {
-    label: "Custom",
-    descriptionId: "settings.provider.preset.customDescription",
-    defaultModel: "",
-    defaultBaseUrl: "",
-    wireApi: "chat",
-    requiresOpenAIAuth: false,
-    providerKind: "custom",
-  },
-};
-
-const DEFAULT_FORM: ProviderFormState = {
-  modelProvider: "openai",
-  model: "gpt-5",
-  baseUrl: "",
-  apiKey: "",
-  reasoningEffort: "medium",
-  webSearch: "live",
-  approvalPolicy: "on-request",
-  wireApi: "",
-  requiresOpenAIAuth: true,
-  supportsVision: false,
-};
-
-const PROVIDER_BASE_URL_KEYS = [
-  "base_url",
-  "baseUrl",
-  "endpoint",
-  "url",
-  "api_base_url",
-  "apiBaseUrl",
-] as const;
-const PROVIDER_TOKEN_KEYS = [
-  "experimental_bearer_token",
-  "experimentalBearerToken",
-  "api_key",
-  "apiKey",
-  "bearer_token",
-  "bearerToken",
-  "key",
-  "token",
-] as const;
-const PROVIDER_WIRE_API_KEYS = [
-  "wire_api",
-  "wireApi",
-  "api_format",
-  "apiFormat",
-  "api",
-] as const;
-const PROVIDER_AUTH_KEYS = ["requires_openai_auth", "requiresOpenaiAuth"] as const;
-
-function getPreset(provider: string): ProviderPreset {
-  return (
-    PROVIDER_PRESETS[provider] ?? {
-      label: provider,
-      descriptionId: "settings.provider.preset.configDescription",
-      defaultModel: "",
-      defaultBaseUrl: "",
-      wireApi: "responses",
-      requiresOpenAIAuth: false,
-      providerKind: "custom",
-    }
-  );
-}
-
-function readString(...values: unknown[]): string {
-  for (const value of values) {
-    if (typeof value === "string") {
-      return value;
-    }
-  }
-  return "";
-}
-
-function readBoolean(fallback: boolean, ...values: unknown[]): boolean {
-  for (const value of values) {
-    if (typeof value === "boolean") {
-      return value;
-    }
-  }
-  return fallback;
-}
-
-function normalizeReasoning(value: unknown): ReasoningEffort {
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh"
-    ? value
-    : "medium";
-}
-
-function normalizeWebSearch(value: unknown): WebSearchMode {
-  return value === "live" || value === "cached" || value === "disabled" ? value : "live";
-}
-
-function normalizeApproval(value: unknown): ApprovalPolicy {
-  return value === "untrusted" ||
-    value === "on-failure" ||
-    value === "on-request" ||
-    value === "never"
-    ? value
-    : "on-request";
-}
-
-function adoptPreset(current: string, previousDefault: string, nextDefault: string): string {
-  const trimmed = current.trim();
-  if (!trimmed || trimmed === previousDefault) {
-    return nextDefault;
-  }
-  return current;
-}
-
-function normalizeProviderConfigs(value: unknown): ProviderConfigMap {
-  if (!value || typeof value !== "object") {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, config]) => [
-      key,
-      typeof config === "object" && config !== null ? (config as ProviderConfig) : {},
-    ]),
-  );
-}
-
-function readProviderString(config: ProviderConfig, keys: readonly string[]): string {
-  return readString(...keys.map((key) => config[key]));
-}
-
-function readProviderBoolean(
-  config: ProviderConfig,
-  fallback: boolean,
-  keys: readonly string[],
-): boolean {
-  return readBoolean(
-    fallback,
-    ...keys.map((key) => config[key]),
-  );
-}
-
-function findFirstExistingKey(
-  config: ProviderConfig,
-  keys: readonly string[],
-): string | null {
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(config, key)) {
-      return key;
-    }
-  }
-
-  return null;
-}
-
-function clearKeys(target: ProviderConfig, keys: readonly string[]) {
-  for (const key of keys) {
-    delete target[key];
-  }
-}
-
-function setPreferredKey(
-  target: ProviderConfig,
-  existingConfig: ProviderConfig,
-  keys: readonly string[],
-  fallbackKey: string,
-  value: unknown,
-) {
-  const preferredKey = findFirstExistingKey(existingConfig, keys) ?? fallbackKey;
-  target[preferredKey] = value;
-}
-
-function normalizeProviderBaseUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, "");
-  if (!trimmed) {
-    return "";
-  }
-
-  if (trimmed.endsWith("/responses")) {
-    return trimmed.slice(0, -"/responses".length);
-  }
-
-  return trimmed;
-}
-
+/**
+ * 供应商管理面板 (cc-switch 风格)
+ * 左侧：实例列表（平铺），支持添加/激活/删除
+ * 右侧：选中实例的配置表单
+ */
 export function ProviderPanel() {
   const intl = useIntl();
-  const configPath = useAppStore((state) => state.configPath);
-  const [form, setForm] = useState<ProviderFormState>(DEFAULT_FORM);
-  const [providerConfigs, setProviderConfigs] = useState<ProviderConfigMap>({});
-  const [loaded, setLoaded] = useState(false);
+  const providers = useAppStore((s) => s.providers);
+  const activeProviderId = useAppStore((s) => s.activeProviderId);
+
+  const [selectedId, setSelectedId] = useState<string | null>(activeProviderId ?? providers[0]?.id ?? null);
   const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(
-    null,
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [showPresetDialog, setShowPresetDialog] = useState(false);
+
+  // 编辑表单
+  const [editForm, setEditForm] = useState<{
+    name: string;
+    apiKey: string;
+    baseUrl: string;
+    wireApi: string;
+    newModelId: string;
+    newModelLabel: string;
+  }>({ name: "", apiKey: "", baseUrl: "", wireApi: "", newModelId: "", newModelLabel: "" });
+
+  const selectedProvider = useMemo(
+    () => providers.find((p) => p.id === selectedId) ?? null,
+    [providers, selectedId],
   );
 
-  const currentPreset = useMemo(() => getPreset(form.modelProvider), [form.modelProvider]);
-
-  const categorizedProviders = useMemo(() => {
-    const categories = PROVIDER_CATEGORIES.map((cat) => ({
-      ...cat,
-      items: cat.providers
-        .filter((id) => PROVIDER_PRESETS[id])
-        .map((id) => ({ id, ...PROVIDER_PRESETS[id] })),
-    }));
-
-    if (!PROVIDER_PRESETS[form.modelProvider]) {
-      categories[0] = {
-        ...categories[0],
-        items: [
-          { id: form.modelProvider, ...getPreset(form.modelProvider) },
-          ...categories[0].items,
-        ],
-      };
-    }
-
-    return categories;
-  }, [form.modelProvider]);
-
-  const currentProviderConfig = providerConfigs[form.modelProvider] ?? {};
-  const hasStoredApiKey = Boolean(readProviderString(currentProviderConfig, PROVIDER_TOKEN_KEYS));
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const response = await standaloneConfigRead();
-        const config = (response?.config ?? {}) as Record<string, unknown>;
-        const configs = normalizeProviderConfigs(
-          config.model_providers ?? config.modelProviders ?? config.providers,
-        );
-        const modelProvider =
-          readString(config.model_provider, config.modelProvider, config.provider) || "openai";
-        const providerConfig = configs[modelProvider] ?? {};
-        const preset = getPreset(modelProvider);
-
-        setProviderConfigs(configs);
-        setForm({
-          modelProvider,
-          model:
-            readString(config.model) ||
-            readString(providerConfig.model) ||
-            preset.defaultModel ||
-            DEFAULT_FORM.model,
-          baseUrl:
-            normalizeProviderBaseUrl(readProviderString(providerConfig, PROVIDER_BASE_URL_KEYS)) ||
-            preset.defaultBaseUrl,
-          apiKey: "",
-          reasoningEffort: normalizeReasoning(
-            config.model_reasoning_effort ?? config.modelReasoningEffort,
-          ),
-          webSearch: normalizeWebSearch(config.web_search ?? config.webSearch),
-          approvalPolicy: normalizeApproval(config.approval_policy ?? config.approvalPolicy),
-          wireApi: readProviderString(providerConfig, PROVIDER_WIRE_API_KEYS) || preset.wireApi,
-          requiresOpenAIAuth: readProviderBoolean(
-            providerConfig,
-            preset.requiresOpenAIAuth,
-            PROVIDER_AUTH_KEYS,
-          ),
-          supportsVision: readBoolean(false, providerConfig.supports_vision, providerConfig.supportsVision),
-        });
-      } catch (error) {
-        console.error("Failed to load provider config:", error);
-        setFeedback({
-          kind: "error",
-          text: intl.formatMessage({ id: "settings.provider.loadError" }),
-        });
-      } finally {
-        setLoaded(true);
-      }
-    };
-
-    void load();
-  }, [intl]);
-
-  const handleProviderChange = useCallback(
-    (nextProvider: string) => {
-      setFeedback(null);
-      setForm((current) => {
-        const previousPreset = getPreset(current.modelProvider);
-        const nextPreset = getPreset(nextProvider);
-        const storedProviderConfig = providerConfigs[nextProvider] ?? {};
-
-        return {
-          ...current,
-          modelProvider: nextProvider,
-          model:
-            readString(storedProviderConfig.model) ||
-            adoptPreset(current.model, previousPreset.defaultModel, nextPreset.defaultModel),
-          baseUrl:
-            normalizeProviderBaseUrl(
-              readProviderString(storedProviderConfig, PROVIDER_BASE_URL_KEYS),
-            ) ||
-            adoptPreset(
-              current.baseUrl,
-              previousPreset.defaultBaseUrl,
-              nextPreset.defaultBaseUrl,
-            ),
-          wireApi:
-            readProviderString(storedProviderConfig, PROVIDER_WIRE_API_KEYS) || nextPreset.wireApi,
-          requiresOpenAIAuth: readProviderBoolean(
-            storedProviderConfig,
-            nextPreset.requiresOpenAIAuth,
-            PROVIDER_AUTH_KEYS,
-          ),
-          supportsVision: readBoolean(false, storedProviderConfig.supports_vision, storedProviderConfig.supportsVision),
-          apiKey: "",
-        };
+  // 选中实例时加载配置到编辑表单
+  const handleSelect = useCallback((id: string) => {
+    setSelectedId(id);
+    setFeedback(null);
+    const provider = useAppStore.getState().providers.find((p) => p.id === id);
+    if (provider) {
+      setEditForm({
+        name: provider.name,
+        apiKey: "",
+        baseUrl: provider.baseUrl,
+        wireApi: provider.wireApi,
+        newModelId: "",
+        newModelLabel: "",
       });
-    },
-    [providerConfigs],
-  );
+    }
+  }, []);
 
+  // 激活实例
+  const handleActivate = useCallback((id: string) => {
+    useAppStore.getState().activateProvider(id);
+    setFeedback(null);
+  }, []);
+
+  // 从预设创建新实例
+  const handleCreateFromPreset = useCallback((preset: ProviderPreset) => {
+    const instance = createProviderFromPreset(preset);
+    useAppStore.getState().addCustomProvider(instance);
+    setShowPresetDialog(false);
+    handleSelect(instance.id);
+  }, [handleSelect]);
+
+  // 删除实例
+  const handleDelete = useCallback((providerId: string) => {
+    // 不能删除当前激活的实例
+    if (providerId === useAppStore.getState().activeProviderId) return;
+    useAppStore.getState().removeCustomProvider(providerId);
+    if (selectedId === providerId) {
+      const remaining = useAppStore.getState().providers;
+      setSelectedId(remaining[0]?.id ?? null);
+    }
+  }, [selectedId]);
+
+  // 保存配置
   const handleSave = useCallback(async () => {
-    const trimmedModel = form.model.trim();
-    const trimmedBaseUrl = normalizeProviderBaseUrl(form.baseUrl);
-    const trimmedApiKey = form.apiKey.trim();
-    const trimmedWireApi = form.wireApi.trim() || currentPreset.wireApi;
-
-    if (!trimmedModel) {
-      setFeedback({
-        kind: "error",
-        text: intl.formatMessage({ id: "settings.provider.modelRequired" }),
-      });
-      return;
-    }
-
-    if (currentPreset.providerKind === "custom" && !trimmedBaseUrl) {
-      setFeedback({
-        kind: "error",
-        text: intl.formatMessage({ id: "settings.provider.baseUrlRequired" }),
-      });
-      return;
-    }
-
+    if (!selectedProvider) return;
     setSaving(true);
     setFeedback(null);
 
     try {
-      const existingConfig = providerConfigs[form.modelProvider] ?? {};
-      const persistedToken =
-        trimmedApiKey || readProviderString(existingConfig, PROVIDER_TOKEN_KEYS);
+      const trimmedName = editForm.name.trim() || selectedProvider.name;
+      const trimmedBaseUrl = editForm.baseUrl.trim().replace(/\/+$/, "");
+      const trimmedApiKey = editForm.apiKey.trim();
+      const trimmedWireApi = editForm.wireApi.trim();
 
-      const providerOverride: ProviderConfig = { ...existingConfig };
-      clearKeys(providerOverride, PROVIDER_BASE_URL_KEYS);
-      clearKeys(providerOverride, PROVIDER_TOKEN_KEYS);
-      clearKeys(providerOverride, PROVIDER_WIRE_API_KEYS);
-      clearKeys(providerOverride, PROVIDER_AUTH_KEYS);
-
-      if (trimmedBaseUrl) {
-        setPreferredKey(
-          providerOverride,
-          existingConfig,
-          PROVIDER_BASE_URL_KEYS,
-          "base_url",
-          trimmedBaseUrl,
-        );
-      }
-
-      if (trimmedWireApi) {
-        setPreferredKey(
-          providerOverride,
-          existingConfig,
-          PROVIDER_WIRE_API_KEYS,
-          "wire_api",
-          trimmedWireApi,
-        );
-      }
-
-      setPreferredKey(
-        providerOverride,
-        existingConfig,
-        PROVIDER_AUTH_KEYS,
-        "requires_openai_auth",
-        form.requiresOpenAIAuth,
-      );
-
-      if (persistedToken) {
-        setPreferredKey(
-          providerOverride,
-          existingConfig,
-          PROVIDER_TOKEN_KEYS,
-          "experimental_bearer_token",
-          persistedToken,
-        );
-      }
-
-      providerOverride.supports_vision = form.supportsVision;
-
-      if (currentPreset.providerKind === "custom") {
-        providerOverride.name = providerOverride.name || currentPreset.label || form.modelProvider;
-      }
-
-      const edits: ConfigEdit[] = [
-        { keyPath: "model_provider", value: form.modelProvider, mergeStrategy: "replace" },
-        { keyPath: "model", value: trimmedModel, mergeStrategy: "replace" },
-        {
-          keyPath: "model_reasoning_effort",
-          value: form.reasoningEffort,
-          mergeStrategy: "replace",
-        },
-        { keyPath: "web_search", value: form.webSearch, mergeStrategy: "replace" },
-        { keyPath: "approval_policy", value: form.approvalPolicy, mergeStrategy: "replace" },
-      ];
-
-      if (currentPreset.providerKind === "custom") {
-        edits.push({
-          keyPath: `model_providers.${form.modelProvider}`,
-          value: providerOverride,
-          mergeStrategy: "replace",
-        });
-      }
-
-      await standaloneConfigWrite(edits);
-
-      setProviderConfigs((current) => ({
-        ...current,
-        [form.modelProvider]: providerOverride,
-      }));
-      setForm((current) => ({ ...current, apiKey: "" }));
-      useAppStore.getState().setCurrentModel(trimmedModel);
-
-      const modelId = `${form.modelProvider}:${trimmedModel}`;
-      const newEntry: ModelEntry = {
-        id: modelId,
-        provider: form.modelProvider,
-        model: trimmedModel,
-        label: `${currentPreset.label} / ${trimmedModel}`,
-        supportsVision: form.supportsVision,
+      const updates: Partial<ProviderConfig> = {
+        name: trimmedName,
+        baseUrl: trimmedBaseUrl,
+        wireApi: trimmedWireApi || selectedProvider.wireApi,
       };
-      const store = useAppStore.getState();
-      const existing = store.configuredModels;
-      const idx = existing.findIndex((m) => m.id === modelId);
-      const updated = idx >= 0
-        ? existing.map((m, i) => (i === idx ? newEntry : m))
-        : [...existing, newEntry];
-      store.setConfiguredModels(updated);
-      if (!store.activeModelId) {
-        store.setActiveModelId(modelId);
+      if (trimmedApiKey) {
+        updates.apiKey = trimmedApiKey;
+      }
+      useAppStore.getState().updateProvider(selectedProvider.id, updates);
+
+      // 如果是激活的实例，同步写入 config.toml
+      if (selectedProvider.id === useAppStore.getState().activeProviderId) {
+        const providerKey = selectedProvider.type || "custom";
+        const providerOverride: Record<string, unknown> = {};
+        if (trimmedBaseUrl) providerOverride.base_url = trimmedBaseUrl;
+        if (trimmedWireApi) providerOverride.wire_api = trimmedWireApi;
+        const persistedKey = trimmedApiKey || selectedProvider.apiKey;
+        if (persistedKey) providerOverride.experimental_bearer_token = persistedKey;
+        providerOverride.requires_openai_auth = selectedProvider.requiresOpenAIAuth;
+
+        const defaultModel = selectedProvider.models[0]?.id ?? "";
+        const edits: ConfigEdit[] = [
+          { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
+          { keyPath: "model", value: defaultModel, mergeStrategy: "replace" },
+          { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
+        ];
+        await standaloneConfigWrite(edits);
       }
 
-      setFeedback({
-        kind: "success",
-        text: intl.formatMessage({ id: "settings.provider.saveSuccess" }),
-      });
+      setEditForm((f) => ({ ...f, apiKey: "" }));
+      setFeedback({ kind: "success", text: intl.formatMessage({ id: "settings.provider.saveSuccess" }) });
     } catch (error) {
-      console.error("Failed to save provider config:", error);
-      const detail = typeof error === "string" ? error : (error as Error)?.message ?? "";
-      setFeedback({
-        kind: "error",
-        text: detail
-          ? `${intl.formatMessage({ id: "settings.provider.saveError" })} ${detail}`
-          : intl.formatMessage({ id: "settings.provider.saveError" }),
-      });
+      console.error("Failed to save provider:", error);
+      setFeedback({ kind: "error", text: intl.formatMessage({ id: "settings.provider.saveError" }) });
     } finally {
       setSaving(false);
     }
-  }, [currentPreset, form, intl, providerConfigs]);
+  }, [selectedProvider, editForm, intl]);
 
-  if (!loaded) {
-    return (
-      <div className="text-sm text-[var(--text-muted)]">
-        {intl.formatMessage({ id: "common.loading" })}
-      </div>
-    );
-  }
+  // 添加模型
+  const handleAddModel = useCallback(() => {
+    if (!selectedProvider || !editForm.newModelId.trim()) return;
+    const model: ProviderModel = {
+      id: editForm.newModelId.trim(),
+      label: editForm.newModelLabel.trim() || editForm.newModelId.trim(),
+      supportsVision: false,
+    };
+    useAppStore.getState().addProviderModel(selectedProvider.id, model);
+    setEditForm((f) => ({ ...f, newModelId: "", newModelLabel: "" }));
+  }, [selectedProvider, editForm]);
+
+  // 删除模型
+  const handleRemoveModel = useCallback((modelId: string) => {
+    if (!selectedProvider) return;
+    useAppStore.getState().removeProviderModel(selectedProvider.id, modelId);
+  }, [selectedProvider]);
+
+  // 预设按分类分组（用于对话框）
+  const presetsByCategory = useMemo(() => {
+    const map: Record<string, ProviderPreset[]> = { global: [], china: [], local: [], other: [] };
+    for (const p of PROVIDER_PRESETS) {
+      (map[p.category] ?? map.other).push(p);
+    }
+    return Object.entries(map).filter(([, items]) => items.length > 0);
+  }, []);
 
   return (
-    <div className="space-y-6">
-      {/* Provider selection grid */}
-      <section className="space-y-4">
-        <div className="space-y-1">
-          <h3 className="text-sm font-semibold tracking-tight text-[var(--text-strong)]">
+    <div className="flex h-full gap-4">
+      {/* 左侧：实例列表 */}
+      <div className="flex w-56 flex-shrink-0 flex-col">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-xs font-semibold text-[var(--text-strong)]">
             {intl.formatMessage({ id: "settings.provider.type" })}
           </h3>
-          <p className="text-sm leading-relaxed text-[var(--text-muted)]">
-            {intl.formatMessage({ id: currentPreset.descriptionId })}
-          </p>
+          <button
+            onClick={() => setShowPresetDialog(true)}
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-[var(--accent)] hover:bg-[var(--accent-soft)] transition-colors"
+          >
+            <IconPlus size={12} stroke={2} />
+            {intl.formatMessage({ id: "settings.provider.addCustom" })}
+          </button>
         </div>
 
-        {categorizedProviders.map((category) => (
-          <div key={category.label} className="space-y-2">
-            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--text-faint)]">
-              {intl.formatMessage({ id: `settings.provider.category.${category.label.toLowerCase()}` })}
-            </p>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-              {category.items.map((item) => {
-                const isActive = form.modelProvider === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => handleProviderChange(item.id)}
-                    className={`provider-card ${isActive ? "is-active" : ""}`}
-                  >
-                    <span className="provider-card-label">{item.label}</span>
-                    <span className="provider-card-model">{item.defaultModel || "custom"}</span>
-                  </button>
-                );
-              })}
+        <div className="flex-1 space-y-1 overflow-y-auto pr-1">
+          {providers.length === 0 && (
+            <div className="py-8 text-center text-xs text-[var(--text-faint)]">
+              {intl.formatMessage({ id: "settings.provider.description" })}
+              <br />
+              <button
+                onClick={() => setShowPresetDialog(true)}
+                className="mt-2 text-[var(--accent)] underline"
+              >
+                {intl.formatMessage({ id: "settings.provider.addCustom" })}
+              </button>
             </div>
-          </div>
-        ))}
-      </section>
-
-      {/* Configuration form */}
-      <section className="settings-card space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <h3 className="text-sm font-semibold text-[var(--text-strong)]">
-              {currentPreset.label}
-            </h3>
-            <p className="text-xs text-[var(--text-muted)]">
-              {intl.formatMessage({ id: currentPreset.descriptionId })}
-            </p>
-          </div>
-          {configPath && (
-            <span className="max-w-[200px] truncate rounded-md bg-[var(--surface-contrast)] px-2 py-1 font-mono text-[10px] text-[var(--text-faint)]">
-              {configPath.split(/[/\\]/).pop()}
-            </span>
           )}
+          {providers.map((provider) => {
+            const isActive = activeProviderId === provider.id;
+            const isSelected = selectedId === provider.id;
+            return (
+              <div
+                key={provider.id}
+                onClick={() => handleSelect(provider.id)}
+                className={`group relative flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 transition-colors ${
+                  isSelected
+                    ? "bg-[var(--surface-elevated)] ring-1 ring-[var(--accent-border)]"
+                    : "hover:bg-[var(--surface-soft)]"
+                }`}
+              >
+                {/* 激活指示器 */}
+                <span className={`h-2 w-2 flex-shrink-0 rounded-full ${isActive ? "bg-green-500" : "bg-[var(--border-subtle)]"}`} />
+                {/* 信息 */}
+                <div className="flex-1 overflow-hidden">
+                  <div className="flex items-center gap-1">
+                    <span className="truncate text-xs font-medium text-[var(--text-strong)]">
+                      {provider.name}
+                    </span>
+                    {isActive && (
+                      <IconCheck size={10} stroke={3} className="flex-shrink-0 text-green-500" />
+                    )}
+                  </div>
+                  <span className="block truncate text-[10px] text-[var(--text-faint)]">
+                    {provider.baseUrl || provider.type}
+                  </span>
+                </div>
+                {/* 删除按钮（非激活的才能删除） */}
+                {!isActive && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDelete(provider.id); }}
+                    className="hidden flex-shrink-0 rounded p-0.5 text-[var(--text-faint)] hover:text-[var(--danger)] group-hover:block"
+                  >
+                    <IconTrash size={12} stroke={2} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
+      </div>
 
-        <div className="grid gap-3 md:grid-cols-2">
-          <div className="space-y-1.5">
-            <label className="settings-field-label">
-              {intl.formatMessage({ id: "settings.provider.model" })}
-            </label>
-            <input
-              value={form.model}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, model: event.target.value }))
-              }
-              placeholder={
-                currentPreset.defaultModel ||
-                intl.formatMessage({ id: "settings.provider.modelPlaceholder" })
-              }
-              className="app-input"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <label className="settings-field-label">
-                {intl.formatMessage({ id: "settings.provider.apiKey" })}
-              </label>
-              {hasStoredApiKey && (
-                <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] text-[var(--accent-strong)]">
-                  {intl.formatMessage({ id: "settings.provider.apiKeySaved" })}
+      {/* 右侧：配置表单 */}
+      <div className="flex-1 overflow-y-auto">
+        {selectedProvider ? (
+          <div className="settings-card space-y-4">
+            {/* 标题行 */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="rounded bg-[var(--surface-soft)] px-1.5 py-0.5 text-[10px] text-[var(--text-faint)]">
+                  {selectedProvider.type}
                 </span>
+                {activeProviderId === selectedProvider.id && (
+                  <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-600">
+                    {intl.formatMessage({ id: "settings.provider.current" })}
+                  </span>
+                )}
+              </div>
+              {activeProviderId !== selectedProvider.id && (
+                <button
+                  onClick={() => handleActivate(selectedProvider.id)}
+                  className="flex items-center gap-1 rounded-md border border-[var(--accent-border)] px-2 py-1 text-[11px] text-[var(--accent)] hover:bg-[var(--accent-soft)] transition-colors"
+                >
+                  <IconBolt size={12} stroke={2} />
+                  {intl.formatMessage({ id: "settings.provider.activateThis" })}
+                </button>
               )}
             </div>
-            <input
-              type="password"
-              value={form.apiKey}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, apiKey: event.target.value }))
-              }
-              placeholder={intl.formatMessage({ id: "settings.provider.apiKeyPlaceholder" })}
-              className="app-input"
-            />
+
+            {/* 名称 */}
+            <div className="space-y-1.5">
+              <label className="settings-field-label">
+                名称
+              </label>
+              <input
+                value={editForm.name}
+                onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="供应商实例名称"
+                className="app-input"
+              />
+            </div>
+
+            {/* API Key & Base URL */}
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-1.5">
+                <label className="settings-field-label">
+                  {intl.formatMessage({ id: "settings.provider.apiKey" })}
+                  {selectedProvider.apiKey && (
+                    <span className="ml-2 rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] text-[var(--accent-strong)]">
+                      {intl.formatMessage({ id: "settings.provider.apiKeySaved" })}
+                    </span>
+                  )}
+                </label>
+                <input
+                  type="password"
+                  value={editForm.apiKey}
+                  onChange={(e) => setEditForm((f) => ({ ...f, apiKey: e.target.value }))}
+                  placeholder={intl.formatMessage({ id: "settings.provider.apiKeyPlaceholder" })}
+                  className="app-input"
+                />
+                {/* 获取 API Key 链接 */}
+                {(() => {
+                  const preset = PROVIDER_PRESETS.find((p) => p.type === selectedProvider.type);
+                  return preset?.signupUrl ? (
+                    <a
+                      href={preset.signupUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] text-[var(--accent)] hover:underline"
+                    >
+                      <IconExternalLink size={11} stroke={2} />
+                      {intl.formatMessage({ id: "settings.provider.getApiKey", defaultMessage: "前往获取 API Key" })}
+                    </a>
+                  ) : null;
+                })()}
+              </div>
+              <div className="space-y-1.5">
+                <label className="settings-field-label">
+                  {intl.formatMessage({ id: "settings.provider.baseUrl" })}
+                </label>
+                <input
+                  value={editForm.baseUrl}
+                  onChange={(e) => setEditForm((f) => ({ ...f, baseUrl: e.target.value }))}
+                  placeholder={intl.formatMessage({ id: "settings.provider.baseUrlPlaceholder" })}
+                  className="app-input"
+                />
+              </div>
+            </div>
+
+            {/* Wire API 格式选择 */}
+            <div className="space-y-1.5">
+              <label className="settings-field-label">
+                {intl.formatMessage({ id: "settings.provider.transport", defaultMessage: "API 格式" })}
+              </label>
+              <select
+                value={editForm.wireApi}
+                onChange={(e) => setEditForm((f) => ({ ...f, wireApi: e.target.value }))}
+                className="app-select w-56"
+              >
+                <option value="chat">OpenAI Chat Completions</option>
+                <option value="responses">OpenAI Responses API</option>
+                <option value="anthropic">Anthropic Messages API</option>
+                <option value="gemini">Google Gemini API</option>
+              </select>
+              <p className="text-[10px] text-[var(--text-faint)]">
+                {editForm.wireApi === "chat" && "适用于大多数 OpenAI 兼容供应商（DeepSeek、通义千问等）"}
+                {editForm.wireApi === "responses" && "适用于 OpenAI 官方 Responses API 和部分中转站"}
+                {editForm.wireApi === "anthropic" && "适用于 Anthropic Claude 原生 API"}
+                {editForm.wireApi === "gemini" && "适用于 Google Gemini 原生 API（非 OpenAI 兼容端点）"}
+              </p>
+            </div>
+
+            {/* 模型列表 */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-medium text-[var(--text-strong)]">
+                {intl.formatMessage({ id: "settings.provider.models" })}
+              </h4>
+              <div className="space-y-1">
+                {selectedProvider.models.map((model) => (
+                  <div key={model.id} className="flex items-center justify-between rounded-md bg-[var(--surface-soft)] px-3 py-1.5">
+                    <div>
+                      <span className="text-xs text-[var(--text-strong)]">{model.label}</span>
+                      <span className="ml-2 text-[11px] text-[var(--text-faint)]">{model.id}</span>
+                      {model.supportsVision && (
+                        <span className="ml-1 text-[10px] text-[var(--accent)]">Vision</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => handleRemoveModel(model.id)}
+                      className="text-[var(--text-faint)] hover:text-[var(--danger)] transition-colors"
+                    >
+                      <IconX size={12} stroke={2} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {/* 添加新模型 */}
+              <div className="flex items-center gap-2">
+                <input
+                  value={editForm.newModelId}
+                  onChange={(e) => setEditForm((f) => ({ ...f, newModelId: e.target.value }))}
+                  placeholder={intl.formatMessage({ id: "settings.provider.modelPlaceholder" })}
+                  className="app-input flex-1 text-xs"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddModel(); }}
+                />
+                <input
+                  value={editForm.newModelLabel}
+                  onChange={(e) => setEditForm((f) => ({ ...f, newModelLabel: e.target.value }))}
+                  placeholder={intl.formatMessage({ id: "settings.provider.modelLabelPlaceholder" })}
+                  className="app-input flex-1 text-xs"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddModel(); }}
+                />
+                <button onClick={handleAddModel} className="flex h-7 w-7 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white transition-colors">
+                  <IconPlus size={12} stroke={2} />
+                </button>
+              </div>
+            </div>
+
+            {/* 反馈 */}
+            {feedback && (
+              <div className={`rounded-lg border px-4 py-3 text-sm ${
+                feedback.kind === "success"
+                  ? "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                  : "border-[rgba(220,92,92,0.35)] bg-[rgba(220,92,92,0.12)] text-[var(--danger)]"
+              }`}>
+                {feedback.text}
+              </div>
+            )}
+
+            {/* 保存按钮 */}
+            <div className="flex justify-end">
+              <button onClick={handleSave} disabled={saving} className="primary-button">
+                {saving
+                  ? intl.formatMessage({ id: "common.saving" })
+                  : intl.formatMessage({ id: "common.save" })}
+              </button>
+            </div>
           </div>
-
-          <div className="space-y-1.5 md:col-span-2">
-            <label className="settings-field-label">
-              {intl.formatMessage({ id: "settings.provider.baseUrl" })}
-            </label>
-            <input
-              value={form.baseUrl}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, baseUrl: event.target.value }))
-              }
-              placeholder={
-                currentPreset.defaultBaseUrl ||
-                intl.formatMessage({ id: "settings.provider.baseUrlPlaceholder" })
-              }
-              className="app-input"
-            />
+        ) : (
+          <div className="flex h-full items-center justify-center text-xs text-[var(--text-faint)]">
+            {providers.length === 0
+              ? "点击左上角「添加」按钮创建你的第一个供应商"
+              : "选择左侧的供应商实例查看配置"}
           </div>
-        </div>
-      </section>
+        )}
+      </div>
 
-      {/* Runtime options */}
-      <section className="settings-card space-y-4">
-        <div className="space-y-0.5">
-          <h3 className="text-sm font-semibold text-[var(--text-strong)]">
-            {intl.formatMessage({ id: "settings.provider.runtime" })}
-          </h3>
-          <p className="text-xs text-[var(--text-muted)]">
-            {intl.formatMessage({ id: "settings.provider.runtimeHint" })}
-          </p>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <div className="space-y-1.5">
-            <label className="settings-field-label">
-              {intl.formatMessage({ id: "settings.provider.effort" })}
-            </label>
-            <select
-              value={form.reasoningEffort}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  reasoningEffort: normalizeReasoning(event.target.value),
-                }))
-              }
-              className="app-select"
-            >
-              <option value="low">{intl.formatMessage({ id: "settings.provider.reasoning.low" })}</option>
-              <option value="medium">{intl.formatMessage({ id: "settings.provider.reasoning.medium" })}</option>
-              <option value="high">{intl.formatMessage({ id: "settings.provider.reasoning.high" })}</option>
-              <option value="xhigh">{intl.formatMessage({ id: "settings.provider.reasoning.xhigh" })}</option>
-            </select>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="settings-field-label">
-              {intl.formatMessage({ id: "settings.provider.webSearch" })}
-            </label>
-            <select
-              value={form.webSearch}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  webSearch: normalizeWebSearch(event.target.value),
-                }))
-              }
-              className="app-select"
-            >
-              <option value="live">{intl.formatMessage({ id: "settings.webSearch.live" })}</option>
-              <option value="cached">{intl.formatMessage({ id: "settings.webSearch.cached" })}</option>
-              <option value="disabled">{intl.formatMessage({ id: "settings.webSearch.disabled" })}</option>
-            </select>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="settings-field-label">
-              {intl.formatMessage({ id: "settings.approvalMode" })}
-            </label>
-            <select
-              value={form.approvalPolicy}
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  approvalPolicy: normalizeApproval(event.target.value),
-                }))
-              }
-              className="app-select"
-            >
-              <option value="on-request">{intl.formatMessage({ id: "settings.approvalMode.onRequest" })}</option>
-              <option value="on-failure">{intl.formatMessage({ id: "settings.approvalMode.onFailure" })}</option>
-              <option value="untrusted">{intl.formatMessage({ id: "settings.approvalMode.untrusted" })}</option>
-              <option value="never">{intl.formatMessage({ id: "settings.approvalMode.never" })}</option>
-            </select>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="settings-field-label">
-              {intl.formatMessage({ id: "settings.provider.transport" })}
-            </label>
-            <input
-              value={form.wireApi}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, wireApi: event.target.value }))
-              }
-              placeholder={intl.formatMessage({ id: "settings.provider.wireApiPlaceholder" })}
-              className="app-input"
-            />
-          </div>
-        </div>
-
-        <div className="mt-3 flex items-center gap-2.5">
-          <button
-            type="button"
-            role="switch"
-            aria-checked={form.supportsVision}
-            onClick={() => setForm((c) => ({ ...c, supportsVision: !c.supportsVision }))}
-            className={`relative h-5 w-9 flex-shrink-0 rounded-full transition-colors ${form.supportsVision ? "bg-[var(--accent)]" : "bg-[var(--surface-contrast)]"}`}
-          >
-            <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${form.supportsVision ? "translate-x-4" : "translate-x-0.5"}`} />
-          </button>
-          <div>
-            <span className="text-sm text-[var(--text-strong)]">
-              {intl.formatMessage({ id: "settings.provider.supportsVision" })}
-            </span>
-            <p className="text-xs text-[var(--text-faint)]">
-              {intl.formatMessage({ id: "settings.provider.supportsVisionHint" })}
+      {/* 从预设添加供应商的对话框 */}
+      {showPresetDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowPresetDialog(false)}>
+          <div className="w-[480px] max-h-[80vh] overflow-y-auto rounded-xl bg-[var(--surface-base)] p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-[var(--text-strong)]">
+                添加供应商
+              </h3>
+              <button onClick={() => setShowPresetDialog(false)} className="rounded p-1 text-[var(--text-faint)] hover:bg-[var(--surface-soft)]">
+                <IconX size={16} stroke={2} />
+              </button>
+            </div>
+            <p className="mb-4 text-xs text-[var(--text-muted)]">
+              选择一个预设模板，将创建新的供应商实例。同一类型可以创建多个。
             </p>
+            {presetsByCategory.map(([category, presets]) => (
+              <div key={category} className="mb-4">
+                <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--text-faint)]">
+                  {category === "global" && "国际"}
+                  {category === "china" && "国内"}
+                  {category === "local" && "本地"}
+                  {category === "other" && "其他"}
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {presets.map((preset) => (
+                    <div
+                      key={preset.type}
+                      className="rounded-lg border border-[var(--border-subtle)] px-3 py-2 text-left transition-colors hover:border-[var(--accent-border)] hover:bg-[var(--accent-soft)]"
+                    >
+                      <button
+                        onClick={() => handleCreateFromPreset(preset)}
+                        className="w-full text-left"
+                      >
+                        <span className="block text-xs font-medium text-[var(--text-strong)]">{preset.name}</span>
+                        <span className="block truncate text-[10px] text-[var(--text-faint)]">
+                          {preset.defaultModels[0]?.label ?? preset.type}
+                        </span>
+                      </button>
+                      {preset.signupUrl && (
+                        <a
+                          href={preset.signupUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="mt-1 inline-flex items-center gap-0.5 text-[10px] text-[var(--accent)] hover:underline"
+                        >
+                          <IconExternalLink size={9} stroke={2} />
+                          获取 Key
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
-        </div>
-      </section>
-
-      {/* Feedback + Save */}
-      {feedback && (
-        <div
-          className={`rounded-lg border px-4 py-3 text-sm ${
-            feedback.kind === "success"
-              ? "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-              : "border-[rgba(220,92,92,0.35)] bg-[rgba(220,92,92,0.12)] text-[var(--danger)]"
-          }`}
-        >
-          {feedback.text}
         </div>
       )}
-
-      <div className="flex items-center justify-end">
-        <button onClick={handleSave} disabled={saving} className="primary-button">
-          {saving
-            ? intl.formatMessage({ id: "common.saving" })
-            : intl.formatMessage({ id: "common.save" })}
-        </button>
-      </div>
     </div>
   );
 }

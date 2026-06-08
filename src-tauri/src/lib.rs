@@ -3,13 +3,13 @@ pub mod state;
 pub mod commands;
 pub mod llm_tiers;
 pub mod protocol;
-pub mod jsonrpc_client;
 pub mod standalone;
 pub mod config_system;
 pub mod thread_store;
 pub mod agent;
 pub mod tool_executor;
-mod server_bridge;
+pub mod adapter;
+pub mod usage;
 
 use state::AppState;
 
@@ -40,7 +40,6 @@ pub fn run() {
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::greet,
-            commands::initialize_server,
             commands::get_server_status,
             // Thread management
             commands::thread_start,
@@ -89,6 +88,13 @@ pub fn run() {
             standalone::standalone_thread_list,
             standalone::standalone_thread_read,
             standalone::standalone_chat,
+            // Usage tracking
+            commands::usage_get_stats,
+            commands::usage_get_daily,
+            commands::usage_get_by_model,
+            commands::usage_get_recent,
+            commands::usage_set_pricing,
+            commands::usage_get_pricing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CN-Codex");
