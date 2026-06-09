@@ -7,10 +7,12 @@
 //! - SSE events: content_block_delta, message_stop 等
 
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 
-use super::types::{InternalMessage, StreamEvent, UsageInfo};
 use super::ProviderAdapter;
+use super::types::{
+    InternalMessage, StreamEvent, UsageInfo, content_as_text, content_to_anthropic_blocks,
+};
 
 /// Anthropic API 版本号
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -55,25 +57,19 @@ impl ProviderAdapter for AnthropicAdapter {
         for msg in messages {
             match msg.role.as_str() {
                 "system" => {
-                    if let Some(ref content) = msg.content {
+                    let content = content_as_text(&msg.content);
+                    if !content.is_empty() {
                         if !system_text.is_empty() {
                             system_text.push('\n');
                         }
-                        system_text.push_str(content);
+                        system_text.push_str(&content);
                     }
                 }
                 "assistant" => {
                     let mut content_blocks: Vec<serde_json::Value> = Vec::new();
 
                     // 文本部分
-                    if let Some(ref text) = msg.content {
-                        if !text.is_empty() {
-                            content_blocks.push(serde_json::json!({
-                                "type": "text",
-                                "text": text
-                            }));
-                        }
-                    }
+                    content_blocks.extend(content_to_anthropic_blocks(&msg.content));
 
                     // tool_use 部分
                     if let Some(ref tcs) = msg.tool_calls {
@@ -104,14 +100,14 @@ impl ProviderAdapter for AnthropicAdapter {
                         "content": [{
                             "type": "tool_result",
                             "tool_use_id": msg.tool_call_id.clone().unwrap_or_default(),
-                            "content": msg.content.clone().unwrap_or_default()
+                            "content": content_as_text(&msg.content)
                         }]
                     }));
                 }
                 "user" => {
                     api_messages.push(serde_json::json!({
                         "role": "user",
-                        "content": msg.content.clone().unwrap_or_default()
+                        "content": content_to_anthropic_blocks(&msg.content)
                     }));
                 }
                 _ => {}
@@ -152,8 +148,7 @@ impl ProviderAdapter for AnthropicAdapter {
 
     fn is_stream_done(&self, line: &str) -> bool {
         let trimmed = line.trim();
-        trimmed.contains("\"type\":\"message_stop\"")
-            || trimmed == "event: message_stop"
+        trimmed.contains("\"type\":\"message_stop\"") || trimmed == "event: message_stop"
     }
 
     fn parse_stream_line(&self, line: &str) -> Vec<StreamEvent> {
@@ -176,7 +171,10 @@ impl ProviderAdapter for AnthropicAdapter {
             "message_start" => {
                 if let Some(message) = parsed.get("message") {
                     if let Some(usage) = message.get("usage") {
-                        let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let input = usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         events.push(StreamEvent::Usage(UsageInfo {
                             prompt_tokens: input,
                             completion_tokens: 0,
@@ -188,11 +186,21 @@ impl ProviderAdapter for AnthropicAdapter {
             // content_block_start: 新的内容块开始
             "content_block_start" => {
                 if let Some(content_block) = parsed.get("content_block") {
-                    let block_type = content_block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    let block_type = content_block
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     if block_type == "tool_use" {
-                        let idx = parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                        let id = content_block.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        let name = content_block.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let idx =
+                            parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        let id = content_block
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let name = content_block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         events.push(StreamEvent::ToolCallDelta {
                             index: idx,
                             id: Some(id.to_string()),
@@ -216,8 +224,11 @@ impl ProviderAdapter for AnthropicAdapter {
                         }
                         "input_json_delta" => {
                             // tool call arguments 增量
-                            if let Some(partial_json) = delta.get("partial_json").and_then(|v| v.as_str()) {
-                                let idx = parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            if let Some(partial_json) =
+                                delta.get("partial_json").and_then(|v| v.as_str())
+                            {
+                                let idx = parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
+                                    as usize;
                                 events.push(StreamEvent::ToolCallDelta {
                                     index: idx,
                                     id: None,
@@ -248,7 +259,10 @@ impl ProviderAdapter for AnthropicAdapter {
                 }
                 // output tokens 用量
                 if let Some(usage) = parsed.get("usage") {
-                    let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let output = usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     events.push(StreamEvent::Usage(UsageInfo {
                         prompt_tokens: 0,
                         completion_tokens: output,

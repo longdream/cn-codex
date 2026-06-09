@@ -15,6 +15,7 @@ use tracing::info;
 
 use crate::commands::plugin as plugin_commands;
 use crate::commands::window::open_browser_window;
+use crate::config_system::ConfigToml;
 use crate::config_system::McpServerConfig;
 use crate::error::AppResult;
 use crate::plugin_loader;
@@ -1369,14 +1370,14 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "browser_run",
-                    "description": "Run a browser session for navigation, UI interaction, screenshots, rendered DOM inspection, and web app testing. Supports two engines: 'playwright' (default, controls CN-Codex's built-in browser or standalone Chromium) and 'obscura' (Rust-based headless browser with CDP, ideal for automated testing without Chrome).",
+                    "description": "Run a browser session for navigation, UI interaction, screenshots, rendered DOM inspection, and web app testing. Supports two engines: 'obscura' (default, Rust-based headless browser via CDP, ideal for automated testing) and 'playwright' (optional, controls CN-Codex's visible browser or standalone Chromium).",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "engine": {
                                 "type": "string",
                                 "enum": ["playwright", "obscura"],
-                                "description": "Browser engine to use. 'playwright' (default) uses Playwright with Chromium; 'obscura' uses the Obscura headless browser via CDP."
+                                "description": "Browser engine to use. Defaults to 'obscura'. Use 'playwright' only when you specifically need Chromium or the visible browser."
                             },
                             "url": {
                                 "type": "string",
@@ -1392,7 +1393,7 @@ impl ToolExecutor {
                             },
                             "use_visible_browser": {
                                 "type": "boolean",
-                                "description": "Whether to control CN-Codex's visible built-in browser window through Playwright CDP. Defaults to true when engine is playwright."
+                                "description": "Whether to control CN-Codex's visible built-in browser window through Playwright CDP. Only applies to engine='playwright'."
                             },
                             "viewport": {
                                 "type": "object",
@@ -3623,10 +3624,12 @@ impl ToolExecutor {
             return Ok(msg);
         }
 
+        apply_browser_defaults(&self.workspace_config_dir, &mut payload);
+
         let engine = payload
             .get("engine")
             .and_then(|v| v.as_str())
-            .unwrap_or("playwright")
+            .unwrap_or("obscura")
             .to_string();
 
         let display = browser_run_display(&payload);
@@ -3804,12 +3807,8 @@ impl ToolExecutor {
         app_handle: &AppHandle,
         thread_id: &str,
     ) -> AppResult<String> {
-        let obscura_binary = std::env::var("OBSCURA_BINARY")
-            .unwrap_or_else(|_| "obscura".to_string());
-        let obscura_port: u16 = std::env::var("OBSCURA_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(9222);
+        let obscura_binary = resolved_obscura_binary(&self.workspace_config_dir);
+        let obscura_port = resolved_obscura_port(&self.workspace_config_dir);
 
         let manager = crate::obscura::ObscuraManager::new(
             std::path::PathBuf::from(&obscura_binary),
@@ -6693,11 +6692,15 @@ impl ToolExecutor {
             encode_query_component(query)
         );
         let browser_args = serde_json::json!({
+            "engine": "obscura",
             "url": baidu_url,
             "waitUntil": "networkidle",
+            "use_visible_browser": false,
             "actions": [
-                { "type": "wait", "ms": 2000 },
-                { "type": "eval", "script": extract_script }
+                { "type": "wait_for_timeout", "ms": 2500 },
+                { "type": "eval", "script": extract_script },
+                { "type": "title" },
+                { "type": "url" }
             ]
         });
 
@@ -6723,11 +6726,15 @@ impl ToolExecutor {
             encode_query_component(query)
         );
         let browser_args_ddg = serde_json::json!({
+            "engine": "obscura",
             "url": ddg_url,
             "waitUntil": "networkidle",
+            "use_visible_browser": false,
             "actions": [
-                { "type": "wait", "ms": 3000 },
-                { "type": "eval", "script": extract_script }
+                { "type": "wait_for_timeout", "ms": 3000 },
+                { "type": "eval", "script": extract_script },
+                { "type": "title" },
+                { "type": "url" }
             ]
         });
 
@@ -7346,6 +7353,34 @@ fn browser_runner_path(workspace_config_dir: &Path) -> PathBuf {
         .join("browser-runner.mjs")
 }
 
+fn load_browser_config(workspace_config_dir: &Path) -> ConfigToml {
+    let config_path = workspace_config_dir.join("config.toml");
+    ConfigToml::load(&config_path).unwrap_or_default()
+}
+
+fn apply_browser_defaults(workspace_config_dir: &Path, payload: &mut serde_json::Value) {
+    let config = load_browser_config(workspace_config_dir);
+    if let Some(object) = payload.as_object_mut() {
+        if object.get("engine").is_none() {
+            object.insert(
+                "engine".to_string(),
+                serde_json::Value::String(config.resolved_browser_engine()),
+            );
+        }
+
+        let engine = object
+            .get("engine")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("obscura");
+        if engine == "obscura" {
+            object.insert(
+                "use_visible_browser".to_string(),
+                serde_json::Value::Bool(false),
+            );
+        }
+    }
+}
+
 fn browser_run_display(payload: &serde_json::Value) -> String {
     let url = payload
         .get("url")
@@ -7397,6 +7432,26 @@ fn browser_run_initial_url(payload: &serde_json::Value) -> Option<String> {
                     .map(|url| url.trim().to_string())
             })
         })
+}
+
+fn resolved_obscura_binary(workspace_config_dir: &Path) -> String {
+    std::env::var("OBSCURA_BINARY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            load_browser_config(workspace_config_dir)
+                .obscura_binary
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| "obscura".to_string())
+}
+
+fn resolved_obscura_port(workspace_config_dir: &Path) -> u16 {
+    std::env::var("OBSCURA_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .or_else(|| load_browser_config(workspace_config_dir).obscura_port)
+        .unwrap_or(9222)
 }
 
 #[derive(Debug, Clone)]
@@ -11792,7 +11847,7 @@ fn parse_browser_search_results(
     browser_output: &str,
     max_results: usize,
 ) -> Option<Vec<WebSearchResult>> {
-    let parsed: serde_json::Value = serde_json::from_str(browser_output).ok()?;
+    let parsed: serde_json::Value = extract_browser_output_json(browser_output)?;
     let actions = parsed.get("actions").and_then(|v| v.as_array())?;
 
     for action in actions {
@@ -11844,6 +11899,20 @@ fn parse_browser_search_results(
         }
     }
     None
+}
+
+fn extract_browser_output_json(browser_output: &str) -> Option<serde_json::Value> {
+    if let Ok(parsed) = serde_json::from_str(browser_output) {
+        return Some(parsed);
+    }
+
+    let start = browser_output.find('{')?;
+    let end = browser_output.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+
+    serde_json::from_str(&browser_output[start..=end]).ok()
 }
 
 fn format_browser_search_results(query: &str, results: &[WebSearchResult]) -> String {
@@ -13559,6 +13628,19 @@ rl.on("line", (line) => {
             PathBuf::from("D:/workspace/cn-codex")
                 .join("scripts")
                 .join("browser-runner.mjs")
+        );
+    }
+
+    #[test]
+    fn extract_browser_output_json_parses_mixed_stdout_and_stderr() {
+        let mixed = "{\n  \"actions\": []\n}\n[stderr]\nwarning";
+        let parsed = extract_browser_output_json(mixed).expect("expected browser json");
+        assert_eq!(
+            parsed
+                .get("actions")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(0)
         );
     }
 

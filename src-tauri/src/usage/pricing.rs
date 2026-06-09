@@ -36,7 +36,8 @@ impl PricingTable {
     pub fn calculate_cost(&self, model: &str, prompt_tokens: u64, completion_tokens: u64) -> f64 {
         let pricing = self.find_pricing(model);
         let prompt_cost = (prompt_tokens as f64 / 1_000_000.0) * pricing.prompt_price_per_1m;
-        let completion_cost = (completion_tokens as f64 / 1_000_000.0) * pricing.completion_price_per_1m;
+        let completion_cost =
+            (completion_tokens as f64 / 1_000_000.0) * pricing.completion_price_per_1m;
         prompt_cost + completion_cost
     }
 
@@ -54,7 +55,8 @@ impl PricingTable {
         }
         // 匹配内置默认
         for p in &self.default_prices {
-            if model == p.model_pattern || model.starts_with(p.model_pattern.trim_end_matches('*')) {
+            if model == p.model_pattern || model.starts_with(p.model_pattern.trim_end_matches('*'))
+            {
                 return p;
             }
         }
@@ -97,22 +99,70 @@ static ZERO_PRICING: ModelPricing = ModelPricing {
 fn builtin_prices() -> Vec<ModelPricing> {
     vec![
         // OpenAI
-        ModelPricing { model_pattern: "gpt-4o".to_string(), prompt_price_per_1m: 2.5, completion_price_per_1m: 10.0 },
-        ModelPricing { model_pattern: "gpt-4o-mini".to_string(), prompt_price_per_1m: 0.15, completion_price_per_1m: 0.6 },
-        ModelPricing { model_pattern: "gpt-4.1".to_string(), prompt_price_per_1m: 2.0, completion_price_per_1m: 8.0 },
-        ModelPricing { model_pattern: "gpt-4.1-mini".to_string(), prompt_price_per_1m: 0.4, completion_price_per_1m: 1.6 },
-        ModelPricing { model_pattern: "o3-mini".to_string(), prompt_price_per_1m: 1.1, completion_price_per_1m: 4.4 },
+        ModelPricing {
+            model_pattern: "gpt-4o".to_string(),
+            prompt_price_per_1m: 2.5,
+            completion_price_per_1m: 10.0,
+        },
+        ModelPricing {
+            model_pattern: "gpt-4o-mini".to_string(),
+            prompt_price_per_1m: 0.15,
+            completion_price_per_1m: 0.6,
+        },
+        ModelPricing {
+            model_pattern: "gpt-4.1".to_string(),
+            prompt_price_per_1m: 2.0,
+            completion_price_per_1m: 8.0,
+        },
+        ModelPricing {
+            model_pattern: "gpt-4.1-mini".to_string(),
+            prompt_price_per_1m: 0.4,
+            completion_price_per_1m: 1.6,
+        },
+        ModelPricing {
+            model_pattern: "o3-mini".to_string(),
+            prompt_price_per_1m: 1.1,
+            completion_price_per_1m: 4.4,
+        },
         // Anthropic
-        ModelPricing { model_pattern: "claude-sonnet-4*".to_string(), prompt_price_per_1m: 3.0, completion_price_per_1m: 15.0 },
-        ModelPricing { model_pattern: "claude-opus-4*".to_string(), prompt_price_per_1m: 15.0, completion_price_per_1m: 75.0 },
+        ModelPricing {
+            model_pattern: "claude-sonnet-4*".to_string(),
+            prompt_price_per_1m: 3.0,
+            completion_price_per_1m: 15.0,
+        },
+        ModelPricing {
+            model_pattern: "claude-opus-4*".to_string(),
+            prompt_price_per_1m: 15.0,
+            completion_price_per_1m: 75.0,
+        },
         // DeepSeek
-        ModelPricing { model_pattern: "deepseek-chat".to_string(), prompt_price_per_1m: 0.14, completion_price_per_1m: 0.28 },
-        ModelPricing { model_pattern: "deepseek-reasoner".to_string(), prompt_price_per_1m: 0.55, completion_price_per_1m: 2.19 },
+        ModelPricing {
+            model_pattern: "deepseek-chat".to_string(),
+            prompt_price_per_1m: 0.14,
+            completion_price_per_1m: 0.28,
+        },
+        ModelPricing {
+            model_pattern: "deepseek-reasoner".to_string(),
+            prompt_price_per_1m: 0.55,
+            completion_price_per_1m: 2.19,
+        },
         // Google
-        ModelPricing { model_pattern: "gemini-2.5-pro".to_string(), prompt_price_per_1m: 1.25, completion_price_per_1m: 10.0 },
+        ModelPricing {
+            model_pattern: "gemini-2.5-pro".to_string(),
+            prompt_price_per_1m: 1.25,
+            completion_price_per_1m: 10.0,
+        },
         // 通义千问
-        ModelPricing { model_pattern: "qwen-max".to_string(), prompt_price_per_1m: 2.4, completion_price_per_1m: 9.6 },
+        ModelPricing {
+            model_pattern: "qwen-max".to_string(),
+            prompt_price_per_1m: 2.4,
+            completion_price_per_1m: 9.6,
+        },
         // 智谱
-        ModelPricing { model_pattern: "glm-4-plus".to_string(), prompt_price_per_1m: 5.0, completion_price_per_1m: 5.0 },
+        ModelPricing {
+            model_pattern: "glm-4-plus".to_string(),
+            prompt_price_per_1m: 5.0,
+            completion_price_per_1m: 5.0,
+        },
     ]
 }

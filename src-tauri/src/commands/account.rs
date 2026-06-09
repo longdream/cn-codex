@@ -10,9 +10,7 @@ fn not_supported() -> AppError {
 }
 
 #[tauri::command]
-pub async fn account_read(
-    state: State<'_, AppState>,
-) -> AppResult<GetAccountResponse> {
+pub async fn account_read(state: State<'_, AppState>) -> AppResult<GetAccountResponse> {
     let _ = state;
     Err(not_supported())
 }
@@ -36,9 +34,7 @@ pub async fn account_login_cancel(
 }
 
 #[tauri::command]
-pub async fn account_logout(
-    state: State<'_, AppState>,
-) -> AppResult<LogoutAccountResponse> {
+pub async fn account_logout(state: State<'_, AppState>) -> AppResult<LogoutAccountResponse> {
     let _ = state;
     Err(not_supported())
 }

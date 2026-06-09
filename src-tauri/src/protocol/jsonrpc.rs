@@ -17,7 +17,11 @@ pub struct JSONRPCRequest {
 }
 
 impl JSONRPCRequest {
-    pub fn new(id: RequestId, method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
+    pub fn new(
+        id: RequestId,
+        method: impl Into<String>,
+        params: Option<serde_json::Value>,
+    ) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             id,

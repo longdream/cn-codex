@@ -20,13 +20,7 @@ impl UsageRecorder {
     }
 
     /// 记录一次 LLM 调用的用量
-    pub fn record(
-        &self,
-        provider: &str,
-        model: &str,
-        thread_id: &str,
-        usage: &UsageInfo,
-    ) {
+    pub fn record(&self, provider: &str, model: &str, thread_id: &str, usage: &UsageInfo) {
         let cost = {
             let pricing = self.pricing.read().unwrap_or_else(|e| e.into_inner());
             pricing.calculate_cost(model, usage.prompt_tokens, usage.completion_tokens)
@@ -44,8 +38,12 @@ impl UsageRecorder {
             Ok(id) => {
                 info!(
                     "Usage recorded (id={}): provider={}, model={}, tokens={}/{}/{}, cost=${:.6}",
-                    id, provider, model,
-                    usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+                    id,
+                    provider,
+                    model,
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    usage.total_tokens,
                     cost
                 );
             }

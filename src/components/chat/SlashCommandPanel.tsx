@@ -41,13 +41,13 @@ export function SlashCommandPanel({
   }
 
   return (
-    <div className="absolute bottom-full left-0 right-0 mb-2 px-5">
-      <div className="mx-auto max-w-3xl overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-raised)] shadow-[var(--shadow-strong)]">
-        <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-3 py-2">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+    <div className="absolute bottom-full left-0 right-0 mb-2 px-4 sm:px-8">
+      <div className="mx-auto max-w-[1180px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] shadow-[var(--shadow-strong)]">
+        <div className="flex items-center justify-between border-b border-[var(--chat-line)] px-3 py-2">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--chat-faint)]">
             {intl.formatMessage({ id: "chat.slashHint" })}
           </span>
-          <span className="text-[11px] text-[var(--text-faint)]">{filtered.length}</span>
+          <span className="text-[11px] text-[var(--chat-faint)]">{filtered.length}</span>
         </div>
 
         <div className="p-1">
@@ -58,12 +58,12 @@ export function SlashCommandPanel({
               onMouseEnter={() => setSelectedIndex(index)}
               className={`w-full rounded-[var(--radius-md)] px-3 py-2 text-left text-sm transition-colors ${
                 index === selectedIndex
-                  ? "bg-[var(--accent-soft)] text-[var(--text-strong)]"
-                  : "text-[var(--text-muted)] hover:bg-[var(--surface-soft)]"
+                  ? "bg-[var(--accent-soft)] text-[var(--chat-prose)]"
+                  : "text-[var(--chat-muted)] hover:bg-[var(--chat-chip)]"
               }`}
             >
               <div className="flex items-center gap-3">
-                <span className="font-mono text-xs text-[var(--text-faint)]">/{command.name}</span>
+                <span className="font-mono text-xs text-[var(--chat-faint)]">/{command.name}</span>
                 <span>{command.description}</span>
               </div>
             </button>

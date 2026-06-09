@@ -5,10 +5,9 @@ approval_policy = "on-request"
 web_search = "live"
 
 [model_providers.volcengine]
-name = "Volcengine Ark"
 base_url = "https://ark.cn-beijing.volces.com/api/v3"
 experimental_bearer_token = "633ef9cd-ef82-4311-9356-f4b99ec04150"
-wire_api = "responses"
+wire_api = "chat"
 requires_openai_auth = false
 
 [mcp_servers]

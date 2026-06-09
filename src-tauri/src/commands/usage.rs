@@ -51,7 +51,9 @@ pub async fn usage_set_pricing(
     prompt_price_per_1m: f64,
     completion_price_per_1m: f64,
 ) -> AppResult<()> {
-    let mut pricing = state.pricing_table.write()
+    let mut pricing = state
+        .pricing_table
+        .write()
         .map_err(|e| crate::error::AppError::Custom(format!("Lock error: {e}")))?;
     pricing.set_price(model_pattern, prompt_price_per_1m, completion_price_per_1m);
     Ok(())
@@ -59,18 +61,21 @@ pub async fn usage_set_pricing(
 
 /// 获取所有定价信息
 #[tauri::command]
-pub async fn usage_get_pricing(
-    state: State<'_, AppState>,
-) -> AppResult<Vec<serde_json::Value>> {
-    let pricing = state.pricing_table.read()
+pub async fn usage_get_pricing(state: State<'_, AppState>) -> AppResult<Vec<serde_json::Value>> {
+    let pricing = state
+        .pricing_table
+        .read()
         .map_err(|e| crate::error::AppError::Custom(format!("Lock error: {e}")))?;
-    let prices: Vec<serde_json::Value> = pricing.all_prices()
+    let prices: Vec<serde_json::Value> = pricing
+        .all_prices()
         .iter()
-        .map(|p| serde_json::json!({
-            "modelPattern": p.model_pattern,
-            "promptPricePer1m": p.prompt_price_per_1m,
-            "completionPricePer1m": p.completion_price_per_1m,
-        }))
+        .map(|p| {
+            serde_json::json!({
+                "modelPattern": p.model_pattern,
+                "promptPricePer1m": p.prompt_price_per_1m,
+                "completionPricePer1m": p.completion_price_per_1m,
+            })
+        })
         .collect();
     Ok(prices)
 }

@@ -6,6 +6,7 @@ import {
   standaloneConfigRead,
 } from "./api";
 import { ChatPage } from "./components/chat/ChatPage";
+import { RightPanel } from "./components/layout/RightPanel";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TitleBar } from "./components/layout/TitleBar";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
@@ -68,6 +69,14 @@ function App() {
           configDir: status.configDir,
           configPath: status.configPath,
         });
+        if (status.currentThreadId) {
+          try {
+            useAppStore.getState().setCurrentThread(status.currentThreadId);
+            await useAppStore.getState().loadThread(status.currentThreadId);
+          } catch (restoreErr) {
+            console.warn("Failed to restore current thread:", restoreErr);
+          }
+        }
       } catch {
         // Runtime paths are best-effort
       }
@@ -110,6 +119,7 @@ function App() {
 
   const showSettings = useAppStore((s) => s.showSettings);
   const setShowSettings = useAppStore((s) => s.setShowSettings);
+  const rightPanelVisible = useAppStore((s) => s.rightPanelVisible);
 
   return (
     <IntlProvider
@@ -124,6 +134,7 @@ function App() {
           <div className="app-main">
             <ChatPage />
           </div>
+          {rightPanelVisible && <RightPanel />}
         </div>
       </div>
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}

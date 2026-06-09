@@ -16,6 +16,45 @@ pub struct ToolCallInfo {
     pub arguments: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChange {
+    pub path: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ThreadGoalStatus {
+    Active,
+    Paused,
+    Blocked,
+    UsageLimited,
+    BudgetLimited,
+    Complete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadGoal {
+    pub objective: String,
+    pub status: ThreadGoalStatus,
+    #[serde(default)]
+    pub token_budget: Option<u64>,
+    #[serde(default)]
+    pub tokens_used: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadMessage {
     pub id: String,
@@ -35,6 +74,18 @@ pub struct StoredTurn {
     pub turn_id: String,
     pub started_at: i64,
     pub completed_at: Option<i64>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub changed_files: Vec<FileChange>,
+    #[serde(default)]
+    pub usage: Option<TurnUsage>,
+    #[serde(default)]
+    pub goal_budget_tokens: Option<u64>,
+    #[serde(default)]
+    pub budget_limited: bool,
     pub messages: Vec<ThreadMessage>,
 }
 
@@ -45,6 +96,8 @@ pub struct StoredThread {
     pub created_at: i64,
     pub updated_at: i64,
     pub model: Option<String>,
+    #[serde(default)]
+    pub goal: Option<ThreadGoal>,
     pub turns: Vec<StoredTurn>,
 }
 
@@ -60,7 +113,11 @@ impl StoredThread {
             .find(|m| m.role == "user")
             .map(|m| {
                 let s: String = m.content.chars().take(60).collect();
-                if m.content.len() > 60 { format!("{s}...") } else { s }
+                if m.content.len() > 60 {
+                    format!("{s}...")
+                } else {
+                    s
+                }
             })
             .unwrap_or_default()
     }
@@ -78,14 +135,32 @@ enum RolloutLine {
     TurnStart {
         turn_id: String,
         started_at: i64,
+        #[serde(default)]
+        mode: Option<String>,
+        #[serde(default)]
+        goal_budget_tokens: Option<u64>,
     },
     Message(ThreadMessage),
     TurnEnd {
         turn_id: String,
         completed_at: i64,
+        #[serde(default)]
+        duration_ms: Option<u64>,
+        #[serde(default)]
+        changed_files: Vec<FileChange>,
+        #[serde(default)]
+        usage: Option<TurnUsage>,
+        #[serde(default)]
+        budget_limited: bool,
     },
     ThreadUpdate {
         name: Option<String>,
+        updated_at: i64,
+    },
+    ThreadGoalSet {
+        goal: ThreadGoal,
+    },
+    ThreadGoalClear {
         updated_at: i64,
     },
 }
@@ -166,17 +241,26 @@ impl ThreadStore {
                         created_at,
                         updated_at: created_at,
                         model,
+                        goal: None,
                         turns: Vec::new(),
                     });
                 }
                 RolloutLine::TurnStart {
                     turn_id,
                     started_at,
+                    mode,
+                    goal_budget_tokens,
                 } => {
                     current_turn = Some(StoredTurn {
                         turn_id,
                         started_at,
                         completed_at: None,
+                        mode,
+                        duration_ms: None,
+                        changed_files: Vec::new(),
+                        usage: None,
+                        goal_budget_tokens,
+                        budget_limited: false,
                         messages: Vec::new(),
                     });
                 }
@@ -188,9 +272,17 @@ impl ThreadStore {
                 RolloutLine::TurnEnd {
                     turn_id: _,
                     completed_at,
+                    duration_ms,
+                    changed_files,
+                    usage,
+                    budget_limited,
                 } => {
                     if let Some(mut turn) = current_turn.take() {
                         turn.completed_at = Some(completed_at);
+                        turn.duration_ms = duration_ms;
+                        turn.changed_files = changed_files;
+                        turn.usage = usage;
+                        turn.budget_limited = budget_limited;
                         if let Some(ref mut t) = thread {
                             t.updated_at = completed_at;
                             t.turns.push(turn);
@@ -203,6 +295,18 @@ impl ThreadStore {
                             t.name = name;
                         }
                         t.updated_at = updated_at;
+                    }
+                }
+                RolloutLine::ThreadGoalSet { goal } => {
+                    if let Some(ref mut t) = thread {
+                        t.updated_at = goal.updated_at;
+                        t.goal = Some(goal);
+                    }
+                }
+                RolloutLine::ThreadGoalClear { updated_at } => {
+                    if let Some(ref mut t) = thread {
+                        t.updated_at = updated_at;
+                        t.goal = None;
                     }
                 }
             }
@@ -235,6 +339,7 @@ impl ThreadStore {
             created_at: now,
             updated_at: now,
             model,
+            goal: None,
             turns: Vec::new(),
         };
 
@@ -248,14 +353,16 @@ impl ThreadStore {
             },
         )?;
 
-        self.threads
-            .write()
-            .await
-            .insert(thread_id, thread.clone());
+        self.threads.write().await.insert(thread_id, thread.clone());
         Ok(thread)
     }
 
-    pub async fn start_turn(&self, thread_id: &str) -> AppResult<String> {
+    pub async fn start_turn(
+        &self,
+        thread_id: &str,
+        mode: Option<String>,
+        goal_budget_tokens: Option<u64>,
+    ) -> AppResult<String> {
         let turn_id = uuid::Uuid::new_v4().to_string();
         let now = now_secs();
 
@@ -264,6 +371,8 @@ impl ThreadStore {
             &RolloutLine::TurnStart {
                 turn_id: turn_id.clone(),
                 started_at: now,
+                mode: mode.clone(),
+                goal_budget_tokens,
             },
         )?;
 
@@ -273,6 +382,12 @@ impl ThreadStore {
                 turn_id: turn_id.clone(),
                 started_at: now,
                 completed_at: None,
+                mode,
+                duration_ms: None,
+                changed_files: Vec::new(),
+                usage: None,
+                goal_budget_tokens,
+                budget_limited: false,
                 messages: Vec::new(),
             });
             thread.updated_at = now;
@@ -281,11 +396,7 @@ impl ThreadStore {
         Ok(turn_id)
     }
 
-    pub async fn add_message(
-        &self,
-        thread_id: &str,
-        msg: ThreadMessage,
-    ) -> AppResult<()> {
+    pub async fn add_message(&self, thread_id: &str, msg: ThreadMessage) -> AppResult<()> {
         self.append_line(thread_id, &RolloutLine::Message(msg.clone()))?;
 
         let mut threads = self.threads.write().await;
@@ -298,13 +409,25 @@ impl ThreadStore {
         Ok(())
     }
 
-    pub async fn end_turn(&self, thread_id: &str, turn_id: &str) -> AppResult<()> {
+    pub async fn end_turn(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        duration_ms: Option<u64>,
+        changed_files: Vec<FileChange>,
+        usage: Option<TurnUsage>,
+        budget_limited: bool,
+    ) -> AppResult<i64> {
         let now = now_secs();
         self.append_line(
             thread_id,
             &RolloutLine::TurnEnd {
                 turn_id: turn_id.to_string(),
                 completed_at: now,
+                duration_ms,
+                changed_files: changed_files.clone(),
+                usage: usage.clone(),
+                budget_limited,
             },
         )?;
 
@@ -312,10 +435,14 @@ impl ThreadStore {
         if let Some(thread) = threads.get_mut(thread_id) {
             if let Some(turn) = thread.turns.iter_mut().find(|t| t.turn_id == turn_id) {
                 turn.completed_at = Some(now);
+                turn.duration_ms = duration_ms;
+                turn.changed_files = changed_files;
+                turn.usage = usage;
+                turn.budget_limited = budget_limited;
             }
             thread.updated_at = now;
         }
-        Ok(())
+        Ok(now)
     }
 
     pub async fn set_thread_name(&self, thread_id: &str, name: String) -> AppResult<()> {
@@ -334,6 +461,165 @@ impl ThreadStore {
             thread.updated_at = now;
         }
         Ok(())
+    }
+
+    pub async fn set_thread_goal(
+        &self,
+        thread_id: &str,
+        objective: String,
+        status: ThreadGoalStatus,
+        token_budget: Option<u64>,
+    ) -> AppResult<ThreadGoal> {
+        if objective.trim().is_empty() {
+            return Err(AppError::Custom(
+                "Goal objective cannot be empty".to_string(),
+            ));
+        }
+        if !self.threads.read().await.contains_key(thread_id) {
+            return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
+        }
+
+        let now = now_secs();
+        let goal = ThreadGoal {
+            objective,
+            status,
+            token_budget: token_budget.filter(|value| *value > 0),
+            tokens_used: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        self.append_line(
+            thread_id,
+            &RolloutLine::ThreadGoalSet { goal: goal.clone() },
+        )?;
+
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.goal = Some(goal.clone());
+            thread.updated_at = now;
+        }
+        Ok(goal)
+    }
+
+    pub async fn set_thread_goal_status(
+        &self,
+        thread_id: &str,
+        status: ThreadGoalStatus,
+    ) -> AppResult<ThreadGoal> {
+        let current_goal = self
+            .get_thread(thread_id)
+            .await
+            .ok_or_else(|| AppError::Custom(format!("Thread not found: {thread_id}")))?
+            .goal
+            .ok_or_else(|| AppError::Custom("No goal is set for this thread".to_string()))?;
+
+        let now = now_secs();
+        let mut goal = current_goal;
+        goal.status = status;
+        goal.updated_at = now;
+        self.append_line(
+            thread_id,
+            &RolloutLine::ThreadGoalSet { goal: goal.clone() },
+        )?;
+
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.goal = Some(goal.clone());
+            thread.updated_at = now;
+        }
+        Ok(goal)
+    }
+
+    pub async fn edit_thread_goal(
+        &self,
+        thread_id: &str,
+        objective: String,
+        token_budget: Option<u64>,
+    ) -> AppResult<ThreadGoal> {
+        if objective.trim().is_empty() {
+            return Err(AppError::Custom(
+                "Goal objective cannot be empty".to_string(),
+            ));
+        }
+        let current_goal = self
+            .get_thread(thread_id)
+            .await
+            .ok_or_else(|| AppError::Custom(format!("Thread not found: {thread_id}")))?
+            .goal
+            .ok_or_else(|| AppError::Custom("No goal is set for this thread".to_string()))?;
+
+        let now = now_secs();
+        let mut goal = current_goal;
+        goal.objective = objective;
+        goal.status = edited_goal_status(goal.status);
+        if let Some(token_budget) = token_budget {
+            goal.token_budget = (token_budget > 0).then_some(token_budget);
+        }
+        goal.updated_at = now;
+        self.append_line(
+            thread_id,
+            &RolloutLine::ThreadGoalSet { goal: goal.clone() },
+        )?;
+
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.goal = Some(goal.clone());
+            thread.updated_at = now;
+        }
+        Ok(goal)
+    }
+
+    pub async fn clear_thread_goal(&self, thread_id: &str) -> AppResult<()> {
+        if !self.threads.read().await.contains_key(thread_id) {
+            return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
+        }
+
+        let now = now_secs();
+        self.append_line(thread_id, &RolloutLine::ThreadGoalClear { updated_at: now })?;
+
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.goal = None;
+            thread.updated_at = now;
+        }
+        Ok(())
+    }
+
+    pub async fn record_goal_usage(
+        &self,
+        thread_id: &str,
+        total_tokens: u64,
+    ) -> AppResult<Option<ThreadGoal>> {
+        let Some(current_goal) = self
+            .get_thread(thread_id)
+            .await
+            .ok_or_else(|| AppError::Custom(format!("Thread not found: {thread_id}")))?
+            .goal
+        else {
+            return Ok(None);
+        };
+
+        let now = now_secs();
+        let mut goal = current_goal;
+        goal.tokens_used = goal.tokens_used.saturating_add(total_tokens);
+        if goal
+            .token_budget
+            .is_some_and(|budget| budget > 0 && goal.tokens_used >= budget)
+        {
+            goal.status = ThreadGoalStatus::BudgetLimited;
+        }
+        goal.updated_at = now;
+        self.append_line(
+            thread_id,
+            &RolloutLine::ThreadGoalSet { goal: goal.clone() },
+        )?;
+
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.goal = Some(goal.clone());
+            thread.updated_at = now;
+        }
+        Ok(Some(goal))
     }
 
     pub async fn list_threads(&self) -> Vec<StoredThread> {
@@ -361,4 +647,202 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn edited_goal_status(status: ThreadGoalStatus) -> ThreadGoalStatus {
+    match status {
+        ThreadGoalStatus::Active => ThreadGoalStatus::Active,
+        ThreadGoalStatus::Paused | ThreadGoalStatus::Blocked | ThreadGoalStatus::UsageLimited => {
+            status
+        }
+        ThreadGoalStatus::BudgetLimited | ThreadGoalStatus::Complete => ThreadGoalStatus::Active,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn end_turn_persists_usage_metadata() {
+        let workspace_dir =
+            std::env::temp_dir().join(format!("cn-codex-thread-store-{}", uuid::Uuid::new_v4()));
+        let store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let usage = TurnUsage {
+            prompt_tokens: 100,
+            completion_tokens: 40,
+            total_tokens: 140,
+        };
+        let thread_id = runtime.block_on(async {
+            let thread = store
+                .create_thread(Some("test-model".to_string()))
+                .await
+                .unwrap();
+            let turn_id = store
+                .start_turn(&thread.id, Some("goal".to_string()), Some(120))
+                .await
+                .unwrap();
+
+            store
+                .end_turn(
+                    &thread.id,
+                    &turn_id,
+                    Some(25),
+                    Vec::new(),
+                    Some(usage.clone()),
+                    true,
+                )
+                .await
+                .unwrap();
+
+            let loaded = store.get_thread(&thread.id).await.unwrap();
+            assert_eq!(loaded.turns[0].usage, Some(usage.clone()));
+            assert_eq!(loaded.turns[0].goal_budget_tokens, Some(120));
+            assert!(loaded.turns[0].budget_limited);
+            thread.id
+        });
+        drop(runtime);
+
+        let reloaded_store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let reloaded = runtime
+            .block_on(async { reloaded_store.get_thread(&thread_id).await })
+            .unwrap();
+        assert_eq!(reloaded.turns[0].usage, Some(usage));
+        assert_eq!(reloaded.turns[0].goal_budget_tokens, Some(120));
+        assert!(reloaded.turns[0].budget_limited);
+
+        let _ = std::fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn thread_goal_lifecycle_persists_status_and_usage() {
+        let workspace_dir =
+            std::env::temp_dir().join(format!("cn-codex-thread-goal-{}", uuid::Uuid::new_v4()));
+        let store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let thread_id = runtime.block_on(async {
+            let thread = store.create_thread(None).await.unwrap();
+            let goal = store
+                .set_thread_goal(
+                    &thread.id,
+                    "ship goal controls".to_string(),
+                    ThreadGoalStatus::Active,
+                    Some(100),
+                )
+                .await
+                .unwrap();
+            assert_eq!(goal.status, ThreadGoalStatus::Active);
+            assert_eq!(goal.token_budget, Some(100));
+
+            let paused = store
+                .set_thread_goal_status(&thread.id, ThreadGoalStatus::Paused)
+                .await
+                .unwrap();
+            assert_eq!(paused.status, ThreadGoalStatus::Paused);
+
+            let resumed = store
+                .set_thread_goal_status(&thread.id, ThreadGoalStatus::Active)
+                .await
+                .unwrap();
+            assert_eq!(resumed.status, ThreadGoalStatus::Active);
+
+            let limited = store
+                .record_goal_usage(&thread.id, 120)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(limited.tokens_used, 120);
+            assert_eq!(limited.status, ThreadGoalStatus::BudgetLimited);
+            thread.id
+        });
+        drop(runtime);
+
+        let reloaded_store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let reloaded = runtime
+            .block_on(async { reloaded_store.get_thread(&thread_id).await })
+            .unwrap();
+        let goal = reloaded.goal.unwrap();
+        assert_eq!(goal.objective, "ship goal controls");
+        assert_eq!(goal.status, ThreadGoalStatus::BudgetLimited);
+        assert_eq!(goal.tokens_used, 120);
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime
+            .block_on(async { reloaded_store.clear_thread_goal(&thread_id).await })
+            .unwrap();
+        let cleared = runtime
+            .block_on(async { reloaded_store.get_thread(&thread_id).await })
+            .unwrap();
+        assert!(cleared.goal.is_none());
+        drop(runtime);
+
+        let final_store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let final_thread = runtime
+            .block_on(async { final_store.get_thread(&thread_id).await })
+            .unwrap();
+        assert!(final_thread.goal.is_none());
+
+        let _ = std::fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn thread_goal_edit_preserves_usage_and_updates_status_like_codex() {
+        let workspace_dir =
+            std::env::temp_dir().join(format!("cn-codex-goal-edit-{}", uuid::Uuid::new_v4()));
+        let store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let thread_id = runtime.block_on(async {
+            let thread = store.create_thread(None).await.unwrap();
+            store
+                .set_thread_goal(
+                    &thread.id,
+                    "old goal".to_string(),
+                    ThreadGoalStatus::Active,
+                    Some(100),
+                )
+                .await
+                .unwrap();
+            store.record_goal_usage(&thread.id, 120).await.unwrap();
+
+            let edited = store
+                .edit_thread_goal(&thread.id, "new goal".to_string(), Some(500))
+                .await
+                .unwrap();
+            assert_eq!(edited.objective, "new goal");
+            assert_eq!(edited.status, ThreadGoalStatus::Active);
+            assert_eq!(edited.tokens_used, 120);
+            assert_eq!(edited.token_budget, Some(500));
+
+            store
+                .set_thread_goal_status(&thread.id, ThreadGoalStatus::Paused)
+                .await
+                .unwrap();
+            let paused_edit = store
+                .edit_thread_goal(&thread.id, "paused goal".to_string(), None)
+                .await
+                .unwrap();
+            assert_eq!(paused_edit.status, ThreadGoalStatus::Paused);
+            assert_eq!(paused_edit.token_budget, Some(500));
+            thread.id
+        });
+        drop(runtime);
+
+        let reloaded_store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let reloaded = runtime
+            .block_on(async { reloaded_store.get_thread(&thread_id).await })
+            .unwrap()
+            .goal
+            .unwrap();
+        assert_eq!(reloaded.objective, "paused goal");
+        assert_eq!(reloaded.status, ThreadGoalStatus::Paused);
+        assert_eq!(reloaded.tokens_used, 120);
+        assert_eq!(reloaded.token_budget, Some(500));
+
+        let _ = std::fs::remove_dir_all(workspace_dir);
+    }
 }

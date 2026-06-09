@@ -2,6 +2,7 @@
 //! 所有 adapter 返回相同的 StreamEvent，由 agent.rs 统一处理
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// 单次请求中 LLM 返回的 token 用量信息
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -34,9 +35,7 @@ pub enum StreamEvent {
     },
 
     /// 流结束，附带 finish reason
-    Done {
-        finish_reason: Option<String>,
-    },
+    Done { finish_reason: Option<String> },
 
     /// 用量信息（通常在流结束时由最后一个 chunk 返回）
     Usage(UsageInfo),
@@ -68,7 +67,7 @@ pub struct ToolCallResult {
 pub struct InternalMessage {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<InternalToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,4 +90,175 @@ pub struct InternalToolCall {
 pub struct InternalFunctionCall {
     pub name: String,
     pub arguments: String,
+}
+
+pub fn text_content(text: impl Into<String>) -> Option<Value> {
+    Some(Value::String(text.into()))
+}
+
+pub fn content_as_text(content: &Option<Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
+pub fn content_is_empty(content: &Option<Value>) -> bool {
+    match content {
+        None => true,
+        Some(Value::String(text)) => text.is_empty(),
+        Some(Value::Array(parts)) => parts.is_empty(),
+        Some(Value::Null) => true,
+        Some(_) => false,
+    }
+}
+
+pub fn content_to_responses_content(content: &Option<Value>) -> Value {
+    match content {
+        Some(Value::Array(parts)) => Value::Array(
+            parts
+                .iter()
+                .filter_map(|part| {
+                    let kind = part.get("type").and_then(Value::as_str)?;
+                    match kind {
+                        "text" => Some(serde_json::json!({
+                            "type": "input_text",
+                            "text": part.get("text").and_then(Value::as_str).unwrap_or_default()
+                        })),
+                        "image_url" => Some(serde_json::json!({
+                            "type": "input_image",
+                            "image_url": part
+                                .get("image_url")
+                                .and_then(|value| value.get("url"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                        })),
+                        _ => None,
+                    }
+                })
+                .collect(),
+        ),
+        Some(Value::String(text)) => Value::String(text.clone()),
+        Some(other) => Value::String(other.to_string()),
+        None => Value::String(String::new()),
+    }
+}
+
+pub fn content_to_anthropic_blocks(content: &Option<Value>) -> Vec<Value> {
+    match content {
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                let kind = part.get("type").and_then(Value::as_str)?;
+                match kind {
+                    "text" => Some(serde_json::json!({
+                        "type": "text",
+                        "text": part.get("text").and_then(Value::as_str).unwrap_or_default()
+                    })),
+                    "image_url" => {
+                        let url = part
+                            .get("image_url")
+                            .and_then(|value| value.get("url"))
+                            .and_then(Value::as_str)?;
+                        let (media_type, data) = parse_data_url(url)?;
+                        Some(serde_json::json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data
+                            }
+                        }))
+                    }
+                    _ => None,
+                }
+            })
+            .collect(),
+        Some(Value::String(text)) if !text.is_empty() => vec![serde_json::json!({
+            "type": "text",
+            "text": text
+        })],
+        Some(other) => vec![serde_json::json!({
+            "type": "text",
+            "text": other.to_string()
+        })],
+        None => Vec::new(),
+    }
+}
+
+pub fn content_to_gemini_parts(content: &Option<Value>) -> Vec<Value> {
+    match content {
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                let kind = part.get("type").and_then(Value::as_str)?;
+                match kind {
+                    "text" => Some(serde_json::json!({
+                        "text": part.get("text").and_then(Value::as_str).unwrap_or_default()
+                    })),
+                    "image_url" => {
+                        let url = part
+                            .get("image_url")
+                            .and_then(|value| value.get("url"))
+                            .and_then(Value::as_str)?;
+                        let (mime_type, data) = parse_data_url(url)?;
+                        Some(serde_json::json!({
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": data
+                            }
+                        }))
+                    }
+                    _ => None,
+                }
+            })
+            .collect(),
+        Some(Value::String(text)) if !text.is_empty() => vec![serde_json::json!({ "text": text })],
+        Some(other) => vec![serde_json::json!({ "text": other.to_string() })],
+        None => Vec::new(),
+    }
+}
+
+fn parse_data_url(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    let mut parts = meta.split(';');
+    let mime = parts.next()?.trim();
+    if mime.is_empty() || !parts.any(|part| part.eq_ignore_ascii_case("base64")) {
+        return None;
+    }
+    Some((mime.to_string(), data.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multimodal_content_converts_to_provider_shapes() {
+        let content = Some(serde_json::json!([
+            { "type": "text", "text": "describe this" },
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,abc123" } }
+        ]));
+
+        let responses = content_to_responses_content(&content);
+        assert_eq!(responses[0]["type"], "input_text");
+        assert_eq!(responses[1]["type"], "input_image");
+
+        let anthropic = content_to_anthropic_blocks(&content);
+        assert_eq!(anthropic[0]["type"], "text");
+        assert_eq!(anthropic[1]["source"]["media_type"], "image/png");
+        assert_eq!(anthropic[1]["source"]["data"], "abc123");
+
+        let gemini = content_to_gemini_parts(&content);
+        assert_eq!(gemini[0]["text"], "describe this");
+        assert_eq!(gemini[1]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(gemini[1]["inlineData"]["data"], "abc123");
+    }
 }

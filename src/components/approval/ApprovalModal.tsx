@@ -5,7 +5,7 @@ import {
   IconShieldX,
   IconTerminal2,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useIntl } from "react-intl";
 import { rejectApproval, resolveApproval } from "../../api";
 import type { RequestId } from "../../types";
@@ -16,9 +16,22 @@ interface ApprovalRequest {
   params: Record<string, unknown>;
 }
 
+interface UserInputQuestionOption {
+  label: string;
+  description: string;
+}
+
+interface UserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options?: UserInputQuestionOption[];
+}
+
 export function ApprovalModal() {
   const intl = useIntl();
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -45,17 +58,60 @@ export function ApprovalModal() {
   }, []);
 
   const current = requests[0];
+  const isUserInput = !!current && (
+    current.method.includes("request_user_input") ||
+    current.method.includes("requestUserInput")
+  );
+  const isPermissions = !!current && (
+    current.method.includes("request_permissions") ||
+    current.method.includes("requestPermissions")
+  );
+  const userInputQuestions = useMemo(
+    () => (isUserInput ? userInputQuestionsFromParams(current?.params ?? {}) : []),
+    [current?.params, isUserInput],
+  );
+
+  useEffect(() => {
+    if (!current || !isUserInput) {
+      setAnswers({});
+      return;
+    }
+
+    setAnswers(
+      Object.fromEntries(
+        userInputQuestions.map((question) => [
+          question.id,
+          question.options?.[0]?.label ?? "",
+        ]),
+      ),
+    );
+  }, [current?.requestId, isUserInput]);
 
   const handleApprove = useCallback(async () => {
     if (!current) {
       return;
     }
 
-    const decision = current.method.includes("commandExecution")
-      ? { decision: "accept" }
-      : current.method.includes("fileChange")
+    const decision = isUserInput
+      ? {
+          answers: Object.fromEntries(
+            userInputQuestions.map((question) => [
+              question.id,
+              { answers: [answers[question.id] ?? question.options?.[0]?.label ?? ""] },
+            ]),
+          ),
+        }
+      : isPermissions
+        ? {
+            permissions: current.params.permissions ?? {},
+            scope: "turn",
+            strict_auto_review: false,
+          }
+      : current.method.includes("commandExecution")
         ? { decision: "accept" }
-        : { decision: "accept" };
+        : current.method.includes("fileChange")
+          ? { decision: "accept" }
+          : { decision: "accept" };
 
     try {
       await resolveApproval(current.requestId, decision);
@@ -63,7 +119,7 @@ export function ApprovalModal() {
       console.error("Approve failed:", err);
     }
     setRequests((previous) => previous.slice(1));
-  }, [current]);
+  }, [answers, current, isPermissions, isUserInput, userInputQuestions]);
 
   const handleReject = useCallback(async () => {
     if (!current) {
@@ -88,10 +144,12 @@ export function ApprovalModal() {
     ? intl.formatMessage({ id: "approval.command" })
     : isFile
       ? intl.formatMessage({ id: "approval.fileChange" })
-      : intl.formatMessage({ id: "approval.title" });
+      : isPermissions
+        ? "Permission Request"
+        : intl.formatMessage({ id: "approval.title" });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+    <div className="fixed bottom-0 left-0 right-0 top-8 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
       <div className="app-shell-panel w-full max-w-2xl overflow-hidden">
         <div className="flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-5 py-3">
           <div className="flex items-center gap-3">
@@ -158,7 +216,120 @@ export function ApprovalModal() {
             </section>
           )}
 
-          {!isCommand && !isFile && (
+          {isUserInput && userInputQuestions.length > 0 && (
+            <section className="space-y-3">
+              {userInputQuestions.map((question) => (
+                <div
+                  key={question.id}
+                  className="rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] p-4"
+                >
+                  <div className="mb-3">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+                      {question.header}
+                    </p>
+                    <h4 className="mt-1 text-sm font-semibold text-[var(--text-strong)]">
+                      {question.question}
+                    </h4>
+                  </div>
+
+                  {question.options?.length ? (
+                    <div className="space-y-2">
+                      {question.options.map((option) => {
+                        const selected = answers[question.id] === option.label;
+                        return (
+                          <button
+                            key={option.label}
+                            type="button"
+                            onClick={() =>
+                              setAnswers((previous) => ({
+                                ...previous,
+                                [question.id]: option.label,
+                              }))
+                            }
+                            className={`w-full rounded-[var(--radius-sm)] border px-3 py-2 text-left transition-colors ${
+                              selected
+                                ? "border-[var(--accent-border)] bg-[var(--surface-elevated)]"
+                                : "border-[var(--border-subtle)] bg-[var(--surface-main)] hover:border-[var(--border-strong)]"
+                            }`}
+                          >
+                            <div className="text-sm font-medium text-[var(--text-strong)]">
+                              {option.label}
+                            </div>
+                            <div className="mt-0.5 text-xs text-[var(--text-muted)]">
+                              {option.description}
+                            </div>
+                          </button>
+                        );
+                      })}
+                      <textarea
+                        value={
+                          question.options.some((option) => option.label === answers[question.id])
+                            ? ""
+                            : answers[question.id] ?? ""
+                        }
+                        onChange={(event) =>
+                          setAnswers((previous) => ({
+                            ...previous,
+                            [question.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="Other"
+                        rows={2}
+                        className="w-full resize-none rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] px-3 py-2 text-sm text-[var(--text-base)] outline-none focus:border-[var(--accent-border)]"
+                      />
+                    </div>
+                  ) : (
+                    <textarea
+                      value={answers[question.id] ?? ""}
+                      onChange={(event) =>
+                        setAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: event.target.value,
+                        }))
+                      }
+                      rows={3}
+                      className="w-full resize-none rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] px-3 py-2 text-sm text-[var(--text-base)] outline-none focus:border-[var(--accent-border)]"
+                    />
+                  )}
+                </div>
+              ))}
+            </section>
+          )}
+
+          {isPermissions && (
+            <section className="space-y-3 rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] p-4">
+              {typeof current.params.reason === "string" && current.params.reason.trim() && (
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+                    Reason
+                  </p>
+                  <p className="mt-1 text-sm text-[var(--text-strong)]">
+                    {current.params.reason}
+                  </p>
+                </div>
+              )}
+              {"cwd" in current.params && (
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+                    Workspace
+                  </p>
+                  <p className="mt-1 break-all font-mono text-xs text-[var(--text-muted)]">
+                    {String(current.params.cwd)}
+                  </p>
+                </div>
+              )}
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
+                  Permissions
+                </p>
+                <pre className="thin-scrollbar mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3 text-xs text-[var(--text-muted)]">
+                  {JSON.stringify(current.params.permissions ?? {}, null, 2)}
+                </pre>
+              </div>
+            </section>
+          )}
+
+          {!isCommand && !isFile && !isUserInput && !isPermissions && (
             <section className="rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] p-4">
               <pre className="whitespace-pre-wrap text-xs text-[var(--text-muted)]">
                 {JSON.stringify(current.params, null, 2)}
@@ -180,4 +351,41 @@ export function ApprovalModal() {
       </div>
     </div>
   );
+}
+
+function userInputQuestionsFromParams(params: Record<string, unknown>): UserInputQuestion[] {
+  if (!Array.isArray(params.questions)) {
+    return [];
+  }
+
+  return params.questions
+    .map((question): UserInputQuestion | null => {
+      if (!question || typeof question !== "object") {
+        return null;
+      }
+      const value = question as Record<string, unknown>;
+      const id = typeof value.id === "string" ? value.id : "";
+      const header = typeof value.header === "string" ? value.header : id;
+      const prompt = typeof value.question === "string" ? value.question : "";
+      if (!id || !prompt) {
+        return null;
+      }
+
+      const options = Array.isArray(value.options)
+        ? value.options
+            .map((option): UserInputQuestionOption | null => {
+              if (!option || typeof option !== "object") {
+                return null;
+              }
+              const raw = option as Record<string, unknown>;
+              const label = typeof raw.label === "string" ? raw.label : "";
+              const description = typeof raw.description === "string" ? raw.description : "";
+              return label ? { label, description } : null;
+            })
+            .filter((option): option is UserInputQuestionOption => option !== null)
+        : undefined;
+
+      return { id, header, question: prompt, options };
+    })
+    .filter((question): question is UserInputQuestion => question !== null);
 }

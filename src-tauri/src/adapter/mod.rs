@@ -3,11 +3,11 @@
 //! 支持: chat (OpenAI Chat Completions), responses (OpenAI Responses API),
 //!       anthropic (Anthropic Messages API), gemini (Google Gemini API)
 
-pub mod types;
-pub mod chat_completions;
-pub mod responses;
 pub mod anthropic;
+pub mod chat_completions;
 pub mod google;
+pub mod responses;
+pub mod types;
 
 use async_trait::async_trait;
 use reqwest::header::HeaderMap;

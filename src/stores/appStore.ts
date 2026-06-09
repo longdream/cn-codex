@@ -5,7 +5,48 @@ import {
   standaloneThreadList,
   standaloneThreadRead,
 } from "../api";
+import type {
+  ThreadGoal as ApiThreadGoal,
+  ThreadGoalStatus,
+} from "../api";
 import type { ProviderConfig, ProviderPreset, ProviderModel, AttachedFile } from "../types/provider";
+
+export type ChatMode = "chat" | "goal";
+export type GoalStatus = ThreadGoalStatus;
+export type ThreadGoal = ApiThreadGoal;
+
+export interface ChatSendOptions {
+  goalBudgetTokens?: number;
+}
+
+export interface FileChange {
+  path: string;
+  action: string;
+}
+
+export interface PatchProgressChange {
+  path: string;
+  action: string;
+  moveTo?: string;
+}
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface RunSummary {
+  turnId: string;
+  mode: ChatMode;
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+  changedFiles: FileChange[];
+  usage?: TokenUsage;
+  goalBudgetTokens?: number;
+  budgetLimited?: boolean;
+}
 
 export interface ToolCallItem {
   id: string;
@@ -14,6 +55,7 @@ export interface ToolCallItem {
   status: "running" | "success" | "failed";
   displayLabel: string;
   output?: string;
+  patchProgress?: PatchProgressChange[];
 }
 
 export interface ChatMessage {
@@ -24,6 +66,7 @@ export interface ChatMessage {
   toolCalls?: ToolCallItem[];
   commandStatus?: string;
   fileChanges?: { path: string; action: string }[];
+  runSummary?: RunSummary;
 }
 
 export interface ThreadSummary {
@@ -49,6 +92,8 @@ export interface ModelEntry {
   supportsVision: boolean;
 }
 
+export type RightPanelTab = "browser" | "project";
+
 interface RawToolCallInfo {
   id: string;
   name: string;
@@ -70,6 +115,19 @@ interface RawTurn {
   items?: RawThreadItem[];
   startedAt?: number | null;
   completedAt?: number | null;
+  mode?: ChatMode | null;
+  durationMs?: number | null;
+  changedFiles?: FileChange[];
+  usage?: TokenUsage | null;
+  goalBudgetTokens?: number | null;
+  budgetLimited?: boolean | null;
+}
+
+interface RawThread {
+  id: string;
+  name?: string;
+  goal?: ApiThreadGoal | null;
+  turns?: RawTurn[];
 }
 
 function toMillis(value?: number | null): number {
@@ -80,23 +138,216 @@ function toMillis(value?: number | null): number {
 }
 
 function toolDisplayLabelFromArgs(name: string, args: string): string {
+  if (name === "apply_patch") {
+    const path = firstPatchPath(args);
+    if (path) {
+      return path;
+    }
+  }
+
   try {
     const parsed = JSON.parse(args);
+    if (name.startsWith("mcp__")) {
+      return mcpDirectDisplayLabel(name);
+    }
     switch (name) {
       case "shell":
-        return Array.isArray(parsed.command) ? parsed.command.join(" ") : String(parsed.command ?? "shell");
+      case "shell_command":
+        return Array.isArray(parsed.command) ? parsed.command.join(" ") : String(parsed.command ?? name);
+      case "exec_command":
+        return String(parsed.cmd ?? "exec_command");
+      case "write_stdin":
+      case "close_exec_session":
+        return parsed.session_id != null ? `session ${parsed.session_id}` : name;
       case "read_file":
         return parsed.path ?? "read_file";
       case "write_file":
         return parsed.path ?? "write_file";
+      case "tool_search":
+        return parsed.query ?? "tool_search";
+      case "code_review":
+        return parsed.base_ref
+          ? `vs ${parsed.base_ref}`
+          : Array.isArray(parsed.paths) && parsed.paths.length > 0
+            ? `${parsed.paths.length} paths`
+            : "working tree";
+      case "apply_patch":
+        return firstPatchPath(parsed.patch ?? parsed.command) ?? "apply_patch";
       case "list_directory":
         return parsed.path ?? ".";
+      case "update_plan":
+        return Array.isArray(parsed.plan) ? `${parsed.plan.length} steps` : "update_plan";
+      case "request_user_input":
+        return Array.isArray(parsed.questions) ? `${parsed.questions.length} question(s)` : "request_user_input";
+      case "request_permissions":
+        return parsed.reason ?? "permissions";
+      case "view_image":
+        return parsed.path ?? "view_image";
+      case "image_generate":
+        return parsed.output_path ?? promptPreview(parsed.prompt) ?? "image_generate";
+      case "memory_list":
+        return parsed.path ?? ".";
+      case "memory_read":
+      case "memory_write":
+      case "memory_update":
+      case "memory_forget":
+        return parsed.path ?? name;
+      case "memory_search":
+        return parsed.query ?? "memory_search";
+      case "mcp_list_servers":
+        return "MCP servers";
+      case "mcp_status":
+        return parsed.server ?? "all";
+      case "mcp_list_tools":
+      case "mcp_list_resources":
+      case "mcp_list_resource_templates":
+      case "mcp_list_prompts":
+        return parsed.server ?? "all";
+      case "mcp_call_tool":
+        return parsed.server && parsed.tool ? `${parsed.server}:${parsed.tool}` : "mcp_call_tool";
+      case "mcp_read_resource":
+        return parsed.server && parsed.uri ? `${parsed.server}:${parsed.uri}` : "mcp_read_resource";
+      case "mcp_get_prompt":
+        return parsed.server && parsed.prompt ? `${parsed.server}:${parsed.prompt}` : "mcp_get_prompt";
+      case "apps_list":
+        return parsed.connector_id ?? "all";
+      case "list_available_plugins_to_install":
+        return parsed.query ?? "plugins";
+      case "request_plugin_install":
+        return parsed.tool_id ?? parsed.name ?? "plugin";
+      case "plugin_manage":
+        return parsed.plugin_id ?? parsed.id ?? parsed.action ?? "plugins";
+      case "browser_run": {
+        const url = typeof parsed.url === "string" && parsed.url.trim() ? parsed.url : "browser";
+        const actionCount = Array.isArray(parsed.actions) ? parsed.actions.length : 0;
+        return actionCount > 0 ? `${url} (${actionCount} actions)` : url;
+      }
+      case "spawn_agent":
+        return parsed.role ?? promptPreview(parsed.prompt) ?? "agent";
+      case "wait_agent":
+        return parsed.agent_id ?? (Array.isArray(parsed.agent_ids) ? `${parsed.agent_ids.length} agents` : "agents");
+      case "send_input":
+        return parsed.target ?? parsed.agent_id ?? parsed.id ?? "agent";
+      case "resume_agent":
+        return parsed.id ?? parsed.target ?? parsed.agent_id ?? "agent";
+      case "list_agents":
+        return parsed.status ?? "agents";
+      case "close_agent":
+        return parsed.target ?? parsed.agent_id ?? parsed.id ?? "agent";
+      case "web_search":
+        return parsed.query ?? "web_search";
+      case "web_fetch":
+        return parsed.url ?? "web_fetch";
       default:
         return name;
     }
   } catch {
-    return name;
+    if (name === "apply_patch") {
+      return firstPatchPath(args) ?? "apply_patch";
+    }
+    return name.startsWith("mcp__") ? mcpDirectDisplayLabel(name) : name;
   }
+}
+
+function promptPreview(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+  return normalized.length > 48 ? `${normalized.slice(0, 48)}...` : normalized;
+}
+
+function mcpDirectDisplayLabel(name: string): string {
+  const parts = name.slice("mcp__".length).split("__");
+  return parts.length >= 2 ? `${parts[0]}:${parts.slice(1).join("__")}` : name;
+}
+
+function firstPatchPath(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  for (const line of value.split(/\r?\n/)) {
+    const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/);
+    if (match) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
+export function createRunSummaryMessage(summary: RunSummary): ChatMessage {
+  return {
+    id: `summary-${summary.turnId}-${crypto.randomUUID()}`,
+    role: "system",
+    content: "",
+    timestamp: summary.completedAt ?? Date.now(),
+    runSummary: summary,
+  };
+}
+
+function normalizeRunSummary(turn: RawTurn): RunSummary | null {
+  if (turn.durationMs == null && !(turn.changedFiles?.length) && turn.mode !== "goal") {
+    return null;
+  }
+
+  return {
+    turnId: turn.id,
+    mode: turn.mode === "goal" ? "goal" : "chat",
+    startedAt: turn.startedAt ? toMillis(turn.startedAt) : undefined,
+    completedAt: turn.completedAt ? toMillis(turn.completedAt) : undefined,
+    durationMs: turn.durationMs ?? undefined,
+    changedFiles: turn.changedFiles ?? [],
+    usage: normalizeTokenUsage(turn.usage),
+    goalBudgetTokens: normalizeTokenBudget(turn.goalBudgetTokens),
+    budgetLimited: Boolean(turn.budgetLimited),
+  };
+}
+
+function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+
+  const promptTokens = Number(usage.promptTokens ?? 0);
+  const completionTokens = Number(usage.completionTokens ?? 0);
+  const totalTokens = Number(usage.totalTokens ?? promptTokens + completionTokens);
+  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0) {
+    return undefined;
+  }
+
+  return {
+    promptTokens: Math.max(0, promptTokens),
+    completionTokens: Math.max(0, completionTokens),
+    totalTokens: Math.max(0, totalTokens),
+  };
+}
+
+function normalizeTokenBudget(value?: number | null): number | undefined {
+  const budget = Number(value ?? 0);
+  if (!Number.isFinite(budget) || budget <= 0) {
+    return undefined;
+  }
+  return Math.floor(budget);
+}
+
+function normalizeThreadGoal(goal?: ApiThreadGoal | null): ThreadGoal | null {
+  if (!goal?.objective?.trim()) {
+    return null;
+  }
+
+  return {
+    objective: goal.objective,
+    status: goal.status ?? "active",
+    tokenBudget: normalizeTokenBudget(goal.tokenBudget) ?? null,
+    tokensUsed: Math.max(0, Number(goal.tokensUsed ?? 0)),
+    createdAt: goal.createdAt,
+    updatedAt: goal.updatedAt,
+  };
 }
 
 function mapTurnsToMessages(turns: RawTurn[]): ChatMessage[] {
@@ -167,9 +418,13 @@ function mapTurnsToMessages(turns: RawTurn[]): ChatMessage[] {
         });
       }
     }
+
+    const summary = normalizeRunSummary(turn);
+    if (summary) {
+      messages.push(createRunSummaryMessage(summary));
+    }
   }
 
-  console.log("[mapTurnsToMessages] produced", messages.length, "messages from", turns.length, "turns");
   return messages;
 }
 
@@ -433,7 +688,14 @@ interface AppState {
   messages: ChatMessage[];
   streamingText: string;
   isStreaming: boolean;
+  chatMode: ChatMode;
+  currentGoal: ThreadGoal | null;
   showSettings: boolean;
+  rightPanelVisible: boolean;
+  rightPanelTab: RightPanelTab;
+  browserPanelUrl: string | null;
+  browserPanelTitle: string | null;
+  browserPanelStatus: "idle" | "running" | "success" | "failed";
 
   setInitialized: (v: boolean) => void;
   setInitError: (err: string | null) => void;
@@ -480,10 +742,21 @@ interface AppState {
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (message: ChatMessage) => void;
   updateToolCallStatus: (toolId: string, status: "success" | "failed", output?: string) => void;
+  updateToolCallPatchProgress: (toolId: string, changes: PatchProgressChange[]) => void;
   appendStreamingText: (delta: string) => void;
   clearStreamingText: () => void;
   setStreaming: (v: boolean) => void;
+  setChatMode: (mode: ChatMode) => void;
+  setCurrentGoal: (goal: ThreadGoal | null) => void;
   setShowSettings: (v: boolean) => void;
+  setRightPanelVisible: (v: boolean) => void;
+  toggleRightPanel: () => void;
+  setRightPanelTab: (tab: RightPanelTab) => void;
+  setBrowserPanelState: (state: Partial<{
+    url: string | null;
+    title: string | null;
+    status: "idle" | "running" | "success" | "failed";
+  }>) => void;
   createThread: () => Promise<string | null>;
   loadThreads: () => Promise<void>;
   loadThread: (threadId: string) => Promise<void>;
@@ -517,19 +790,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   messages: [],
   streamingText: "",
   isStreaming: false,
+  chatMode: "chat",
+  currentGoal: null,
   showSettings: false,
+  rightPanelVisible: false,
+  rightPanelTab: "browser",
+  browserPanelUrl: null,
+  browserPanelTitle: null,
+  browserPanelStatus: "idle",
 
   setInitialized: (v) => set({ initialized: v }),
   setInitError: (err) => set({ initError: err }),
   retryInit: null,
   setRetryInit: (fn) => set({ retryInit: fn }),
   setCurrentThread: (id) => {
-    console.warn("[store] setCurrentThread:", id, "clearing messages. Stack:", new Error().stack);
-    set({ currentThreadId: id, messages: [], streamingText: "" });
+    set({ currentThreadId: id, messages: [], streamingText: "", currentGoal: null });
   },
   startNewThreadWithMessage: (threadId, message) => {
-    console.debug("[store] startNewThreadWithMessage:", threadId);
-    set({ currentThreadId: threadId, messages: [message], streamingText: "", isStreaming: false });
+    set({
+      currentThreadId: threadId,
+      messages: [message],
+      streamingText: "",
+      isStreaming: false,
+      currentGoal: null,
+    });
   },
   setCurrentTurnId: (id) => set({ currentTurnId: id }),
   setCurrentModel: (model) => set({ currentModel: model }),
@@ -569,6 +853,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentThreadId: null,
       messages: [],
       streamingText: "",
+      currentGoal: null,
     });
     return id;
   },
@@ -585,6 +870,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       streamingText: "",
       isStreaming: false,
       currentTurnId: null,
+      currentGoal: null,
     });
   },
 
@@ -617,6 +903,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             currentThreadId: null,
             messages: [],
             streamingText: "",
+            currentGoal: null,
           }
         : {}),
     });
@@ -743,12 +1030,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  setMessages: (messages) => {
-    console.debug("[store] setMessages:", messages.length, "msgs");
-    set({ messages });
-  },
+  setMessages: (messages) => set({ messages }),
   addMessage: (message) => {
-    console.debug("[store] addMessage:", message.role, message.content?.slice(0, 40) || "(toolCalls)");
     set((s) => ({ messages: [...s.messages, message] }));
   },
   updateToolCallStatus: (toolId, status, output?) =>
@@ -767,22 +1050,48 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       return {};
     }),
+  updateToolCallPatchProgress: (toolId, changes) =>
+    set((s) => {
+      const normalized = changes.filter((change) => change.path.trim());
+      if (!normalized.length) {
+        return {};
+      }
+
+      const msgs = [...s.messages];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const tc = msgs[i].toolCalls;
+        if (!tc) continue;
+        const idx = tc.findIndex((c) => c.id === toolId);
+        if (idx >= 0) {
+          const updatedCalls = [...tc];
+          updatedCalls[idx] = { ...updatedCalls[idx], patchProgress: normalized };
+          msgs[i] = { ...msgs[i], toolCalls: updatedCalls };
+          return { messages: msgs };
+        }
+      }
+      return {};
+    }),
   appendStreamingText: (delta) =>
     set((s) => ({ streamingText: s.streamingText + delta })),
   clearStreamingText: () => set({ streamingText: "" }),
-  setStreaming: (v) => {
-    const prev = get().isStreaming;
-    if (prev !== v) console.debug("[store] setStreaming:", prev, "->", v);
-    set({ isStreaming: v });
-  },
+  setStreaming: (v) => set({ isStreaming: v }),
+  setChatMode: (mode) => set({ chatMode: mode }),
+  setCurrentGoal: (goal) => set({ currentGoal: normalizeThreadGoal(goal) }),
   setShowSettings: (v) => set({ showSettings: v }),
+  setRightPanelVisible: (v) => set({ rightPanelVisible: v }),
+  toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
+  setRightPanelTab: (tab) => set({ rightPanelTab: tab, rightPanelVisible: true }),
+  setBrowserPanelState: (state) =>
+    set({
+      ...(state.url !== undefined ? { browserPanelUrl: state.url } : {}),
+      ...(state.title !== undefined ? { browserPanelTitle: state.title } : {}),
+      ...(state.status !== undefined ? { browserPanelStatus: state.status } : {}),
+    }),
 
   createThread: async () => {
-    console.log("[store] createThread called. Stack:", new Error().stack?.split('\n').slice(0, 5).join('\n'));
     try {
       const resp = await standaloneThreadCreate();
       const threadId = resp?.thread?.id ?? null;
-      console.log("[store] createThread got threadId:", threadId);
       if (threadId) {
         const projectId = get().currentProjectId;
         set({
@@ -791,6 +1100,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           streamingText: "",
           isStreaming: false,
           currentTurnId: null,
+          currentGoal: null,
         });
         const newThread: ThreadSummary = {
           id: threadId,
@@ -803,11 +1113,13 @@ export const useAppStore = create<AppState>((set, get) => ({
           const map = { ...get().threadProjectMap, [threadId]: projectId };
           saveThreadProjectMap(map);
           set((s) => ({
-            threads: [newThread, ...s.threads],
+            threads: [newThread, ...s.threads.filter((thread) => thread.id !== threadId)],
             threadProjectMap: map,
           }));
         } else {
-          set((s) => ({ threads: [newThread, ...s.threads] }));
+          set((s) => ({
+            threads: [newThread, ...s.threads.filter((thread) => thread.id !== threadId)],
+          }));
         }
       }
       return threadId;
@@ -836,14 +1148,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   loadThread: async (threadId: string) => {
-    console.log("[store] loadThread:", threadId);
     try {
       const resp = await standaloneThreadRead(threadId);
-      const rawThread = resp?.thread;
+      const rawThread = resp?.thread as RawThread | undefined;
       const turns = rawThread?.turns ?? [];
-      console.log("[store] loadThread raw turns:", turns.length, "items per turn:", turns.map((t: RawTurn) => (t.items ?? []).length));
       const messages = mapTurnsToMessages(turns as RawTurn[]);
-      console.log("[store] loadThread mapped messages:", messages.length, messages.map((m) => `${m.role}:${m.toolCalls ? "toolCalls(" + m.toolCalls.length + ")" : m.content?.slice(0, 30)}`));
 
       set({
         currentThreadId: threadId,
@@ -851,6 +1160,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages,
         streamingText: "",
         isStreaming: false,
+        currentGoal: normalizeThreadGoal(rawThread?.goal),
       });
       if (rawThread?.id) {
         set((state) => {
@@ -877,6 +1187,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: [],
         streamingText: "",
         isStreaming: false,
+        currentGoal: null,
       });
     }
   },

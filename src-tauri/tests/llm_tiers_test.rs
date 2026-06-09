@@ -90,12 +90,24 @@ fn scene_bindings_complete() {
     let high_scenes = ["architecture", "code_review", "complex_debug", "plan"];
 
     for s in low_scenes {
-        assert_eq!(mgr.scenes.get(s), Some(&TierLevel::Low), "scene '{s}' should be Low");
+        assert_eq!(
+            mgr.scenes.get(s),
+            Some(&TierLevel::Low),
+            "scene '{s}' should be Low"
+        );
     }
     for s in medium_scenes {
-        assert_eq!(mgr.scenes.get(s), Some(&TierLevel::Medium), "scene '{s}' should be Medium");
+        assert_eq!(
+            mgr.scenes.get(s),
+            Some(&TierLevel::Medium),
+            "scene '{s}' should be Medium"
+        );
     }
     for s in high_scenes {
-        assert_eq!(mgr.scenes.get(s), Some(&TierLevel::High), "scene '{s}' should be High");
+        assert_eq!(
+            mgr.scenes.get(s),
+            Some(&TierLevel::High),
+            "scene '{s}' should be High"
+        );
     }
 }

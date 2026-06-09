@@ -1,0 +1,7 @@
+{
+  "label": "cn-browser",
+  "url": "https://duckduckgo.com/?q=OPC%20UA%20technology%20news",
+  "debugPort": 9242,
+  "cdpEndpoint": "http://127.0.0.1:9242",
+  "updatedAtMs": 1781013098232
+}

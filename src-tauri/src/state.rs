@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use crate::agent::AgentEngine;
 use crate::config_system::ConfigManager;
@@ -10,7 +10,7 @@ use crate::protocol::{JSONRPCErrorError, RequestId};
 use crate::standalone::StandaloneState;
 use crate::thread_store::ThreadStore;
 use crate::tool_executor::ToolExecutor;
-use crate::usage::{UsageDb, UsageRecorder, PricingTable};
+use crate::usage::{PricingTable, UsageDb, UsageRecorder};
 
 const WORKSPACE_CONFIG_DIR: &str = "codey";
 
@@ -98,6 +98,8 @@ fn prepare_workspace_config_dir(project_root: &Path) -> PathBuf {
     let workspace_dir = project_root.join(WORKSPACE_CONFIG_DIR);
     let _ = std::fs::create_dir_all(&workspace_dir);
     let _ = std::fs::create_dir_all(workspace_dir.join("skills"));
+    let _ = std::fs::create_dir_all(workspace_dir.join("plugins"));
+    let _ = std::fs::create_dir_all(workspace_dir.join("memories"));
     workspace_dir
 }
 
@@ -112,15 +114,17 @@ impl AppState {
 
         let config_manager = ConfigManager::new(config_path.clone());
         let thread_store = Arc::new(ThreadStore::new(&workspace_config_dir));
-        let tool_executor = ToolExecutor::new(project_root.clone());
-        let mut agent_engine = AgentEngine::new(thread_store.clone(), tool_executor, project_root.clone())
-            .expect("failed to create agent engine");
+        let tool_executor = ToolExecutor::with_workspace_config_dir(
+            project_root.clone(),
+            workspace_config_dir.clone(),
+        );
+        let mut agent_engine =
+            AgentEngine::new(thread_store.clone(), tool_executor, project_root.clone())
+                .expect("failed to create agent engine");
 
         // 初始化用量追踪
         let db_path = workspace_config_dir.join("usage.db");
-        let usage_db = Arc::new(
-            UsageDb::open(&db_path).expect("failed to open usage database")
-        );
+        let usage_db = Arc::new(UsageDb::open(&db_path).expect("failed to open usage database"));
         let pricing_table = Arc::new(std::sync::RwLock::new(PricingTable::new()));
         let usage_recorder = UsageRecorder::new(usage_db.clone(), pricing_table.clone());
 

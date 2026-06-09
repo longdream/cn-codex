@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
@@ -89,14 +89,19 @@ impl UsageDb {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
             .map_err(|e| AppError::Custom(format!("Failed to set pragma: {e}")))?;
 
-        let db = Self { conn: Mutex::new(conn) };
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
         db.migrate()?;
         Ok(db)
     }
 
     /// 执行数据库迁移
     fn migrate(&self) -> AppResult<()> {
-        let conn = self.conn.lock().map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS usage_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,8 +125,9 @@ impl UsageDb {
                 prompt_price_per_1m REAL NOT NULL DEFAULT 0.0,
                 completion_price_per_1m REAL NOT NULL DEFAULT 0.0,
                 updated_at INTEGER NOT NULL
-            );"
-        ).map_err(|e| AppError::Custom(format!("Migration failed: {e}")))?;
+            );",
+        )
+        .map_err(|e| AppError::Custom(format!("Migration failed: {e}")))?;
         Ok(())
     }
 
@@ -136,7 +142,10 @@ impl UsageDb {
         total_tokens: u64,
         cost_usd: f64,
     ) -> AppResult<i64> {
-        let conn = self.conn.lock().map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -153,39 +162,55 @@ impl UsageDb {
 
     /// 获取全局汇总统计
     pub fn get_stats(&self, since_timestamp: Option<i64>) -> AppResult<UsageStats> {
-        let conn = self.conn.lock().map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
         let (sql, param): (&str, i64) = if let Some(since) = since_timestamp {
-            ("SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0.0) FROM usage_records WHERE timestamp >= ?1", since)
+            (
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0.0) FROM usage_records WHERE timestamp >= ?1",
+                since,
+            )
         } else {
-            ("SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0.0) FROM usage_records WHERE 1=1 OR ?1=0", 0)
+            (
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0.0) FROM usage_records WHERE 1=1 OR ?1=0",
+                0,
+            )
         };
 
-        let mut stmt = conn.prepare(sql)
+        let mut stmt = conn
+            .prepare(sql)
             .map_err(|e| AppError::Custom(format!("Prepare failed: {e}")))?;
-        let row = stmt.query_row(params![param], |row| {
-            Ok(UsageStats {
-                total_requests: row.get::<_, i64>(0)? as u64,
-                total_prompt_tokens: row.get::<_, i64>(1)? as u64,
-                total_completion_tokens: row.get::<_, i64>(2)? as u64,
-                total_tokens: row.get::<_, i64>(3)? as u64,
-                total_cost_usd: row.get(4)?,
+        let row = stmt
+            .query_row(params![param], |row| {
+                Ok(UsageStats {
+                    total_requests: row.get::<_, i64>(0)? as u64,
+                    total_prompt_tokens: row.get::<_, i64>(1)? as u64,
+                    total_completion_tokens: row.get::<_, i64>(2)? as u64,
+                    total_tokens: row.get::<_, i64>(3)? as u64,
+                    total_cost_usd: row.get(4)?,
+                })
             })
-        }).map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
+            .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
 
         Ok(row)
     }
 
     /// 获取按天分组的用量（最近 N 天）
     pub fn get_daily_usage(&self, days: u32) -> AppResult<Vec<DailyUsage>> {
-        let conn = self.conn.lock().map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
         let since = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64
             - (days as i64 * 86400);
 
-        let mut stmt = conn.prepare(
-            "SELECT date(timestamp, 'unixepoch', 'localtime') as day,
+        let mut stmt = conn
+            .prepare(
+                "SELECT date(timestamp, 'unixepoch', 'localtime') as day,
                     COUNT(*),
                     SUM(prompt_tokens),
                     SUM(completion_tokens),
@@ -194,19 +219,22 @@ impl UsageDb {
              FROM usage_records
              WHERE timestamp >= ?1
              GROUP BY day
-             ORDER BY day ASC"
-        ).map_err(|e| AppError::Custom(format!("Prepare failed: {e}")))?;
+             ORDER BY day ASC",
+            )
+            .map_err(|e| AppError::Custom(format!("Prepare failed: {e}")))?;
 
-        let rows = stmt.query_map(params![since], |row| {
-            Ok(DailyUsage {
-                date: row.get(0)?,
-                requests: row.get::<_, i64>(1)? as u64,
-                prompt_tokens: row.get::<_, i64>(2)? as u64,
-                completion_tokens: row.get::<_, i64>(3)? as u64,
-                total_tokens: row.get::<_, i64>(4)? as u64,
-                cost_usd: row.get(5)?,
+        let rows = stmt
+            .query_map(params![since], |row| {
+                Ok(DailyUsage {
+                    date: row.get(0)?,
+                    requests: row.get::<_, i64>(1)? as u64,
+                    prompt_tokens: row.get::<_, i64>(2)? as u64,
+                    completion_tokens: row.get::<_, i64>(3)? as u64,
+                    total_tokens: row.get::<_, i64>(4)? as u64,
+                    cost_usd: row.get(5)?,
+                })
             })
-        }).map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
+            .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
 
         let mut results = Vec::new();
         for row in rows {
@@ -217,7 +245,10 @@ impl UsageDb {
 
     /// 获取按模型分组的用量统计
     pub fn get_model_usage(&self, since_timestamp: Option<i64>) -> AppResult<Vec<ModelUsage>> {
-        let conn = self.conn.lock().map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
         let since = since_timestamp.unwrap_or(0);
 
         let mut stmt = conn.prepare(
@@ -228,17 +259,19 @@ impl UsageDb {
              ORDER BY SUM(total_tokens) DESC"
         ).map_err(|e| AppError::Custom(format!("Prepare failed: {e}")))?;
 
-        let rows = stmt.query_map(params![since], |row| {
-            Ok(ModelUsage {
-                provider: row.get(0)?,
-                model: row.get(1)?,
-                requests: row.get::<_, i64>(2)? as u64,
-                prompt_tokens: row.get::<_, i64>(3)? as u64,
-                completion_tokens: row.get::<_, i64>(4)? as u64,
-                total_tokens: row.get::<_, i64>(5)? as u64,
-                cost_usd: row.get(6)?,
+        let rows = stmt
+            .query_map(params![since], |row| {
+                Ok(ModelUsage {
+                    provider: row.get(0)?,
+                    model: row.get(1)?,
+                    requests: row.get::<_, i64>(2)? as u64,
+                    prompt_tokens: row.get::<_, i64>(3)? as u64,
+                    completion_tokens: row.get::<_, i64>(4)? as u64,
+                    total_tokens: row.get::<_, i64>(5)? as u64,
+                    cost_usd: row.get(6)?,
+                })
             })
-        }).map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
+            .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
 
         let mut results = Vec::new();
         for row in rows {
@@ -249,7 +282,10 @@ impl UsageDb {
 
     /// 获取最近 N 条用量记录
     pub fn get_recent_records(&self, limit: u32) -> AppResult<Vec<UsageRecord>> {
-        let conn = self.conn.lock().map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
 
         let mut stmt = conn.prepare(
             "SELECT id, provider, model, thread_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, timestamp
@@ -258,19 +294,21 @@ impl UsageDb {
              LIMIT ?1"
         ).map_err(|e| AppError::Custom(format!("Prepare failed: {e}")))?;
 
-        let rows = stmt.query_map(params![limit], |row| {
-            Ok(UsageRecord {
-                id: row.get(0)?,
-                provider: row.get(1)?,
-                model: row.get(2)?,
-                thread_id: row.get(3)?,
-                prompt_tokens: row.get::<_, i64>(4)? as u64,
-                completion_tokens: row.get::<_, i64>(5)? as u64,
-                total_tokens: row.get::<_, i64>(6)? as u64,
-                cost_usd: row.get(7)?,
-                timestamp: row.get(8)?,
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(UsageRecord {
+                    id: row.get(0)?,
+                    provider: row.get(1)?,
+                    model: row.get(2)?,
+                    thread_id: row.get(3)?,
+                    prompt_tokens: row.get::<_, i64>(4)? as u64,
+                    completion_tokens: row.get::<_, i64>(5)? as u64,
+                    total_tokens: row.get::<_, i64>(6)? as u64,
+                    cost_usd: row.get(7)?,
+                    timestamp: row.get(8)?,
+                })
             })
-        }).map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
+            .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
 
         let mut results = Vec::new();
         for row in rows {

@@ -43,12 +43,20 @@ export interface FileChangeOutputDelta {
   delta: string;
 }
 
-export interface FileChangePatchUpdated {
-  threadId: string;
-  turnId: string;
-  itemId: string;
+export interface PatchProgressChange {
   path: string;
-  patch: string;
+  action: string;
+  moveTo?: string;
+}
+
+export interface FileChangePatchUpdated {
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+  callId?: string;
+  path?: string;
+  patch?: string;
+  changes?: PatchProgressChange[];
 }
 
 export interface ThreadStartedNotification {

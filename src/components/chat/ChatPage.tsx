@@ -220,9 +220,6 @@ export function ChatPage() {
           text += `\n  [Tool Call] ${tc.name}(${tc.arguments ?? ""})`;
         }
       }
-      if (m.toolName) {
-        text = `[Tool: ${m.toolName}] ${m.content}`;
-      }
       return text;
     });
     navigator.clipboard.writeText(lines.join("\n\n")).then(() => {

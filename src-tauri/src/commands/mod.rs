@@ -1,12 +1,15 @@
 pub mod account;
 pub mod approval;
 pub mod config;
+pub mod hook;
 pub mod llm;
 pub mod model;
+pub mod plugin;
 pub mod skill;
 pub mod thread;
 pub mod turn;
 pub mod usage;
+pub mod window;
 
 use serde::Serialize;
 use tauri::State;
@@ -17,12 +20,15 @@ use crate::state::AppState;
 pub use account::*;
 pub use approval::*;
 pub use config::*;
+pub use hook::*;
 pub use llm::*;
 pub use model::*;
+pub use plugin::*;
 pub use skill::*;
 pub use thread::*;
 pub use turn::*;
 pub use usage::*;
+pub use window::*;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

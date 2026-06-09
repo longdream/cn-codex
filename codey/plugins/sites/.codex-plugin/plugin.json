@@ -1,0 +1,38 @@
+{
+  "name": "sites",
+  "version": "0.1.10",
+  "description": "Create, save, deploy, and inspect sites hosted by OpenAI.",
+  "author": {
+    "name": "OpenAI",
+    "email": "support@openai.com",
+    "url": "https://openai.com/"
+  },
+  "homepage": "https://openai.com/",
+  "license": "Proprietary",
+  "keywords": [
+    "deploy",
+    "sites",
+    "games"
+  ],
+  "skills": "./skills/",
+  "apps": "./.app.json",
+  "interface": {
+    "displayName": "Sites",
+    "shortDescription": "Create and deploy sites hosted by OpenAI",
+    "longDescription": "Create, save, deploy, and inspect sites hosted by OpenAI.",
+    "developerName": "OpenAI",
+    "category": "Productivity",
+    "websiteURL": "https://openai.com/",
+    "privacyPolicyURL": "https://openai.com/policies/row-privacy-policy/",
+    "termsOfServiceURL": "https://openai.com/policies/row-terms-of-use/",
+    "defaultPrompt": [
+      "Build a landing page for my pizza restaurant",
+      "Create a daily sudoku game with a leaderboard",
+      "Create an image generation website"
+    ],
+    "brandColor": "#10A37F",
+    "logo": "./assets/logo.svg",
+    "composerIcon": "./assets/icon.svg",
+    "screenshots": []
+  }
+}

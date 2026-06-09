@@ -1,19 +1,27 @@
 import { useEffect, useState } from "react";
 import { useIntl } from "react-intl";
-import { standaloneConfigRead } from "../../api";
+import { hookList } from "../../api";
 import { useAppStore } from "../../stores/appStore";
+import type { HookListItem } from "../../types/hook";
 
 interface HookConfig {
+  id: string;
   name: string;
   command?: string;
   enabled: boolean;
+  sourceName?: string;
+  sourcePath?: string;
+  matcher?: string | null;
 }
 
 const KNOWN_HOOKS = [
   { name: "on-agent-start", descKey: "settings.hooks.onAgentStart" },
+  { name: "on-user-prompt-submit", descKey: "settings.hooks.onUserPromptSubmit" },
   { name: "on-agent-end", descKey: "settings.hooks.onAgentEnd" },
   { name: "on-file-change", descKey: "settings.hooks.onFileChange" },
   { name: "on-command-exec", descKey: "settings.hooks.onCommandExec" },
+  { name: "on-post-tool-use", descKey: "settings.hooks.onPostToolUse" },
+  { name: "on-subagent-stop", descKey: "settings.hooks.onSubagentStop" },
 ];
 
 export function HooksPanel() {
@@ -23,33 +31,14 @@ export function HooksPanel() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    standaloneConfigRead()
-      .then((resp) => {
-        const cfg = (resp?.config ?? {}) as Record<string, unknown>;
-        const hooksConfig = (cfg.hooks ?? {}) as Record<string, Record<string, unknown>>;
-
-        const parsed: HookConfig[] = KNOWN_HOOKS.map((hook) => {
-          const hookCfg = hooksConfig[hook.name];
-          return {
-            name: hook.name,
-            command: hookCfg?.command as string | undefined,
-            enabled: !!hookCfg?.command,
-          };
-        });
-
-        const customHooks = Object.keys(hooksConfig)
-          .filter((key) => !KNOWN_HOOKS.some((hook) => hook.name === key))
-          .map((name) => ({
-            name,
-            command: hooksConfig[name]?.command as string | undefined,
-            enabled: !!hooksConfig[name]?.command,
-          }));
-
-        setHooks([...parsed, ...customHooks]);
+    hookList()
+      .then((runtimeHooks) => {
+        setHooks(buildHookRows(runtimeHooks));
       })
       .catch(() => {
         setHooks(
           KNOWN_HOOKS.map((hook) => ({
+            id: hook.name,
             name: hook.name,
             enabled: false,
           })),
@@ -107,6 +96,17 @@ export function HooksPanel() {
                   <div className="mt-3 break-all font-mono text-xs text-[var(--text-base)]">
                     {hook.command ?? intl.formatMessage({ id: "settings.hooks.noCommand" })}
                   </div>
+                  {hook.sourceName && (
+                    <div className="mt-2 text-xs text-[var(--text-muted)]">
+                      {hook.sourceName}
+                      {hook.matcher ? ` · ${hook.matcher}` : ""}
+                    </div>
+                  )}
+                  {hook.sourcePath && (
+                    <div className="mt-1 break-all font-mono text-[11px] text-[var(--text-faint)]">
+                      {hook.sourcePath}
+                    </div>
+                  )}
                 </div>
                 <span
                   className={`rounded-full px-2.5 py-1 text-xs ${
@@ -130,4 +130,35 @@ export function HooksPanel() {
       </section>
     </div>
   );
+}
+
+function buildHookRows(runtimeHooks: HookListItem[]): HookConfig[] {
+  const rows: HookConfig[] = runtimeHooks.map((hook) => ({
+    id: hook.id,
+    name: hook.event,
+    command: hook.command,
+    enabled: hook.enabled,
+    sourceName: hook.sourceName,
+    sourcePath: hook.sourcePath,
+    matcher: hook.matcher,
+  }));
+
+  for (const hook of KNOWN_HOOKS) {
+    if (!rows.some((row) => row.name === hook.name)) {
+      rows.push({
+        id: hook.name,
+        name: hook.name,
+        enabled: false,
+      });
+    }
+  }
+
+  return rows.sort((left, right) => {
+    const leftKnown = KNOWN_HOOKS.findIndex((hook) => hook.name === left.name);
+    const rightKnown = KNOWN_HOOKS.findIndex((hook) => hook.name === right.name);
+    const leftOrder = leftKnown >= 0 ? leftKnown : KNOWN_HOOKS.length;
+    const rightOrder = rightKnown >= 0 ? rightKnown : KNOWN_HOOKS.length;
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return left.id.localeCompare(right.id);
+  });
 }

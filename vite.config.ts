@@ -4,6 +4,13 @@ import path from "path";
 
 const host = process.env.TAURI_DEV_HOST;
 
+const ignoredWatchGlobs = [
+  "**/src-tauri/**",
+  "**/codey/**",
+  "**/logs/**",
+  "**/dist/**",
+];
+
 export default defineConfig(async () => ({
   plugins: [react()],
   resolve: {
@@ -29,7 +36,7 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: ignoredWatchGlobs,
     },
   },
 }));

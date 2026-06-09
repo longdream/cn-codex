@@ -38,6 +38,7 @@ reqwest = { version = "0.13.4", features = ["json", "stream"] }
 async-trait = "0.1"
 rusqlite = { version = "0.34", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
 
 [profile.dev]
 opt-level = 0

@@ -108,10 +108,7 @@ pub async fn skill_list(state: State<'_, AppState>) -> AppResult<Vec<SkillSummar
 }
 
 #[tauri::command]
-pub async fn skill_read(
-    state: State<'_, AppState>,
-    skill_id: String,
-) -> AppResult<SkillDetail> {
+pub async fn skill_read(state: State<'_, AppState>, skill_id: String) -> AppResult<SkillDetail> {
     let skills_dir = get_skills_dir(&state);
     let skill_md = skills_dir.join(&skill_id).join("SKILL.md");
 

@@ -82,6 +82,46 @@ describe("i18n messages", () => {
     }
   });
 
+  it("has goal mode and run summary keys", () => {
+    for (const msgs of [zhCN, enUS] as Record<string, string>[]) {
+      expect(msgs).toHaveProperty("chat.mode.chat");
+      expect(msgs).toHaveProperty("chat.mode.goal");
+      expect(msgs).toHaveProperty("chat.mode.goalActive");
+      expect(msgs).toHaveProperty("chat.goalStatus.active");
+      expect(msgs).toHaveProperty("chat.goalStatus.paused");
+      expect(msgs).toHaveProperty("chat.goalStatus.blocked");
+      expect(msgs).toHaveProperty("chat.goalStatus.usageLimited");
+      expect(msgs).toHaveProperty("chat.goalStatus.budgetLimited");
+      expect(msgs).toHaveProperty("chat.goalStatus.complete");
+      expect(msgs).toHaveProperty("chat.goalCommand.noGoal");
+      expect(msgs).toHaveProperty("chat.goalCommand.cleared");
+      expect(msgs).toHaveProperty("chat.goalCommand.paused");
+      expect(msgs).toHaveProperty("chat.goalCommand.resumed");
+      expect(msgs).toHaveProperty("chat.goalCommand.edited");
+      expect(msgs).toHaveProperty("chat.goalCommand.editNeedsObjective");
+      expect(msgs).toHaveProperty("chat.goalCommand.summaryTitle");
+      expect(msgs).toHaveProperty("chat.goalCommand.summaryStatus");
+      expect(msgs).toHaveProperty("chat.goalCommand.summaryObjective");
+      expect(msgs).toHaveProperty("chat.goalCommand.summaryTokens");
+      expect(msgs).toHaveProperty("chat.goalCommand.summaryCommands");
+      expect(msgs).toHaveProperty("chat.runSummary.title");
+      expect(msgs).toHaveProperty("chat.runSummary.processed");
+      expect(msgs).toHaveProperty("chat.runSummary.budgetLimited");
+      expect(msgs).toHaveProperty("chat.runSummary.running");
+      expect(msgs).toHaveProperty("chat.runSummary.elapsed");
+      expect(msgs).toHaveProperty("chat.runSummary.tokens");
+      expect(msgs).toHaveProperty("chat.runSummary.tokenBudget");
+      expect(msgs).toHaveProperty("chat.runSummary.promptTokens");
+      expect(msgs).toHaveProperty("chat.runSummary.completionTokens");
+      expect(msgs).toHaveProperty("chat.runSummary.changedFiles");
+      expect(msgs).toHaveProperty("chat.runSummary.noChangedFiles");
+      expect(msgs).toHaveProperty("chat.fileAction.modified");
+      expect(msgs).toHaveProperty("chat.fileAction.created");
+      expect(msgs).toHaveProperty("chat.fileAction.deleted");
+      expect(msgs).toHaveProperty("chat.fileAction.renamed");
+    }
+  });
+
   it("has at least 60 keys in each locale", () => {
     expect(Object.keys(zhCN).length).toBeGreaterThanOrEqual(60);
     expect(Object.keys(enUS).length).toBeGreaterThanOrEqual(60);

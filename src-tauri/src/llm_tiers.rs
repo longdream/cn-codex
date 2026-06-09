@@ -115,9 +115,7 @@ impl LlmTiersManager {
     }
 
     pub fn get_usage_stats(&self) -> TierUsageStats {
-        let total = self
-            .daily_usage
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let total = self.daily_usage.load(std::sync::atomic::Ordering::Relaxed);
         TierUsageStats {
             low_tokens: 0,
             medium_tokens: 0,

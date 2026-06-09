@@ -7,10 +7,12 @@
 //! - Response: JSON 流（非标准 SSE），每行是一个完整 JSON 对象
 
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 
-use super::types::{InternalMessage, StreamEvent, UsageInfo};
 use super::ProviderAdapter;
+use super::types::{
+    InternalMessage, StreamEvent, UsageInfo, content_as_text, content_to_gemini_parts,
+};
 
 pub struct GoogleAdapter;
 
@@ -47,26 +49,23 @@ impl ProviderAdapter for GoogleAdapter {
         for msg in messages {
             match msg.role.as_str() {
                 "system" => {
-                    if let Some(ref content) = msg.content {
+                    let content = content_as_text(&msg.content);
+                    if !content.is_empty() {
                         if !system_text.is_empty() {
                             system_text.push('\n');
                         }
-                        system_text.push_str(content);
+                        system_text.push_str(&content);
                     }
                 }
                 "user" => {
                     contents.push(serde_json::json!({
                         "role": "user",
-                        "parts": [{ "text": msg.content.clone().unwrap_or_default() }]
+                        "parts": content_to_gemini_parts(&msg.content)
                     }));
                 }
                 "assistant" => {
                     let mut parts: Vec<serde_json::Value> = Vec::new();
-                    if let Some(ref text) = msg.content {
-                        if !text.is_empty() {
-                            parts.push(serde_json::json!({ "text": text }));
-                        }
-                    }
+                    parts.extend(content_to_gemini_parts(&msg.content));
                     if let Some(ref tcs) = msg.tool_calls {
                         for tc in tcs {
                             let args: serde_json::Value =
@@ -90,8 +89,9 @@ impl ProviderAdapter for GoogleAdapter {
                 "tool" => {
                     // functionResponse
                     let response_val: serde_json::Value =
-                        serde_json::from_str(msg.content.as_deref().unwrap_or("{}"))
-                            .unwrap_or(serde_json::json!({"result": msg.content.clone().unwrap_or_default()}));
+                        serde_json::from_str(&content_as_text(&msg.content)).unwrap_or_else(
+                            |_| serde_json::json!({"result": content_as_text(&msg.content)}),
+                        );
                     contents.push(serde_json::json!({
                         "role": "user",
                         "parts": [{
@@ -187,7 +187,8 @@ impl ProviderAdapter for GoogleAdapter {
                             // functionCall
                             if let Some(fc) = part.get("functionCall") {
                                 let name = fc.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                let args = fc.get("args").map(|v| v.to_string()).unwrap_or_default();
+                                let args =
+                                    fc.get("args").map(|v| v.to_string()).unwrap_or_default();
                                 // Gemini 不提供 call_id，我们生成一个
                                 let call_id = format!("call_{}", uuid::Uuid::new_v4());
                                 events.push(StreamEvent::ToolCallDelta {
@@ -205,9 +206,18 @@ impl ProviderAdapter for GoogleAdapter {
 
         // usageMetadata
         if let Some(usage) = parsed.get("usageMetadata") {
-            let prompt = usage.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
-            let completion = usage.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0);
-            let total = usage.get("totalTokenCount").and_then(|v| v.as_u64()).unwrap_or(prompt + completion);
+            let prompt = usage
+                .get("promptTokenCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let completion = usage
+                .get("candidatesTokenCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let total = usage
+                .get("totalTokenCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(prompt + completion);
             events.push(StreamEvent::Usage(UsageInfo {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
