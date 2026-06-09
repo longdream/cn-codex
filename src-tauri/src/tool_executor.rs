@@ -11040,6 +11040,7 @@ fn normalize_sandbox_permissions(value: Option<&str>) -> Option<String> {
 }
 
 fn shell_program_and_args_windows(script: &str, login: Option<bool>) -> (String, Vec<String>) {
+    let ps_script = script.replace(" && ", "; ");
     let mut args = Vec::new();
     if login == Some(false) {
         args.push("-NoProfile".to_string());
@@ -11047,7 +11048,7 @@ fn shell_program_and_args_windows(script: &str, login: Option<bool>) -> (String,
     args.push("-ExecutionPolicy".to_string());
     args.push("Bypass".to_string());
     args.push("-Command".to_string());
-    args.push(script.to_string());
+    args.push(ps_script);
     ("powershell.exe".to_string(), args)
 }
 

@@ -647,6 +647,66 @@ impl AgentEngine {
             }
         }
 
+        if !stop_hooks_satisfied && !stop_hooks_ran_for_last_stop && !prompt_hook_blocked {
+            info!("Agent loop ended after tool calls without summary, requesting final summary");
+            let summary_nudge = ThreadMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: "system".to_string(),
+                content: "All tool executions have completed. You MUST now provide a brief \
+                          summary: what was done, any errors encountered, and suggested next steps. \
+                          Do NOT call any more tools."
+                    .to_string(),
+                timestamp: now_secs(),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            };
+            self.thread_store
+                .add_message(thread_id, summary_nudge)
+                .await?;
+
+            let history = self.thread_store.get_thread_messages(thread_id).await;
+            let internal_messages = self.build_internal_messages(
+                config,
+                &history,
+                &effective_cwd,
+                &turn_mode,
+                Some(user_message_id.as_str()),
+                &[],
+            );
+            let summary_result = self
+                .stream_completion(
+                    app_handle,
+                    &base_url,
+                    &api_key,
+                    &model,
+                    &wire_api,
+                    internal_messages,
+                    None,
+                )
+                .await;
+            if let Ok(CompletionResult::Message { text, usage }) = summary_result {
+                if let Some(u) = usage {
+                    add_turn_usage(&mut turn_usage, &u);
+                    if let Some(ref recorder) = self.usage_recorder {
+                        recorder.record(&provider_id, &model, thread_id, &u);
+                    }
+                }
+                if !text.is_empty() {
+                    let msg = ThreadMessage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        role: "assistant".to_string(),
+                        content: text,
+                        timestamp: now_secs(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    };
+                    self.thread_store.add_message(thread_id, msg).await?;
+                }
+            }
+        }
+
         info!("Turn {turn_id} completed for thread {thread_id}");
 
         let git_status_after = git_status_snapshot(&effective_cwd).await;
@@ -849,7 +909,11 @@ impl AgentEngine {
                 Never end silently after tool execution.\n\
              \n\
              All file paths in tool calls should be relative to the working directory unless \
-             the user specifies an absolute path.{skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}"
+             the user specifies an absolute path.\n\
+             \n\
+             WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
+             use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \
+             directories. Alternatively, set the 'workdir' parameter in the shell tool call.{skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}"
         )
     }
 

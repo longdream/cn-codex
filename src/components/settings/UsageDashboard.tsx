@@ -51,14 +51,16 @@ export function UsageDashboard() {
   }, [loadData]);
 
   /** 格式化数字 */
-  const formatNumber = (n: number) => {
+  const formatNumber = (n: number | undefined | null) => {
+    if (n == null) return "0";
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
     return n.toString();
   };
 
   /** 格式化费用 */
-  const formatCost = (cost: number) => {
+  const formatCost = (cost: number | undefined | null) => {
+    if (cost == null) return "$0.00";
     if (cost < 0.01) return `$${cost.toFixed(4)}`;
     return `$${cost.toFixed(2)}`;
   };
