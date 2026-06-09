@@ -49,7 +49,9 @@ struct StreamChunk {
 /// usage 字段（部分供应商在最后一个 chunk 中返回）
 #[derive(Debug, Deserialize)]
 struct ChunkUsage {
+    #[serde(alias = "input_tokens")]
     prompt_tokens: Option<u64>,
+    #[serde(alias = "output_tokens")]
     completion_tokens: Option<u64>,
     total_tokens: Option<u64>,
 }

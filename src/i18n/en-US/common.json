@@ -23,6 +23,7 @@
   "chat.thinking": "Thinking...",
   "chat.copy": "Copy",
   "chat.copied": "Copied",
+  "chat.copyAll": "Copy All",
   "chat.threadUntitled": "New Chat",
   "chat.emptyTitle": "Project-local coding workspace with a sharper operator view.",
   "chat.emptyDescription": "Threads, providers, and skills now stay inside the project's codey directory, so the desktop app behaves like a real workspace instead of a loose shell.",

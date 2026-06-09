@@ -23,6 +23,7 @@
   "chat.thinking": "思考中...",
   "chat.copy": "复制",
   "chat.copied": "已复制",
+  "chat.copyAll": "复制全部",
   "chat.threadUntitled": "新对话",
   "chat.emptyTitle": "一个更像专业工作台的项目级编程空间。",
   "chat.emptyDescription": "线程、提供商和技能现在都固定保存在项目自己的 codey 目录里，桌面端会像真正的本地工作区一样稳定工作。",

@@ -234,28 +234,6 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
       </div>
 
       <div className="mt-5 grid gap-3">
-        {usage && (
-          <div className={`chat-work-card grid gap-3 px-4 py-3 ${goalBudgetTokens ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}>
-            <TokenUsageMetric
-              label={intl.formatMessage({ id: "chat.runSummary.tokens" })}
-              value={usage.totalTokens}
-            />
-            {goalBudgetTokens && (
-              <TokenUsageMetric
-                label={intl.formatMessage({ id: "chat.runSummary.tokenBudget" })}
-                value={goalBudgetTokens}
-              />
-            )}
-            <TokenUsageMetric
-              label={intl.formatMessage({ id: "chat.runSummary.promptTokens" })}
-              value={usage.promptTokens}
-            />
-            <TokenUsageMetric
-              label={intl.formatMessage({ id: "chat.runSummary.completionTokens" })}
-              value={usage.completionTokens}
-            />
-          </div>
-        )}
         {changedFiles.length > 0 ? (
           changedFiles.map((file) => (
             <div key={`${file.action}:${file.path}`} className="chat-work-card flex items-center gap-4 px-4 py-3">
@@ -291,18 +269,6 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
   );
 }
 
-function TokenUsageMetric({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[11px] font-medium uppercase text-[var(--chat-faint)]">
-        {label}
-      </div>
-      <div className="mt-1 font-mono text-sm font-semibold text-[var(--chat-prose)]">
-        {formatTokenCount(value)}
-      </div>
-    </div>
-  );
-}
 
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;

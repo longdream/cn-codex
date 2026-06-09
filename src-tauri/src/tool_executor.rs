@@ -6633,8 +6633,122 @@ impl ToolExecutor {
         };
 
         let output = format_duckduckgo_results(query, parsed, max_results);
+
+        if output.starts_with("No web search results found") {
+            info!("DDG API returned no results, falling back to browser search");
+            let fallback = self
+                .fallback_browser_search(query, max_results, call_id, app_handle, thread_id)
+                .await;
+            self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &fallback);
+            return Ok(fallback);
+        }
+
         self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &output);
         Ok(output)
+    }
+
+    async fn fallback_browser_search(
+        &self,
+        query: &str,
+        max_results: usize,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> String {
+        let extract_script = r#"
+            (() => {
+                const results = [];
+                // 百度搜索结果
+                document.querySelectorAll('.result.c-container, .c-container').forEach(el => {
+                    const a = el.querySelector('h3 a, .t a');
+                    const snippet = el.querySelector('.c-abstract, .content-right_8Zs40');
+                    if (a) {
+                        results.push({
+                            title: a.innerText.trim(),
+                            url: a.href || '',
+                            snippet: snippet ? snippet.innerText.trim() : ''
+                        });
+                    }
+                });
+                // DuckDuckGo 搜索结果 (备选)
+                if (results.length === 0) {
+                    document.querySelectorAll('.result, .nrn-react-div').forEach(el => {
+                        const a = el.querySelector('.result__a, a.result-link');
+                        const snippet = el.querySelector('.result__snippet, .result__body');
+                        if (a) {
+                            results.push({
+                                title: a.innerText.trim(),
+                                url: a.href || '',
+                                snippet: snippet ? snippet.innerText.trim() : ''
+                            });
+                        }
+                    });
+                }
+                return JSON.stringify(results);
+            })()
+        "#;
+
+        let baidu_url = format!(
+            "https://www.baidu.com/s?wd={}",
+            encode_query_component(query)
+        );
+        let browser_args = serde_json::json!({
+            "url": baidu_url,
+            "waitUntil": "networkidle",
+            "actions": [
+                { "type": "wait", "ms": 2000 },
+                { "type": "eval", "script": extract_script }
+            ]
+        });
+
+        let browser_output = self
+            .exec_browser_run(
+                &browser_args.to_string(),
+                call_id,
+                app_handle,
+                thread_id,
+            )
+            .await;
+
+        if let Ok(ref raw) = browser_output {
+            if let Some(results) = parse_browser_search_results(raw, max_results) {
+                if !results.is_empty() {
+                    return format_browser_search_results(query, &results);
+                }
+            }
+        }
+
+        let ddg_url = format!(
+            "https://duckduckgo.com/?q={}",
+            encode_query_component(query)
+        );
+        let browser_args_ddg = serde_json::json!({
+            "url": ddg_url,
+            "waitUntil": "networkidle",
+            "actions": [
+                { "type": "wait", "ms": 3000 },
+                { "type": "eval", "script": extract_script }
+            ]
+        });
+
+        let ddg_output = self
+            .exec_browser_run(
+                &browser_args_ddg.to_string(),
+                call_id,
+                app_handle,
+                thread_id,
+            )
+            .await;
+
+        if let Ok(ref raw) = ddg_output {
+            if let Some(results) = parse_browser_search_results(raw, max_results) {
+                if !results.is_empty() {
+                    return format_browser_search_results(query, &results);
+                }
+            }
+        }
+
+        format!("No web search results found for: {query} (tried API, Baidu, and DuckDuckGo browser search)")
     }
 
     async fn exec_web_fetch(
@@ -11672,6 +11786,82 @@ fn split_search_text(text: &str) -> (String, String) {
     } else {
         (text.trim().to_string(), String::new())
     }
+}
+
+fn parse_browser_search_results(
+    browser_output: &str,
+    max_results: usize,
+) -> Option<Vec<WebSearchResult>> {
+    let parsed: serde_json::Value = serde_json::from_str(browser_output).ok()?;
+    let actions = parsed.get("actions").and_then(|v| v.as_array())?;
+
+    for action in actions {
+        if action.get("type").and_then(|v| v.as_str()) != Some("eval") {
+            continue;
+        }
+        let value_str = action
+            .get("value")
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                action
+                    .get("value")
+                    .and_then(|v| serde_json::to_string(v).ok())
+                    .as_deref()
+                    .map(|_| "")
+            })?;
+
+        let items: Vec<serde_json::Value> = serde_json::from_str(value_str).ok()?;
+        let mut results = Vec::new();
+        for item in items.into_iter().take(max_results) {
+            let title = item
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let url = item
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let snippet = item
+                .get("snippet")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !title.is_empty() {
+                results.push(WebSearchResult {
+                    title,
+                    url,
+                    snippet,
+                });
+            }
+        }
+        if !results.is_empty() {
+            return Some(results);
+        }
+    }
+    None
+}
+
+fn format_browser_search_results(query: &str, results: &[WebSearchResult]) -> String {
+    let mut output = format!("Web search results for \"{query}\" (via browser):\n");
+    for (idx, result) in results.iter().enumerate() {
+        output.push_str(&format!("\n{}. {}", idx + 1, result.title));
+        if !result.url.is_empty() {
+            output.push_str(&format!("\n   URL: {}", result.url));
+        }
+        if !result.snippet.is_empty() {
+            output.push_str(&format!(
+                "\n   Snippet: {}",
+                truncate_output(&condense_whitespace(&result.snippet), 600)
+            ));
+        }
+        output.push('\n');
+    }
+    output
 }
 
 fn extract_html_title(html: &str) -> Option<String> {
