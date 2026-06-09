@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::adapter::{
     self,
@@ -177,7 +177,7 @@ impl AgentEngine {
             .await
             .set_mcp_servers(mcp_servers);
 
-        let max_iterations = 10;
+        let max_iterations = 25;
         let mut stop_hooks_satisfied = false;
         let mut stop_hooks_ran_for_last_stop = false;
         let mut stop_hook_continuations = 0usize;
@@ -685,25 +685,45 @@ impl AgentEngine {
                     None,
                 )
                 .await;
-            if let Ok(CompletionResult::Message { text, usage }) = summary_result {
-                if let Some(u) = usage {
-                    add_turn_usage(&mut turn_usage, &u);
-                    if let Some(ref recorder) = self.usage_recorder {
-                        recorder.record(&provider_id, &model, thread_id, &u);
+            let summary_text = match summary_result {
+                Ok(CompletionResult::Message { text, usage }) => {
+                    if let Some(u) = usage {
+                        add_turn_usage(&mut turn_usage, &u);
+                        if let Some(ref recorder) = self.usage_recorder {
+                            recorder.record(&provider_id, &model, thread_id, &u);
+                        }
                     }
+                    text
                 }
-                if !text.is_empty() {
-                    let msg = ThreadMessage {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        role: "assistant".to_string(),
-                        content: text,
-                        timestamp: now_secs(),
-                        tool_call_id: None,
-                        tool_name: None,
-                        tool_calls: None,
-                    };
-                    self.thread_store.add_message(thread_id, msg).await?;
+                Ok(CompletionResult::ToolCalls {
+                    preceding_text,
+                    usage,
+                    ..
+                }) => {
+                    if let Some(u) = usage {
+                        add_turn_usage(&mut turn_usage, &u);
+                        if let Some(ref recorder) = self.usage_recorder {
+                            recorder.record(&provider_id, &model, thread_id, &u);
+                        }
+                    }
+                    preceding_text
                 }
+                Err(e) => {
+                    warn!("Final summary LLM call failed: {e}");
+                    String::new()
+                }
+            };
+            if !summary_text.is_empty() {
+                let msg = ThreadMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    role: "assistant".to_string(),
+                    content: summary_text,
+                    timestamp: now_secs(),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                };
+                self.thread_store.add_message(thread_id, msg).await?;
             }
         }
 

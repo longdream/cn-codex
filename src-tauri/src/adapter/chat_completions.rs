@@ -2,11 +2,11 @@
 //! 这是大多数供应商的默认格式：DeepSeek、国产模型、各种中转站等
 
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
 
-use super::types::{InternalMessage, StreamEvent, UsageInfo};
 use super::ProviderAdapter;
+use super::types::{InternalMessage, StreamEvent, UsageInfo};
 
 pub struct ChatCompletionsAdapter;
 
@@ -91,6 +91,7 @@ impl ProviderAdapter for ChatCompletionsAdapter {
             "model": model,
             "messages": messages,
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
         if let Some(tools) = tools {
             if !tools.is_empty() {
