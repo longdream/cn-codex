@@ -102,6 +102,7 @@ pub fn run() {
             standalone::standalone_thread_goal_edit,
             standalone::standalone_thread_goal_clear,
             standalone::standalone_chat,
+            standalone::standalone_turn_interrupt,
             // Usage tracking
             commands::usage_get_stats,
             commands::usage_get_daily,

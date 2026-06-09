@@ -3,6 +3,7 @@ import { useIntl } from "react-intl";
 import { IconFolder, IconSparkles, IconCopy, IconCheck } from "@tabler/icons-react";
 import {
   standaloneChat,
+  standaloneTurnInterrupt,
   standaloneThreadGoalClear,
   standaloneThreadGoalEdit,
   standaloneThreadGoalStatus,
@@ -94,7 +95,20 @@ export function ChatPage() {
   );
 
   const handleInterrupt = useCallback(async () => {
-    useAppStore.getState().setStreaming(false);
+    const store = useAppStore.getState();
+    const partialText = store.streamingText;
+    if (partialText) {
+      store.addMessage({
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: partialText + "\n\n_(interrupted)_",
+        timestamp: Date.now(),
+      });
+      store.clearStreamingText();
+    }
+    store.setStreaming(false);
+    store.setCurrentTurnId(null);
+    standaloneTurnInterrupt().catch(() => {});
   }, []);
 
   const addSystemMessage = useCallback((content: string) => {

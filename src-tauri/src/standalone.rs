@@ -2,8 +2,10 @@ use tauri::{AppHandle, State};
 use tokio::sync::RwLock;
 use tracing::info;
 
+use crate::agent::UserAttachment;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
+use crate::thread_store::ThreadGoalStatus;
 
 pub struct StandaloneState {
     pub active: RwLock<bool>,
@@ -26,9 +28,7 @@ pub async fn standalone_init(state: State<'_, AppState>) -> AppResult<String> {
 }
 
 #[tauri::command]
-pub async fn standalone_config_read(
-    state: State<'_, AppState>,
-) -> AppResult<serde_json::Value> {
+pub async fn standalone_config_read(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
     let config = state.config_manager.read()?;
     Ok(serde_json::json!({
         "config": config.to_json(),
@@ -59,14 +59,13 @@ pub async fn standalone_config_write(
 }
 
 #[tauri::command]
-pub async fn standalone_thread_create(
-    state: State<'_, AppState>,
-) -> AppResult<serde_json::Value> {
+pub async fn standalone_thread_create(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
     let config = state.config_manager.read()?;
     let thread = state
         .thread_store
         .create_thread(config.model.clone())
         .await?;
+    *state.current_thread_id.write().await = Some(thread.id.clone());
 
     Ok(serde_json::json!({
         "thread": {
@@ -76,9 +75,7 @@ pub async fn standalone_thread_create(
 }
 
 #[tauri::command]
-pub async fn standalone_thread_list(
-    state: State<'_, AppState>,
-) -> AppResult<serde_json::Value> {
+pub async fn standalone_thread_list(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
     let threads = state.thread_store.list_threads().await;
     let list: Vec<serde_json::Value> = threads
         .iter()
@@ -106,6 +103,7 @@ pub async fn standalone_thread_read(
         .get_thread(&thread_id)
         .await
         .ok_or_else(|| AppError::Custom(format!("Thread not found: {thread_id}")))?;
+    *state.current_thread_id.write().await = Some(thread_id.clone());
 
     let turns: Vec<serde_json::Value> = thread
         .turns
@@ -114,45 +112,43 @@ pub async fn standalone_thread_read(
             let items: Vec<serde_json::Value> = turn
                 .messages
                 .iter()
-                .filter_map(|m| {
-                    match m.role.as_str() {
-                        "user" => Some(serde_json::json!({
-                            "type": "userMessage",
+                .filter_map(|m| match m.role.as_str() {
+                    "user" => Some(serde_json::json!({
+                        "type": "userMessage",
+                        "id": m.id,
+                        "text": m.content,
+                        "content": [{ "type": "text", "text": m.content }],
+                    })),
+                    "assistant" if m.tool_calls.is_some() => {
+                        let tcs = m.tool_calls.as_ref().unwrap();
+                        Some(serde_json::json!({
+                            "type": "toolUse",
                             "id": m.id,
-                            "text": m.content,
-                            "content": [{ "type": "text", "text": m.content }],
-                        })),
-                        "assistant" if m.tool_calls.is_some() => {
-                            let tcs = m.tool_calls.as_ref().unwrap();
-                            Some(serde_json::json!({
-                                "type": "toolUse",
-                                "id": m.id,
-                                "calls": tcs.iter().map(|tc| serde_json::json!({
-                                    "id": tc.id,
-                                    "name": tc.name,
-                                    "arguments": tc.arguments,
-                                })).collect::<Vec<_>>(),
-                            }))
-                        }
-                        "assistant" => Some(serde_json::json!({
-                            "type": "agentMessage",
-                            "id": m.id,
-                            "text": m.content,
-                            "content": [{ "type": "text", "text": m.content }],
-                        })),
-                        "tool" => Some(serde_json::json!({
-                            "type": "toolResult",
-                            "id": m.id,
-                            "text": m.content,
-                            "toolName": m.tool_name,
-                            "toolCallId": m.tool_call_id,
-                        })),
-                        _ => Some(serde_json::json!({
-                            "type": "systemMessage",
-                            "id": m.id,
-                            "text": m.content,
-                        })),
+                            "calls": tcs.iter().map(|tc| serde_json::json!({
+                                "id": tc.id,
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                            })).collect::<Vec<_>>(),
+                        }))
                     }
+                    "assistant" => Some(serde_json::json!({
+                        "type": "agentMessage",
+                        "id": m.id,
+                        "text": m.content,
+                        "content": [{ "type": "text", "text": m.content }],
+                    })),
+                    "tool" => Some(serde_json::json!({
+                        "type": "toolResult",
+                        "id": m.id,
+                        "text": m.content,
+                        "toolName": m.tool_name,
+                        "toolCallId": m.tool_call_id,
+                    })),
+                    _ => Some(serde_json::json!({
+                        "type": "systemMessage",
+                        "id": m.id,
+                        "text": m.content,
+                    })),
                 })
                 .collect();
 
@@ -161,6 +157,12 @@ pub async fn standalone_thread_read(
                 "items": items,
                 "startedAt": turn.started_at,
                 "completedAt": turn.completed_at,
+                "mode": turn.mode.clone(),
+                "durationMs": turn.duration_ms,
+                "changedFiles": turn.changed_files.clone(),
+                "usage": turn.usage.clone(),
+                "goalBudgetTokens": turn.goal_budget_tokens,
+                "budgetLimited": turn.budget_limited,
             })
         })
         .collect();
@@ -169,9 +171,67 @@ pub async fn standalone_thread_read(
         "thread": {
             "id": thread.id,
             "name": thread.name,
+            "goal": thread.goal,
             "turns": turns,
         }
     }))
+}
+
+#[tauri::command]
+pub async fn standalone_thread_goal_set(
+    state: State<'_, AppState>,
+    thread_id: String,
+    objective: String,
+    status: Option<String>,
+    goal_budget_tokens: Option<u64>,
+) -> AppResult<serde_json::Value> {
+    let status = parse_goal_status(status.as_deref())?.unwrap_or(ThreadGoalStatus::Active);
+    let goal = state
+        .thread_store
+        .set_thread_goal(&thread_id, objective, status, goal_budget_tokens)
+        .await?;
+
+    Ok(serde_json::json!({ "goal": goal }))
+}
+
+#[tauri::command]
+pub async fn standalone_thread_goal_status(
+    state: State<'_, AppState>,
+    thread_id: String,
+    status: String,
+) -> AppResult<serde_json::Value> {
+    let status = parse_goal_status(Some(status.as_str()))?
+        .ok_or_else(|| AppError::Custom("Goal status is required".to_string()))?;
+    let goal = state
+        .thread_store
+        .set_thread_goal_status(&thread_id, status)
+        .await?;
+
+    Ok(serde_json::json!({ "goal": goal }))
+}
+
+#[tauri::command]
+pub async fn standalone_thread_goal_edit(
+    state: State<'_, AppState>,
+    thread_id: String,
+    objective: String,
+    goal_budget_tokens: Option<u64>,
+) -> AppResult<serde_json::Value> {
+    let goal = state
+        .thread_store
+        .edit_thread_goal(&thread_id, objective, goal_budget_tokens)
+        .await?;
+
+    Ok(serde_json::json!({ "goal": goal }))
+}
+
+#[tauri::command]
+pub async fn standalone_thread_goal_clear(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> AppResult<serde_json::Value> {
+    state.thread_store.clear_thread_goal(&thread_id).await?;
+    Ok(serde_json::json!({ "goal": serde_json::Value::Null }))
 }
 
 #[tauri::command]
@@ -180,10 +240,15 @@ pub async fn standalone_chat(
     state: State<'_, AppState>,
     thread_id: String,
     message: String,
+    attachments: Option<Vec<UserAttachment>>,
     cwd: Option<String>,
+    mode: Option<String>,
+    goal_budget_tokens: Option<u64>,
 ) -> AppResult<serde_json::Value> {
     let config = state.config_manager.read()?;
     let override_cwd = cwd.map(std::path::PathBuf::from);
+    let mode = mode.as_deref();
+    *state.current_thread_id.write().await = Some(thread_id.clone());
 
     state
         .agent_engine
@@ -192,9 +257,43 @@ pub async fn standalone_chat(
             &config,
             &thread_id,
             &message,
+            attachments.unwrap_or_default(),
             override_cwd.as_deref(),
+            mode,
+            goal_budget_tokens,
         )
         .await?;
 
     Ok(serde_json::json!({ "status": "ok" }))
+}
+
+#[tauri::command]
+pub async fn standalone_turn_interrupt(
+    state: State<'_, AppState>,
+) -> AppResult<serde_json::Value> {
+    info!("Turn interrupt requested by user");
+    state.agent_engine.interrupt();
+    Ok(serde_json::json!({ "status": "interrupted" }))
+}
+
+fn parse_goal_status(value: Option<&str>) -> AppResult<Option<ThreadGoalStatus>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+
+    let status = match value.to_ascii_lowercase().as_str() {
+        "active" => ThreadGoalStatus::Active,
+        "paused" | "pause" => ThreadGoalStatus::Paused,
+        "blocked" => ThreadGoalStatus::Blocked,
+        "usage_limited" | "usage-limited" | "usagelimited" => ThreadGoalStatus::UsageLimited,
+        "budget_limited" | "budget-limited" | "budgetlimited" => ThreadGoalStatus::BudgetLimited,
+        "complete" | "completed" => ThreadGoalStatus::Complete,
+        other => {
+            return Err(AppError::Custom(format!(
+                "Unsupported goal status '{other}'"
+            )));
+        }
+    };
+
+    Ok(Some(status))
 }

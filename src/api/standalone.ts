@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AttachedFile } from "../types/provider";
 
 export interface ServerStatus {
   initialized: boolean;
@@ -52,6 +53,7 @@ export async function standaloneThreadRead(threadId: string): Promise<{
   thread: {
     id: string;
     name?: string;
+    goal?: ThreadGoal | null;
     turns?: Array<{
       id: string;
       items?: Array<{
@@ -62,16 +64,99 @@ export async function standaloneThreadRead(threadId: string): Promise<{
       }>;
       startedAt?: number;
       completedAt?: number;
+      mode?: "chat" | "goal";
+      durationMs?: number;
+      changedFiles?: Array<{ path: string; action: string }>;
+      usage?: {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+      };
+      goalBudgetTokens?: number;
+      budgetLimited?: boolean;
     }>;
   };
 }> {
   return invoke("standalone_thread_read", { threadId });
 }
 
+export type ThreadGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete";
+
+export interface ThreadGoal {
+  objective: string;
+  status: ThreadGoalStatus;
+  tokenBudget?: number | null;
+  tokensUsed?: number;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export async function standaloneThreadGoalSet(
+  threadId: string,
+  objective: string,
+  status?: ThreadGoalStatus,
+  goalBudgetTokens?: number,
+): Promise<{ goal: ThreadGoal }> {
+  return invoke("standalone_thread_goal_set", {
+    threadId,
+    objective,
+    status,
+    goalBudgetTokens,
+  });
+}
+
+export async function standaloneThreadGoalStatus(
+  threadId: string,
+  status: ThreadGoalStatus,
+): Promise<{ goal: ThreadGoal }> {
+  return invoke("standalone_thread_goal_status", {
+    threadId,
+    status,
+  });
+}
+
+export async function standaloneThreadGoalEdit(
+  threadId: string,
+  objective: string,
+  goalBudgetTokens?: number,
+): Promise<{ goal: ThreadGoal }> {
+  return invoke("standalone_thread_goal_edit", {
+    threadId,
+    objective,
+    goalBudgetTokens,
+  });
+}
+
+export async function standaloneThreadGoalClear(
+  threadId: string,
+): Promise<{ goal: null }> {
+  return invoke("standalone_thread_goal_clear", { threadId });
+}
+
 export async function standaloneChat(
   threadId: string,
   message: string,
   cwd?: string,
+  mode?: "chat" | "goal",
+  attachments?: AttachedFile[],
+  goalBudgetTokens?: number,
 ): Promise<{ status: string }> {
-  return invoke("standalone_chat", { threadId, message, cwd });
+  return invoke("standalone_chat", {
+    threadId,
+    message,
+    cwd,
+    mode,
+    attachments,
+    goalBudgetTokens,
+  });
+}
+
+export async function standaloneTurnInterrupt(): Promise<{ status: string }> {
+  return invoke("standalone_turn_interrupt");
 }

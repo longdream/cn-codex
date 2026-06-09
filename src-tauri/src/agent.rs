@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use futures_util::StreamExt;
@@ -54,8 +55,8 @@ pub struct AgentEngine {
     thread_store: Arc<ThreadStore>,
     tool_executor: Arc<RwLock<ToolExecutor>>,
     cwd: PathBuf,
-    /// 用量记录器（每次 LLM 调用后自动记录）
     usage_recorder: Option<Arc<UsageRecorder>>,
+    cancel_flag: Arc<AtomicBool>,
 }
 
 impl AgentEngine {
@@ -75,12 +76,22 @@ impl AgentEngine {
             tool_executor: Arc::new(RwLock::new(tool_executor)),
             cwd,
             usage_recorder: None,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// 设置用量记录器
     pub fn set_usage_recorder(&mut self, recorder: Arc<UsageRecorder>) {
         self.usage_recorder = Some(recorder);
+    }
+
+    /// 中断当前正在运行的 turn
+    pub fn interrupt(&self) {
+        self.cancel_flag.store(true, Ordering::SeqCst);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel_flag.load(Ordering::SeqCst)
     }
 
     pub async fn run_turn(
@@ -94,6 +105,8 @@ impl AgentEngine {
         mode: Option<&str>,
         goal_budget_tokens: Option<u64>,
     ) -> AppResult<()> {
+        self.cancel_flag.store(false, Ordering::SeqCst);
+
         let turn_mode = match mode {
             Some("goal") => "goal",
             _ => "chat",
@@ -251,6 +264,10 @@ impl AgentEngine {
 
         if !prompt_hook_blocked {
             for iteration in 0..max_iterations {
+                if self.is_cancelled() {
+                    info!("Turn {turn_id} cancelled by user at iteration {iteration}");
+                    break;
+                }
                 info!("Agent loop iteration {iteration} for turn {turn_id}");
 
                 let history = self.thread_store.get_thread_messages(thread_id).await;
@@ -1184,6 +1201,11 @@ impl AgentEngine {
         let mut buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
+            if self.is_cancelled() {
+                info!("SSE stream cancelled by user");
+                finish_reason = Some("interrupted".to_string());
+                break;
+            }
             let chunk = chunk.map_err(|e| AppError::Custom(format!("Stream read error: {e}")))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
