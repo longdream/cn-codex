@@ -58,11 +58,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const activeTab = tabs.find((item) => item.id === tab) ?? tabs[0];
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+    <div className="fixed bottom-0 left-0 right-0 top-8 z-40 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
       <div className="app-shell-panel flex max-h-[88vh] min-h-[70vh] w-full max-w-5xl overflow-hidden">
         <aside className="w-full max-w-[220px] shrink-0 border-r border-[var(--border-subtle)] bg-[var(--surface-soft)]/65 p-4">
           <div className="mb-5 space-y-0.5">
-            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--text-faint)]">
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--text-faint)]">
               CN-Codex
             </p>
             <h2 className="text-lg font-semibold tracking-tight text-[var(--text-strong)]">

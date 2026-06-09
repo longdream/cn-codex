@@ -1,4 +1,5 @@
 import {
+  IconBrowser,
   IconChevronDown,
   IconChevronRight,
   IconFolder,
@@ -12,6 +13,7 @@ import {
 import { useCallback, useMemo, useState } from "react";
 import { useIntl } from "react-intl";
 import { open } from "@tauri-apps/plugin-dialog";
+import { windowOpenBrowser } from "../../api/window";
 import { useAppStore, type Project } from "../../stores/appStore";
 
 function formatThreadTime(timestamp: number, locale: string): string {
@@ -41,6 +43,9 @@ export function Sidebar() {
   const loadThread = useAppStore((s) => s.loadThread);
   const [creating, setCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [browserUrl, setBrowserUrl] = useState("");
+  const [openingBrowser, setOpeningBrowser] = useState(false);
+  const [browserError, setBrowserError] = useState<string | null>(null);
 
   const handleAddProject = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false });
@@ -58,6 +63,19 @@ export function Sidebar() {
       setCreating(false);
     }
   }, [creating, currentProjectId, createThread]);
+
+  const handleOpenBrowser = useCallback(async () => {
+    if (openingBrowser) return;
+    setOpeningBrowser(true);
+    setBrowserError(null);
+    try {
+      await windowOpenBrowser(browserUrl);
+    } catch (err) {
+      setBrowserError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOpeningBrowser(false);
+    }
+  }, [browserUrl, openingBrowser]);
 
   const projectThreads = useMemo(() => {
     const map = new Map<string, typeof threads>();
@@ -124,7 +142,7 @@ export function Sidebar() {
         {initError && retryInit && (
           <button
             onClick={retryInit}
-            className="flex items-center gap-1.5 text-[10px] text-[var(--danger)] hover:underline"
+            className="flex items-center gap-1.5 text-[11px] text-[var(--danger)] hover:underline"
           >
             <IconRefresh size={10} stroke={2} />
             {intl.formatMessage({ id: "status.retry" })}
@@ -145,7 +163,7 @@ export function Sidebar() {
             placeholder={intl.formatMessage({ id: "sidebar.search" })}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] py-1 pl-7 pr-2 text-xs text-[var(--text-base)] placeholder:text-[var(--text-faint)] outline-none focus:border-[var(--accent-border)]"
+            className="w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] py-1.5 pl-7 pr-2 text-[13px] text-[var(--text-base)] placeholder:text-[var(--text-faint)] outline-none focus:border-[var(--accent-border)]"
           />
         </div>
       </div>
@@ -187,6 +205,38 @@ export function Sidebar() {
 
       {/* Bottom */}
       <div className="border-t border-[var(--border-subtle)] p-2 space-y-0.5">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleOpenBrowser();
+          }}
+          className="mb-1 space-y-1"
+        >
+          <div className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+            <IconBrowser size={14} stroke={1.8} className="flex-shrink-0 text-[var(--text-faint)]" />
+            <input
+              type="text"
+              value={browserUrl}
+              onChange={(e) => setBrowserUrl(e.target.value)}
+              placeholder={intl.formatMessage({ id: "browser.addressPlaceholder" })}
+              className="min-w-0 flex-1 bg-transparent text-xs text-[var(--text-base)] placeholder:text-[var(--text-faint)] outline-none"
+              aria-label={intl.formatMessage({ id: "browser.addressPlaceholder" })}
+            />
+            <button
+              type="submit"
+              disabled={openingBrowser}
+              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-40"
+              title={intl.formatMessage({ id: "browser.openTitle" })}
+            >
+              <IconChevronRight size={13} stroke={2} />
+            </button>
+          </div>
+          {browserError && (
+            <p className="truncate px-1 text-[11px] text-[var(--danger)]" title={browserError}>
+              {intl.formatMessage({ id: "browser.openFailed" })}: {browserError}
+            </p>
+          )}
+        </form>
         <button
           onClick={handleAddProject}
           className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"

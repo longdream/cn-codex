@@ -1,14 +1,17 @@
-pub mod error;
-pub mod state;
+pub mod adapter;
+pub mod agent;
 pub mod commands;
+pub mod config_system;
+pub mod error;
+pub mod hook_runtime;
 pub mod llm_tiers;
+pub mod obscura;
+pub mod plugin_loader;
 pub mod protocol;
 pub mod standalone;
-pub mod config_system;
+pub mod state;
 pub mod thread_store;
-pub mod agent;
 pub mod tool_executor;
-pub mod adapter;
 pub mod usage;
 
 use state::AppState;
@@ -59,6 +62,7 @@ pub fn run() {
             commands::config_read,
             commands::config_value_write,
             commands::config_batch_write,
+            commands::hook_list,
             // Account
             commands::account_read,
             commands::account_login,
@@ -80,6 +84,12 @@ pub fn run() {
             // Skills
             commands::skill_list,
             commands::skill_read,
+            // Plugins
+            commands::plugin_list,
+            commands::plugin_read,
+            commands::plugin_set_enabled,
+            commands::plugin_uninstall,
+            commands::plugin_import_codex_cache,
             // Standalone mode
             standalone::standalone_init,
             standalone::standalone_config_read,
@@ -87,6 +97,10 @@ pub fn run() {
             standalone::standalone_thread_create,
             standalone::standalone_thread_list,
             standalone::standalone_thread_read,
+            standalone::standalone_thread_goal_set,
+            standalone::standalone_thread_goal_status,
+            standalone::standalone_thread_goal_edit,
+            standalone::standalone_thread_goal_clear,
             standalone::standalone_chat,
             // Usage tracking
             commands::usage_get_stats,
@@ -95,6 +109,12 @@ pub fn run() {
             commands::usage_get_recent,
             commands::usage_set_pricing,
             commands::usage_get_pricing,
+            // Window controls
+            commands::window_start_dragging,
+            commands::window_minimize,
+            commands::window_toggle_maximize,
+            commands::window_close,
+            commands::window_open_browser,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CN-Codex");

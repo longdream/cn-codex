@@ -4,14 +4,16 @@ import {
   IconCpu,
   IconFile,
   IconFolder,
+  IconMessage2,
   IconPaperclip,
   IconPlugConnected,
   IconSquare,
+  IconTargetArrow,
   IconX,
 } from "@tabler/icons-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
-import { useAppStore } from "../../stores/appStore";
+import { useAppStore, type ChatMode, type ChatSendOptions } from "../../stores/appStore";
 import { SlashCommandPanel, getDefaultSlashCommands } from "./SlashCommandPanel";
 import type { AttachedFile } from "../../types/provider";
 
@@ -21,13 +23,27 @@ const IMAGE_ACCEPT = "image/*";
 const ALL_ACCEPT = `${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`;
 
 interface ChatInputProps {
-  onSend: (text: string) => void;
+  onSend: (
+    text: string,
+    mode: ChatMode,
+    attachments: AttachedFile[],
+    options?: ChatSendOptions,
+  ) => void;
   onInterrupt?: () => void;
   isStreaming: boolean;
   disabled: boolean;
+  mode: ChatMode;
+  onGoalCommand?: (command: ParsedGoalCommand) => void;
 }
 
-export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  onInterrupt,
+  isStreaming,
+  disabled,
+  mode,
+  onGoalCommand,
+}: ChatInputProps) {
   const intl = useIntl();
   const [text, setText] = useState("");
   const [showSlash, setShowSlash] = useState(false);
@@ -39,6 +55,7 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
   const initialized = useAppStore((s) => s.initialized);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const attachedFiles = useAppStore((s) => s.attachedFiles);
+  const currentGoal = useAppStore((s) => s.currentGoal);
 
   // 供应商相关
   const providers = useAppStore((s) => s.providers);
@@ -63,6 +80,11 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
     ?? activeProvider?.name
     ?? defaultProvider;
 
+  const setMode = useCallback((nextMode: ChatMode) => {
+    useAppStore.getState().setChatMode(nextMode);
+    textareaRef.current?.focus();
+  }, []);
+
   const slashCommands = useMemo(() => {
     const defaults = getDefaultSlashCommands();
     defaults.find((command) => command.name === "clear")!.action = () => {
@@ -77,16 +99,69 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
 
   const handleSubmit = useCallback(() => {
     const trimmed = text.trim();
-    if (!trimmed || disabled) return;
+    if ((!trimmed && attachedFiles.length === 0) || disabled) return;
+    const filesToSend = attachedFiles;
 
-    onSend(trimmed);
+    const goalCommand = parseGoalCommand(trimmed);
+    if (goalCommand) {
+      useAppStore.getState().setChatMode("goal");
+      if (goalCommand.action === "show") {
+        onGoalCommand?.(goalCommand);
+        setText("");
+        setShowSlash(false);
+        textareaRef.current?.focus();
+        return;
+      }
+      if (goalCommand.action === "edit" && !goalCommand.objective) {
+        const editCommand = buildGoalEditCommand(currentGoal);
+        if (editCommand) {
+          setText(editCommand);
+          setShowSlash(false);
+          requestAnimationFrame(() => {
+            const element = textareaRef.current;
+            if (!element) return;
+            element.focus();
+            element.setSelectionRange("/goal edit ".length, editCommand.length);
+            element.style.height = "auto";
+            element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+          });
+          return;
+        }
+      }
+      if (goalCommand.action !== "set") {
+        onGoalCommand?.(goalCommand);
+      } else if (goalCommand.objective) {
+        onSend(goalCommand.objective, "goal", filesToSend, {
+          goalBudgetTokens: goalCommand.goalBudgetTokens,
+        });
+      }
+      if (goalCommand.action !== "set" || !goalCommand.objective) {
+        useAppStore.getState().clearAttachedFiles();
+      }
+    } else {
+      onSend(trimmed, mode, filesToSend);
+    }
     setText("");
     setShowSlash(false);
     useAppStore.getState().clearAttachedFiles();
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [disabled, onSend, text]);
+  }, [attachedFiles, currentGoal, disabled, mode, onGoalCommand, onSend, text]);
+
+  const goalStatusLabel = useMemo(() => {
+    if (!currentGoal) {
+      return intl.formatMessage({ id: "chat.mode.goalActive" });
+    }
+
+    return intl.formatMessage({ id: `chat.goalStatus.${currentGoal.status}` });
+  }, [currentGoal, intl]);
+
+  const goalStatusClass = currentGoal?.status === "paused"
+    ? "border-[rgba(239,180,40,0.35)] bg-[rgba(239,180,40,0.12)] text-[var(--warning)]"
+    : currentGoal?.status === "budgetLimited" || currentGoal?.status === "usageLimited"
+      ? "border-[rgba(239,68,68,0.35)] bg-[var(--danger-soft)] text-[var(--danger)]"
+      : "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)]";
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
@@ -198,15 +273,17 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
   };
 
   return (
-    <div className="relative flex-shrink-0 border-t border-[var(--border-subtle)] bg-[var(--surface-main)]">
+    <div className="chat-composer-zone relative flex-shrink-0 px-4 pb-4 pt-3 sm:px-8">
       {showSlash && (
         <SlashCommandPanel
           query={text}
           commands={slashCommands}
           onSelect={(command) => {
             command.action();
-            if (command.name === "plan" || command.name === "goal" || command.name === "help") {
-              onSend(`/${command.name}`);
+            if (command.name === "goal") {
+              setMode("goal");
+            } else if (command.name === "plan" || command.name === "help" || command.name === "compact") {
+              onSend(`/${command.name}`, mode, []);
             }
             setText("");
             setShowSlash(false);
@@ -217,12 +294,12 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
 
       {/* 模型选择菜单 */}
       {showModelMenu && (
-        <div className="absolute bottom-full left-0 right-0 z-20 mx-auto max-w-3xl px-5 pb-1">
-          <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-panel)] shadow-lg">
+        <div className="absolute bottom-full left-0 right-0 z-20 mx-auto max-w-[1180px] px-4 pb-2 sm:px-8">
+          <div className="rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] shadow-lg">
             {/* 供应商模型列表 */}
             {providerModels.length > 0 && (
               <>
-                <div className="px-3 py-2 text-[10px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
+                <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
                   {activeProvider?.name} {intl.formatMessage({ id: "settings.provider.models" })}
                 </div>
                 <div className="max-h-[200px] overflow-y-auto">
@@ -252,7 +329,7 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
             {/* 兼容旧的 configuredModels */}
             {configuredModels.length > 0 && providerModels.length === 0 && (
               <>
-                <div className="px-3 py-2 text-[10px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
+                <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
                   {intl.formatMessage({ id: "chat.modelSelectorHint" })}
                 </div>
                 <div className="max-h-[200px] overflow-y-auto">
@@ -284,33 +361,72 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
       )}
 
       {visionWarning && (
-        <div className="absolute bottom-full left-0 right-0 z-10 mx-auto max-w-3xl px-5 pb-1">
+        <div className="absolute bottom-full left-0 right-0 z-10 mx-auto max-w-[1180px] px-4 pb-2 sm:px-8">
           <div className="rounded-[var(--radius-sm)] border border-[rgba(239,180,40,0.3)] bg-[rgba(239,180,40,0.1)] px-3 py-2 text-xs text-[var(--warning)]">
             {intl.formatMessage({ id: "chat.visionNotSupported" })}
           </div>
         </div>
       )}
 
-      <div className="mx-auto max-w-3xl px-5 py-2.5">
+      <div className="mx-auto max-w-[1180px]">
+        <div className="chat-composer-shell px-4 pb-3 pt-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="inline-flex rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] p-1">
+            <button
+              type="button"
+              aria-pressed={mode === "chat"}
+              onClick={() => setMode("chat")}
+              className={`flex h-7 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition-colors ${
+                mode === "chat"
+                  ? "bg-[var(--chat-card-solid)] text-[var(--chat-prose)] shadow-[var(--shadow-soft)]"
+                  : "text-[var(--chat-muted)] hover:text-[var(--chat-prose)]"
+              }`}
+            >
+              <IconMessage2 size={13} stroke={1.8} />
+              {intl.formatMessage({ id: "chat.mode.chat" })}
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === "goal"}
+              onClick={() => setMode("goal")}
+              className={`flex h-7 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition-colors ${
+                mode === "goal"
+                  ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                  : "text-[var(--chat-muted)] hover:text-[var(--chat-prose)]"
+              }`}
+            >
+              <IconTargetArrow size={13} stroke={1.8} />
+              {intl.formatMessage({ id: "chat.mode.goal" })}
+            </button>
+          </div>
+
+          {mode === "goal" && (
+            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${goalStatusClass}`}>
+              {goalStatusLabel}
+            </span>
+          )}
+        </div>
+
         {/* 附件预览区 */}
         {attachedFiles.length > 0 && (
           <div className="mb-2 flex flex-wrap items-center gap-2">
             {attachedFiles.map((file, idx) => (
-              <div key={idx} className="group relative flex items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+              <div key={idx} className="group relative flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-chip)] px-2 py-1.5">
                 {file.type.startsWith("image/") ? (
-                  <div className="h-10 w-10 overflow-hidden rounded-sm">
+                  <div className="h-10 w-10 overflow-hidden rounded-[var(--radius-sm)]">
                     <img src={file.dataUrl} alt="" className="h-full w-full object-cover" />
                   </div>
                 ) : (
-                  <IconFile size={16} stroke={1.5} className="text-[var(--text-muted)]" />
+                  <IconFile size={16} stroke={1.5} className="text-[var(--chat-muted)]" />
                 )}
-                <div className="max-w-[120px]">
-                  <p className="truncate text-[11px] text-[var(--text-strong)]">{file.name}</p>
-                  <p className="text-[10px] text-[var(--text-faint)]">{formatSize(file.size)}</p>
+                <div className="max-w-[150px]">
+                  <p className="truncate text-[11px] text-[var(--chat-prose)]">{file.name}</p>
+                  <p className="text-[11px] text-[var(--chat-faint)]">{formatSize(file.size)}</p>
                 </div>
                 <button
+                  type="button"
                   onClick={() => handleRemoveFile(idx)}
-                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--surface-elevated)] text-[var(--text-faint)] opacity-0 shadow transition-opacity group-hover:opacity-100 hover:text-[var(--danger)]"
+                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--chat-card-solid)] text-[var(--chat-faint)] opacity-0 shadow transition-opacity group-hover:opacity-100 hover:text-[var(--danger)]"
                 >
                   <IconX size={10} stroke={2} />
                 </button>
@@ -320,11 +436,12 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
         )}
 
         {/* 输入框主体 */}
-        <div className="flex items-end rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] px-3 py-1.5 focus-within:border-[var(--accent-border)] transition-colors">
+        <div className="flex min-h-[82px] items-end gap-3 rounded-[var(--radius-lg)] px-1 py-1 transition-colors">
           {/* 附件按钮 */}
           <button
+            type="button"
             onClick={handleAttachClick}
-            className="mb-0.5 mr-1.5 flex h-[28px] w-[28px] flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-muted)]"
+            className="mb-1 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border border-[var(--chat-line)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
             title={intl.formatMessage({ id: "chat.attachFile" })}
           >
             <IconPaperclip size={15} stroke={1.8} />
@@ -346,22 +463,24 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
             onInput={handleInput}
             placeholder={intl.formatMessage({ id: "chat.placeholder" })}
             disabled={disabled}
-            rows={1}
-            className="max-h-[200px] min-h-[28px] w-full flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-strong)] placeholder:text-[var(--text-faint)] outline-none disabled:opacity-50"
+            rows={2}
+            className="chat-composer-input max-h-[200px] min-h-[78px] w-full flex-1 resize-none bg-transparent py-2 text-base leading-relaxed text-[var(--chat-prose)] placeholder:text-[var(--chat-faint)] outline-none disabled:opacity-50"
           />
 
           {isStreaming ? (
             <button
+              type="button"
               onClick={onInterrupt}
-              className="mb-0.5 ml-2 flex h-[30px] w-[30px] flex-shrink-0 items-center justify-center rounded-full border border-[rgba(239,68,68,0.3)] bg-[var(--danger-soft)] text-[var(--danger)] transition-opacity hover:opacity-80"
+              className="mb-1 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border border-[rgba(239,68,68,0.3)] bg-[var(--danger-soft)] text-[var(--danger)] transition-opacity hover:opacity-80"
             >
               <IconSquare size={12} stroke={2.5} />
             </button>
           ) : (
             <button
+              type="button"
               onClick={handleSubmit}
-              disabled={disabled || !text.trim()}
-              className="mb-0.5 ml-2 flex h-[30px] w-[30px] flex-shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition-opacity hover:opacity-90 disabled:opacity-30"
+              disabled={disabled || (!text.trim() && attachedFiles.length === 0)}
+              className="mb-1 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-white transition-opacity hover:opacity-90 disabled:opacity-30"
             >
               <IconArrowUp size={14} stroke={2.5} />
             </button>
@@ -369,11 +488,11 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
         </div>
 
         {/* 底部状态栏 */}
-        <div className="mt-1.5 flex items-center justify-between px-1 text-[10px] text-[var(--text-faint)]">
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--chat-line)] px-1 pt-3 text-[11px] text-[var(--chat-muted)]">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <span className="flex items-center gap-1.5">
               <span className={`h-1.5 w-1.5 rounded-full ${initialized ? "bg-[var(--accent)]" : "bg-[var(--warning)] animate-pulse"}`} />
-              <IconPlugConnected size={10} stroke={1.8} />
+              <IconPlugConnected size={12} stroke={1.8} />
               {initialized
                 ? intl.formatMessage({ id: "status.connected" })
                 : intl.formatMessage({ id: "status.initializing" })}
@@ -381,6 +500,7 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
 
             {/* 模型选择器 */}
             <button
+              type="button"
               onClick={() => {
                 if (providerModels.length > 0 || configuredModels.length > 0) {
                   setShowModelMenu((v) => !v);
@@ -388,25 +508,110 @@ export function ChatInput({ onSend, onInterrupt, isStreaming, disabled }: ChatIn
                   useAppStore.getState().setShowSettings(true);
                 }
               }}
-              className="flex items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-muted)]"
+              className="flex min-w-0 items-center gap-1 rounded-full px-2 py-1 transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
               title={intl.formatMessage({ id: "chat.modelSelector" })}
             >
-              <IconCpu size={10} stroke={1.8} />
-              <span className="max-w-[160px] truncate">{displayModel}</span>
-              <IconChevronDown size={8} stroke={2} className="opacity-50" />
+              <IconCpu size={12} stroke={1.8} className="flex-shrink-0" />
+              <span className="max-w-[190px] truncate">{displayModel}</span>
+              <IconChevronDown size={10} stroke={2} className="flex-shrink-0 opacity-60" />
             </button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             {cwdLeaf && (
-              <span className="flex items-center gap-1" title={workspaceCwd ?? undefined}>
-                <IconFolder size={10} stroke={1.8} />
-                {cwdLeaf}
+              <span className="flex min-w-0 items-center gap-1 truncate" title={workspaceCwd ?? undefined}>
+                <IconFolder size={12} stroke={1.8} className="flex-shrink-0" />
+                <span className="truncate">{cwdLeaf}</span>
               </span>
             )}
-            <span>v0.1.0</span>
           </div>
+        </div>
         </div>
       </div>
     </div>
   );
+}
+
+export interface ParsedGoalCommand {
+  action: "set" | "show" | "pause" | "resume" | "clear" | "edit";
+  objective: string;
+  goalBudgetTokens?: number;
+}
+
+export function buildGoalEditCommand(
+  goal: { objective?: string | null } | null | undefined,
+): string | null {
+  const objective = goal?.objective?.trim();
+  return objective ? `/goal edit ${objective}` : null;
+}
+
+export function parseGoalCommand(value: string): ParsedGoalCommand | null {
+  const match = value.trim().match(/^\/goal(?:\s+([\s\S]+))?$/i);
+  if (!match) {
+    return null;
+  }
+
+  const body = match[1]?.trim() ?? "";
+  if (!body) {
+    return { action: "show", objective: "" };
+  }
+
+  const normalizedBody = body.toLowerCase();
+  if (normalizedBody === "pause" || normalizedBody === "paused") {
+    return { action: "pause", objective: "" };
+  }
+  if (normalizedBody === "resume" || normalizedBody === "active") {
+    return { action: "resume", objective: "" };
+  }
+  if (normalizedBody === "clear") {
+    return { action: "clear", objective: "" };
+  }
+
+  const editMatch = body.match(/^edit(?:\s+([\s\S]*))?$/i);
+  if (editMatch) {
+    return parseGoalObjective("edit", editMatch[1]?.trim() ?? "");
+  }
+
+  return parseGoalObjective("set", body);
+}
+
+function parseGoalObjective(
+  action: "set" | "edit",
+  body: string,
+): ParsedGoalCommand {
+  const tokenMatch = body.match(/^--tokens(?:=|\s+)(\S+)(?:\s+([\s\S]*))?$/i);
+  if (!tokenMatch) {
+    return { action, objective: body };
+  }
+
+  const goalBudgetTokens = parseGoalTokenBudget(tokenMatch[1]);
+  if (goalBudgetTokens == null) {
+    return { action, objective: body };
+  }
+
+  return {
+    action,
+    objective: tokenMatch[2]?.trim() ?? "",
+    goalBudgetTokens,
+  };
+}
+
+function parseGoalTokenBudget(value: string): number | undefined {
+  const normalized = value.replace(/[,_]/g, "").trim();
+  const match = normalized.match(/^(\d+(?:\.\d+)?)([kKmM])?$/);
+  if (!match) {
+    return undefined;
+  }
+
+  const base = Number(match[1]);
+  if (!Number.isFinite(base) || base <= 0) {
+    return undefined;
+  }
+
+  const multiplier = match[2]?.toLowerCase() === "m"
+    ? 1_000_000
+    : match[2]?.toLowerCase() === "k"
+      ? 1_000
+      : 1;
+  const tokens = Math.round(base * multiplier);
+  return tokens > 0 ? tokens : undefined;
 }

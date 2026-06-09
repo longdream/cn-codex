@@ -75,9 +75,36 @@ pub struct ConfigToml {
     #[serde(default)]
     pub sandbox: Option<String>,
     #[serde(default)]
+    pub browser_engine: Option<String>,
+    #[serde(default)]
+    pub obscura_binary: Option<String>,
+    #[serde(default)]
+    pub obscura_port: Option<u16>,
+    #[serde(default)]
     pub model_providers: HashMap<String, ModelProviderInfo>,
     #[serde(default)]
     pub mcp_servers: HashMap<String, toml::Value>,
+    #[serde(default)]
+    pub hooks: HashMap<String, toml::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub transport: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    pub cwd: Option<String>,
+    pub url: Option<String>,
+    pub headers: HashMap<String, String>,
+    pub disabled: bool,
+}
+
+impl McpServerConfig {
+    pub fn is_http_transport(&self) -> bool {
+        self.transport == "http"
+    }
 }
 
 fn builtin_providers() -> HashMap<String, ModelProviderInfo> {
@@ -216,19 +243,33 @@ fn builtin_providers() -> HashMap<String, ModelProviderInfo> {
 }
 
 const RESERVED_PROVIDER_IDS: &[&str] = &[
-    "openai", "anthropic", "google", "deepseek", "volcengine",
-    "qwen", "zhipu", "moonshot", "siliconflow", "baichuan",
-    "ollama", "lmstudio", "amazon-bedrock",
+    "openai",
+    "anthropic",
+    "google",
+    "deepseek",
+    "volcengine",
+    "qwen",
+    "zhipu",
+    "moonshot",
+    "siliconflow",
+    "baichuan",
+    "ollama",
+    "lmstudio",
+    "amazon-bedrock",
 ];
 
 impl ConfigToml {
     pub fn load(path: &Path) -> AppResult<Self> {
         if !path.exists() {
-            info!("Config file not found at {}, using defaults", path.display());
+            info!(
+                "Config file not found at {}, using defaults",
+                path.display()
+            );
             return Ok(Self::default());
         }
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| AppError::Custom(format!("Failed to read config {}: {e}", path.display())))?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            AppError::Custom(format!("Failed to read config {}: {e}", path.display()))
+        })?;
         let config: Self = toml::from_str(&content)
             .map_err(|e| AppError::Custom(format!("Failed to parse config: {e}")))?;
         Ok(config)
@@ -297,6 +338,24 @@ impl ConfigToml {
             .to_string()
     }
 
+    pub fn web_search_enabled(&self) -> bool {
+        matches!(
+            self.web_search
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("live" | "cached" | "enabled" | "true" | "on" | "1")
+        )
+    }
+
+    pub fn resolved_mcp_servers(&self) -> HashMap<String, McpServerConfig> {
+        self.mcp_servers
+            .iter()
+            .filter_map(|(name, value)| parse_mcp_server(name, value))
+            .collect()
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
@@ -304,6 +363,119 @@ impl ConfigToml {
     pub fn is_reserved_provider(id: &str) -> bool {
         RESERVED_PROVIDER_IDS.contains(&id)
     }
+}
+
+fn parse_mcp_server(name: &str, value: &toml::Value) -> Option<(String, McpServerConfig)> {
+    let table = value.as_table()?;
+    let url = table
+        .get("url")
+        .or_else(|| table.get("server_url"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(ToString::to_string);
+    let transport = normalize_mcp_transport(
+        table
+            .get("type")
+            .or_else(|| table.get("transport"))
+            .and_then(toml::Value::as_str),
+        url.as_deref(),
+    );
+    let command = table
+        .get("command")
+        .and_then(toml::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if transport == "stdio" && command.is_empty() {
+        return None;
+    }
+    if transport == "http" && !is_supported_mcp_http_url(url.as_deref()) {
+        return None;
+    }
+
+    let args = table
+        .get("args")
+        .and_then(toml::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let env = table
+        .get("env")
+        .and_then(toml::Value::as_table)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|val| (key.to_string(), val.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let headers = table
+        .get("headers")
+        .or_else(|| table.get("http_headers"))
+        .and_then(toml::Value::as_table)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|val| (key.to_string(), val.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let cwd = table
+        .get("cwd")
+        .and_then(toml::Value::as_str)
+        .map(ToString::to_string);
+    let disabled = table
+        .get("disabled")
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false);
+
+    Some((
+        name.to_string(),
+        McpServerConfig {
+            name: name.to_string(),
+            transport,
+            command,
+            args,
+            env,
+            cwd,
+            url,
+            headers,
+            disabled,
+        },
+    ))
+}
+
+pub fn normalize_mcp_transport(raw: Option<&str>, url: Option<&str>) -> String {
+    let normalized = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase().replace('-', "_"));
+    match normalized.as_deref() {
+        Some("http" | "streamable_http" | "sse") => "http".to_string(),
+        Some("stdio" | "local") => "stdio".to_string(),
+        Some(_) => "stdio".to_string(),
+        None if url.is_some_and(|value| !value.trim().is_empty()) => "http".to_string(),
+        None => "stdio".to_string(),
+    }
+}
+
+pub fn is_supported_mcp_http_url(url: Option<&str>) -> bool {
+    url.is_some_and(|value| {
+        let trimmed = value.trim().to_ascii_lowercase();
+        trimmed.starts_with("http://") || trimmed.starts_with("https://")
+    })
 }
 
 pub struct ConfigManager {
@@ -330,5 +502,72 @@ impl ConfigManager {
 
     pub fn config_path(&self) -> &Path {
         &self.config_path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_search_enabled_requires_enabled_mode() {
+        let mut config = ConfigToml::default();
+        assert!(!config.web_search_enabled());
+
+        for value in ["live", "cached", "enabled", "true", "on", "1"] {
+            config.web_search = Some(value.to_string());
+            assert!(
+                config.web_search_enabled(),
+                "{value} should enable web search"
+            );
+        }
+
+        for value in ["disabled", "false", "off", "0", ""] {
+            config.web_search = Some(value.to_string());
+            assert!(
+                !config.web_search_enabled(),
+                "{value} should disable web search"
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_mcp_servers_parses_supported_fields() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+            [mcp_servers.docs]
+            command = "node"
+            args = ["server.js", "--stdio"]
+            cwd = "tools/docs"
+            disabled = false
+            env = { TOKEN = "abc" }
+
+            [mcp_servers.remote]
+            type = "streamable-http"
+            url = "https://example.com/mcp"
+            headers = { Authorization = "Bearer token" }
+
+            [mcp_servers.empty]
+            args = ["missing-command"]
+            "#,
+        )
+        .unwrap();
+
+        let servers = config.resolved_mcp_servers();
+        assert_eq!(servers.len(), 2);
+        let docs = servers.get("docs").unwrap();
+        assert_eq!(docs.transport, "stdio");
+        assert_eq!(docs.command, "node");
+        assert_eq!(docs.args, vec!["server.js", "--stdio"]);
+        assert_eq!(docs.cwd.as_deref(), Some("tools/docs"));
+        assert_eq!(docs.env.get("TOKEN").map(String::as_str), Some("abc"));
+        assert!(!docs.disabled);
+        let remote = servers.get("remote").unwrap();
+        assert_eq!(remote.transport, "http");
+        assert_eq!(remote.url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(
+            remote.headers.get("Authorization").map(String::as_str),
+            Some("Bearer token")
+        );
     }
 }

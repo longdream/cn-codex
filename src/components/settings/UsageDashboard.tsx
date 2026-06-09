@@ -142,7 +142,7 @@ export function UsageDashboard() {
                     style={{ flex: "1 1 0" }}
                   >
                     {/* tooltip */}
-                    <div className="pointer-events-none absolute -top-16 left-1/2 z-10 hidden -translate-x-1/2 rounded-md bg-[var(--surface-elevated)] px-2 py-1 text-[10px] shadow-lg group-hover:block">
+                    <div className="pointer-events-none absolute -top-16 left-1/2 z-10 hidden -translate-x-1/2 rounded-md bg-[var(--surface-elevated)] px-2 py-1 text-[11px] shadow-lg group-hover:block">
                       <div className="font-medium text-[var(--text-strong)]">{day.date}</div>
                       <div className="text-[var(--text-muted)]">
                         {formatNumber(day.totalTokens)} tokens
@@ -179,7 +179,7 @@ export function UsageDashboard() {
                   <span className="text-xs font-medium text-[var(--text-strong)]">
                     {item.model}
                   </span>
-                  <span className="text-[10px] text-[var(--text-faint)]">({item.provider})</span>
+                  <span className="text-[11px] text-[var(--text-faint)]">({item.provider})</span>
                 </div>
                 <div className="flex items-center gap-4 text-xs text-[var(--text-muted)]">
                   <span>{item.requests} 次</span>
@@ -222,7 +222,7 @@ function StatCard({
 }) {
   return (
     <div className="rounded-lg bg-[var(--surface-soft)] p-3">
-      <p className="text-[10px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
+      <p className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
         {label}
       </p>
       <p
