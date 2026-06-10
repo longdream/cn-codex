@@ -17,6 +17,10 @@ function latestBrowserToolCall(messages: ReturnType<typeof useAppStore.getState>
 }
 
 function parseBrowserRunOutput(output?: string): {
+  ok?: boolean;
+  errorCode?: string;
+  message?: string;
+  hint?: string;
   screenshots: string[];
   finalUrl?: string;
   title?: string;
@@ -30,6 +34,10 @@ function parseBrowserRunOutput(output?: string): {
   try {
     const parsed = JSON.parse(output.slice(start, end + 1)) as Record<string, unknown>;
     return {
+      ok: typeof parsed.ok === "boolean" ? parsed.ok : undefined,
+      errorCode: typeof parsed.errorCode === "string" ? parsed.errorCode : undefined,
+      message: typeof parsed.message === "string" ? parsed.message : undefined,
+      hint: typeof parsed.hint === "string" ? parsed.hint : undefined,
       screenshots: Array.isArray(parsed.screenshots)
         ? parsed.screenshots.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
         : [],
@@ -44,8 +52,14 @@ function parseBrowserRunOutput(output?: string): {
 
 function localPreviewSrc(path: string, workspaceCwd: string | null): string | null {
   if (!path) return null;
-  const normalized = path.replace(/\\/g, "/");
+  // 兼容 Windows 扩展路径前缀（\\?\），否则 convertFileSrc 会生成不可访问 URL。
+  const sanitized = normalizeLocalImagePath(path);
+  if (!sanitized) return null;
+  const normalized = sanitized.replace(/\\/g, "/");
   if (/^[a-zA-Z]:\//.test(normalized)) {
+    return convertFileSrc(normalized);
+  }
+  if (normalized.startsWith("//")) {
     return convertFileSrc(normalized);
   }
   if (normalized.startsWith("/")) {
@@ -54,6 +68,18 @@ function localPreviewSrc(path: string, workspaceCwd: string | null): string | nu
   if (!workspaceCwd) return null;
   const base = workspaceCwd.replace(/\\/g, "/").replace(/\/+$/, "");
   return convertFileSrc(`${base}/${normalized}`);
+}
+
+function normalizeLocalImagePath(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("\\\\?\\UNC\\")) {
+    return `\\\\${trimmed.slice("\\\\?\\UNC\\".length)}`;
+  }
+  if (trimmed.startsWith("\\\\?\\")) {
+    return trimmed.slice("\\\\?\\".length);
+  }
+  return trimmed;
 }
 
 export function RightPanel() {
@@ -104,7 +130,7 @@ export function RightPanel() {
         <div className="thin-scrollbar flex-1 overflow-y-auto p-3">
           <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-semibold text-[var(--text-strong)]">Obscura</p>
+              <p className="text-xs font-semibold text-[var(--text-strong)]">WebView JS Injection</p>
               <span
                 className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] ${
                   browserPanelStatus === "running"
@@ -131,6 +157,25 @@ export function RightPanel() {
               <p className="mt-2 text-[11px] text-[var(--text-faint)]">
                 Mode: {browserOutput.browserMode}
               </p>
+            ) : null}
+            {browserPanelStatus === "failed" && screenshots.length === 0 ? (
+              <div className="mt-3 rounded-[var(--radius-sm)] border border-[var(--danger-soft)] bg-[var(--danger-soft)] px-2.5 py-2">
+                <p className="text-[11px] font-medium text-[var(--danger)]">
+                  {browserOutput?.message ?? "Browser run 失败，未生成可预览截图。"}
+                </p>
+                {browserOutput?.hint ? (
+                  <p className="mt-1 text-[11px] text-[var(--text-muted)]">{browserOutput.hint}</p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                    请检查工具输出中的错误详情，并确认内置浏览器窗口与 CDP 通道可用。
+                  </p>
+                )}
+                {browserOutput?.errorCode ? (
+                  <p className="mt-1 font-mono text-[10px] text-[var(--text-faint)]">
+                    {browserOutput.errorCode}
+                  </p>
+                ) : null}
+              </div>
             ) : null}
           </div>
 

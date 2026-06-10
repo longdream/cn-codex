@@ -1,6 +1,6 @@
 ---
 name: webapp-testing
-description: Test local web applications through CN-Codex's built-in Browser Skill and Playwright-controlled browser.
+description: Test local web applications through CN-Codex's built-in Browser Skill and WebView JS Injection runtime.
 license: Complete terms in LICENSE.txt
 ---
 
@@ -12,8 +12,8 @@ Use this skill when a task needs rendered browser verification for a local web a
 
 - First read `codey/skills/browser/SKILL.md`.
 - Use the built-in `browser_run` tool for browser simulation and verification.
-- Keep `use_visible_browser` enabled by default so Playwright controls the visible `cn-browser` Tauri WebView through CDP.
-- Do not write standalone Python, Node, or Playwright scripts for ordinary browser work.
+- Runtime is Tauri WebView + Rust JS Injection through CDP.
+- Do not write standalone Python/Node Playwright scripts for ordinary browser work.
 - Do not connect to an unrelated Chrome, remote Browser Use session, or external browser harness unless the user explicitly asks for that alternate path.
 - For local apps, start or reuse the dev server first, then call `browser_run` against the local URL.
 
@@ -29,7 +29,6 @@ Example:
 ```json
 {
   "url": "http://localhost:5173",
-  "use_visible_browser": true,
   "actions": [
     { "type": "wait_for_selector", "selector": "#root" },
     { "type": "screenshot", "fullPage": true },

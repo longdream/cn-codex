@@ -11,8 +11,8 @@ This skill is kept as a compatibility alias for prompts or imported workflows th
 
 - First read `codey/skills/browser/SKILL.md`.
 - Use `browser_run` for navigation, clicking, typing, screenshots, rendered text checks, and page inspection.
-- Keep `use_visible_browser` enabled by default so Playwright controls the visible `cn-browser` Tauri WebView through CDP.
-- Do not invoke an external `browser-harness` binary, remote Browser Use daemon, standalone Chrome, or separate Playwright script for ordinary browser simulation.
+- Runtime is WebView + JS Injection. Do not invoke external `browser-harness` binaries or Playwright scripts.
+- Do not invoke a remote Browser Use daemon or unrelated standalone Chrome for ordinary browser simulation.
 - Only use a detached or remote browser path when the user explicitly asks for it.
 
 ## Example
@@ -20,12 +20,9 @@ This skill is kept as a compatibility alias for prompts or imported workflows th
 ```json
 {
   "url": "https://example.com",
-  "use_visible_browser": true,
   "actions": [
     { "type": "screenshot", "fullPage": true },
     { "type": "text", "selector": "body" }
   ]
 }
 ```
-
-If `browser_run` cannot connect to the visible built-in browser, report the fallback note from the tool output and continue only if the fallback result is adequate for the task.

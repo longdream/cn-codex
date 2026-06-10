@@ -96,6 +96,8 @@ export function ChatPage() {
 
   const handleInterrupt = useCallback(async () => {
     const store = useAppStore.getState();
+    // 先做前端状态收敛，保证点击“停止”后转圈立即结束。
+    store.markRunningToolCallsInterrupted("Tool interrupted by user.");
     const partialText = store.streamingText;
     if (partialText) {
       store.addMessage({
@@ -238,10 +240,10 @@ export function ChatPage() {
             <div className="flex items-center justify-end px-4 py-1.5 border-b border-[var(--chat-line)]">
               <button
                 onClick={handleCopyAll}
-                className="flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2.5 py-1 text-[11px] text-[var(--chat-muted)] hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)] transition-colors"
+                className="chat-copy-button flex items-center gap-1 px-2 py-1 text-[11px] transition-[color,background]"
                 title={intl.formatMessage({ id: "chat.copyAll" })}
               >
-                {copyDone ? <IconCheck size={13} stroke={1.8} /> : <IconCopy size={13} stroke={1.8} />}
+                {copyDone ? <IconCheck size={12} stroke={2} /> : <IconCopy size={12} stroke={2} />}
                 {intl.formatMessage({ id: copyDone ? "chat.copied" : "chat.copyAll" })}
               </button>
             </div>

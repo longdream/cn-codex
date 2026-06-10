@@ -1,11 +1,11 @@
 pub mod adapter;
 pub mod agent;
+pub mod browser_automation;
 pub mod commands;
 pub mod config_system;
 pub mod error;
 pub mod hook_runtime;
 pub mod llm_tiers;
-pub mod obscura;
 pub mod plugin_loader;
 pub mod protocol;
 pub mod standalone;

@@ -19,3 +19,8 @@ Thumbs.db
 # Env
 .env
 .env.local
+
+# CN-Codex browser runtime artifacts (generated at runtime)
+codey/browser/webview-data/
+codey/browser/screenshots/
+codey/browser/visible-browser.json

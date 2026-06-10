@@ -575,6 +575,10 @@ function parseToolArgs(item: ToolCallItem): Record<string, unknown> {
 }
 
 function parseBrowserRunOutput(output?: string): {
+  ok?: boolean;
+  errorCode?: string;
+  message?: string;
+  hint?: string;
   title?: string;
   finalUrl?: string;
   browserMode?: string;
@@ -593,6 +597,10 @@ function parseBrowserRunOutput(output?: string): {
   try {
     const parsed = JSON.parse(output.slice(start, end + 1)) as Record<string, unknown>;
     return {
+      ok: typeof parsed.ok === "boolean" ? parsed.ok : undefined,
+      errorCode: typeof parsed.errorCode === "string" ? parsed.errorCode : undefined,
+      message: typeof parsed.message === "string" ? parsed.message : undefined,
+      hint: typeof parsed.hint === "string" ? parsed.hint : undefined,
       title: typeof parsed.title === "string" ? parsed.title : undefined,
       finalUrl: typeof parsed.finalUrl === "string" ? parsed.finalUrl : undefined,
       browserMode: typeof parsed.browserMode === "string" ? parsed.browserMode : undefined,
@@ -799,6 +807,7 @@ function MultiToolItem({ item }: { item: ToolCallItem }) {
 }
 
 function ToolDetailView({ item }: { item: ToolCallItem }) {
+  const intl = useIntl();
   const args = parseToolArgs(item);
   const workspaceCwd = useAppStore((state) => state.workspaceCwd);
   const cmd = args.command;
@@ -1375,6 +1384,21 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
               </span>
             ) : null}
           </div>
+          {item.status === "failed" && !browserResult?.screenshots.length ? (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--danger-soft)] bg-[var(--danger-soft)] px-2 py-1.5">
+              <p className="text-[11px] font-medium text-[var(--danger)]">
+                {browserResult?.message ?? "Browser run 失败，未生成截图。"}
+              </p>
+              {browserResult?.hint ? (
+                <p className="mt-1 text-[11px] text-[var(--chat-muted)]">{browserResult.hint}</p>
+              ) : null}
+              {browserResult?.errorCode ? (
+                <p className="mt-1 font-mono text-[10px] text-[var(--chat-faint)]">
+                  {browserResult.errorCode}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           {browserResult?.actions.length ? (
             <div className="space-y-1">
               {browserResult.actions.map((action, index) => (
@@ -1430,10 +1454,15 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
             <span>output</span>
             <button
               onClick={handleCopyOutput}
-              className="flex items-center gap-0.5 rounded px-1 py-0.5 opacity-0 transition-opacity hover:bg-[var(--chat-chip)] group-hover/output:opacity-100"
+              className="chat-copy-button flex items-center gap-1 px-2 py-1 text-[11px] opacity-0 transition-[opacity,color,background] hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)] group-hover/output:opacity-100"
+              title={intl.formatMessage({
+                id: outputCopied ? "chat.copied" : "chat.copy",
+              })}
             >
-              {outputCopied ? <IconCheck size={10} stroke={2} /> : <IconCopy size={10} stroke={2} />}
-              {outputCopied ? "Copied" : "Copy"}
+              {outputCopied ? <IconCheck size={12} stroke={2} /> : <IconCopy size={12} stroke={2} />}
+              {outputCopied
+                ? intl.formatMessage({ id: "chat.copied" })
+                : intl.formatMessage({ id: "chat.copy" })}
             </button>
           </div>
           <pre className="chat-tool-output thin-scrollbar max-h-[200px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]">
@@ -1461,7 +1490,8 @@ function patchActionLabel(action: string): string {
 }
 
 function localImagePreviewSrc(path: string, workspaceCwd: string | null): string | null {
-  const trimmed = path.trim();
+  // 兼容 Windows 扩展路径前缀，防止 convertFileSrc 生成损坏的 asset URL。
+  const trimmed = normalizeLocalImagePath(path);
   if (!trimmed) {
     return null;
   }
@@ -1474,6 +1504,18 @@ function localImagePreviewSrc(path: string, workspaceCwd: string | null): string
       : null;
 
   return resolved ? convertFileSrc(resolved) : null;
+}
+
+function normalizeLocalImagePath(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("\\\\?\\UNC\\")) {
+    return `\\\\${trimmed.slice("\\\\?\\UNC\\".length)}`;
+  }
+  if (trimmed.startsWith("\\\\?\\")) {
+    return trimmed.slice("\\\\?\\".length);
+  }
+  return trimmed;
 }
 
 function MessageContent({ content }: { content: string }) {

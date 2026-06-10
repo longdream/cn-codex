@@ -273,6 +273,15 @@ pub async fn standalone_turn_interrupt(
 ) -> AppResult<serde_json::Value> {
     info!("Turn interrupt requested by user");
     state.agent_engine.interrupt();
+    let current_thread_id = state.current_thread_id.read().await.clone();
+    let interrupted_tools = state
+        .agent_engine
+        .interrupt_active_tools(current_thread_id.as_deref())
+        .await;
+    info!(
+        "Turn interrupt completed: thread={:?}, interrupted_tools={interrupted_tools}",
+        current_thread_id
+    );
     Ok(serde_json::json!({ "status": "interrupted" }))
 }
 

@@ -7,7 +7,7 @@
 | Rust 单元测试 | 后端逻辑 | cargo test |
 | 前端单元测试 | React 组件 + Store | vitest + @testing-library/react |
 | 集成测试 | Tauri IPC 通信 | cargo test (integration) |
-| E2E 测试 | 完整用户流程 | playwright / webapp-testing skill |
+| E2E 测试 | 完整用户流程 | browser_run（WebView JS Injection）/ webapp-testing skill |
 
 ---
 

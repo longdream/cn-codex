@@ -75,12 +75,6 @@ pub struct ConfigToml {
     #[serde(default)]
     pub sandbox: Option<String>,
     #[serde(default)]
-    pub browser_engine: Option<String>,
-    #[serde(default)]
-    pub obscura_binary: Option<String>,
-    #[serde(default)]
-    pub obscura_port: Option<u16>,
-    #[serde(default)]
     pub model_providers: HashMap<String, ModelProviderInfo>,
     #[serde(default)]
     pub mcp_servers: HashMap<String, toml::Value>,
@@ -300,9 +294,6 @@ impl ConfigToml {
             "web_search" => self.web_search = value.as_str().map(String::from),
             "instructions" => self.instructions = value.as_str().map(String::from),
             "sandbox" => self.sandbox = value.as_str().map(String::from),
-            "browser_engine" => self.browser_engine = value.as_str().map(String::from),
-            "obscura_binary" => self.obscura_binary = value.as_str().map(String::from),
-            "obscura_port" => self.obscura_port = value.as_u64().map(|v| v as u16),
             other if other.starts_with("model_providers.") => {
                 let provider_key = &other["model_providers.".len()..];
                 if let Ok(info) = serde_json::from_value::<ModelProviderInfo>(value.clone()) {
@@ -333,11 +324,13 @@ impl ConfigToml {
         (provider_id, ModelProviderInfo::default())
     }
 
+    /// 解析当前配置的模型名称
+    /// 如果 model 字段为空，返回空字符串（调用方负责报错）
     pub fn resolve_model(&self) -> String {
         self.model
             .as_deref()
             .filter(|s| !s.is_empty())
-            .unwrap_or("gpt-4.1")
+            .unwrap_or("")
             .to_string()
     }
 
@@ -350,20 +343,6 @@ impl ConfigToml {
                 .as_deref(),
             Some("live" | "cached" | "enabled" | "true" | "on" | "1")
         )
-    }
-
-    pub fn resolved_browser_engine(&self) -> String {
-        match self
-            .browser_engine
-            .as_deref()
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
-            Some("playwright") => "playwright".to_string(),
-            Some("obscura") => "obscura".to_string(),
-            _ => "obscura".to_string(),
-        }
     }
 
     pub fn resolved_mcp_servers(&self) -> HashMap<String, McpServerConfig> {
@@ -546,18 +525,6 @@ mod tests {
                 "{value} should disable web search"
             );
         }
-    }
-
-    #[test]
-    fn resolved_browser_engine_defaults_to_obscura() {
-        let mut config = ConfigToml::default();
-        assert_eq!(config.resolved_browser_engine(), "obscura");
-
-        config.browser_engine = Some("playwright".to_string());
-        assert_eq!(config.resolved_browser_engine(), "playwright");
-
-        config.browser_engine = Some("unknown".to_string());
-        assert_eq!(config.resolved_browser_engine(), "obscura");
     }
 
     #[test]

@@ -90,6 +90,20 @@ impl AgentEngine {
         self.cancel_flag.store(true, Ordering::SeqCst);
     }
 
+    /// 中断指定线程（或全部线程）的活跃工具子进程。
+    ///
+    /// 说明：
+    /// - 停止按钮先设置 cancel flag，再调用此方法；
+    /// - 该方法只负责“进程级中断”，不修改线程消息本身；
+    /// - 返回命中的进程数量，供上层记录日志和验证。
+    pub async fn interrupt_active_tools(&self, thread_id: Option<&str>) -> usize {
+        let executor = self.tool_executor.read().await;
+        match thread_id {
+            Some(id) => executor.interrupt_active_tools(id).await,
+            None => executor.interrupt_all_active_tools().await,
+        }
+    }
+
     fn is_cancelled(&self) -> bool {
         self.cancel_flag.load(Ordering::SeqCst)
     }
@@ -115,6 +129,11 @@ impl AgentEngine {
         let turn_started_at_ms = now_millis();
         let turn_timer = Instant::now();
         let model = config.resolve_model();
+        if model.is_empty() {
+            return Err(AppError::Custom(
+                "未配置模型。请在设置中选择一个模型后再试。".to_string()
+            ));
+        }
         let (provider_id, provider) = config.resolve_provider();
         let effective_cwd = override_cwd
             .map(|p| p.to_path_buf())
@@ -263,14 +282,14 @@ impl AgentEngine {
         const MAX_INTENT_RETRIES: u32 = 2;
 
         if !prompt_hook_blocked {
-            for iteration in 0..max_iterations {
+        for iteration in 0..max_iterations {
                 if self.is_cancelled() {
                     info!("Turn {turn_id} cancelled by user at iteration {iteration}");
                     break;
                 }
-                info!("Agent loop iteration {iteration} for turn {turn_id}");
+            info!("Agent loop iteration {iteration} for turn {turn_id}");
 
-                let history = self.thread_store.get_thread_messages(thread_id).await;
+            let history = self.thread_store.get_thread_messages(thread_id).await;
                 let internal_messages = self.build_internal_messages(
                     config,
                     &history,
@@ -286,19 +305,19 @@ impl AgentEngine {
                     .tool_specs_with_mcp(config.web_search_enabled())
                     .await;
 
-                let result = self
-                    .stream_completion(
-                        app_handle,
-                        &base_url,
-                        &api_key,
-                        &model,
+            let result = self
+                .stream_completion(
+                    app_handle,
+                    &base_url,
+                    &api_key,
+                    &model,
                         &wire_api,
                         internal_messages,
-                        if tools.is_empty() { None } else { Some(tools) },
-                    )
-                    .await;
+                    if tools.is_empty() { None } else { Some(tools) },
+                )
+                .await;
 
-                match result {
+            match result {
                     Ok(CompletionResult::Message {
                         ref text,
                         ref usage,
@@ -315,15 +334,15 @@ impl AgentEngine {
                                 recorder.record(&provider_id, &model, thread_id, u);
                             }
                         }
-                        if text.is_empty() && iteration > 0 {
-                            info!("Empty message after tool execution, sending minimal signal");
-                            app_handle
-                                .emit(
-                                    "agent-message-delta",
-                                    serde_json::json!({ "delta": "(completed)" }),
-                                )
-                                .ok();
-                        }
+                    if text.is_empty() && iteration > 0 {
+                        info!("Empty message after tool execution, sending minimal signal");
+                        app_handle
+                            .emit(
+                                "agent-message-delta",
+                                serde_json::json!({ "delta": "(completed)" }),
+                            )
+                            .ok();
+                    }
 
                         if !text.is_empty()
                             && iteration > 0
@@ -350,23 +369,23 @@ impl AgentEngine {
                             continue;
                         }
 
-                        let content = if text.is_empty() && iteration > 0 {
-                            String::new()
-                        } else {
-                            text.clone()
-                        };
-                        if !content.is_empty() || iteration == 0 {
-                            let msg = ThreadMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                role: "assistant".to_string(),
+                    let content = if text.is_empty() && iteration > 0 {
+                        String::new()
+                    } else {
+                        text.clone()
+                    };
+                    if !content.is_empty() || iteration == 0 {
+                        let msg = ThreadMessage {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            role: "assistant".to_string(),
                                 content: content.clone(),
-                                timestamp: now_secs(),
-                                tool_call_id: None,
-                                tool_name: None,
-                                tool_calls: None,
-                            };
-                            self.thread_store.add_message(thread_id, msg).await?;
-                        }
+                            timestamp: now_secs(),
+                            tool_call_id: None,
+                            tool_name: None,
+                            tool_calls: None,
+                        };
+                        self.thread_store.add_message(thread_id, msg).await?;
+                    }
                         let git_status_now = git_status_snapshot(&effective_cwd).await;
                         merge_git_changes(&mut changed_files, &git_status_before, &git_status_now);
                         let budget_limited_now = if turn_mode == "goal" {
@@ -421,8 +440,8 @@ impl AgentEngine {
                             }
                         }
                         stop_hooks_satisfied = true;
-                        break;
-                    }
+                    break;
+                }
                     Ok(CompletionResult::ToolCalls {
                         calls,
                         preceding_text,
@@ -443,64 +462,100 @@ impl AgentEngine {
                             }
                         }
 
-                        if !preceding_text.is_empty() {
-                            let text_msg = ThreadMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                role: "assistant".to_string(),
-                                content: preceding_text,
-                                timestamp: now_secs(),
-                                tool_call_id: None,
-                                tool_name: None,
-                                tool_calls: None,
-                            };
-                            self.thread_store.add_message(thread_id, text_msg).await?;
-                        }
-
-                        let tc_infos: Vec<ToolCallInfo> = calls
-                            .iter()
-                            .map(|c| ToolCallInfo {
-                                id: c.id.clone(),
-                                name: c.name.clone(),
-                                arguments: c.arguments.clone(),
-                            })
-                            .collect();
-                        let assistant_tc_msg = ThreadMessage {
+                    if !preceding_text.is_empty() {
+                        let text_msg = ThreadMessage {
                             id: uuid::Uuid::new_v4().to_string(),
                             role: "assistant".to_string(),
-                            content: String::new(),
+                            content: preceding_text,
                             timestamp: now_secs(),
                             tool_call_id: None,
                             tool_name: None,
-                            tool_calls: Some(tc_infos),
+                            tool_calls: None,
                         };
-                        self.thread_store
-                            .add_message(thread_id, assistant_tc_msg)
-                            .await?;
+                        self.thread_store.add_message(thread_id, text_msg).await?;
+                    }
 
-                        let calls_json: Vec<serde_json::Value> = calls
-                            .iter()
-                            .map(|c| {
-                                serde_json::json!({
-                                    "id": c.id,
-                                    "name": c.name,
-                                    "arguments": c.arguments,
-                                })
+                    let tc_infos: Vec<ToolCallInfo> = calls
+                        .iter()
+                        .map(|c| ToolCallInfo {
+                            id: c.id.clone(),
+                            name: c.name.clone(),
+                            arguments: c.arguments.clone(),
+                        })
+                        .collect();
+                    let assistant_tc_msg = ThreadMessage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        timestamp: now_secs(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: Some(tc_infos),
+                    };
+                    self.thread_store
+                        .add_message(thread_id, assistant_tc_msg)
+                        .await?;
+
+                    let calls_json: Vec<serde_json::Value> = calls
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "id": c.id,
+                                "name": c.name,
+                                "arguments": c.arguments,
                             })
-                            .collect();
-                        app_handle
-                            .emit(
-                                "tool-calls-start",
-                                serde_json::json!({
-                                    "threadId": thread_id,
-                                    "calls": calls_json,
-                                }),
-                            )
-                            .ok();
+                        })
+                        .collect();
+                    app_handle
+                        .emit(
+                            "tool-calls-start",
+                            serde_json::json!({
+                                "threadId": thread_id,
+                                "calls": calls_json,
+                            }),
+                        )
+                        .ok();
 
-                        let mut results_json: Vec<serde_json::Value> = Vec::new();
+                    let mut results_json: Vec<serde_json::Value> = Vec::new();
 
                         for mut call in calls {
-                            info!("Tool call: {} args={}", call.name, call.arguments);
+                        info!("Tool call: {} args={}", call.name, call.arguments);
+                            // 若用户已点击停止，则跳过工具执行，并主动补发结束状态，
+                            // 防止前端工具卡片一直停留在 running。
+                            if self.is_cancelled() {
+                                let interrupted_call_id = call.id.clone();
+                                let interrupted_tool_name = call.name.clone();
+                                let interrupted_output = "Tool execution skipped: interrupted by user.".to_string();
+                                app_handle
+                                    .emit(
+                                        "tool-exec-end",
+                                        serde_json::json!({
+                                            "threadId": thread_id,
+                                            "callId": interrupted_call_id,
+                                            "tool": interrupted_tool_name,
+                                            "exitCode": -1,
+                                            "output": interrupted_output.clone(),
+                                        }),
+                                    )
+                                    .ok();
+                                results_json.push(serde_json::json!({
+                                    "id": call.id.clone(),
+                                    "tool": call.name.clone(),
+                                    "success": false,
+                                    "interrupted": true,
+                                }));
+                                let tool_msg = ThreadMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role: "tool".to_string(),
+                                    content: interrupted_output,
+                                    timestamp: now_secs(),
+                                    tool_call_id: Some(call.id.clone()),
+                                    tool_name: Some(call.name.clone()),
+                                    tool_calls: None,
+                                };
+                                self.thread_store.add_message(thread_id, tool_msg).await?;
+                                continue;
+                            }
                             let pre_tool_hook_results = hook_runtime
                                 .run_event(
                                     app_handle,
@@ -544,10 +599,10 @@ impl AgentEngine {
                             }
 
                             let requested_file_changes = file_changes_from_tool_call(&call);
-                            let tool_result = self
-                                .tool_executor
-                                .read()
-                                .await
+                        let tool_result = self
+                            .tool_executor
+                            .read()
+                            .await
                                 .execute(
                                     &call.name,
                                     &call.arguments,
@@ -555,12 +610,12 @@ impl AgentEngine {
                                     app_handle,
                                     thread_id,
                                 )
-                                .await;
+                            .await;
 
                             let (mut result_content, success) = match tool_result {
-                                Ok(output) => (output, true),
-                                Err(e) => (format!("Tool execution error: {e}"), false),
-                            };
+                            Ok(output) => (output, true),
+                            Err(e) => (format!("Tool execution error: {e}"), false),
+                        };
                             let mut has_subagent_stop_feedback = false;
                             if success && call.name == "close_agent" {
                                 let subagent_stop_hook_results = hook_runtime
@@ -619,46 +674,46 @@ impl AgentEngine {
                                 }
                             }
 
-                            results_json.push(serde_json::json!({
-                                "id": call.id,
-                                "tool": call.name,
-                                "success": success,
+                        results_json.push(serde_json::json!({
+                            "id": call.id,
+                            "tool": call.name,
+                            "success": success,
                                 "postHookFeedback": has_post_hook_feedback,
                                 "subagentStopHookFeedback": has_subagent_stop_feedback,
-                            }));
+                        }));
 
-                            let tool_msg = ThreadMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                role: "tool".to_string(),
-                                content: result_content,
-                                timestamp: now_secs(),
-                                tool_call_id: Some(call.id.clone()),
-                                tool_name: Some(call.name.clone()),
-                                tool_calls: None,
-                            };
-                            self.thread_store.add_message(thread_id, tool_msg).await?;
-                        }
-
-                        app_handle
-                            .emit(
-                                "tool-calls-end",
-                                serde_json::json!({
-                                    "threadId": thread_id,
-                                    "results": results_json,
-                                }),
-                            )
-                            .ok();
-                        stop_hooks_ran_for_last_stop = false;
+                        let tool_msg = ThreadMessage {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            role: "tool".to_string(),
+                            content: result_content,
+                            timestamp: now_secs(),
+                            tool_call_id: Some(call.id.clone()),
+                            tool_name: Some(call.name.clone()),
+                            tool_calls: None,
+                        };
+                        self.thread_store.add_message(thread_id, tool_msg).await?;
                     }
-                    Err(e) => {
-                        error!("Iteration {iteration}: LLM request failed: {e}");
-                        app_handle
-                            .emit(
-                                "server-error",
-                                serde_json::json!({ "message": e.to_string() }),
-                            )
-                            .ok();
-                        break;
+
+                    app_handle
+                        .emit(
+                            "tool-calls-end",
+                            serde_json::json!({
+                                "threadId": thread_id,
+                                "results": results_json,
+                            }),
+                        )
+                        .ok();
+                        stop_hooks_ran_for_last_stop = false;
+                }
+                Err(e) => {
+                    error!("Iteration {iteration}: LLM request failed: {e}");
+                    app_handle
+                        .emit(
+                            "server-error",
+                            serde_json::json!({ "message": e.to_string() }),
+                        )
+                        .ok();
+                    break;
                     }
                 }
             }
@@ -755,7 +810,7 @@ impl AgentEngine {
                     thread_id,
                     HOOK_FILE_CHANGE,
                     &effective_cwd,
-                    serde_json::json!({
+                serde_json::json!({
                         "turnId": &turn_id,
                         "mode": &turn_mode,
                         "cwd": &effective_cwd,
@@ -898,7 +953,7 @@ impl AgentEngine {
              - request_permissions: Ask the user for additional filesystem or network permissions and wait for their response.\n\
              - view_image: Inspect and preview local image files, returning format, dimensions, size, and path.\n\
              - image_generate: Generate an image through an OpenAI Images API-compatible backend and save it as a local file when image generation is configured.\n\
-             - browser_run: Run a browser session for page navigation, UI interaction, screenshots, and web app testing. Supports engine='playwright' (default, uses CN-Codex's visible browser or standalone Chromium) and engine='obscura' (Rust-based headless browser via CDP, ideal for automated testing). Use engine='obscura' when running UI tests or headless automation.\n\
+             - browser_run: Run a browser session for page navigation, UI interaction, screenshots, and web app testing. Runtime is CN-Codex built-in Tauri WebView controlled by Rust-side JS Injection + CDP. Keep action batches focused and rely on screenshots/html/snapshot for verification.\n\
              - apps_list: List imported plugin app connectors and trusted codex-apps MCP tools, including connector IDs and availability.\n\
              - list_available_plugins_to_install: List local Codex plugin cache candidates that can be imported into this CN-Codex workspace.\n\
              - request_plugin_install: Import one local Codex plugin cache candidate into codey/plugins; call list_available_plugins_to_install first when unsure of the tool_id.\n\
@@ -1222,8 +1277,8 @@ impl AgentEngine {
                     if finish_reason.is_none() {
                         finish_reason = Some("stop".to_string());
                     }
-                    continue;
-                }
+                                continue;
+                            }
 
                 // 使用 adapter 解析 SSE 行
                 let events = adapter.parse_stream_line(&line);
@@ -1231,10 +1286,10 @@ impl AgentEngine {
                     match event {
                         StreamEvent::TextDelta(text) => {
                             full_text.push_str(&text);
-                            app_handle
+                                                app_handle
                                 .emit("agent-message-delta", serde_json::json!({ "delta": text }))
-                                .ok();
-                        }
+                                                    .ok();
+                                            }
                         StreamEvent::ToolCallDelta {
                             index,
                             id,
@@ -1242,19 +1297,19 @@ impl AgentEngine {
                             arguments,
                         } => {
                             while tool_calls.len() <= index {
-                                tool_calls.push(ToolCallAccumulator::default());
-                            }
+                                                    tool_calls.push(ToolCallAccumulator::default());
+                                                }
                             let acc = &mut tool_calls[index];
                             if let Some(id) = id {
-                                acc.id = id;
-                            }
+                                                    acc.id = id;
+                                                }
                             if let Some(name) = name {
-                                acc.name = name;
-                            }
+                                                        acc.name = name;
+                                                    }
                             if let Some(args) = arguments {
-                                acc.arguments.push_str(&args);
-                            }
-                        }
+                                                        acc.arguments.push_str(&args);
+                                                    }
+                                                }
                         StreamEvent::Done {
                             finish_reason: reason,
                         } => {

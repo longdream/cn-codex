@@ -288,9 +288,7 @@
   "chat.fileAction.created": "已创建",
   "chat.fileAction.deleted": "已删除",
   "chat.fileAction.renamed": "已重命名",
-  "browser.engine.playwright": "Playwright 浏览器",
-  "browser.engine.obscura": "Obscura 无头浏览器",
+  "browser.engine.webview": "WebView JS 注入浏览器",
   "browser.engine.description": "浏览器引擎",
-  "settings.obscuraBinary": "Obscura 可执行文件路径",
-  "settings.obscuraPort": "Obscura CDP 端口"
+  "settings.browserCdpPort": "浏览器 CDP 端口"
 }

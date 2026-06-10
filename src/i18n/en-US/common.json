@@ -288,9 +288,7 @@
   "settings.provider.addCustom": "Custom",
   "settings.provider.models": "Models",
   "settings.provider.modelLabelPlaceholder": "Display name (optional)",
-  "browser.engine.playwright": "Playwright Browser",
-  "browser.engine.obscura": "Obscura Headless Browser",
+  "browser.engine.webview": "WebView JS Injection Browser",
   "browser.engine.description": "Browser Engine",
-  "settings.obscuraBinary": "Obscura Binary Path",
-  "settings.obscuraPort": "Obscura CDP Port"
+  "settings.browserCdpPort": "Browser CDP Port"
 }

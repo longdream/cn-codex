@@ -1,7 +1,7 @@
 ---
 name: Browser
-description: Use CN-Codex's built-in Playwright browser for browser automation, web app testing, screenshots, UI simulation, scraping, and page inspection.
-tags: ["browser", "playwright", "automation", "testing"]
+description: Use CN-Codex's built-in browser_run runtime (Tauri WebView + Rust JS Injection) for browser automation, web app testing, screenshots, scraping, and page inspection.
+tags: ["browser", "webview", "js-injection", "automation", "testing"]
 ---
 
 # Browser
@@ -11,9 +11,9 @@ Use this skill when a task requires a real browser: navigating pages, testing lo
 ## Required Approach
 
 - This is the canonical Browser Skill for CN-Codex.
-- Use CN-Codex's built-in `browser_run` tool for every browser simulation and verification task. It opens or reuses the visible `cn-browser` window and controls it through Playwright CDP.
-- Keep `use_visible_browser` enabled unless the user explicitly asks for a detached/headless fallback or you are running a narrow runner smoke test.
-- Do not start an unrelated Playwright script or standalone browser for ordinary browser work; call `browser_run` so the simulation happens through CN-Codex's built-in browser surface.
+- First read `codey/skills/webview-js-injection/SKILL.md`.
+- Use CN-Codex's built-in `browser_run` tool for every browser simulation and verification task.
+- Runtime is Tauri WebView + Rust JS Injection through CDP. Do not switch to external Playwright scripts.
 - If an imported Browser plugin skill mentions `Node REPL`, `browser-client`, or `agent.browsers.get("iab")`, treat that as upstream reference text. Inside CN-Codex, the runtime adapter is `browser_run`.
 - Do not pretend to inspect a page without opening it in the browser.
 - Prefer screenshots after every meaningful interaction so the next action is based on visible state.
@@ -22,7 +22,7 @@ Use this skill when a task requires a real browser: navigating pages, testing lo
 
 ## `browser_run`
 
-`browser_run` runs a Playwright-controlled browser session. It accepts a URL plus ordered actions. By default it opens or reuses the visible CN-Codex browser window; if CDP connection is unavailable it reports the fallback note and uses a standalone Chromium session.
+`browser_run` runs a WebView JS Injection automation session. It accepts a URL plus ordered actions and executes them against CN-Codex's built-in browser surface.
 
 Common action types:
 
@@ -56,7 +56,6 @@ Example:
 ```json
 {
   "url": "http://localhost:5173",
-  "use_visible_browser": true,
   "actions": [
     { "type": "screenshot", "fullPage": true },
     { "type": "click", "selector": "text=Sign in" },
@@ -65,5 +64,3 @@ Example:
   ]
 }
 ```
-
-If browser launch fails because no browser is installed, run `pnpm exec playwright install chromium` in the CN-Codex workspace, then retry.

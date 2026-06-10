@@ -11,3 +11,5 @@ wire_api = "chat"
 requires_openai_auth = false
 
 [mcp_servers]
+
+[hooks]

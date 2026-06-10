@@ -26,7 +26,8 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
         </span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1 text-[11px] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+          className="chat-copy-button flex items-center gap-1 px-2 py-1 text-[11px] transition-[color,background]"
+          title={intl.formatMessage({ id: copied ? "chat.copied" : "chat.copy" })}
         >
           {copied ? <IconCheck size={12} stroke={2} /> : <IconCopy size={12} stroke={2} />}
           {copied

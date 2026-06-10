@@ -311,6 +311,10 @@ export function useTauriEvents() {
             if ("goal" in e.payload) {
               store.setCurrentGoal(e.payload.goal ?? null);
             }
+            // turn 已结束但仍有 running 工具时，做一次兜底收敛，避免 UI 长时间转圈。
+            store.markRunningToolCallsInterrupted(
+              "Turn completed before tool status settled.",
+            );
             store.clearStreamingText();
             store.setStreaming(false);
             store.setCurrentTurnId(null);
@@ -428,9 +432,18 @@ export function useTauriEvents() {
           }
         }),
 
-        listen<{ threadId: string; results: Array<{ id: string; tool: string; success: boolean }> }>(
+        listen<{ threadId: string; results: Array<{ id: string; tool: string; success: boolean; interrupted?: boolean }> }>(
           "tool-calls-end",
-          () => {},
+          (e) => {
+            const store = useAppStore.getState();
+            for (const result of e.payload.results ?? []) {
+              store.updateToolCallStatus(
+                result.id,
+                result.success ? "success" : "failed",
+                result.interrupted ? "Tool interrupted by user." : undefined,
+              );
+            }
+          },
         ),
 
         listen<{ error?: { message?: string }; message?: string; threadId?: string }>(

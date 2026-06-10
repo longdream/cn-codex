@@ -743,6 +743,7 @@ interface AppState {
   addMessage: (message: ChatMessage) => void;
   updateToolCallStatus: (toolId: string, status: "success" | "failed", output?: string) => void;
   updateToolCallPatchProgress: (toolId: string, changes: PatchProgressChange[]) => void;
+  markRunningToolCallsInterrupted: (reason?: string) => void;
   appendStreamingText: (delta: string) => void;
   clearStreamingText: () => void;
   setStreaming: (v: boolean) => void;
@@ -825,7 +826,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     saveActiveModelId(id);
     const models = get().configuredModels;
     const entry = models.find((m) => m.id === id);
-    set({ activeModelId: id, currentModel: entry?.model ?? id });
+    const modelName = entry?.model ?? id;
+    set({ activeModelId: id, currentModel: modelName });
+    // 同步写入 config.toml，确保后端立即使用新模型
+    if (modelName) {
+      standaloneConfigWrite([
+        { keyPath: "model", value: modelName, mergeStrategy: "replace" },
+      ]).catch((err) => console.error("Failed to sync model to config:", err));
+    }
   },
   getActiveModel: () => {
     const { configuredModels, activeModelId } = get();
@@ -1070,6 +1078,40 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       return {};
+    }),
+  markRunningToolCallsInterrupted: (reason = "Tool interrupted by user.") =>
+    set((s) => {
+      let changed = false;
+      const messages = s.messages.map((message) => {
+        if (!message.toolCalls?.length) {
+          return message;
+        }
+        let messageChanged = false;
+        const nextCalls = message.toolCalls.map((toolCall) => {
+          if (toolCall.status !== "running") {
+            return toolCall;
+          }
+          changed = true;
+          messageChanged = true;
+          return {
+            ...toolCall,
+            status: "failed" as const,
+            output: toolCall.output ?? reason,
+          };
+        });
+        return messageChanged ? { ...message, toolCalls: nextCalls } : message;
+      });
+
+      if (!changed && s.browserPanelStatus !== "running") {
+        return {};
+      }
+
+      return {
+        messages: changed ? messages : s.messages,
+        ...(s.browserPanelStatus === "running"
+          ? { browserPanelStatus: "failed" as const }
+          : {}),
+      };
     }),
   appendStreamingText: (delta) =>
     set((s) => ({ streamingText: s.streamingText + delta })),

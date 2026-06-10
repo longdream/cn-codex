@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose};
@@ -14,8 +14,6 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::commands::plugin as plugin_commands;
-use crate::commands::window::open_browser_window;
-use crate::config_system::ConfigToml;
 use crate::config_system::McpServerConfig;
 use crate::error::AppResult;
 use crate::plugin_loader;
@@ -38,6 +36,8 @@ pub struct ToolExecutor {
     exec_sessions: Arc<Mutex<HashMap<u64, ExecSessionRecord>>>,
     next_exec_session_id: Arc<AtomicU64>,
     permission_grants: Arc<Mutex<Vec<serde_json::Value>>>,
+    active_tool_processes: Arc<Mutex<HashMap<String, ActiveToolProcess>>>,
+    active_browser_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,6 +213,19 @@ struct ExecSessionRecord {
     cursor: Arc<Mutex<usize>>,
     exit_code: Arc<Mutex<Option<i32>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
+}
+
+/// 记录可被“停止”中断的工具子进程。
+///
+/// 这里按 `thread_id + call_id` 维度登记，便于：
+/// 1) 用户点击停止时按线程批量 kill；
+/// 2) 工具自然结束时自动反注册。
+#[derive(Clone)]
+struct ActiveToolProcess {
+    thread_id: String,
+    call_id: String,
+    tool_name: String,
+    child: Arc<Mutex<Child>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -648,6 +661,8 @@ impl ToolExecutor {
             exec_sessions: Arc::new(Mutex::new(HashMap::new())),
             next_exec_session_id: Arc::new(AtomicU64::new(1)),
             permission_grants: Arc::new(Mutex::new(Vec::new())),
+            active_tool_processes: Arc::new(Mutex::new(HashMap::new())),
+            active_browser_cancellations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -665,6 +680,135 @@ impl ToolExecutor {
         self.mcp_direct_tools_discovered = false;
         clear_mcp_sessions_async(self.mcp_sessions.clone());
         clear_mcp_http_sessions_async(self.mcp_http_sessions.clone());
+    }
+
+    /// 仅用于“可中断工具”登记：key = thread_id::call_id。
+    fn active_process_key(thread_id: &str, call_id: &str) -> String {
+        format!("{thread_id}::{call_id}")
+    }
+
+    /// 工具子进程启动后登记，供停止按钮按线程中断。
+    async fn register_active_tool_process(
+        &self,
+        thread_id: &str,
+        call_id: &str,
+        tool_name: &str,
+        child: Arc<Mutex<Child>>,
+    ) {
+        let key = Self::active_process_key(thread_id, call_id);
+        let mut table = self.active_tool_processes.lock().await;
+        table.insert(
+            key,
+            ActiveToolProcess {
+                thread_id: thread_id.to_string(),
+                call_id: call_id.to_string(),
+                tool_name: tool_name.to_string(),
+                child,
+            },
+        );
+    }
+
+    /// 工具结束后反注册，避免内存中残留失效句柄。
+    async fn unregister_active_tool_process(&self, thread_id: &str, call_id: &str) {
+        let key = Self::active_process_key(thread_id, call_id);
+        self.active_tool_processes.lock().await.remove(&key);
+    }
+
+    async fn register_active_browser_cancellation(
+        &self,
+        thread_id: &str,
+        call_id: &str,
+        cancel_flag: Arc<AtomicBool>,
+    ) {
+        let key = Self::active_process_key(thread_id, call_id);
+        self.active_browser_cancellations
+            .lock()
+            .await
+            .insert(key, cancel_flag);
+    }
+
+    async fn unregister_active_browser_cancellation(&self, thread_id: &str, call_id: &str) {
+        let key = Self::active_process_key(thread_id, call_id);
+        self.active_browser_cancellations.lock().await.remove(&key);
+    }
+
+    /// 停止当前线程下所有活跃工具进程。
+    ///
+    /// 返回实际命中并尝试 kill 的进程数量，便于上层日志确认中断行为。
+    pub async fn interrupt_active_tools(&self, thread_id: &str) -> usize {
+        let mut table = self.active_tool_processes.lock().await;
+        let process_keys: Vec<String> = table
+            .iter()
+            .filter_map(|(key, entry)| {
+                if entry.thread_id == thread_id {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let processes: Vec<ActiveToolProcess> = process_keys
+            .iter()
+            .filter_map(|key| table.remove(key))
+            .collect();
+        drop(table);
+        let mut cancel_table = self.active_browser_cancellations.lock().await;
+        let cancel_keys: Vec<String> = cancel_table
+            .keys()
+            .filter_map(|key| {
+                if key.starts_with(&format!("{thread_id}::")) {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let cancel_flags: Vec<Arc<AtomicBool>> = cancel_keys
+            .iter()
+            .filter_map(|key| cancel_table.remove(key))
+            .collect();
+        drop(cancel_table);
+
+        for process in &processes {
+            let mut child = process.child.lock().await;
+            if let Err(error) = child.kill().await {
+                info!(
+                    "interrupt_active_tools: failed to kill {} call {}: {}",
+                    process.tool_name, process.call_id, error
+                );
+            }
+        }
+        for cancel in cancel_flags {
+            cancel.store(true, Ordering::SeqCst);
+        }
+
+        process_keys.len().max(cancel_keys.len())
+    }
+
+    /// 当线程 id 不可用时的兜底：中断所有活跃工具。
+    pub async fn interrupt_all_active_tools(&self) -> usize {
+        let mut table = self.active_tool_processes.lock().await;
+        let processes: Vec<ActiveToolProcess> = table.drain().map(|(_, entry)| entry).collect();
+        drop(table);
+        let mut cancel_table = self.active_browser_cancellations.lock().await;
+        let cancel_flags: Vec<Arc<AtomicBool>> =
+            cancel_table.drain().map(|(_, flag)| flag).collect();
+        drop(cancel_table);
+
+        for process in &processes {
+            let mut child = process.child.lock().await;
+            if let Err(error) = child.kill().await {
+                info!(
+                    "interrupt_all_active_tools: failed to kill {} call {}: {}",
+                    process.tool_name, process.call_id, error
+                );
+            }
+        }
+        for cancel in &cancel_flags {
+            cancel.store(true, Ordering::SeqCst);
+        }
+
+        processes.len().max(cancel_flags.len())
     }
 
     async fn remember_permission_grant(&self, profile: serde_json::Value) {
@@ -1370,14 +1514,14 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "browser_run",
-                    "description": "Run a browser session for navigation, UI interaction, screenshots, rendered DOM inspection, and web app testing. Supports two engines: 'obscura' (default, Rust-based headless browser via CDP, ideal for automated testing) and 'playwright' (optional, controls CN-Codex's visible browser or standalone Chromium).",
+                    "description": "Run a browser session for navigation, UI interaction, screenshots, rendered DOM inspection, and web app testing. Runtime uses CN-Codex Tauri WebView with Rust-side JS Injection + CDP.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "engine": {
                                 "type": "string",
-                                "enum": ["playwright", "obscura"],
-                                "description": "Browser engine to use. Defaults to 'obscura'. Use 'playwright' only when you specifically need Chromium or the visible browser."
+                                "enum": ["webview-js-injection"],
+                                "description": "Compatibility field. Runtime is always mapped to webview-js-injection internally."
                             },
                             "url": {
                                 "type": "string",
@@ -1385,15 +1529,15 @@ impl ToolExecutor {
                             },
                             "headless": {
                                 "type": "boolean",
-                                "description": "Whether to run the browser headlessly. Defaults to true."
+                                "description": "Compatibility field kept for old prompts. Ignored by WebView runtime."
                             },
                             "channel": {
                                 "type": "string",
-                                "description": "Optional Playwright browser channel, such as msedge or chrome."
+                                "description": "Compatibility field kept for old prompts. Ignored in WebView runtime."
                             },
                             "use_visible_browser": {
                                 "type": "boolean",
-                                "description": "Whether to control CN-Codex's visible built-in browser window through Playwright CDP. Only applies to engine='playwright'."
+                                "description": "Compatibility field kept for old prompts. WebView runtime always controls CN-Codex built-in browser."
                             },
                             "viewport": {
                                 "type": "object",
@@ -2496,16 +2640,19 @@ impl ToolExecutor {
         });
 
         let timeout_ms = args.timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000);
-        let timeout = std::time::Duration::from_millis(timeout_ms);
-        match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(Ok(status)) => {
+        let child = Arc::new(Mutex::new(child));
+        self.register_active_tool_process(thread_id, call_id, tool_name, child.clone())
+            .await;
+
+        let result = match wait_for_child_with_timeout(&child, timeout_ms).await {
+            WaitChildResult::Exited(status) => {
                 let stdout_bytes = stdout_handle.await.unwrap_or_default();
                 let stderr_bytes = stderr_handle.await.unwrap_or_default();
                 let stdout = String::from_utf8_lossy(&stdout_bytes);
                 let stderr = String::from_utf8_lossy(&stderr_bytes);
                 let exit_code = status.code().unwrap_or(-1);
 
-                let result = if exit_code == 0 {
+                let output = if exit_code == 0 {
                     if stderr.is_empty() {
                         stdout.to_string()
                     } else {
@@ -2515,19 +2662,24 @@ impl ToolExecutor {
                     format!("[exit code: {exit_code}]\n{stdout}\n[stderr]\n{stderr}")
                 };
 
-                let truncated = truncate_output(&result, 8000);
+                let truncated = truncate_output(&output, 8000);
                 self.emit_tool_end(
                     app_handle, thread_id, call_id, tool_name, exit_code, &truncated,
                 );
                 Ok(truncated)
             }
-            Ok(Err(e)) => {
-                let msg = format!("Failed to wait for command: {e}");
+            WaitChildResult::Failed(error) => {
+                stdout_handle.abort();
+                stderr_handle.abort();
+                let msg = format!("Failed to wait for command: {error}");
                 self.emit_tool_end(app_handle, thread_id, call_id, tool_name, -1, &msg);
                 Ok(msg)
             }
-            Err(_) => {
-                child.kill().await.ok();
+            WaitChildResult::TimedOut => {
+                {
+                    let mut guard = child.lock().await;
+                    let _ = guard.kill().await;
+                }
                 stdout_handle.abort();
                 stderr_handle.abort();
                 info!("Shell command timed out after {timeout_ms} ms: {cmd_display}");
@@ -2537,7 +2689,10 @@ impl ToolExecutor {
                 self.emit_tool_end(app_handle, thread_id, call_id, tool_name, 124, &msg);
                 Ok(msg)
             }
-        }
+        };
+
+        self.unregister_active_tool_process(thread_id, call_id).await;
+        result
     }
 
     async fn exec_command(
@@ -3626,323 +3781,72 @@ impl ToolExecutor {
 
         apply_browser_defaults(&self.workspace_config_dir, &mut payload);
 
-        let engine = payload
-            .get("engine")
-            .and_then(|v| v.as_str())
-            .unwrap_or("obscura")
-            .to_string();
-
         let display = browser_run_display(&payload);
         self.emit_tool_start(app_handle, thread_id, call_id, "browser_run", &display);
 
-        if engine == "obscura" {
-            return self
-                .exec_browser_run_obscura(&payload, call_id, app_handle, thread_id)
-                .await;
-        }
+        let timeout_ms = crate::browser_automation::browser_run_timeout_ms(&payload);
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        self.register_active_browser_cancellation(thread_id, call_id, cancel_flag.clone())
+            .await;
 
-        let runner_path = browser_runner_path(&self.workspace_config_dir);
-        if !runner_path.is_file() {
-            let msg = format!("Browser runner not found: {}", runner_path.display());
-            self.emit_tool_end(app_handle, thread_id, call_id, "browser_run", -1, &msg);
-            return Ok(msg);
-        }
-
-        let browser_dir = self.workspace_config_dir.join("browser");
-        let screenshot_dir = browser_dir.join("screenshots");
-        let asset_dir = browser_dir.join("assets");
-        tokio::fs::create_dir_all(&screenshot_dir).await.ok();
-        tokio::fs::create_dir_all(&asset_dir).await.ok();
-
-        if let Some(object) = payload.as_object_mut() {
-            object.insert(
-                "defaultScreenshotDir".to_string(),
-                serde_json::Value::String(screenshot_dir.to_string_lossy().to_string()),
-            );
-            object.insert(
-                "defaultAssetDir".to_string(),
-                serde_json::Value::String(asset_dir.to_string_lossy().to_string()),
-            );
-            object.insert(
-                "storageStatePath".to_string(),
-                serde_json::Value::String(
-                    browser_dir
-                        .join("storage-state.json")
-                        .to_string_lossy()
-                        .to_string(),
-                ),
-            );
-            object.insert(
-                "cwd".to_string(),
-                serde_json::Value::String(self.cwd.to_string_lossy().to_string()),
-            );
-        }
-
-        if browser_run_use_visible_browser(&payload) {
-            let initial_url = browser_run_initial_url(&payload);
-            match open_browser_window(
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            crate::browser_automation::run_webview_js_injection(
                 app_handle,
                 &self.workspace_config_dir,
-                initial_url.as_deref(),
-                false,
-            ) {
-                Ok(info) => {
-                    if let Some(object) = payload.as_object_mut() {
-                        object.insert(
-                            "cdpEndpoint".to_string(),
-                            serde_json::Value::String(info.cdp_endpoint),
-                        );
-                        object.insert(
-                            "visibleBrowserLabel".to_string(),
-                            serde_json::Value::String(info.label),
-                        );
-                    }
-                }
-                Err(e) => {
-                    if let Some(object) = payload.as_object_mut() {
-                        object.insert(
-                            "visibleBrowserError".to_string(),
-                            serde_json::Value::String(e.to_string()),
-                        );
-                    }
-                }
-            }
-        }
+                &self.cwd,
+                self.http.clone(),
+                &payload,
+                cancel_flag.clone(),
+            ),
+        )
+        .await;
 
-        let timeout_ms = payload
-            .get("timeout_ms")
-            .or_else(|| payload.get("timeoutMs"))
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(60_000)
-            .clamp(1_000, 120_000);
+        self.unregister_active_browser_cancellation(thread_id, call_id)
+            .await;
 
-        let mut child = match Command::new("node")
-            .arg(&runner_path)
-            .current_dir(project_root_from_config_dir(&self.workspace_config_dir))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(e) => {
-                let msg = format!("Failed to start browser runner: {e}");
-                self.emit_tool_end(app_handle, thread_id, call_id, "browser_run", -1, &msg);
-                return Ok(msg);
+        let (exit_code, output) = match outcome {
+            Ok(Ok(result)) => {
+                let output = serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "ok": true,
+                        "browserMode": "tauri-webview-js-injection",
+                        "actions": [],
+                        "screenshots": [],
+                        "assetBundles": [],
+                        "tabs": []
+                    })
+                    .to_string()
+                });
+                (0, output)
             }
+            Ok(Err(error)) => {
+                let (error_code, hint) = classify_browser_run_error(&error);
+                (
+                    -1,
+                    browser_run_failure_json(error_code, &error, Some(hint)),
+                )
+            }
+            Err(_) => (
+                124,
+                browser_run_failure_json(
+                    "WEBVIEW_RUN_TIMEOUT",
+                    &format!("WebView browser run timed out after {timeout_ms} ms"),
+                    Some("请缩小动作批次、减少 wait_for_timeout，或检查页面是否卡死。"),
+                ),
+            ),
         };
 
-        if let Some(mut stdin) = child.stdin.take() {
-            let input = serde_json::to_vec(&payload).unwrap_or_default();
-            let _ = stdin.write_all(&input).await;
-        }
-
-        let child_stdout = child.stdout.take();
-        let child_stderr = child.stderr.take();
-        let stdout_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut out) = child_stdout {
-                let _ = out.read_to_end(&mut buf).await;
-            }
-            buf
-        });
-        let stderr_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut err) = child_stderr {
-                let _ = err.read_to_end(&mut buf).await;
-            }
-            buf
-        });
-
-        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait()).await
-        {
-            Ok(Ok(status)) => {
-                let stdout =
-                    String::from_utf8_lossy(&stdout_handle.await.unwrap_or_default()).to_string();
-                let stderr =
-                    String::from_utf8_lossy(&stderr_handle.await.unwrap_or_default()).to_string();
-                let exit_code = status.code().unwrap_or(-1);
-                let output = if exit_code == 0 {
-                    if stderr.trim().is_empty() {
-                        stdout
-                    } else {
-                        format!("{stdout}\n[stderr]\n{stderr}")
-                    }
-                } else {
-                    format!("[exit code: {exit_code}]\n{stdout}\n[stderr]\n{stderr}")
-                };
-                let truncated = truncate_output(&output, 16_000);
-                self.emit_tool_end(
-                    app_handle,
-                    thread_id,
-                    call_id,
-                    "browser_run",
-                    exit_code,
-                    &truncated,
-                );
-                Ok(truncated)
-            }
-            Ok(Err(e)) => {
-                stdout_handle.abort();
-                stderr_handle.abort();
-                let msg = format!("Failed to wait for browser runner: {e}");
-                self.emit_tool_end(app_handle, thread_id, call_id, "browser_run", -1, &msg);
-                Ok(msg)
-            }
-            Err(_) => {
-                let _ = child.kill().await;
-                stdout_handle.abort();
-                stderr_handle.abort();
-                let msg = format!("Browser run timed out after {timeout_ms} ms");
-                self.emit_tool_end(app_handle, thread_id, call_id, "browser_run", 124, &msg);
-                Ok(msg)
-            }
-        }
-    }
-
-    async fn exec_browser_run_obscura(
-        &self,
-        payload: &serde_json::Value,
-        call_id: &str,
-        app_handle: &AppHandle,
-        thread_id: &str,
-    ) -> AppResult<String> {
-        let obscura_binary = resolved_obscura_binary(&self.workspace_config_dir);
-        let obscura_port = resolved_obscura_port(&self.workspace_config_dir);
-
-        let manager = crate::obscura::ObscuraManager::new(
-            std::path::PathBuf::from(&obscura_binary),
-            obscura_port,
+        let truncated = truncate_output(&output, 16_000);
+        self.emit_tool_end(
+            app_handle,
+            thread_id,
+            call_id,
+            "browser_run",
+            exit_code,
+            &truncated,
         );
-
-        let cdp_endpoint = match manager.start().await {
-            Ok(ep) => ep,
-            Err(e) => {
-                let msg = format!("Failed to start Obscura: {e}");
-                self.emit_tool_end(app_handle, thread_id, call_id, "browser_run", -1, &msg);
-                return Ok(msg);
-            }
-        };
-
-        let runner_path = browser_runner_path(&self.workspace_config_dir);
-        if !runner_path.is_file() {
-            let msg = format!("Browser runner not found: {}", runner_path.display());
-            self.emit_tool_end(app_handle, thread_id, call_id, "browser_run", -1, &msg);
-            return Ok(msg);
-        }
-
-        let mut obscura_payload = payload.clone();
-        if let Some(obj) = obscura_payload.as_object_mut() {
-            obj.insert(
-                "cdpEndpoint".to_string(),
-                serde_json::Value::String(cdp_endpoint),
-            );
-            obj.remove("engine");
-            obj.remove("use_visible_browser");
-
-            let browser_dir = self.workspace_config_dir.join("browser");
-            let screenshot_dir = browser_dir.join("screenshots");
-            let asset_dir = browser_dir.join("assets");
-            tokio::fs::create_dir_all(&screenshot_dir).await.ok();
-            tokio::fs::create_dir_all(&asset_dir).await.ok();
-            obj.insert(
-                "defaultScreenshotDir".to_string(),
-                serde_json::Value::String(screenshot_dir.to_string_lossy().to_string()),
-            );
-            obj.insert(
-                "defaultAssetDir".to_string(),
-                serde_json::Value::String(asset_dir.to_string_lossy().to_string()),
-            );
-            obj.insert(
-                "cwd".to_string(),
-                serde_json::Value::String(self.cwd.to_string_lossy().to_string()),
-            );
-        }
-
-        let timeout_ms = payload
-            .get("timeout_ms")
-            .or_else(|| payload.get("timeoutMs"))
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(60_000)
-            .clamp(1_000, 120_000);
-
-        let mut child = match Command::new("node")
-            .arg(&runner_path)
-            .current_dir(project_root_from_config_dir(&self.workspace_config_dir))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(e) => {
-                let msg = format!("Failed to start browser runner (obscura): {e}");
-                self.emit_tool_end(app_handle, thread_id, call_id, "browser_run", -1, &msg);
-                return Ok(msg);
-            }
-        };
-
-        if let Some(mut stdin) = child.stdin.take() {
-            let input = serde_json::to_vec(&obscura_payload).unwrap_or_default();
-            let _ = stdin.write_all(&input).await;
-        }
-
-        let child_stdout = child.stdout.take();
-        let child_stderr = child.stderr.take();
-        let stdout_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut out) = child_stdout {
-                let _ = out.read_to_end(&mut buf).await;
-            }
-            buf
-        });
-        let stderr_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut err) = child_stderr {
-                let _ = err.read_to_end(&mut buf).await;
-            }
-            buf
-        });
-
-        match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait()).await
-        {
-            Ok(Ok(status)) => {
-                let stdout =
-                    String::from_utf8_lossy(&stdout_handle.await.unwrap_or_default()).to_string();
-                let stderr =
-                    String::from_utf8_lossy(&stderr_handle.await.unwrap_or_default()).to_string();
-                let exit_code = status.code().unwrap_or(-1);
-                let output = if exit_code == 0 {
-                    if stderr.trim().is_empty() {
-                        stdout
-                    } else {
-                        format!("{stdout}\n[stderr]\n{stderr}")
-                    }
-                } else {
-                    format!("[obscura exit code: {exit_code}]\n{stdout}\n[stderr]\n{stderr}")
-                };
-                let truncated = truncate_output(&output, 16_000);
-                self.emit_tool_end(
-                    app_handle, thread_id, call_id, "browser_run", exit_code, &truncated,
-                );
-                Ok(truncated)
-            }
-            Ok(Err(e)) => {
-                stdout_handle.abort();
-                stderr_handle.abort();
-                let msg = format!("Failed to wait for browser runner (obscura): {e}");
-                self.emit_tool_end(app_handle, thread_id, call_id, "browser_run", -1, &msg);
-                Ok(msg)
-            }
-            Err(_) => {
-                let _ = child.kill().await;
-                stdout_handle.abort();
-                stderr_handle.abort();
-                let msg = format!("Obscura browser run timed out after {timeout_ms} ms");
-                self.emit_tool_end(app_handle, thread_id, call_id, "browser_run", 124, &msg);
-                Ok(msg)
-            }
-        }
+        Ok(truncated)
     }
 
     async fn exec_spawn_agent(
@@ -6692,10 +6596,10 @@ impl ToolExecutor {
             encode_query_component(query)
         );
         let browser_args = serde_json::json!({
-            "engine": "obscura",
+            "engine": "webview-js-injection",
             "url": baidu_url,
             "waitUntil": "networkidle",
-            "use_visible_browser": false,
+            "use_visible_browser": true,
             "actions": [
                 { "type": "wait_for_timeout", "ms": 2500 },
                 { "type": "eval", "script": extract_script },
@@ -6726,10 +6630,10 @@ impl ToolExecutor {
             encode_query_component(query)
         );
         let browser_args_ddg = serde_json::json!({
-            "engine": "obscura",
+            "engine": "webview-js-injection",
             "url": ddg_url,
             "waitUntil": "networkidle",
-            "use_visible_browser": false,
+            "use_visible_browser": true,
             "actions": [
                 { "type": "wait_for_timeout", "ms": 3000 },
                 { "type": "eval", "script": extract_script },
@@ -7341,43 +7245,59 @@ fn format_apply_patch_report(report: &ApplyPatchReport) -> String {
     output
 }
 
-fn project_root_from_config_dir(workspace_config_dir: &Path) -> &Path {
-    workspace_config_dir
-        .parent()
-        .unwrap_or(workspace_config_dir)
+enum WaitChildResult {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+    Failed(String),
 }
 
-fn browser_runner_path(workspace_config_dir: &Path) -> PathBuf {
-    project_root_from_config_dir(workspace_config_dir)
-        .join("scripts")
-        .join("browser-runner.mjs")
-}
+/// 以短轮询方式等待子进程结束。
+///
+/// 说明：
+/// - 不直接 `child.wait().await`，避免在等待期间长时间独占 child 的可变借用；
+/// - 这样 interrupt 逻辑仍可获取 child 并执行 kill。
+async fn wait_for_child_with_timeout(child: &Arc<Mutex<Child>>, timeout_ms: u64) -> WaitChildResult {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let wait_result = {
+            let mut guard = child.lock().await;
+            guard.try_wait()
+        };
 
-fn load_browser_config(workspace_config_dir: &Path) -> ConfigToml {
-    let config_path = workspace_config_dir.join("config.toml");
-    ConfigToml::load(&config_path).unwrap_or_default()
-}
-
-fn apply_browser_defaults(workspace_config_dir: &Path, payload: &mut serde_json::Value) {
-    let config = load_browser_config(workspace_config_dir);
-    if let Some(object) = payload.as_object_mut() {
-        if object.get("engine").is_none() {
-            object.insert(
-                "engine".to_string(),
-                serde_json::Value::String(config.resolved_browser_engine()),
-            );
+        match wait_result {
+            Ok(Some(status)) => return WaitChildResult::Exited(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    return WaitChildResult::TimedOut;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => return WaitChildResult::Failed(error.to_string()),
         }
+    }
+}
 
-        let engine = object
+fn apply_browser_defaults(_workspace_config_dir: &Path, payload: &mut serde_json::Value) {
+    if let Some(object) = payload.as_object_mut() {
+        // 兼容历史 prompt：保留传入 engine，但统一映射到新引擎。
+        let requested_engine = object
             .get("engine")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("obscura");
-        if engine == "obscura" {
+            .unwrap_or("webview-js-injection")
+            .to_string();
+        if requested_engine != "webview-js-injection" {
             object.insert(
-                "use_visible_browser".to_string(),
-                serde_json::Value::Bool(false),
+                "engineRequested".to_string(),
+                serde_json::Value::String(requested_engine),
             );
         }
+        object.insert(
+            "engine".to_string(),
+            serde_json::Value::String("webview-js-injection".to_string()),
+        );
+        object
+            .entry("use_visible_browser".to_string())
+            .or_insert_with(|| serde_json::Value::Bool(true));
     }
 }
 
@@ -7399,6 +7319,7 @@ fn browser_run_display(payload: &serde_json::Value) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn browser_run_use_visible_browser(payload: &serde_json::Value) -> bool {
     payload
         .get("use_visible_browser")
@@ -7407,6 +7328,7 @@ fn browser_run_use_visible_browser(payload: &serde_json::Value) -> bool {
         .unwrap_or(true)
 }
 
+#[allow(dead_code)]
 fn browser_run_initial_url(payload: &serde_json::Value) -> Option<String> {
     if let Some(url) = payload
         .get("url")
@@ -7432,26 +7354,6 @@ fn browser_run_initial_url(payload: &serde_json::Value) -> Option<String> {
                     .map(|url| url.trim().to_string())
             })
         })
-}
-
-fn resolved_obscura_binary(workspace_config_dir: &Path) -> String {
-    std::env::var("OBSCURA_BINARY")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            load_browser_config(workspace_config_dir)
-                .obscura_binary
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or_else(|| "obscura".to_string())
-}
-
-fn resolved_obscura_port(workspace_config_dir: &Path) -> u16 {
-    std::env::var("OBSCURA_PORT")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .or_else(|| load_browser_config(workspace_config_dir).obscura_port)
-        .unwrap_or(9222)
 }
 
 #[derive(Debug, Clone)]
@@ -12038,6 +11940,52 @@ fn encode_query_component(input: &str) -> String {
     output
 }
 
+fn browser_run_failure_json(error_code: &str, message: &str, hint: Option<&str>) -> String {
+    let mapped = serde_json::json!({
+        "ok": false,
+        "errorCode": error_code,
+        "message": message,
+        "hint": hint.unwrap_or("请检查页面是否可访问、CDP 端口是否可用，并重试。"),
+        "browserMode": "unavailable",
+        "actions": [],
+        "screenshots": [],
+        "assetBundles": [],
+        "tabs": []
+    });
+    serde_json::to_string_pretty(&mapped).unwrap_or_else(|_| mapped.to_string())
+}
+
+/// 将 browser_run 运行期错误归类为更精确的错误码，避免把所有失败都显示为 CDP 失效。
+fn classify_browser_run_error(error: &str) -> (&'static str, &'static str) {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("webview_cdp_unavailable")
+        || lower.contains("cdp connect failed")
+        || lower.contains("failed to query cdp tabs")
+        || lower.contains("cdp websocket closed")
+    {
+        return (
+            "WEBVIEW_CDP_UNAVAILABLE",
+            "未建立到内置浏览器的 CDP 通道。请确认浏览器窗口已启动，然后重试。",
+        );
+    }
+    if lower.contains("timeout waiting for selector:") {
+        return (
+            "SELECTOR_TIMEOUT",
+            "页面已打开，但在超时时间内未找到目标选择器。请核对 selector 是否与当前 DOM 匹配。",
+        );
+    }
+    if lower.contains("browser run interrupted by user") {
+        return (
+            "BROWSER_RUN_INTERRUPTED",
+            "本次浏览器任务已被中断，未继续执行剩余动作。",
+        );
+    }
+    (
+        "JS_INJECTION_FAILED",
+        "请检查页面是否可访问、动作参数是否正确，并重试。",
+    )
+}
+
 fn truncate_output(s: &str, max_chars: usize) -> String {
     if s.len() <= max_chars {
         s.to_string()
@@ -12507,7 +12455,7 @@ mod tests {
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname: Browser\ndescription: Control pages with Playwright\ntags: [\"browser\"]\n---\n",
+            "---\nname: Browser\ndescription: Control pages with WebView JS Injection\ntags: [\"browser\"]\n---\n",
         )
         .unwrap();
         let plugin_dir = root.join("codey").join("plugins").join("sites");
@@ -13621,14 +13569,20 @@ rl.on("line", (line) => {
     }
 
     #[test]
-    fn browser_runner_path_resolves_from_codey_config_dir() {
-        let config_dir = PathBuf::from("D:/workspace/cn-codex/codey");
-        assert_eq!(
-            browser_runner_path(&config_dir),
-            PathBuf::from("D:/workspace/cn-codex")
-                .join("scripts")
-                .join("browser-runner.mjs")
+    fn classify_browser_run_error_maps_selector_timeout() {
+        let (code, hint) = classify_browser_run_error(
+            "Action 0 (wait_for_selector) failed: Timeout waiting for selector: #game-board",
         );
+        assert_eq!(code, "SELECTOR_TIMEOUT");
+        assert!(hint.contains("选择器"));
+    }
+
+    #[test]
+    fn classify_browser_run_error_maps_cdp_unavailable() {
+        let (code, hint) =
+            classify_browser_run_error("WEBVIEW_CDP_UNAVAILABLE: cannot connect to http://127.0.0.1:9242");
+        assert_eq!(code, "WEBVIEW_CDP_UNAVAILABLE");
+        assert!(hint.contains("CDP"));
     }
 
     #[test]
