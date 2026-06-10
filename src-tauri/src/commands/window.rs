@@ -274,15 +274,19 @@ pub async fn reveal_in_explorer(path: String) -> AppResult<()> {
 
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
         if p.is_dir() {
             std::process::Command::new("explorer")
                 .arg(&path)
+                .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .map_err(|e| AppError::Custom(format!("Failed to open explorer: {e}")))?;
         } else {
             std::process::Command::new("explorer")
                 .arg("/select,")
                 .arg(&path)
+                .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .map_err(|e| AppError::Custom(format!("Failed to open explorer: {e}")))?;
         }

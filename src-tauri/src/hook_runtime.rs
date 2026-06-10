@@ -10,6 +10,19 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tracing::{info, warn};
 
+#[cfg(windows)]
+trait CommandNoConsole {
+    fn no_console(&mut self) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl CommandNoConsole for Command {
+    fn no_console(&mut self) -> &mut Self {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+}
+
 use crate::config_system::ConfigToml;
 use crate::plugin_loader;
 
@@ -773,6 +786,9 @@ async fn execute_hook_command(
     for (key, value) in &hook.env {
         command.env(key, value);
     }
+
+    #[cfg(windows)]
+    command.no_console();
 
     let mut child = match command.spawn() {
         Ok(child) => child,

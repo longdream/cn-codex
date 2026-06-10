@@ -12,6 +12,19 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
+#[cfg(windows)]
+trait CommandNoConsole {
+    fn no_console(&mut self) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl CommandNoConsole for Command {
+    fn no_console(&mut self) -> &mut Self {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+}
+
 use crate::adapter::{
     self,
     types::{
@@ -1999,12 +2012,12 @@ fn git_status_disappeared_to_action(status: &str) -> String {
 }
 
 async fn git_status_snapshot(cwd: &Path) -> GitStatusSnapshot {
-    let Ok(output) = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(cwd)
-        .output()
-        .await
-    else {
+    let mut cmd = Command::new("git");
+    cmd.args(["status", "--porcelain"])
+        .current_dir(cwd);
+    #[cfg(windows)]
+    cmd.no_console();
+    let Ok(output) = cmd.output().await else {
         return GitStatusSnapshot::new();
     };
 

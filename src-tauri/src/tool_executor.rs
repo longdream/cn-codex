@@ -13,6 +13,19 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tracing::info;
 
+#[cfg(windows)]
+trait CommandNoConsole {
+    fn no_console(&mut self) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl CommandNoConsole for Command {
+    fn no_console(&mut self) -> &mut Self {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+}
+
 use crate::commands::plugin as plugin_commands;
 use crate::config_system::McpServerConfig;
 use crate::error::AppResult;
@@ -2609,12 +2622,14 @@ impl ToolExecutor {
             shell_program_and_args_unix(&cmd_display, args.login)
         };
 
-        let mut child = Command::new(&program)
-            .args(&cmd_args)
+        let mut cmd = Command::new(&program);
+        cmd.args(&cmd_args)
             .current_dir(&workdir)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        cmd.no_console();
+        let mut child = cmd.spawn()
             .map_err(|e| crate::error::AppError::Custom(format!("Failed to spawn command: {e}")))?;
 
         let child_stdout = child.stdout.take();
@@ -2774,14 +2789,15 @@ impl ToolExecutor {
         }
 
         let (program, cmd_args) = exec_command_program_and_args(&args);
-        let mut child = match Command::new(&program)
-            .args(&cmd_args)
+        let mut spawn_cmd = Command::new(&program);
+        spawn_cmd.args(&cmd_args)
             .current_dir(&workdir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        spawn_cmd.no_console();
+        let mut child = match spawn_cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
                 let msg = format!("Failed to spawn command: {e}");
@@ -4761,12 +4777,14 @@ impl ToolExecutor {
         args: &[String],
         max_output_bytes: usize,
     ) -> Result<GitCommandOutput, String> {
-        let mut child = Command::new("git")
-            .args(args)
+        let mut cmd = Command::new("git");
+        cmd.args(args)
             .current_dir(&self.cwd)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        cmd.no_console();
+        let mut child = cmd.spawn()
             .map_err(|e| format!("Failed to spawn git: {e}"))?;
 
         let child_stdout = child.stdout.take();
@@ -6328,6 +6346,8 @@ impl ToolExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .envs(&server.env);
+        #[cfg(windows)]
+        command.no_console();
 
         let mut child = command.spawn().map_err(|e| {
             McpRequestError::Transport(format!("Failed to start MCP server '{}': {e}", server.name))
@@ -7424,14 +7444,15 @@ async fn run_subagent_process(
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
     subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
 ) {
-    let mut child = match Command::new(&command.program)
-        .args(&command.args)
+    let mut cmd = Command::new(&command.program);
+    cmd.args(&command.args)
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.no_console();
+    let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
             update_subagent_finished(
@@ -7957,10 +7978,11 @@ async fn close_subagent(
 async fn kill_process_tree(pid: u32) -> Result<(), String> {
     let output = if cfg!(windows) {
         let pid = pid.to_string();
-        Command::new("taskkill")
-            .args(["/PID", pid.as_str(), "/F", "/T"])
-            .output()
-            .await
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/PID", pid.as_str(), "/F", "/T"]);
+        #[cfg(windows)]
+        cmd.no_console();
+        cmd.output().await
     } else {
         let pid = pid.to_string();
         Command::new("kill")

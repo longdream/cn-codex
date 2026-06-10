@@ -7,7 +7,7 @@ src-tauri/target/
 
 # Node
 node_modules/
-
+publish/
 # IDE
 .vscode/
 .idea/

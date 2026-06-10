@@ -18,7 +18,6 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    use tauri::Manager;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -33,10 +32,13 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .setup(|app| {
+        .setup(|_app| {
             #[cfg(debug_assertions)]
-            if let Some(webview) = app.get_webview_window("main") {
-                webview.open_devtools();
+            {
+                use tauri::Manager;
+                if let Some(webview) = _app.get_webview_window("main") {
+                    webview.open_devtools();
+                }
             }
             Ok(())
         })
