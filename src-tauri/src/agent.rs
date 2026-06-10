@@ -1229,6 +1229,14 @@ impl AgentEngine {
         let body = adapter.build_body(model, &messages, tools_slice);
 
         info!("LLM request: wire_api={wire_api}, url={url}, model={model}");
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let body_preview = serde_json::to_string(&body)
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect::<String>();
+            tracing::debug!("LLM request body (first 500 chars): {body_preview}");
+        }
 
         let response = self
             .http
@@ -1245,6 +1253,21 @@ impl AgentEngine {
             return Err(AppError::Custom(format!(
                 "LLM API error ({status}): {body_text}"
             )));
+        }
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        info!("LLM response content-type: {content_type}");
+
+        // 如果返回的是非流式 JSON（某些中转站即使请求 stream=true 也返回完整 JSON）
+        if content_type.contains("application/json") && !content_type.contains("stream") {
+            let body_text = response.text().await.unwrap_or_default();
+            info!("Non-streaming JSON response received (first 300 chars): {}", &body_text[..body_text.len().min(300)]);
+            return self.parse_non_streaming_chat_response(&body_text, app_handle);
         }
 
         // 流式解析
@@ -1271,6 +1294,8 @@ impl AgentEngine {
                 if line.is_empty() {
                     continue;
                 }
+
+                tracing::trace!("SSE line: {}", &line[..line.len().min(200)]);
 
                 // 使用 adapter 检测是否结束
                 if adapter.is_stream_done(&line) {
@@ -1303,8 +1328,10 @@ impl AgentEngine {
                             if let Some(id) = id {
                                                     acc.id = id;
                                                 }
-                            if let Some(name) = name {
-                                                        acc.name = name;
+                            if let Some(ref name) = name {
+                                if !name.is_empty() {
+                                    acc.name = name.clone();
+                                }
                                                     }
                             if let Some(args) = arguments {
                                                         acc.arguments.push_str(&args);
@@ -1351,6 +1378,19 @@ impl AgentEngine {
             usage_info,
         );
 
+        // 如果流结束但没有任何内容也没有 finish_reason，可能是连接异常或响应格式不兼容
+        if full_text.is_empty()
+            && valid_tool_calls.is_empty()
+            && finish_reason.is_none()
+        {
+            warn!("Stream ended with no content and no finish_reason. Buffer remainder: {:?}", &buffer[..buffer.len().min(200)]);
+            return Err(AppError::Custom(
+                "LLM returned empty stream - the provider may not support the current request format. \
+                 Try switching wire_api or check the provider's compatibility."
+                    .to_string(),
+            ));
+        }
+
         if !valid_tool_calls.is_empty() {
             Ok(CompletionResult::ToolCalls {
                 calls: valid_tool_calls,
@@ -1360,6 +1400,76 @@ impl AgentEngine {
         } else {
             Ok(CompletionResult::Message {
                 text: full_text,
+                usage: usage_info,
+            })
+        }
+    }
+
+    /// 解析非流式 Chat Completions JSON 响应
+    fn parse_non_streaming_chat_response(
+        &self,
+        body: &str,
+        app_handle: &AppHandle,
+    ) -> AppResult<CompletionResult> {
+        let json: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| AppError::Custom(format!("Failed to parse non-streaming response: {e}")))?;
+
+        // 检查是否有 error
+        if let Some(err) = json.get("error") {
+            let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
+            return Err(AppError::Custom(format!("LLM API error: {msg}")));
+        }
+
+        let choices = json.get("choices").and_then(|c| c.as_array());
+        let choice = choices.and_then(|arr| arr.first());
+
+        let message = choice.and_then(|c| c.get("message"));
+        let text = message
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // 提取 usage
+        let usage_info = json.get("usage").map(|u| UsageInfo {
+            prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            completion_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        });
+
+        // 提取 tool calls
+        let tool_calls: Vec<ToolCallRequest> = message
+            .and_then(|m| m.get("tool_calls"))
+            .and_then(|tc| tc.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|tc| {
+                        let id = tc.get("id")?.as_str()?.to_string();
+                        let func = tc.get("function")?;
+                        let name = func.get("name")?.as_str()?.to_string();
+                        let arguments = func.get("arguments")?.as_str()?.to_string();
+                        Some(ToolCallRequest { id, name, arguments })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // 发送文本增量事件
+        if !text.is_empty() {
+            app_handle
+                .emit("agent-message-delta", serde_json::json!({ "delta": &text }))
+                .ok();
+        }
+
+        if !tool_calls.is_empty() {
+            Ok(CompletionResult::ToolCalls {
+                calls: tool_calls,
+                preceding_text: text,
+                usage: usage_info,
+            })
+        } else {
+            Ok(CompletionResult::Message {
+                text,
                 usage: usage_info,
             })
         }

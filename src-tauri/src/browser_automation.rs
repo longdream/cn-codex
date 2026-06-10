@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::time::sleep;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-use crate::commands::window::open_browser_window;
+use crate::commands::window::open_browser_embedded;
 
 const DEFAULT_ACTION_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_RUN_TIMEOUT_MS: u64 = 60_000;
@@ -124,8 +124,8 @@ pub async fn run_webview_js_injection(
 ) -> Result<BrowserRunOutput, String> {
     let started_at = Instant::now();
     let initial_url = browser_run_initial_url(payload);
-    let browser_info = open_browser_window(app_handle, workspace_config_dir, initial_url.as_deref(), false)
-        .map_err(|e| format!("Failed to open browser window: {e}"))?;
+    let browser_info = open_browser_embedded(app_handle, workspace_config_dir, initial_url.as_deref(), -9999.0, -9999.0, 800.0, 600.0)
+        .map_err(|e| format!("Failed to open browser: {e}"))?;
     let cdp_endpoint = browser_info.cdp_endpoint.clone();
 
     ensure_cdp_ready(&http, &cdp_endpoint, Duration::from_secs(8), &cancel_flag).await?;

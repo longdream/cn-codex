@@ -16,6 +16,7 @@
     "fs:default",
     "notification:default",
     "opener:default",
+    "opener:allow-open-path",
     "process:default"
   ]
 }

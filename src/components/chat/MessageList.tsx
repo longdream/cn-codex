@@ -6,6 +6,7 @@ import {
   IconChevronRight,
   IconClock,
   IconCopy,
+  IconExternalLink,
   IconFile,
   IconFileDiff,
   IconFileText,
@@ -21,6 +22,7 @@ import {
   IconTerminal2,
 } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { revealInExplorer } from "../../api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import type { ChatMessage, RunSummary, ToolCallItem } from "../../stores/appStore";
@@ -199,6 +201,7 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
   const changedFiles = summary.changedFiles ?? [];
   const usage = summary.usage;
   const goalBudgetTokens = summary.goalBudgetTokens;
+  const workspaceCwd = useAppStore((s) => s.workspaceCwd);
 
   return (
     <section className="max-w-[1100px]">
@@ -236,7 +239,12 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
       <div className="mt-5 grid gap-3">
         {changedFiles.length > 0 ? (
           changedFiles.map((file) => (
-            <div key={`${file.action}:${file.path}`} className="chat-work-card flex items-center gap-4 px-4 py-3">
+            <div
+              key={`${file.action}:${file.path}`}
+              className="chat-work-card flex cursor-pointer items-center gap-4 px-4 py-3 transition-colors hover:border-[var(--accent-border)]"
+              onClick={() => void revealInExplorer(toAbsolutePath(file.path, workspaceCwd))}
+              title={intl.formatMessage({ id: "chat.runSummary.revealFile" })}
+            >
               <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--chat-chip)] text-[var(--chat-muted)]">
                 <IconFileDiff size={24} stroke={1.65} />
               </div>
@@ -253,10 +261,14 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
                   {file.path}
                 </div>
               </div>
-              <div className="hidden items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--chat-line)] px-2.5 py-1 text-xs text-[var(--chat-muted)] sm:flex">
-                <IconClock size={13} stroke={1.8} />
-                {formatDuration(summary.durationMs)}
-              </div>
+              <button
+                type="button"
+                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--accent)]"
+                onClick={(e) => { e.stopPropagation(); void revealInExplorer(toAbsolutePath(file.path, workspaceCwd)); }}
+                title={intl.formatMessage({ id: "chat.runSummary.revealFile" })}
+              >
+                <IconExternalLink size={15} stroke={1.8} />
+              </button>
             </div>
           ))
         ) : (
@@ -265,6 +277,7 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
           </div>
         )}
       </div>
+
     </section>
   );
 }
@@ -272,6 +285,15 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
 
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function toAbsolutePath(filePath: string, cwd: string | null): string {
+  if (!cwd) return filePath;
+  if (/^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith("/") || filePath.startsWith("\\\\")) {
+    return filePath;
+  }
+  const base = cwd.replace(/[\\/]+$/, "");
+  return `${base}\\${filePath.replace(/\//g, "\\")}`;
 }
 
 function formatTokenCount(value?: number): string {

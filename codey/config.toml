@@ -10,6 +10,12 @@ experimental_bearer_token = "633ef9cd-ef82-4311-9356-f4b99ec04150"
 wire_api = "chat"
 requires_openai_auth = false
 
+[model_providers.openai]
+base_url = "https://rayplus.site/v1"
+experimental_bearer_token = "sk-54f433732fa28bb48c75aa2039e354f5c732217f9c38fc2f5e7cb4564915ac05"
+wire_api = "chat"
+requires_openai_auth = true
+
 [mcp_servers]
 
 [hooks]

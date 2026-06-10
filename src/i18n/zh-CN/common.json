@@ -290,5 +290,8 @@
   "chat.fileAction.renamed": "已重命名",
   "browser.engine.webview": "WebView JS 注入浏览器",
   "browser.engine.description": "浏览器引擎",
-  "settings.browserCdpPort": "浏览器 CDP 端口"
+  "settings.browserCdpPort": "浏览器 CDP 端口",
+  "chat.runSummary.revealFile": "在资源管理器中显示",
+  "chat.runSummary.openFolder": "打开项目文件夹",
+  "contextMenu.openInExplorer": "在资源管理器中打开"
 }

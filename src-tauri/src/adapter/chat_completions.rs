@@ -60,11 +60,9 @@ struct ChunkUsage {
 impl ProviderAdapter for ChatCompletionsAdapter {
     fn build_url(&self, base_url: &str, _model: &str) -> String {
         let base = base_url.trim_end_matches('/');
-        // 如果已经包含完整路径，直接使用
         if base.ends_with("/chat/completions") {
             return base.to_string();
         }
-        // 如果是 responses 结尾，替换为 chat/completions
         if base.ends_with("/responses") {
             let prefix = &base[..base.len() - "/responses".len()];
             return format!("{prefix}/chat/completions");
@@ -89,9 +87,14 @@ impl ProviderAdapter for ChatCompletionsAdapter {
         messages: &[InternalMessage],
         tools: Option<&[serde_json::Value]>,
     ) -> serde_json::Value {
+        let formatted_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|msg| chat_completions_message(msg))
+            .collect();
+
         let mut body = serde_json::json!({
             "model": model,
-            "messages": messages,
+            "messages": formatted_messages,
             "stream": true,
             "stream_options": { "include_usage": true },
         });
@@ -104,15 +107,26 @@ impl ProviderAdapter for ChatCompletionsAdapter {
     }
 
     fn is_stream_done(&self, line: &str) -> bool {
-        line.trim() == "data: [DONE]"
+        let trimmed = line.trim();
+        trimmed == "data: [DONE]" || trimmed == "data:[DONE]"
     }
 
     fn parse_stream_line(&self, line: &str) -> Vec<StreamEvent> {
         let mut events = Vec::new();
 
-        let data = match line.strip_prefix("data: ") {
-            Some(d) => d.trim(),
-            None => return events,
+        // 兼容 "data: {...}" 和 "data:{...}" 两种格式
+        let data = if let Some(d) = line.strip_prefix("data: ") {
+            d.trim()
+        } else if let Some(d) = line.strip_prefix("data:") {
+            d.trim()
+        } else {
+            // 某些中转站可能直接返回 JSON 对象（非标准 SSE）
+            let trimmed = line.trim();
+            if trimmed.starts_with('{') {
+                trimmed
+            } else {
+                return events;
+            }
         };
 
         if data == "[DONE]" {
@@ -121,7 +135,10 @@ impl ProviderAdapter for ChatCompletionsAdapter {
 
         let chunk: StreamChunk = match serde_json::from_str(data) {
             Ok(c) => c,
-            Err(_) => return events,
+            Err(e) => {
+                tracing::debug!("Chat SSE parse skip: {e}, raw: {data}");
+                return events;
+            }
         };
 
         // 处理 usage-only chunk（部分供应商在流末尾单独发送 usage）
@@ -159,7 +176,7 @@ impl ProviderAdapter for ChatCompletionsAdapter {
                             events.push(StreamEvent::ToolCallDelta {
                                 index: idx,
                                 id: dtc.id,
-                                name: func.and_then(|f| f.name.clone()),
+                                name: func.and_then(|f| f.name.as_ref().filter(|n| !n.is_empty()).cloned()),
                                 arguments: func.and_then(|f| f.arguments.clone()),
                             });
                         }
@@ -171,3 +188,92 @@ impl ProviderAdapter for ChatCompletionsAdapter {
         events
     }
 }
+
+/// 将 InternalMessage 转换为严格符合 Chat Completions API 格式的 JSON
+fn chat_completions_message(msg: &InternalMessage) -> serde_json::Value {
+    match msg.role.as_str() {
+        "system" => {
+            serde_json::json!({
+                "role": "system",
+                "content": content_to_string(&msg.content),
+            })
+        }
+        "user" => {
+            // user content 可能是字符串或多模态数组，直接传递
+            let content = msg.content.clone().unwrap_or(serde_json::Value::String(String::new()));
+            serde_json::json!({
+                "role": "user",
+                "content": content,
+            })
+        }
+        "assistant" => {
+            let mut m = serde_json::json!({ "role": "assistant" });
+            // assistant content：有 tool_calls 时 content 可为 null，但某些 API 要求空字符串
+            match &msg.content {
+                Some(c) if !content_is_empty_value(c) => {
+                    m["content"] = serde_json::Value::String(content_to_string(&msg.content));
+                }
+                _ => {
+                    if msg.tool_calls.is_some() {
+                        m["content"] = serde_json::Value::Null;
+                    } else {
+                        m["content"] = serde_json::Value::String(String::new());
+                    }
+                }
+            }
+            if let Some(ref tcs) = msg.tool_calls {
+                let tool_calls: Vec<serde_json::Value> = tcs
+                    .iter()
+                    .map(|tc| {
+                        serde_json::json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            }
+                        })
+                    })
+                    .collect();
+                m["tool_calls"] = serde_json::Value::Array(tool_calls);
+            }
+            m
+        }
+        "tool" => {
+            // tool 消息：必须有 tool_call_id 和 content（字符串），不含 name 字段
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id.clone().unwrap_or_default(),
+                "content": content_to_string(&msg.content),
+            })
+        }
+        _ => {
+            // 其他角色原样序列化
+            serde_json::to_value(msg).unwrap_or(serde_json::Value::Null)
+        }
+    }
+}
+
+/// 将 content Option<Value> 转为纯文本字符串
+fn content_to_string(content: &Option<serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(serde_json::Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    }
+}
+
+fn content_is_empty_value(val: &serde_json::Value) -> bool {
+    match val {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.is_empty(),
+        serde_json::Value::Array(arr) => arr.is_empty(),
+        _ => false,
+    }
+}
+

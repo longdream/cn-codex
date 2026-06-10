@@ -6,6 +6,7 @@ import {
   standaloneConfigRead,
 } from "./api";
 import { ChatPage } from "./components/chat/ChatPage";
+import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { RightPanel } from "./components/layout/RightPanel";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TitleBar } from "./components/layout/TitleBar";
@@ -122,23 +123,25 @@ function App() {
   const rightPanelVisible = useAppStore((s) => s.rightPanelVisible);
 
   return (
-    <IntlProvider
-      locale={locale}
-      messages={messages[locale] ?? zhCN}
-      defaultLocale="zh-CN"
-    >
-      <div className="app-frame">
-        <TitleBar />
-        <div className="app-workbench">
-          <Sidebar />
-          <div className="app-main">
-            <ChatPage />
+    <ErrorBoundary>
+      <IntlProvider
+        locale={locale}
+        messages={messages[locale] ?? zhCN}
+        defaultLocale="zh-CN"
+      >
+        <div className="app-frame">
+          <TitleBar />
+          <div className="app-workbench">
+            <Sidebar />
+            <div className="app-main">
+              <ChatPage />
+            </div>
+            {rightPanelVisible && <RightPanel />}
           </div>
-          {rightPanelVisible && <RightPanel />}
         </div>
-      </div>
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
-    </IntlProvider>
+        {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      </IntlProvider>
+    </ErrorBoundary>
   );
 }
 

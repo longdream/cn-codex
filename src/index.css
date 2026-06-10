@@ -457,6 +457,8 @@ textarea:focus {
   font-size: var(--text-body);
   line-height: 1.6;
   letter-spacing: 0;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .chat-prose p {
@@ -491,6 +493,8 @@ textarea:focus {
   background: var(--chat-user-bg);
   color: var(--chat-prose);
   box-shadow: var(--shadow-soft);
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .chat-work-card,
@@ -506,6 +510,8 @@ textarea:focus {
   border: 1px solid var(--chat-line);
   border-radius: var(--radius-sm);
   background: var(--chat-paper);
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .chat-copy-button {

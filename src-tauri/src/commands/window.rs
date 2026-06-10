@@ -5,12 +5,15 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State, Url, WebviewUrl, WebviewWindowBuilder, Window};
+use tauri::{
+    AppHandle, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl, Window,
+    webview::WebviewBuilder,
+};
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
-const BROWSER_WINDOW_LABEL: &str = "cn-browser";
+const BROWSER_WEBVIEW_LABEL: &str = "cn-browser";
 const BROWSER_DEBUG_PORT: u16 = 9242;
 const BROWSER_ENDPOINT_FILE: &str = "visible-browser.json";
 
@@ -67,32 +70,84 @@ pub async fn window_open_browser(
     app: AppHandle,
     state: State<'_, AppState>,
     url: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
 ) -> AppResult<BrowserWindowInfo> {
-    open_browser_window(&app, &state.workspace_config_dir, url.as_deref(), true)
+    let pos_x = x.unwrap_or(0.0);
+    let pos_y = y.unwrap_or(0.0);
+    let w = width.unwrap_or(400.0);
+    let h = height.unwrap_or(600.0);
+    open_browser_embedded(&app, &state.workspace_config_dir, url.as_deref(), pos_x, pos_y, w, h)
 }
 
-pub fn open_browser_window(
+#[tauri::command]
+pub async fn window_resize_browser(
+    app: AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> AppResult<()> {
+    if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
+        webview.set_position(LogicalPosition::new(x, y))?;
+        webview.set_size(LogicalSize::new(width, height))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn window_navigate_browser(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+) -> AppResult<()> {
+    let browser_url = normalize_browser_url(Some(&url))?;
+    if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
+        webview.navigate(browser_url.clone())?;
+        let info = BrowserWindowInfo {
+            label: BROWSER_WEBVIEW_LABEL.to_string(),
+            url: browser_url.as_str().to_string(),
+            created: false,
+            debug_port: BROWSER_DEBUG_PORT,
+            cdp_endpoint: browser_cdp_endpoint(),
+        };
+        write_browser_endpoint_metadata(&state.workspace_config_dir, &info)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn window_close_browser(app: AppHandle) -> AppResult<()> {
+    if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
+        webview.close()?;
+    }
+    Ok(())
+}
+
+pub fn open_browser_embedded(
     app: &AppHandle,
     workspace_config_dir: &Path,
     url: Option<&str>,
-    focus: bool,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
 ) -> AppResult<BrowserWindowInfo> {
     let should_navigate_existing = url.is_some_and(|value| !value.trim().is_empty());
     let browser_url = normalize_browser_url(url)?;
     let url_string = browser_url.as_str().to_string();
     let cdp_endpoint = browser_cdp_endpoint();
 
-    if let Some(browser) = app.get_webview_window(BROWSER_WINDOW_LABEL) {
+    if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
         if should_navigate_existing {
-            browser.navigate(browser_url)?;
+            webview.navigate(browser_url)?;
         }
-        browser.show()?;
-        browser.unminimize()?;
-        if focus {
-            browser.set_focus()?;
-        }
+        webview.set_position(LogicalPosition::new(x, y))?;
+        webview.set_size(LogicalSize::new(width, height))?;
         let info = BrowserWindowInfo {
-            label: BROWSER_WINDOW_LABEL.to_string(),
+            label: BROWSER_WEBVIEW_LABEL.to_string(),
             url: url_string,
             created: false,
             debug_port: BROWSER_DEBUG_PORT,
@@ -105,21 +160,22 @@ pub fn open_browser_window(
     let browser_dir = workspace_config_dir.join("browser");
     fs::create_dir_all(&browser_dir)?;
 
-    WebviewWindowBuilder::new(app, BROWSER_WINDOW_LABEL, WebviewUrl::External(browser_url))
-        .title("CN-Codex Browser")
-        .inner_size(1160.0, 800.0)
-        .resizable(true)
-        .decorations(true)
-        .focused(focus)
-        .visible(true)
-        .center()
+    let main_window = app.get_window("main")
+        .ok_or_else(|| AppError::Custom("Main window not found".to_string()))?;
+
+    let webview_builder = WebviewBuilder::new(BROWSER_WEBVIEW_LABEL, WebviewUrl::External(browser_url))
         .enable_clipboard_access()
         .data_directory(browser_dir.join("webview-data"))
-        .additional_browser_args(&browser_additional_args())
-        .build()?;
+        .additional_browser_args(&browser_additional_args());
+
+    main_window.add_child(
+        webview_builder,
+        LogicalPosition::new(x, y),
+        LogicalSize::new(width, height),
+    )?;
 
     let info = BrowserWindowInfo {
-        label: BROWSER_WINDOW_LABEL.to_string(),
+        label: BROWSER_WEBVIEW_LABEL.to_string(),
         url: url_string,
         created: true,
         debug_port: BROWSER_DEBUG_PORT,
@@ -207,6 +263,69 @@ fn looks_like_local_dev_host(value: &str) -> bool {
         || lower.starts_with("127.")
         || lower.starts_with("[::1]")
         || lower.starts_with("::1")
+}
+
+#[tauri::command]
+pub async fn reveal_in_explorer(path: String) -> AppResult<()> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(AppError::Custom(format!("Path does not exist: {path}")));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if p.is_dir() {
+            std::process::Command::new("explorer")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| AppError::Custom(format!("Failed to open explorer: {e}")))?;
+        } else {
+            std::process::Command::new("explorer")
+                .arg("/select,")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| AppError::Custom(format!("Failed to open explorer: {e}")))?;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if p.is_dir() {
+            std::process::Command::new("open")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| AppError::Custom(format!("Failed to open finder: {e}")))?;
+        } else {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| AppError::Custom(format!("Failed to open finder: {e}")))?;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let dir = if p.is_dir() { p.to_path_buf() } else { p.parent().unwrap_or(p).to_path_buf() };
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| AppError::Custom(format!("Failed to open file manager: {e}")))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn window_toggle_devtools(app: AppHandle) -> AppResult<()> {
+    if let Some(webview) = app.get_webview_window("main") {
+        if webview.is_devtools_open() {
+            webview.close_devtools();
+        } else {
+            webview.open_devtools();
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

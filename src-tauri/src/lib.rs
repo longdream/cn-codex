@@ -116,6 +116,11 @@ pub fn run() {
             commands::window_toggle_maximize,
             commands::window_close,
             commands::window_open_browser,
+            commands::window_resize_browser,
+            commands::window_navigate_browser,
+            commands::window_close_browser,
+            commands::reveal_in_explorer,
+            commands::window_toggle_devtools,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CN-Codex");

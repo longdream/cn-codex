@@ -1,0 +1,3 @@
+{"type":"thread_meta","thread_id":"7669bb1a-7334-446b-8ec0-327a71795b81","name":null,"created_at":1781101814,"model":"doubao-seed-2-0-code-preview-260215"}
+{"type":"turn_start","turn_id":"28a13f02-4a3e-462e-9e10-2597c27dae85","started_at":1781101818,"mode":"chat","goal_budget_tokens":null}
+{"type":"message","id":"80081571-05b7-468d-bcba-7bf5c7bd2484","role":"user","content":".创建一个关于软通动力介绍的网站，需要将龙俊导师加进去，需要在网络上搜索PPDE龙俊的相关信息，然后还有软通最新的信息当新闻放进去","timestamp":1781101818,"tool_call_id":null,"tool_name":null,"tool_calls":null}

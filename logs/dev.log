@@ -1,6 +1,5 @@
-[周三 2026/06/10 15:21:57.26] Starting dev mode...
-[周三 2026/06/10 15:21:57.82] WARN: codex.exe not in PATH
-[周三 2026/06/10 15:21:57.82] Checking Vite port 1420
-[周三 2026/06/10 15:21:58.73] Port 1420 is free
-[周三 2026/06/10 15:21:58.75] Running pnpm tauri dev
-[周三 2026/06/10 15:35:05.12] ERROR: Dev server failed
+[周三 2026/06/10 22:34:34.73] Starting dev mode...
+[周三 2026/06/10 22:34:34.78] WARN: codex.exe not in PATH
+[周三 2026/06/10 22:34:34.78] Checking Vite port 1420
+[周三 2026/06/10 22:34:34.83] Port 1420 is free
+[周三 2026/06/10 22:34:34.83] Running pnpm tauri dev

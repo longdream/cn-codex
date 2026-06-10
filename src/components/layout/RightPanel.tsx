@@ -1,8 +1,8 @@
-import { IconBrowser, IconExternalLink, IconFolderOpen } from "@tabler/icons-react";
+import { IconBrowser, IconExternalLink, IconFolderOpen, IconX } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
+import { revealInExplorer, windowCloseBrowser, windowOpenBrowser, windowResizeBrowser } from "../../api/window";
 
 function latestBrowserToolCall(messages: ReturnType<typeof useAppStore.getState>["messages"]) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -52,7 +52,6 @@ function parseBrowserRunOutput(output?: string): {
 
 function localPreviewSrc(path: string, workspaceCwd: string | null): string | null {
   if (!path) return null;
-  // 兼容 Windows 扩展路径前缀（\\?\），否则 convertFileSrc 会生成不可访问 URL。
   const sanitized = normalizeLocalImagePath(path);
   if (!sanitized) return null;
   const normalized = sanitized.replace(/\\/g, "/");
@@ -85,11 +84,14 @@ function normalizeLocalImagePath(raw: string): string {
 export function RightPanel() {
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
   const browserPanelUrl = useAppStore((s) => s.browserPanelUrl);
-  const browserPanelTitle = useAppStore((s) => s.browserPanelTitle);
   const browserPanelStatus = useAppStore((s) => s.browserPanelStatus);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const messages = useAppStore((s) => s.messages);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
+
+  const [browserActive, setBrowserActive] = useState(false);
+  const browserContainerRef = useRef<HTMLDivElement>(null);
+  const resizeTimerRef = useRef<number | null>(null);
 
   const browserCall = useMemo(() => latestBrowserToolCall(messages), [messages]);
   const browserOutput = useMemo(
@@ -98,6 +100,83 @@ export function RightPanel() {
   );
 
   const screenshots = browserOutput?.screenshots ?? [];
+
+  const syncBrowserPosition = useCallback(() => {
+    const el = browserContainerRef.current;
+    if (!el || !browserActive) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      void windowResizeBrowser(
+        Math.round(rect.x),
+        Math.round(rect.y),
+        Math.round(rect.width),
+        Math.round(rect.height),
+      );
+    }
+  }, [browserActive]);
+
+  useEffect(() => {
+    if (!browserActive || rightPanelTab !== "browser") return;
+    const el = browserContainerRef.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver(() => {
+      if (resizeTimerRef.current) cancelAnimationFrame(resizeTimerRef.current);
+      resizeTimerRef.current = requestAnimationFrame(syncBrowserPosition);
+    });
+    observer.observe(el);
+
+    syncBrowserPosition();
+
+    const onWindowResize = () => {
+      if (resizeTimerRef.current) cancelAnimationFrame(resizeTimerRef.current);
+      resizeTimerRef.current = requestAnimationFrame(syncBrowserPosition);
+    };
+    window.addEventListener("resize", onWindowResize);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", onWindowResize);
+      if (resizeTimerRef.current) cancelAnimationFrame(resizeTimerRef.current);
+    };
+  }, [browserActive, rightPanelTab, syncBrowserPosition]);
+
+  const handleOpenBrowser = useCallback((url?: string) => {
+    const el = browserContainerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    void windowOpenBrowser(url, {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.max(Math.round(rect.width), 200),
+      height: Math.max(Math.round(rect.height), 200),
+    }).then(() => {
+      setBrowserActive(true);
+      setTimeout(syncBrowserPosition, 100);
+      requestAnimationFrame(syncBrowserPosition);
+    });
+  }, [syncBrowserPosition]);
+
+  const handleCloseBrowser = useCallback(() => {
+    void windowCloseBrowser();
+    setBrowserActive(false);
+  }, []);
+
+  // 切换 tab 时隐藏/恢复 webview 位置（不关闭）
+  useEffect(() => {
+    if (browserActive && rightPanelTab !== "browser") {
+      void windowResizeBrowser(-9999, -9999, 0, 0);
+    } else if (browserActive && rightPanelTab === "browser") {
+      syncBrowserPosition();
+    }
+  }, [rightPanelTab, browserActive, syncBrowserPosition]);
+
+  // 当切到 browser tab 时自动激活 webview
+  useEffect(() => {
+    if (rightPanelTab === "browser" && !browserActive) {
+      handleOpenBrowser();
+    }
+  }, [rightPanelTab, browserActive, handleOpenBrowser]);
 
   return (
     <aside className="flex h-full w-[24rem] flex-shrink-0 flex-col border-l border-[var(--border-subtle)] bg-[var(--surface-panel)]">
@@ -127,80 +206,72 @@ export function RightPanel() {
       </div>
 
       {rightPanelTab === "browser" ? (
-        <div className="thin-scrollbar flex-1 overflow-y-auto p-3">
-          <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-semibold text-[var(--text-strong)]">WebView JS Injection</p>
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {/* Browser info bar */}
+          <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-2">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
               <span
-                className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] ${
-                  browserPanelStatus === "running"
-                    ? "bg-[rgba(245,158,11,0.12)] text-[var(--warning)]"
-                    : browserPanelStatus === "success"
-                      ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-                      : browserPanelStatus === "failed"
-                        ? "bg-[var(--danger-soft)] text-[var(--danger)]"
-                        : "bg-[var(--surface-elevated)] text-[var(--text-faint)]"
+                className={`h-2 w-2 flex-shrink-0 rounded-full ${
+                  browserActive
+                    ? browserPanelStatus === "running"
+                      ? "bg-[var(--warning)] animate-pulse"
+                      : "bg-[var(--accent)]"
+                    : "bg-[var(--text-faint)]"
                 }`}
-              >
-                {browserPanelStatus}
+              />
+              <span className="truncate font-mono text-[11px] text-[var(--text-muted)]">
+                {browserPanelUrl ?? browserOutput?.finalUrl ?? "No active page"}
               </span>
             </div>
-            <p className="mt-2 break-all font-mono text-[11px] text-[var(--text-muted)]">
-              {browserPanelUrl ?? browserOutput?.finalUrl ?? "No active browser run"}
-            </p>
-            {browserPanelTitle || browserOutput?.title ? (
-              <p className="mt-2 text-xs text-[var(--text-base)]">
-                {browserPanelTitle ?? browserOutput?.title}
-              </p>
-            ) : null}
-            {browserOutput?.browserMode ? (
-              <p className="mt-2 text-[11px] text-[var(--text-faint)]">
-                Mode: {browserOutput.browserMode}
-              </p>
-            ) : null}
-            {browserPanelStatus === "failed" && screenshots.length === 0 ? (
-              <div className="mt-3 rounded-[var(--radius-sm)] border border-[var(--danger-soft)] bg-[var(--danger-soft)] px-2.5 py-2">
-                <p className="text-[11px] font-medium text-[var(--danger)]">
-                  {browserOutput?.message ?? "Browser run 失败，未生成可预览截图。"}
-                </p>
-                {browserOutput?.hint ? (
-                  <p className="mt-1 text-[11px] text-[var(--text-muted)]">{browserOutput.hint}</p>
-                ) : (
-                  <p className="mt-1 text-[11px] text-[var(--text-muted)]">
-                    请检查工具输出中的错误详情，并确认内置浏览器窗口与 CDP 通道可用。
-                  </p>
-                )}
-                {browserOutput?.errorCode ? (
-                  <p className="mt-1 font-mono text-[10px] text-[var(--text-faint)]">
-                    {browserOutput.errorCode}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
+            {browserActive && (
+              <button
+                type="button"
+                onClick={handleCloseBrowser}
+                className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--danger)]"
+                title="Close browser"
+              >
+                <IconX size={12} stroke={2} />
+              </button>
+            )}
           </div>
 
-          {screenshots.length > 0 ? (
-            <div className="mt-3 space-y-3">
-              {screenshots.map((shot) => {
-                const src = localPreviewSrc(shot, workspaceCwd);
-                return (
-                  <div key={shot} className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-main)] p-2">
-                    <div className="mb-2 flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
-                      <IconExternalLink size={12} stroke={1.8} />
-                      <span className="min-w-0 break-all font-mono">{shot}</span>
-                    </div>
-                    {src ? (
-                      <img
-                        src={src}
-                        alt={shot}
-                        className="max-h-[240px] w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] object-contain"
-                      />
-                    ) : null}
+          {/* Browser webview container - this div's bounds control the embedded webview position */}
+          <div
+            ref={browserContainerRef}
+            className="relative flex-1"
+          >
+            {!browserActive && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4">
+                <IconBrowser size={32} stroke={1.2} className="text-[var(--text-faint)]" />
+                <p className="text-center text-xs text-[var(--text-muted)]">
+                  Loading browser...
+                </p>
+
+                {screenshots.length > 0 && (
+                  <div className="mt-3 w-full space-y-2">
+                    {screenshots.map((shot) => {
+                      const src = localPreviewSrc(shot, workspaceCwd);
+                      return (
+                        <div key={shot} className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] p-2">
+                          <div className="mb-1 flex items-center gap-1 text-[10px] text-[var(--text-faint)]">
+                            <IconExternalLink size={10} stroke={1.8} />
+                            <span className="min-w-0 truncate font-mono">{shot.split(/[\\/]/).pop()}</span>
+                          </div>
+                          {src ? (
+                            <img
+                              src={src}
+                              alt={shot}
+                              className="max-h-[160px] w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] object-contain"
+                            />
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
-            </div>
-          ) : null}
+                )}
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         <div className="flex flex-1 flex-col p-3">
@@ -212,7 +283,7 @@ export function RightPanel() {
             <button
               onClick={() => {
                 if (workspaceCwd) {
-                  void openPath(workspaceCwd);
+                  void revealInExplorer(workspaceCwd);
                 }
               }}
               disabled={!workspaceCwd}

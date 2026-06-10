@@ -98,6 +98,7 @@ export function ChatInput({
   }, []);
 
   const handleSubmit = useCallback(() => {
+    if (isStreaming) return;
     const trimmed = text.trim();
     if ((!trimmed && attachedFiles.length === 0) || disabled) return;
     const filesToSend = attachedFiles;
@@ -147,7 +148,7 @@ export function ChatInput({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [attachedFiles, currentGoal, disabled, mode, onGoalCommand, onSend, text]);
+  }, [attachedFiles, currentGoal, disabled, isStreaming, mode, onGoalCommand, onSend, text]);
 
   const goalStatusLabel = useMemo(() => {
     if (!currentGoal) {
@@ -167,14 +168,16 @@ export function ChatInput({
     (event: React.KeyboardEvent) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        handleSubmit();
+        if (!isStreaming) {
+          handleSubmit();
+        }
       }
       if (event.key === "Escape") {
         setShowSlash(false);
         setShowModelMenu(false);
       }
     },
-    [handleSubmit],
+    [handleSubmit, isStreaming],
   );
 
   const handleChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {

@@ -2,6 +2,7 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconFolder,
+  IconFolderOpen,
   IconFolderPlus,
   IconMessagePlus,
   IconRefresh,
@@ -12,7 +13,9 @@ import {
 import { useCallback, useMemo, useState } from "react";
 import { useIntl } from "react-intl";
 import { open } from "@tauri-apps/plugin-dialog";
+import { revealInExplorer } from "../../api/window";
 import { useAppStore, type Project } from "../../stores/appStore";
+import { ContextMenu, type ContextMenuEntry, type ContextMenuPosition } from "../common/ContextMenu";
 
 function formatThreadTime(timestamp: number, locale: string): string {
   try {
@@ -43,9 +46,13 @@ export function Sidebar() {
   const [searchQuery, setSearchQuery] = useState("");
 
   const handleAddProject = useCallback(async () => {
-    const selected = await open({ directory: true, multiple: false });
-    if (selected && typeof selected === "string") {
-      useAppStore.getState().addProject(selected);
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (selected && typeof selected === "string") {
+        useAppStore.getState().addProject(selected);
+      }
+    } catch (err) {
+      console.error("Failed to open folder dialog:", err);
     }
   }, []);
 
@@ -172,6 +179,10 @@ export function Sidebar() {
               currentThreadId={currentThreadId}
               onSelect={() => useAppStore.getState().selectProject(project.id)}
               onRemove={() => useAppStore.getState().removeProject(project.id)}
+              onNewChat={() => {
+                useAppStore.getState().selectProject(project.id);
+                void createThread();
+              }}
               onThreadClick={(threadId) => {
                 if (currentProjectId !== project.id) {
                   useAppStore.getState().selectProject(project.id);
@@ -213,6 +224,7 @@ function ProjectGroup({
   currentThreadId,
   onSelect,
   onRemove,
+  onNewChat,
   onThreadClick,
   onThreadDelete,
   locale,
@@ -223,6 +235,7 @@ function ProjectGroup({
   currentThreadId: string | null;
   onSelect: () => void;
   onRemove: () => void;
+  onNewChat: () => void;
   onThreadClick: (threadId: string) => void;
   onThreadDelete: (threadId: string) => void;
   locale: string;
@@ -230,15 +243,53 @@ function ProjectGroup({
   const intl = useIntl();
   const [expanded, setExpanded] = useState(true);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [contextMenu, setContextMenu] = useState<ContextMenuPosition | null>(null);
+
+  const contextMenuItems: ContextMenuEntry[] = useMemo(() => [
+    {
+      id: "open-folder",
+      label: intl.formatMessage({ id: "contextMenu.openInExplorer" }),
+      icon: <IconFolderOpen size={14} stroke={1.8} />,
+      onClick: () => void revealInExplorer(project.cwd),
+    },
+    {
+      id: "new-chat",
+      label: intl.formatMessage({ id: "sidebar.newChat" }),
+      icon: <IconMessagePlus size={14} stroke={1.8} />,
+      onClick: onNewChat,
+    },
+    { id: "divider-1", divider: true },
+    {
+      id: "remove-project",
+      label: intl.formatMessage({ id: "project.remove" }),
+      icon: <IconTrash size={14} stroke={1.8} />,
+      onClick: () => setConfirmRemove(true),
+      danger: true,
+    },
+  ], [intl, project.cwd, onNewChat]);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  }, []);
 
   return (
     <div className="mb-1">
+      {contextMenu && (
+        <ContextMenu
+          items={contextMenuItems}
+          position={contextMenu}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
       {/* Project header */}
       <div
         onClick={() => {
           onSelect();
           setExpanded(true);
         }}
+        onContextMenu={handleContextMenu}
         className={`group flex w-full cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs transition-colors ${
           isActive
             ? "bg-[var(--accent-soft)] text-[var(--accent)]"
@@ -327,7 +378,7 @@ function ProjectGroup({
   );
 }
 
-/** 单个对话项，支持 hover 删除 */
+/** 单个对话项，支持 hover 删除和右键菜单 */
 function ThreadItem({
   thread,
   title,
@@ -344,30 +395,56 @@ function ThreadItem({
   onDelete: () => void;
 }) {
   const intl = useIntl();
+  const [contextMenu, setContextMenu] = useState<ContextMenuPosition | null>(null);
+
+  const contextMenuItems: ContextMenuEntry[] = useMemo(() => [
+    {
+      id: "delete-thread",
+      label: intl.formatMessage({ id: "thread.delete" }),
+      icon: <IconTrash size={14} stroke={1.8} />,
+      onClick: onDelete,
+      danger: true,
+    },
+  ], [intl, onDelete]);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  }, []);
 
   return (
-    <div
-      className={`group/thread flex w-full items-center justify-between gap-1 rounded-[var(--radius-sm)] px-2 py-1.5 text-left transition-colors cursor-pointer ${
-        isCurrent
-          ? "bg-[var(--surface-elevated)] text-[var(--text-strong)]"
-          : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-base)]"
-      }`}
-      onClick={onClick}
-    >
-      <p className="min-w-0 flex-1 truncate text-xs">{title}</p>
-      <span className="shrink-0 text-[11px] text-[var(--text-faint)] group-hover/thread:hidden">
-        {formatThreadTime(thread.updatedAt, locale)}
-      </span>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-        className="hidden shrink-0 items-center justify-center rounded-sm p-0.5 text-[var(--text-faint)] transition-colors hover:text-[var(--danger)] group-hover/thread:flex"
-        title={intl.formatMessage({ id: "thread.delete" })}
+    <>
+      {contextMenu && (
+        <ContextMenu
+          items={contextMenuItems}
+          position={contextMenu}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+      <div
+        className={`group/thread flex w-full items-center justify-between gap-1 rounded-[var(--radius-sm)] px-2 py-1.5 text-left transition-colors cursor-pointer ${
+          isCurrent
+            ? "bg-[var(--surface-elevated)] text-[var(--text-strong)]"
+            : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-base)]"
+        }`}
+        onClick={onClick}
+        onContextMenu={handleContextMenu}
       >
-        <IconTrash size={11} stroke={1.8} />
-      </button>
-    </div>
+        <p className="min-w-0 flex-1 truncate text-xs">{title}</p>
+        <span className="shrink-0 text-[11px] text-[var(--text-faint)] group-hover/thread:hidden">
+          {formatThreadTime(thread.updatedAt, locale)}
+        </span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="hidden shrink-0 items-center justify-center rounded-sm p-0.5 text-[var(--text-faint)] transition-colors hover:text-[var(--danger)] group-hover/thread:flex"
+          title={intl.formatMessage({ id: "thread.delete" })}
+        >
+          <IconTrash size={11} stroke={1.8} />
+        </button>
+      </div>
+    </>
   );
 }

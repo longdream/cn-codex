@@ -347,6 +347,8 @@ export function useTauriEvents() {
 
           const browserCall = e.payload.calls.find((c) => c.name === "browser_run");
           if (browserCall) {
+            // 自动打开右面板并切到 browser tab
+            useAppStore.getState().setRightPanelTab("browser");
             try {
               const parsed = JSON.parse(browserCall.arguments) as Record<string, unknown>;
               const url = typeof parsed.url === "string" && parsed.url.trim()

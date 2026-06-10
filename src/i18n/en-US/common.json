@@ -290,5 +290,8 @@
   "settings.provider.modelLabelPlaceholder": "Display name (optional)",
   "browser.engine.webview": "WebView JS Injection Browser",
   "browser.engine.description": "Browser Engine",
-  "settings.browserCdpPort": "Browser CDP Port"
+  "settings.browserCdpPort": "Browser CDP Port",
+  "chat.runSummary.revealFile": "Reveal in Explorer",
+  "chat.runSummary.openFolder": "Open Project Folder",
+  "contextMenu.openInExplorer": "Open in Explorer"
 }
