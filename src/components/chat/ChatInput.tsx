@@ -11,7 +11,7 @@ import {
   IconTargetArrow,
   IconX,
 } from "@tabler/icons-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
 import { useAppStore, type ChatMode, type ChatSendOptions } from "../../stores/appStore";
 import { SlashCommandPanel, getDefaultSlashCommands } from "./SlashCommandPanel";
@@ -21,6 +21,29 @@ import type { AttachedFile } from "../../types/provider";
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
 const IMAGE_ACCEPT = "image/*";
 const ALL_ACCEPT = `${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`;
+
+function guessTypeFromExt(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  const map: Record<string, string> = {
+    pdf: "application/pdf",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    doc: "application/msword",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ppt: "application/vnd.ms-powerpoint",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    xls: "application/vnd.ms-excel",
+    csv: "text/csv",
+    json: "application/json",
+    xml: "application/xml",
+    html: "text/html",
+    md: "text/markdown",
+    txt: "text/plain",
+    yaml: "text/yaml",
+    yml: "text/yaml",
+    toml: "application/toml",
+  };
+  return map[ext] ?? "application/octet-stream";
+}
 
 interface ChatInputProps {
   onSend: (
@@ -236,6 +259,66 @@ export function ChatInput({
     useAppStore.getState().removeAttachedFile(index);
   }, []);
 
+  // --- 拖拽支持 ---
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounter = useRef(0);
+
+  const handleDragEnter = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current += 1;
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    dragCounter.current = 0;
+
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+
+    for (const file of Array.from(files)) {
+      if (file.type.startsWith("image/") && !activeEntry?.supportsVision) {
+        const providerVision = providerModels.some((m) => m.supportsVision);
+        if (!providerVision) {
+          setVisionWarning(true);
+          setTimeout(() => setVisionWarning(false), 4000);
+        }
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const attached: AttachedFile = {
+          name: file.name,
+          type: file.type || guessTypeFromExt(file.name),
+          dataUrl: reader.result as string,
+          size: file.size,
+        };
+        useAppStore.getState().addAttachedFile(attached);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, [activeEntry, providerModels]);
+
   const handleModelSelect = useCallback((modelId: string) => {
     useAppStore.getState().setActiveModelId(modelId);
     setShowModelMenu(false);
@@ -280,7 +363,20 @@ export function ChatInput({
   };
 
   return (
-    <div className="chat-composer-zone relative flex-shrink-0 px-4 pb-4 pt-3 sm:px-8">
+    <div
+      className="chat-composer-zone relative flex-shrink-0 px-4 pb-4 pt-3 sm:px-8"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {isDragging && (
+        <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-[var(--radius-lg)] border-2 border-dashed border-[var(--accent)] bg-[var(--accent-soft)]">
+          <span className="text-[13px] font-medium text-[var(--accent-strong)]">
+            {intl.formatMessage({ id: "chat.dropFiles" })}
+          </span>
+        </div>
+      )}
       {showSlash && (
         <SlashCommandPanel
           query={text}
@@ -317,7 +413,7 @@ export function ChatInput({
                     <button
                       key={m.id}
                       onClick={() => handleProviderModelSelect(m.id)}
-                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--surface-elevated)] ${
+                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-elevated)] ${
                         activeEntry?.model === m.id ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]" : "text-[var(--text-base)]"
                       }`}
                     >
@@ -347,7 +443,7 @@ export function ChatInput({
                     <button
                       key={m.id}
                       onClick={() => handleModelSelect(m.id)}
-                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--surface-elevated)] ${
+                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-elevated)] ${
                         m.id === activeModelId ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]" : "text-[var(--text-base)]"
                       }`}
                     >
@@ -386,20 +482,20 @@ export function ChatInput({
               type="button"
               aria-pressed={mode === "chat"}
               onClick={() => setMode("chat")}
-              className={`flex h-7 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition-colors ${
+              className={`flex h-6 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition-colors ${
                 mode === "chat"
                   ? "bg-[var(--chat-card-solid)] text-[var(--chat-prose)] shadow-[var(--shadow-soft)]"
                   : "text-[var(--chat-muted)] hover:text-[var(--chat-prose)]"
               }`}
             >
-              <IconMessage2 size={13} stroke={1.8} />
+              <IconMessage2 size={12} stroke={1.8} />
               {intl.formatMessage({ id: "chat.mode.chat" })}
             </button>
             <button
               type="button"
               aria-pressed={mode === "goal"}
               onClick={() => setMode("goal")}
-              className={`flex h-7 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition-colors ${
+              className={`flex h-6 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition-colors ${
                 mode === "goal"
                   ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
                   : "text-[var(--chat-muted)] hover:text-[var(--chat-prose)]"
@@ -474,7 +570,7 @@ export function ChatInput({
             placeholder={intl.formatMessage({ id: "chat.placeholder" })}
             disabled={disabled}
             rows={2}
-            className="chat-composer-input max-h-[200px] min-h-[78px] w-full flex-1 resize-none bg-transparent py-2 text-base leading-relaxed text-[var(--chat-prose)] placeholder:text-[var(--chat-faint)] outline-none disabled:opacity-50"
+            className="chat-composer-input max-h-[200px] min-h-[78px] w-full flex-1 resize-none bg-transparent py-2 text-[13px] leading-relaxed text-[var(--chat-prose)] placeholder:text-[var(--chat-faint)] outline-none disabled:opacity-50"
           />
 
           {isStreaming || goalRunning ? (

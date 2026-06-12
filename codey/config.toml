@@ -1,5 +1,5 @@
-model = "l-deepseek-v4-flash"
-model_provider = "openai"
+model = "doubao-seed-2-0-code-preview-260215"
+model_provider = "volcengine"
 model_reasoning_effort = "medium"
 approval_policy = "on-request"
 web_search = "live"

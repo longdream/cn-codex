@@ -59,7 +59,7 @@ export function MessageList({ messages, streamingText, isStreaming }: MessageLis
             <h2 className="text-lg font-semibold text-[var(--text-strong)]">
               {intl.formatMessage({ id: "status.initFailed" })}
             </h2>
-            <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-[var(--text-muted)]">
+            <p className="mx-auto mt-2 max-w-sm text-[13px] leading-relaxed text-[var(--text-muted)]">
               {intl.formatMessage({ id: "status.initErrorHint" })}
             </p>
             <p className="mt-3 rounded-[var(--radius-sm)] bg-[var(--surface-raised)] px-3 py-2 text-left font-mono text-xs text-[var(--danger)] break-all">
@@ -74,7 +74,7 @@ export function MessageList({ messages, streamingText, isStreaming }: MessageLis
               )}
               <button
                 onClick={() => useAppStore.getState().setShowSettings(true)}
-                className="flex items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--border-strong)] px-3 py-2 text-sm text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)]"
+                className="flex items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--border-strong)] px-3 py-2 text-[13px] text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)]"
               >
                 <IconSettings size={14} stroke={1.8} />
                 {intl.formatMessage({ id: "status.openSettings" })}
@@ -144,7 +144,7 @@ function MessageRow({ message }: { message: ChatMessage }) {
 
   if (message.role === "system") {
     return (
-      <div className="chat-work-card max-w-[980px] border-[rgba(239,68,68,0.22)] bg-[var(--danger-soft)] px-4 py-3 text-sm leading-relaxed text-[var(--text-strong)]">
+      <div className="chat-work-card max-w-[980px] border-[rgba(239,68,68,0.22)] bg-[var(--danger-soft)] px-4 py-3 text-[13px] leading-relaxed text-[var(--text-strong)]">
         <MessageContent content={message.content} />
       </div>
     );
@@ -153,7 +153,7 @@ function MessageRow({ message }: { message: ChatMessage }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end py-1">
-        <div className="chat-user-message group relative max-w-[min(88%,760px)] px-4 py-3 text-sm leading-relaxed">
+        <div className="chat-user-message group relative max-w-[min(88%,760px)] px-4 py-3 text-[13px] leading-relaxed">
           <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-[var(--chat-muted)]">
             <IconMessage2 size={13} stroke={1.8} />
             <span>{intl.formatMessage({ id: "chat.role.user" })}</span>
@@ -230,7 +230,7 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
           </span>
         )}
         <IconChevronRight size={17} stroke={1.8} className="text-[var(--chat-faint)]" />
-        <span className="ml-auto hidden items-center gap-1.5 text-sm sm:flex">
+        <span className="ml-auto hidden items-center gap-1.5 text-[13px] sm:flex">
           {summary.mode === "goal" ? <IconTargetArrow size={14} stroke={1.8} /> : <IconMessage2 size={14} stroke={1.8} />}
           {summary.mode === "goal"
             ? intl.formatMessage({ id: "chat.mode.goal" })
@@ -274,7 +274,7 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
             </div>
           ))
         ) : (
-          <div className="chat-work-card px-4 py-3 text-sm text-[var(--chat-muted)]">
+          <div className="chat-work-card px-4 py-3 text-[13px] text-[var(--chat-muted)]">
             {intl.formatMessage({ id: "chat.runSummary.noChangedFiles" })}
           </div>
         )}

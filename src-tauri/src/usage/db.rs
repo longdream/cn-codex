@@ -10,6 +10,7 @@ use crate::error::{AppError, AppResult};
 
 /// 单条用量记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageRecord {
     pub id: i64,
     /// 供应商标识（provider type，如 "openai", "deepseek"）
@@ -32,6 +33,7 @@ pub struct UsageRecord {
 
 /// 汇总统计
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageStats {
     /// 总请求次数
     pub total_requests: u64,
@@ -47,6 +49,7 @@ pub struct UsageStats {
 
 /// 按天分组的用量
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DailyUsage {
     /// 日期（YYYY-MM-DD）
     pub date: String,
@@ -59,6 +62,7 @@ pub struct DailyUsage {
 
 /// 按模型分组的用量
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelUsage {
     pub provider: String,
     pub model: String,

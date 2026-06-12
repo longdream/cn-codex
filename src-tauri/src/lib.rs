@@ -3,6 +3,7 @@ pub mod agent;
 pub mod browser_automation;
 pub mod commands;
 pub mod config_system;
+pub mod document_parser;
 pub mod error;
 pub mod hook_runtime;
 pub mod llm_tiers;
@@ -86,6 +87,11 @@ pub fn run() {
             // Skills
             commands::skill_list,
             commands::skill_read,
+            // Npm tools
+            commands::npm_tool_list,
+            commands::npm_tool_check,
+            commands::npm_tool_install,
+            commands::npm_tool_uninstall,
             // Plugins
             commands::plugin_list,
             commands::plugin_read,

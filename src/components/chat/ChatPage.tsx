@@ -251,7 +251,7 @@ export function ChatPage() {
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-[var(--radius-lg)] bg-[var(--accent-soft)] text-[var(--accent)]">
             <IconFolder size={24} stroke={1.5} />
           </div>
-          <p className="text-sm text-[var(--text-muted)]">
+          <p className="text-[13px] text-[var(--text-muted)]">
             {intl.formatMessage({ id: "project.noProjectSelected" })}
           </p>
         </div>
@@ -261,22 +261,23 @@ export function ChatPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {messages.length > 0 && (
+        <div className="flex items-center justify-end px-4 py-1.5 border-b border-[var(--chat-line)]">
+          <button
+            onClick={handleCopyAll}
+            className="chat-copy-button flex items-center gap-1 px-2 py-1 text-[11px] transition-[color,background]"
+            title={intl.formatMessage({ id: "chat.copyAll" })}
+          >
+            {copyDone ? <IconCheck size={12} stroke={2} /> : <IconCopy size={12} stroke={2} />}
+            {intl.formatMessage({ id: copyDone ? "chat.copied" : "chat.copyAll" })}
+          </button>
+        </div>
+      )}
+
       {showEmpty ? (
         <EmptyState />
       ) : (
         <>
-          {messages.length > 0 && (
-            <div className="flex items-center justify-end px-4 py-1.5 border-b border-[var(--chat-line)]">
-              <button
-                onClick={handleCopyAll}
-                className="chat-copy-button flex items-center gap-1 px-2 py-1 text-[11px] transition-[color,background]"
-                title={intl.formatMessage({ id: "chat.copyAll" })}
-              >
-                {copyDone ? <IconCheck size={12} stroke={2} /> : <IconCopy size={12} stroke={2} />}
-                {intl.formatMessage({ id: copyDone ? "chat.copied" : "chat.copyAll" })}
-              </button>
-            </div>
-          )}
           <MessageList
             messages={messages}
             streamingText={streamingText}
@@ -368,10 +369,10 @@ function EmptyState() {
         <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] bg-[var(--accent-soft)] text-[var(--accent)]">
           <IconSparkles size={20} stroke={1.8} />
         </div>
-        <h2 className="text-xl font-semibold text-[var(--text-strong)]">
+        <h2 className="text-[13px] font-semibold text-[var(--text-strong)]">
           {intl.formatMessage({ id: "chat.emptyTitle" })}
         </h2>
-        <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[var(--text-muted)]">
+        <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-[var(--text-muted)]">
           {intl.formatMessage({ id: "chat.emptyDescription" })}
         </p>
         <div className="mt-8 grid gap-3 sm:grid-cols-2">
@@ -382,7 +383,7 @@ function EmptyState() {
             <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
               {intl.formatMessage({ id: "chat.emptyCardProvider" })}
             </p>
-            <p className="mt-1 break-all text-sm text-[var(--text-strong)]">
+            <p className="mt-1 break-all text-xs text-[var(--text-strong)]">
               {currentModel ?? defaultProvider}
             </p>
           </div>
@@ -393,7 +394,7 @@ function EmptyState() {
             <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-faint)]">
               {intl.formatMessage({ id: "chat.emptyCardConfig" })}
             </p>
-            <p className="mt-1 break-all text-sm text-[var(--text-strong)]">
+            <p className="mt-1 break-all text-xs text-[var(--text-strong)]">
               {configPath ?? "codey/config.toml"}
             </p>
           </div>

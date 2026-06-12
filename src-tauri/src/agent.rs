@@ -184,10 +184,39 @@ impl AgentEngine {
         let wire_api = provider.wire_api.as_deref().unwrap_or("chat").to_string();
 
         let user_message_id = uuid::Uuid::new_v4().to_string();
+        // 将文档附件提取的文本直接嵌入到消息 content 中进行持久化
+        let persisted_content = if attachments.iter().any(|a| !a.mime_type.starts_with("image/")) {
+            let mut content = user_input.to_string();
+            for attachment in &attachments {
+                if !attachment.mime_type.starts_with("image/") {
+                    match crate::document_parser::parse_document(
+                        &attachment.mime_type,
+                        &attachment.data_url,
+                    ) {
+                        Ok(extracted) => {
+                            content.push_str(&format!(
+                                "\n\n[Attachment: {}]\n{}",
+                                attachment.name, extracted
+                            ));
+                        }
+                        Err(e) => {
+                            warn!("Document parse failed for {}: {e}", attachment.name);
+                            content.push_str(&format!(
+                                "\n\n[Attachment: {} - content extraction failed]",
+                                attachment.name
+                            ));
+                        }
+                    }
+                }
+            }
+            content
+        } else {
+            user_input.to_string()
+        };
         let user_msg = ThreadMessage {
             id: user_message_id.clone(),
             role: "user".to_string(),
-            content: user_input.to_string(),
+            content: persisted_content,
             timestamp: now_secs(),
             tool_call_id: None,
             tool_name: None,
@@ -1203,9 +1232,14 @@ impl AgentEngine {
                 None
             } else if msg.role == "user"
                 && current_user_message_id == Some(msg.id.as_str())
-                && !attachments.is_empty()
+                && attachments.iter().any(|a| a.mime_type.starts_with("image/"))
             {
-                Some(multimodal_user_content(&msg.content, attachments))
+                // 只有图片附件需要 multimodal 格式；文档文本已在 content 中持久化
+                let image_attachments: Vec<_> = attachments.iter()
+                    .filter(|a| a.mime_type.starts_with("image/"))
+                    .cloned()
+                    .collect();
+                Some(multimodal_user_content(&msg.content, &image_attachments))
             } else {
                 text_content(msg.content.clone())
             };
@@ -1408,6 +1442,21 @@ impl AgentEngine {
             ));
         }
 
+        // 当 API 不返回 usage 时，基于文本长度估算 token 数
+        let usage_info = if usage_info.is_none() && (!full_text.is_empty() || !valid_tool_calls.is_empty()) {
+            let completion_tokens = estimate_tokens(&full_text)
+                + valid_tool_calls.iter().map(|tc| estimate_tokens(&tc.arguments)).sum::<u64>();
+            let prompt_tokens = messages.iter().map(|m| {
+                let content_len = m.content.as_ref().map(|c| c.to_string().len() as u64).unwrap_or(0);
+                estimate_tokens_from_char_count(content_len)
+            }).sum::<u64>();
+            let total_tokens = prompt_tokens + completion_tokens;
+            info!("No usage from provider, estimated: prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}");
+            Some(UsageInfo { prompt_tokens, completion_tokens, total_tokens })
+        } else {
+            usage_info
+        };
+
         if !valid_tool_calls.is_empty() {
             Ok(CompletionResult::ToolCalls {
                 calls: valid_tool_calls,
@@ -1584,6 +1633,16 @@ fn nonzero_turn_usage(usage: &TurnUsage) -> Option<TurnUsage> {
     }
 }
 
+/// 基于字符串内容估算 token 数（中英文混合约 2-4 chars/token，取 3 折中）
+fn estimate_tokens(text: &str) -> u64 {
+    let char_count = text.chars().count() as u64;
+    estimate_tokens_from_char_count(char_count)
+}
+
+fn estimate_tokens_from_char_count(char_count: u64) -> u64 {
+    (char_count / 3).max(1)
+}
+
 #[cfg(test)]
 fn turn_budget_limited(goal_budget_tokens: Option<u64>, usage: &TurnUsage) -> bool {
     goal_budget_tokens.is_some_and(|budget| budget > 0 && usage.total_tokens >= budget)
@@ -1599,18 +1658,12 @@ fn goal_budget_limited_after(goal: Option<&ThreadGoal>, usage: &TurnUsage) -> bo
 }
 
 fn multimodal_user_content(text: &str, attachments: &[UserAttachment]) -> serde_json::Value {
-    let mut parts = Vec::new();
-    if !text.trim().is_empty() {
-        parts.push(serde_json::json!({
-            "type": "text",
-            "text": text
-        }));
-    }
+    let mut combined_text = text.to_string();
+    let mut image_parts: Vec<serde_json::Value> = Vec::new();
 
-    let mut non_image_notes = Vec::new();
     for attachment in attachments {
         if attachment.mime_type.starts_with("image/") && attachment.data_url.starts_with("data:") {
-            parts.push(serde_json::json!({
+            image_parts.push(serde_json::json!({
                 "type": "image_url",
                 "image_url": {
                     "url": attachment.data_url,
@@ -1618,23 +1671,36 @@ fn multimodal_user_content(text: &str, attachments: &[UserAttachment]) -> serde_
                 }
             }));
         } else {
-            non_image_notes.push(format!(
-                "- {} ({}, {} bytes)",
-                attachment.name, attachment.mime_type, attachment.size
-            ));
+            match crate::document_parser::parse_document(
+                &attachment.mime_type,
+                &attachment.data_url,
+            ) {
+                Ok(extracted) => {
+                    combined_text.push_str(&format!(
+                        "\n\n[Attachment: {}]\n{}",
+                        attachment.name, extracted
+                    ));
+                }
+                Err(e) => {
+                    warn!("Document parse failed for {}: {e}", attachment.name);
+                    combined_text.push_str(&format!(
+                        "\n\n[Attachment: {} ({}, {} bytes) - content extraction failed]",
+                        attachment.name, attachment.mime_type, attachment.size
+                    ));
+                }
+            }
         }
     }
 
-    if !non_image_notes.is_empty() {
-        parts.push(serde_json::json!({
-            "type": "text",
-            "text": format!("Attached non-image files:\n{}", non_image_notes.join("\n"))
-        }));
-    }
-
-    if parts.is_empty() {
-        serde_json::Value::String(text.to_string())
+    // 只有当存在图片时才使用 multimodal 数组格式，否则用纯文本（兼容不支持 multimodal 的 API）
+    if image_parts.is_empty() {
+        serde_json::Value::String(combined_text)
     } else {
+        let mut parts = vec![serde_json::json!({
+            "type": "text",
+            "text": combined_text
+        })];
+        parts.extend(image_parts);
         serde_json::Value::Array(parts)
     }
 }

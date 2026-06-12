@@ -65,7 +65,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--text-faint)]">
               CN-Codex
             </p>
-            <h2 className="text-lg font-semibold tracking-tight text-[var(--text-strong)]">
+            <h2 className="text-[14px] font-semibold tracking-tight text-[var(--text-strong)]">
               {intl.formatMessage({ id: "sidebar.settings" })}
             </h2>
           </div>
@@ -77,7 +77,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 onClick={() => setTab(item.id)}
                 className={`settings-nav-item ${tab === item.id ? "is-active" : ""}`}
               >
-                <span className="text-[13px] font-medium">{item.label}</span>
+                <span className="text-[12px] font-medium">{item.label}</span>
               </button>
             ))}
           </nav>
@@ -85,7 +85,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
         <section className="flex min-w-0 flex-1 flex-col bg-[var(--surface-raised)]/94">
           <header className="flex items-center justify-between border-b border-[var(--border-subtle)] px-6 py-4">
-            <h3 className="text-lg font-semibold tracking-tight text-[var(--text-strong)]">
+            <h3 className="text-[13px] font-semibold tracking-tight text-[var(--text-strong)]">
               {activeTab.label}
             </h3>
             <button
@@ -101,7 +101,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "general" && (
               <div className="space-y-5">
                 <section className="settings-card space-y-3">
-                  <h4 className="text-sm font-semibold text-[var(--text-strong)]">
+                  <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
                     {intl.formatMessage({ id: "settings.language" })}
                   </h4>
                   <select
@@ -115,7 +115,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 </section>
 
                 <section className="settings-card space-y-3">
-                  <h4 className="text-sm font-semibold text-[var(--text-strong)]">
+                  <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
                     {intl.formatMessage({ id: "settings.theme" })}
                   </h4>
                   <div className="grid gap-2 md:grid-cols-3">
@@ -125,7 +125,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                         onClick={() => setTheme(option)}
                         className={`theme-option ${theme === option ? "is-active" : ""}`}
                       >
-                        <span className="text-sm font-medium">
+                        <span className="text-[13px] font-medium">
                           {intl.formatMessage({ id: `settings.theme.${option}` })}
                         </span>
                         <span className="text-xs text-[var(--text-faint)]">

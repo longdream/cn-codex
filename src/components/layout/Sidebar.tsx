@@ -115,18 +115,27 @@ export function Sidebar() {
                     : "bg-[var(--warning)] animate-pulse"
               }`}
             />
-            <h1 className="text-[13px] font-semibold tracking-tight text-[var(--text-strong)]">
+            <h1 className="text-[12px] font-semibold tracking-tight text-[var(--text-strong)]">
               CN-Codex
             </h1>
           </div>
-          <button
-            onClick={handleNewChat}
-            disabled={creating || !currentProjectId}
-            className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-40"
-            title={intl.formatMessage({ id: "sidebar.newChat" })}
-          >
-            <IconMessagePlus size={15} stroke={1.8} />
-          </button>
+          <div className="flex items-center gap-0.5">
+            <button
+              onClick={handleAddProject}
+              className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+              title={intl.formatMessage({ id: "project.add" })}
+            >
+              <IconFolderPlus size={15} stroke={1.8} />
+            </button>
+            <button
+              onClick={handleNewChat}
+              disabled={creating || !currentProjectId}
+              className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-40"
+              title={intl.formatMessage({ id: "sidebar.newChat" })}
+            >
+              <IconMessagePlus size={15} stroke={1.8} />
+            </button>
+          </div>
         </div>
         {initError && retryInit && (
           <button
@@ -152,7 +161,7 @@ export function Sidebar() {
             placeholder={intl.formatMessage({ id: "sidebar.search" })}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] py-1.5 pl-7 pr-2 text-[13px] text-[var(--text-base)] placeholder:text-[var(--text-faint)] outline-none focus:border-[var(--accent-border)]"
+            className="w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] py-1.5 pl-7 pr-2 text-[12px] text-[var(--text-base)] placeholder:text-[var(--text-faint)] outline-none focus:border-[var(--accent-border)]"
           />
         </div>
       </div>
@@ -198,13 +207,6 @@ export function Sidebar() {
 
       {/* Bottom */}
       <div className="border-t border-[var(--border-subtle)] p-2 space-y-0.5">
-        <button
-          onClick={handleAddProject}
-          className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-        >
-          <IconFolderPlus size={14} stroke={1.8} />
-          {intl.formatMessage({ id: "project.add" })}
-        </button>
         <button
           onClick={() => useAppStore.getState().setShowSettings(true)}
           className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"

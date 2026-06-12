@@ -42,8 +42,6 @@ pub struct AppState {
     pub agent_engine: AgentEngine,
     /// 用量数据库
     pub usage_db: Arc<UsageDb>,
-    /// 用量记录器
-    pub usage_recorder: UsageRecorder,
     /// 价格表
     pub pricing_table: Arc<std::sync::RwLock<PricingTable>>,
 }
@@ -126,7 +124,6 @@ impl AppState {
         let db_path = workspace_config_dir.join("usage.db");
         let usage_db = Arc::new(UsageDb::open(&db_path).expect("failed to open usage database"));
         let pricing_table = Arc::new(std::sync::RwLock::new(PricingTable::new()));
-        let usage_recorder = UsageRecorder::new(usage_db.clone(), pricing_table.clone());
 
         // 将 recorder 注入 agent engine
         let recorder_arc = Arc::new(UsageRecorder::new(usage_db.clone(), pricing_table.clone()));
@@ -147,7 +144,6 @@ impl AppState {
             thread_store,
             agent_engine,
             usage_db,
-            usage_recorder,
             pricing_table,
         }
     }
