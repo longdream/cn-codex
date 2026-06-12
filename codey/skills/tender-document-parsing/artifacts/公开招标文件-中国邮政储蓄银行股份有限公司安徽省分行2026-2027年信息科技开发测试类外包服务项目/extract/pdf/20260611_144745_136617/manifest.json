@@ -1,0 +1,30 @@
+{
+  "file_name": "公开招标文件-中国邮政储蓄银行股份有限公司安徽省分行2026-2027年信息科技开发测试类外包服务项目.pdf",
+  "file_path": "E:\\work\\PythonWorks\\iss.ipsa.bid.filecheck\\公开招标文件-中国邮政储蓄银行股份有限公司安徽省分行2026-2027年信息科技开发测试类外包服务项目.pdf",
+  "file_fingerprint": {
+    "path": "E:\\work\\PythonWorks\\iss.ipsa.bid.filecheck\\公开招标文件-中国邮政储蓄银行股份有限公司安徽省分行2026-2027年信息科技开发测试类外包服务项目.pdf",
+    "size_bytes": 1021346,
+    "mtime_ns": 1781160304551351700,
+    "sha256": "461e363d139a36b892649210525ac4c041e58937a9742e35977179050c4ef82c"
+  },
+  "document_type": "pdf",
+  "token_estimate": 80562,
+  "source_char_count": 80562,
+  "source_to_chunk_threshold": 50000,
+  "preferred_search_target": "chunks",
+  "preferred_reason": "source_char_count=80562 > threshold=50000",
+  "chunk_split_threshold": 50000,
+  "token_threshold": 10000,
+  "strategy": "chapter_scope_then_keyword_recall",
+  "need_global_search_confirmation": false,
+  "image_count": 6,
+  "chunk_count": 95,
+  "retrieval_hit_count": 59,
+  "source_md_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\公开招标文件-中国邮政储蓄银行股份有限公司安徽省分行2026-2027年信息科技开发测试类外包服务项目\\extract\\pdf\\20260611_144745_136617\\source.md",
+  "query_route_file": "E:\\work\\RustWorks\\cn-codex\\codey\\skills\\tender-document-parsing\\artifacts\\公开招标文件-中国邮政储蓄银行股份有限公司安徽省分行2026-2027年信息科技开发测试类外包服务项目\\extract\\pdf\\20260611_144745_136617\\query_route.json",
+  "cache_hit": true,
+  "force_refresh_requested": false,
+  "cache_lookup_skipped": false,
+  "reuse_checked_at": "20260611_161306_032613",
+  "reused_from_artifact_dir": "E:\\work\\RustWorks\\cn-codex\\codey\\skills\\tender-document-parsing\\artifacts\\公开招标文件-中国邮政储蓄银行股份有限公司安徽省分行2026-2027年信息科技开发测试类外包服务项目\\extract\\pdf\\20260611_144745_136617"
+}

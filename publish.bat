@@ -10,6 +10,29 @@ set "PROJECT_DIR=%~dp0"
 set "PUBLISH_DIR=%PROJECT_DIR%publish"
 set "CODEY_SRC=%PROJECT_DIR%codey"
 set "ICONS_DIR=%PROJECT_DIR%src-tauri\icons"
+set "FORCE_FULL_REBUILD=0"
+if /I "%~1"=="clean" set "FORCE_FULL_REBUILD=1"
+
+:: ---------------------------------------------------------------------------
+:: Release build hardening:
+:: 1) Force-disable Cargo incremental for deterministic release artifacts.
+:: 2) Clear stale Rust/Cargo env overrides from parent terminal sessions.
+::    (A previous temporary env like CARGO_TARGET_DIR / RUSTFLAGS can poison
+::     release builds and trigger metadata-stub errors on Windows.)
+:: 3) Use a low-memory release override for Windows build stability.
+::    This prevents "metadata stub", E0786, and rustc OOM/pagefile failures.
+:: 4) Publish as portable green edition only (no NSIS/MSI installer).
+::    This keeps release speed high and avoids installer download overhead.
+:: ---------------------------------------------------------------------------
+set "CARGO_INCREMENTAL=0"
+set "RUSTFLAGS="
+set "CARGO_ENCODED_RUSTFLAGS="
+set "CARGO_TARGET_DIR="
+set "RUSTC_WRAPPER="
+set "CARGO_BUILD_JOBS=1"
+set "CARGO_PROFILE_RELEASE_LTO=false"
+set "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
+set "CARGO_PROFILE_RELEASE_OPT_LEVEL=2"
 
 :: Check prerequisites
 where pnpm >nul 2>&1
@@ -51,32 +74,54 @@ if exist "%PUBLISH_DIR%" (
 )
 mkdir "%PUBLISH_DIR%"
 
-:: Install frontend dependencies
-echo [2/6] Installing frontend dependencies...
+:: Install frontend dependencies only when node_modules is missing.
+:: This avoids unnecessary dependency resolution on every publish run.
+echo [2/6] Checking frontend dependencies...
 cd /d "%PROJECT_DIR%"
-call pnpm install --frozen-lockfile
-if %errorlevel% neq 0 (
-    call pnpm install
+if not exist "%PROJECT_DIR%node_modules" (
+    echo   - node_modules not found, running pnpm install...
+    call pnpm install --frozen-lockfile
     if %errorlevel% neq 0 (
-        echo [ERROR] pnpm install failed.
+        call pnpm install
+        if %errorlevel% neq 0 (
+            echo [ERROR] pnpm install failed.
+            pause
+            exit /b 1
+        )
+    )
+) else (
+    echo   - node_modules exists, skip install for faster publish.
+)
+
+:: Build Tauri app in release mode (portable only, no installer bundle)
+echo [3/6] Building Tauri release (portable, no installer)...
+:: For release speed, default is incremental publish without cargo clean.
+:: If cache corruption is suspected, run "publish.bat clean" for full rebuild.
+if "%FORCE_FULL_REBUILD%"=="1" (
+    echo   - Full rebuild requested, cleaning Rust target cache...
+    call cargo clean --manifest-path "%PROJECT_DIR%src-tauri\Cargo.toml"
+    if %errorlevel% neq 0 (
+        echo [ERROR] cargo clean failed.
         pause
         exit /b 1
     )
+) else (
+    echo   - Skip cargo clean for faster publish. Use "publish.bat clean" when needed.
 )
 
-:: Build Tauri app in release mode
-echo [3/6] Building Tauri release...
-call pnpm tauri build
+:: --no-bundle means:
+:: - still produces optimized release EXE in src-tauri/target/release
+:: - does NOT produce installer files under bundle/nsis or bundle/msi
+call pnpm tauri build --no-bundle
 if %errorlevel% neq 0 (
-    echo [ERROR] Tauri build failed.
+    echo [ERROR] Tauri portable build failed.
     pause
     exit /b 1
 )
 
 :: Copy artifacts to publish folder
-echo [4/6] Copying release artifacts to publish folder...
+echo [4/6] Copying portable artifacts to publish folder...
 
-set "BUNDLE_DIR=%PROJECT_DIR%src-tauri\target\release\bundle"
 set "RELEASE_DIR=%PROJECT_DIR%src-tauri\target\release"
 
 :: Copy the exe directly
@@ -85,21 +130,8 @@ if exist "%RELEASE_DIR%\cn-codex.exe" (
     echo   - CN-Codex.exe
 )
 
-:: Copy NSIS installer if exists
-if exist "%BUNDLE_DIR%\nsis\*.exe" (
-    for %%f in ("%BUNDLE_DIR%\nsis\*.exe") do (
-        copy "%%f" "%PUBLISH_DIR%\" >nul
-        echo   - %%~nxf [NSIS Installer]
-    )
-)
-
-:: Copy MSI installer if exists
-if exist "%BUNDLE_DIR%\msi\*.msi" (
-    for %%f in ("%BUNDLE_DIR%\msi\*.msi") do (
-        copy "%%f" "%PUBLISH_DIR%\" >nul
-        echo   - %%~nxf [MSI Installer]
-    )
-)
+:: NOTE: Installer artifacts are intentionally skipped.
+::       publish/ now contains only green portable runtime files.
 
 :: Copy runtime DLLs
 for %%f in ("%RELEASE_DIR%\*.dll") do (

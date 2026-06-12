@@ -1,4 +1,4 @@
-import { IconChevronDown, IconDownload, IconPower, IconTrash } from "@tabler/icons-react";
+import { IconChevronDown, IconDownload, IconFolderOpen, IconPower, IconTrash } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import {
@@ -10,6 +10,7 @@ import {
   skillList,
   skillRead,
 } from "../../api";
+import { revealInExplorer } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
 import type { PluginSummary } from "../../types/plugin";
 import type { SkillSummary } from "../../types/skill";
@@ -18,6 +19,33 @@ interface McpServerInfo {
   name: string;
   command?: string;
   args?: string[];
+}
+
+interface WorkspacePathCard {
+  key: string;
+  label: string;
+  displayPath: string | null;
+  openPath: string | null;
+}
+
+function normalizeWindowsVerbatimPath(raw: string | null | undefined): string | null {
+  // Windows 在某些 API（尤其 canonicalize）下会返回扩展路径前缀 `\\?\`。
+  // 该前缀对内部文件操作可用，但不适合直接展示给用户，也可能导致 Explorer 打开不稳定。
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("\\\\?\\UNC\\")) {
+    return `\\\\${trimmed.slice("\\\\?\\UNC\\".length)}`;
+  }
+  if (trimmed.startsWith("\\\\?\\")) {
+    return trimmed.slice("\\\\?\\".length);
+  }
+  return trimmed;
+}
+
+function joinWindowsPath(base: string | null, segment: string): string | null {
+  if (!base) return null;
+  return `${base.replace(/[\\/]+$/, "")}\\${segment.replace(/^[\\/]+/, "")}`;
 }
 
 export function IntegrationPanel() {
@@ -37,6 +65,46 @@ export function IntegrationPanel() {
   const [pluginActionId, setPluginActionId] = useState<string | null>(null);
   const [pluginActionStatus, setPluginActionStatus] = useState<string | null>(null);
   const [pluginActionError, setPluginActionError] = useState<string | null>(null);
+
+  const displayConfigDir = normalizeWindowsVerbatimPath(configDir);
+  const displayConfigPath = normalizeWindowsVerbatimPath(configPath);
+  const displayWorkspaceCwd = normalizeWindowsVerbatimPath(workspaceCwd);
+  const displaySkillsDir = joinWindowsPath(displayConfigDir, "skills");
+  const displayPluginsDir = joinWindowsPath(displayConfigDir, "plugins");
+
+  const workspacePathCards: WorkspacePathCard[] = [
+    {
+      key: "config-path",
+      label: intl.formatMessage({ id: "settings.integration.configPath" }),
+      displayPath: displayConfigPath,
+      // 优先打开配置目录，确保配置文件未创建时也能进入对应位置。
+      openPath: displayConfigDir ?? displayConfigPath,
+    },
+    {
+      key: "skills-dir",
+      label: intl.formatMessage({ id: "settings.integration.skillsDir" }),
+      displayPath: displaySkillsDir,
+      openPath: displaySkillsDir,
+    },
+    {
+      key: "plugins-dir",
+      label: intl.formatMessage({ id: "settings.integration.pluginsDir" }),
+      displayPath: displayPluginsDir,
+      openPath: displayPluginsDir,
+    },
+    {
+      key: "config-dir",
+      label: intl.formatMessage({ id: "settings.integration.configDir" }),
+      displayPath: displayConfigDir,
+      openPath: displayConfigDir,
+    },
+    {
+      key: "workspace-cwd",
+      label: intl.formatMessage({ id: "settings.integration.cwd" }),
+      displayPath: displayWorkspaceCwd,
+      openPath: displayWorkspaceCwd,
+    },
+  ];
 
   const load = useCallback(async () => {
     try {
@@ -198,50 +266,34 @@ export function IntegrationPanel() {
         </div>
 
         <div className="grid gap-3 md:grid-cols-2">
-          <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/78 px-4 py-3">
-            <p className="text-xs uppercase tracking-[0.16em] text-[var(--text-faint)]">
-              {intl.formatMessage({ id: "settings.integration.configPath" })}
-            </p>
-            <p className="mt-2 break-all font-mono text-xs text-[var(--text-base)]">
-              {configPath ?? "-"}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/78 px-4 py-3">
-            <p className="text-xs uppercase tracking-[0.16em] text-[var(--text-faint)]">
-              {intl.formatMessage({ id: "settings.integration.skillsDir" })}
-            </p>
-            <p className="mt-2 break-all font-mono text-xs text-[var(--text-base)]">
-              {configDir ? `${configDir}\\skills` : "-"}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/78 px-4 py-3">
-            <p className="text-xs uppercase tracking-[0.16em] text-[var(--text-faint)]">
-              {intl.formatMessage({ id: "settings.integration.pluginsDir" })}
-            </p>
-            <p className="mt-2 break-all font-mono text-xs text-[var(--text-base)]">
-              {configDir ? `${configDir}\\plugins` : "-"}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/78 px-4 py-3">
-            <p className="text-xs uppercase tracking-[0.16em] text-[var(--text-faint)]">
-              {intl.formatMessage({ id: "settings.integration.configDir" })}
-            </p>
-            <p className="mt-2 break-all font-mono text-xs text-[var(--text-base)]">
-              {configDir ?? "-"}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/78 px-4 py-3">
-            <p className="text-xs uppercase tracking-[0.16em] text-[var(--text-faint)]">
-              {intl.formatMessage({ id: "settings.integration.cwd" })}
-            </p>
-            <p className="mt-2 break-all font-mono text-xs text-[var(--text-base)]">
-              {workspaceCwd ?? "-"}
-            </p>
-          </div>
+          {workspacePathCards.map((card) => (
+            <div
+              key={card.key}
+              className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/78 px-4 py-3"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs uppercase tracking-[0.16em] text-[var(--text-faint)]">
+                  {card.label}
+                </p>
+                <button
+                  type="button"
+                  className="icon-button h-7 w-7"
+                  disabled={!card.openPath}
+                  onClick={() => {
+                    if (!card.openPath) return;
+                    void revealInExplorer(card.openPath);
+                  }}
+                  title={intl.formatMessage({ id: "contextMenu.openInExplorer" })}
+                  aria-label={intl.formatMessage({ id: "contextMenu.openInExplorer" })}
+                >
+                  <IconFolderOpen size={14} stroke={1.8} />
+                </button>
+              </div>
+              <p className="mt-2 break-all font-mono text-xs text-[var(--text-base)]">
+                {card.displayPath ?? "-"}
+              </p>
+            </div>
+          ))}
         </div>
       </section>
 

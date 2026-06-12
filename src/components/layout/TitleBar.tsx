@@ -1,5 +1,6 @@
 import {
   windowClose,
+  windowCloseBrowser,
   windowMinimize,
   windowToggleMaximize,
 } from "../../api/window";
@@ -23,6 +24,7 @@ export function TitleBar() {
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const setRightPanelVisible = useAppStore((s) => s.setRightPanelVisible);
+  const setBrowserPanelState = useAppStore((s) => s.setBrowserPanelState);
 
   const handleDoubleClick = () => {
     runWindowAction(windowToggleMaximize, "toggle maximize");
@@ -53,7 +55,20 @@ export function TitleBar() {
           aria-label="Toggle browser panel"
           onClick={() => {
             if (rightPanelVisible && rightPanelTab === "browser") {
-              setRightPanelVisible(false);
+              runWindowAction(async () => {
+                try {
+                  // 先关闭子 WebView，避免右侧面板隐藏后遗留“白色覆盖层”。
+                  await windowCloseBrowser();
+                } finally {
+                  // 无论关闭是否报错，都要收敛 UI 状态，防止界面卡在旧 URL/旧状态。
+                  setBrowserPanelState({
+                    status: "idle",
+                    url: null,
+                    title: null,
+                  });
+                  setRightPanelVisible(false);
+                }
+              }, "close browser panel");
             } else {
               setRightPanelTab("browser");
             }

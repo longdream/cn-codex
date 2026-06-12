@@ -1,0 +1,28 @@
+{
+  "file_name": "tender_sample.docx",
+  "file_path": "C:\\Users\\junlong\\AppData\\Local\\Temp\\p2200_test\\tender_sample.docx",
+  "file_fingerprint": {
+    "path": "C:\\Users\\junlong\\AppData\\Local\\Temp\\p2200_test\\tender_sample.docx",
+    "size_bytes": 36760,
+    "mtime_ns": 1781143015489871700,
+    "sha256": "d9a4910c87b9e772f15eafc133488bdaf64394b10dede7ac8e448ae3c438df47"
+  },
+  "document_type": "docx",
+  "token_estimate": 46,
+  "source_char_count": 46,
+  "source_to_chunk_threshold": 50000,
+  "preferred_search_target": "source",
+  "preferred_reason": "source_char_count=46 <= threshold=50000",
+  "chunk_split_threshold": 50000,
+  "token_threshold": 10000,
+  "strategy": "single_direct_llm",
+  "need_global_search_confirmation": false,
+  "image_count": 0,
+  "chunk_count": 1,
+  "retrieval_hit_count": 0,
+  "source_md_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095712_131563\\source.md",
+  "query_route_file": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095712_131563\\query_route.json",
+  "cache_hit": false,
+  "force_refresh_requested": true,
+  "cache_lookup_skipped": true
+}

@@ -1,20 +1,20 @@
-model = "doubao-seed-2-0-code-preview-260215"
-model_provider = "volcengine"
+model = "l-deepseek-v4-flash"
+model_provider = "openai"
 model_reasoning_effort = "medium"
 approval_policy = "on-request"
 web_search = "live"
+
+[model_providers.openai]
+base_url = "http://10.136.128.2:58080/v1"
+experimental_bearer_token = "sk-aaoLjZDkLppLDmeKd0SPEKWWP4inn56K8SsTnMuKNdGDJoVy"
+wire_api = "chat"
+requires_openai_auth = true
 
 [model_providers.volcengine]
 base_url = "https://ark.cn-beijing.volces.com/api/v3"
 experimental_bearer_token = "633ef9cd-ef82-4311-9356-f4b99ec04150"
 wire_api = "chat"
 requires_openai_auth = false
-
-[model_providers.openai]
-base_url = "https://rayplus.site/v1"
-experimental_bearer_token = "sk-54f433732fa28bb48c75aa2039e354f5c732217f9c38fc2f5e7cb4564915ac05"
-wire_api = "chat"
-requires_openai_auth = true
 
 [mcp_servers]
 

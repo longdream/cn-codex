@@ -25,6 +25,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealInExplorer } from "../../api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatMessage, RunSummary, ToolCallItem } from "../../stores/appStore";
 import { useAppStore } from "../../stores/appStore";
 import { CodeBlock } from "./CodeBlock";
@@ -1540,120 +1542,73 @@ function normalizeLocalImagePath(raw: string): string {
   return trimmed;
 }
 
+const markdownComponents: Components = {
+  h1: ({ children }) => (
+    <h1 className="mt-6 mb-2 text-lg font-semibold text-[var(--chat-prose)]">{children}</h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="mt-5 mb-2 text-[16px] font-semibold text-[var(--chat-prose)]">{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="mt-4 mb-1.5 text-[15px] font-semibold text-[var(--chat-prose)]">{children}</h3>
+  ),
+  p: ({ children }) => <p className="whitespace-pre-wrap break-words">{children}</p>,
+  ul: ({ children }) => (
+    <ul className="my-3 ml-6 list-disc space-y-2 text-[var(--chat-prose)]">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="my-3 ml-6 list-decimal space-y-2 text-[var(--chat-prose)]">{children}</ol>
+  ),
+  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-[var(--accent)] underline decoration-[0.08em] underline-offset-2 hover:opacity-80"
+    >
+      {children}
+    </a>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="my-3 border-l-2 border-[var(--chat-line)] pl-3 text-[var(--chat-muted)]">
+      {children}
+    </blockquote>
+  ),
+  pre: ({ children }) => <>{children}</>,
+  code: ({ className, children }) => {
+    const code = String(children).replace(/\n$/, "");
+    const language = /language-([\w-]+)/.exec(className ?? "")?.[1] ?? "";
+    const isBlockCode = Boolean(language) || code.includes("\n");
+    if (isBlockCode) {
+      return <CodeBlock code={code} language={language} />;
+    }
+    return <code className="chat-inline-code">{code}</code>;
+  },
+  table: ({ children }) => (
+    <div className="thin-scrollbar my-3 overflow-x-auto">
+      <table className="chat-md-table">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-[var(--chat-card-solid)]">{children}</thead>,
+  tbody: ({ children }) => <tbody>{children}</tbody>,
+  tr: ({ children }) => <tr className="border-b border-[var(--chat-line)] last:border-b-0">{children}</tr>,
+  th: ({ children }) => (
+    <th className="border-r border-[var(--chat-line)] px-3 py-2 text-left font-semibold last:border-r-0">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border-r border-[var(--chat-line)] px-3 py-2 align-top last:border-r-0">{children}</td>
+  ),
+};
+
 function MessageContent({ content }: { content: string }) {
-  const parts = content.split(/(```[\s\S]*?```)/g);
+  if (!content) return null;
 
   return (
-    <>
-      {parts.map((part, index) => {
-        if (part.startsWith("```") && part.endsWith("```")) {
-          const lines = part.slice(3, -3);
-          const firstNewline = lines.indexOf("\n");
-          const language = firstNewline > 0 ? lines.slice(0, firstNewline).trim() : "";
-          const code = firstNewline > 0 ? lines.slice(firstNewline + 1) : lines;
-          return <CodeBlock key={index} code={code} language={language} />;
-        }
-
-        return <MarkdownText key={index} text={part} />;
-      })}
-    </>
-  );
-}
-
-function MarkdownText({ text }: { text: string }) {
-  if (!text) return null;
-
-  const lines = text.split("\n");
-  const elements: React.ReactNode[] = [];
-  let listItems: string[] = [];
-  let listKey = 0;
-
-  const flushList = () => {
-    if (listItems.length > 0) {
-      elements.push(
-        <ul key={`list-${listKey++}`} className="my-3 ml-6 list-disc space-y-2 text-[var(--chat-prose)]">
-          {listItems.map((item, i) => (
-            <li key={i}><InlineMarkdown text={item} /></li>
-          ))}
-        </ul>
-      );
-      listItems = [];
-    }
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
-    if (headingMatch) {
-      flushList();
-      const level = headingMatch[1].length;
-      const headingText = headingMatch[2];
-      const cls = level === 1
-        ? "text-lg font-semibold mt-6 mb-2"
-        : level === 2
-          ? "text-[16px] font-semibold mt-5 mb-2"
-          : "text-[15px] font-semibold mt-4 mb-1.5";
-      elements.push(
-        <div key={`h-${i}`} className={`${cls} text-[var(--chat-prose)]`}>
-          <InlineMarkdown text={headingText} />
-        </div>
-      );
-      continue;
-    }
-
-    const listMatch = line.match(/^[-*]\s+(.+)$/);
-    if (listMatch) {
-      listItems.push(listMatch[1]);
-      continue;
-    }
-
-    const numberedMatch = line.match(/^\d+\.\s+(.+)$/);
-    if (numberedMatch) {
-      listItems.push(numberedMatch[1]);
-      continue;
-    }
-
-    flushList();
-
-    if (line.trim() === "") {
-      if (i > 0 && lines[i - 1].trim() !== "") {
-        elements.push(<div key={`br-${i}`} className="h-1" />);
-      }
-      continue;
-    }
-
-    elements.push(
-      <p key={`t-${i}`} className="whitespace-pre-wrap break-words">
-        <InlineMarkdown text={line} />
-        {i < lines.length - 1 && lines[i + 1].trim() !== "" ? "\n" : ""}
-      </p>
-    );
-  }
-
-  flushList();
-
-  return <>{elements}</>;
-}
-
-function InlineMarkdown({ text }: { text: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (part.startsWith("**") && part.endsWith("**")) {
-          return <strong key={i} className="font-semibold text-[var(--chat-prose)]">{part.slice(2, -2)}</strong>;
-        }
-        if (part.startsWith("`") && part.endsWith("`")) {
-          return (
-            <code key={i} className="chat-inline-code">
-              {part.slice(1, -1)}
-            </code>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {content}
+    </ReactMarkdown>
   );
 }

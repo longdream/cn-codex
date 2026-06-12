@@ -37,8 +37,12 @@ export function ChatPage() {
       attachments: AttachedFile[] = [],
       options: ChatSendOptions = {},
     ) => {
-      const cwd = useAppStore.getState().workspaceCwd;
+      const state = useAppStore.getState();
+      const cwd = state.workspaceCwd;
       if (!cwd) return;
+      // 仅目标模式 active 时阻断发送，聊天模式语义保持不变。
+      const goalRunning = mode === "goal" && state.currentGoal?.status === "active";
+      if (goalRunning) return;
       const displayText = formatUserMessageDisplay(text, attachments);
 
       let threadId = currentThreadId;
@@ -96,6 +100,11 @@ export function ChatPage() {
 
   const handleInterrupt = useCallback(async () => {
     const store = useAppStore.getState();
+    const threadId = store.currentThreadId;
+    const currentGoal = store.currentGoal;
+    const shouldPauseGoal =
+      store.chatMode === "goal" && !!threadId && currentGoal?.status === "active";
+
     // 先做前端状态收敛，保证点击“停止”后转圈立即结束。
     store.markRunningToolCallsInterrupted("Tool interrupted by user.");
     const partialText = store.streamingText;
@@ -110,7 +119,26 @@ export function ChatPage() {
     }
     store.setStreaming(false);
     store.setCurrentTurnId(null);
-    standaloneTurnInterrupt().catch(() => {});
+    if (shouldPauseGoal && currentGoal) {
+      // 先乐观切到 paused，让目标模式按钮立即回到可发送（绿色）状态。
+      store.setCurrentGoal({ ...currentGoal, status: "paused" });
+    }
+
+    // 对齐 Codex：停止=中断当前执行；目标 active 时额外切到 paused（不是 complete）。
+    const interruptPromise = standaloneTurnInterrupt().catch((err) => {
+      console.error("Failed to interrupt turn:", err);
+    });
+
+    if (shouldPauseGoal && threadId) {
+      try {
+        const resp = await standaloneThreadGoalStatus(threadId, "paused");
+        store.setCurrentGoal(resp.goal as ThreadGoal);
+      } catch (err) {
+        console.error("Failed to pause active goal after interrupt:", err);
+      }
+    }
+
+    await interruptPromise;
   }, []);
 
   const addSystemMessage = useCallback((content: string) => {
@@ -193,24 +221,7 @@ export function ChatPage() {
     }
   }, [addSystemMessage, intl]);
 
-  const hasProject = !!currentProjectId && !!workspaceCwd;
-  const showEmpty = messages.length === 0 && !isStreaming;
-
-  if (!hasProject) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-12">
-        <div className="w-full max-w-sm text-center">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-[var(--radius-lg)] bg-[var(--accent-soft)] text-[var(--accent)]">
-            <IconFolder size={24} stroke={1.5} />
-          </div>
-          <p className="text-sm text-[var(--text-muted)]">
-            {intl.formatMessage({ id: "project.noProjectSelected" })}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
+  // 注意：所有 Hook 必须在任何条件 return 之前声明，避免项目切换时触发 Hook 顺序错误。
   const [copyDone, setCopyDone] = useState(false);
 
   const handleCopyAll = useCallback(() => {
@@ -229,6 +240,24 @@ export function ChatPage() {
       setTimeout(() => setCopyDone(false), 2000);
     });
   }, [messages]);
+
+  const hasProject = !!currentProjectId && !!workspaceCwd;
+  const showEmpty = messages.length === 0 && !isStreaming;
+
+  if (!hasProject) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-12">
+        <div className="w-full max-w-sm text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-[var(--radius-lg)] bg-[var(--accent-soft)] text-[var(--accent)]">
+            <IconFolder size={24} stroke={1.5} />
+          </div>
+          <p className="text-sm text-[var(--text-muted)]">
+            {intl.formatMessage({ id: "project.noProjectSelected" })}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

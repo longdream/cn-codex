@@ -1,0 +1,40 @@
+{
+  "document_name": "tender_sample.docx",
+  "document_type": "docx",
+  "token_estimate": 46,
+  "source_char_count": 46,
+  "source_to_chunk_threshold": 50000,
+  "preferred_search_target": "source",
+  "preferred_reason": "source_char_count=46 <= threshold=50000",
+  "query_route_file": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095712_131563\\query_route.json",
+  "query_route": {
+    "mode": "source",
+    "source_char_count": 46,
+    "threshold": 50000,
+    "preferred_search_target": "source",
+    "preferred_reason": "source_char_count=46 <= threshold=50000",
+    "source_md_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095712_131563\\source.md",
+    "chunks_json_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095712_131563\\chunks.json",
+    "chunk_dir_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095712_131563\\chunks",
+    "generated_at": "20260611_095712_163455"
+  },
+  "strategy": "single_direct_llm",
+  "chunks_json": [
+    {
+      "chunk_id": "chunk_0001",
+      "chapter": "全文",
+      "section": "全文",
+      "content": "# 第一章 招标要求\n10.2 采购廉洁承诺函\n投标保证金金额：1000元\n评分标准详见附件"
+    }
+  ],
+  "retrieval_hits_json": [],
+  "need_global_search_confirmation": false,
+  "file_fingerprint": {
+    "path": "C:\\Users\\junlong\\AppData\\Local\\Temp\\p2200_test\\tender_sample.docx",
+    "size_bytes": 36760,
+    "mtime_ns": 1781143015489871700,
+    "sha256": "d9a4910c87b9e772f15eafc133488bdaf64394b10dede7ac8e448ae3c438df47"
+  },
+  "force_refresh_requested": true,
+  "cache_lookup_skipped": true
+}

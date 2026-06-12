@@ -268,9 +268,7 @@ pub async fn standalone_chat(
 }
 
 #[tauri::command]
-pub async fn standalone_turn_interrupt(
-    state: State<'_, AppState>,
-) -> AppResult<serde_json::Value> {
+pub async fn standalone_turn_interrupt(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
     info!("Turn interrupt requested by user");
     state.agent_engine.interrupt();
     let current_thread_id = state.current_thread_id.read().await.clone();

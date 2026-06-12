@@ -88,6 +88,7 @@ export function RightPanel() {
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const messages = useAppStore((s) => s.messages);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
+  const setBrowserPanelState = useAppStore((s) => s.setBrowserPanelState);
 
   const [browserActive, setBrowserActive] = useState(false);
   const browserContainerRef = useRef<HTMLDivElement>(null);
@@ -158,9 +159,16 @@ export function RightPanel() {
   }, [syncBrowserPosition]);
 
   const handleCloseBrowser = useCallback(() => {
-    void windowCloseBrowser();
-    setBrowserActive(false);
-  }, []);
+    void windowCloseBrowser().finally(() => {
+      // 主动关闭时同步清理状态，避免后续仍显示旧页面状态。
+      setBrowserPanelState({
+        status: "idle",
+        url: null,
+        title: null,
+      });
+      setBrowserActive(false);
+    });
+  }, [setBrowserPanelState]);
 
   // 切换 tab 时隐藏/恢复 webview 位置（不关闭）
   useEffect(() => {
@@ -177,6 +185,20 @@ export function RightPanel() {
       handleOpenBrowser();
     }
   }, [rightPanelTab, browserActive, handleOpenBrowser]);
+
+  useEffect(() => {
+    return () => {
+      // 组件卸载（例如右侧面板被整体隐藏）时强制关闭 WebView。
+      // 这是防止白屏覆盖残留的最终兜底逻辑。
+      void windowCloseBrowser().finally(() => {
+        setBrowserPanelState({
+          status: "idle",
+          url: null,
+          title: null,
+        });
+      });
+    };
+  }, [setBrowserPanelState]);
 
   return (
     <aside className="flex h-full w-[24rem] flex-shrink-0 flex-col border-l border-[var(--border-subtle)] bg-[var(--surface-panel)]">

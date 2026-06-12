@@ -124,18 +124,31 @@ pub async fn run_webview_js_injection(
 ) -> Result<BrowserRunOutput, String> {
     let started_at = Instant::now();
     let initial_url = browser_run_initial_url(payload);
-    let browser_info = open_browser_embedded(app_handle, workspace_config_dir, initial_url.as_deref(), -9999.0, -9999.0, 800.0, 600.0)
-        .map_err(|e| format!("Failed to open browser: {e}"))?;
+    let browser_info = open_browser_embedded(
+        app_handle,
+        workspace_config_dir,
+        initial_url.as_deref(),
+        -9999.0,
+        -9999.0,
+        800.0,
+        600.0,
+    )
+    .map_err(|e| format!("Failed to open browser: {e}"))?;
     let cdp_endpoint = browser_info.cdp_endpoint.clone();
 
     ensure_cdp_ready(&http, &cdp_endpoint, Duration::from_secs(8), &cancel_flag).await?;
-    let mut session = BrowserSession::connect(http.clone(), cdp_endpoint.clone(), cancel_flag.clone())
-        .await?;
+    let mut session =
+        BrowserSession::connect(http.clone(), cdp_endpoint.clone(), cancel_flag.clone()).await?;
 
     // 兼容旧 runner：默认截图和资源目录都在 codey/browser 下。
     let browser_dir = workspace_config_dir.join("browser");
-    let screenshot_dir = path_from_payload_or_default(payload, "defaultScreenshotDir", browser_dir.join("screenshots"));
-    let asset_dir = path_from_payload_or_default(payload, "defaultAssetDir", browser_dir.join("assets"));
+    let screenshot_dir = path_from_payload_or_default(
+        payload,
+        "defaultScreenshotDir",
+        browser_dir.join("screenshots"),
+    );
+    let asset_dir =
+        path_from_payload_or_default(payload, "defaultAssetDir", browser_dir.join("assets"));
     fs::create_dir_all(&screenshot_dir).await.ok();
     fs::create_dir_all(&asset_dir).await.ok();
 
@@ -243,7 +256,11 @@ async fn run_action(
             let timeout = action_timeout_ms(action, DEFAULT_NAV_TIMEOUT_MS);
             session.navigate(&url, timeout).await?;
             let current_url = session.current_url().await.unwrap_or(url);
-            Ok(action_result(index, action_type, json!({ "url": current_url })))
+            Ok(action_result(
+                index,
+                action_type,
+                json!({ "url": current_url }),
+            ))
         }
         "click" => {
             if let Some(selector) = optional_string(action, "selector") {
@@ -607,8 +624,14 @@ async fn run_action(
             Ok(action_result(index, action_type, json!({ "ms": ms })))
         }
         "screenshot" => {
-            let screenshot_path =
-                resolve_output_path(cwd, optional_string(action, "path"), screenshot_dir, "browser", index, ".png");
+            let screenshot_path = resolve_output_path(
+                cwd,
+                optional_string(action, "path"),
+                screenshot_dir,
+                "browser",
+                index,
+                ".png",
+            );
             if let Some(parent) = screenshot_path.parent() {
                 fs::create_dir_all(parent).await.ok();
             }
@@ -689,7 +712,10 @@ async fn run_action(
                 .unwrap_or(8_000)
                 .clamp(1_000, 20_000) as usize;
             let html = session
-                .evaluate("(() => document.documentElement?.outerHTML ?? \"\")()", true)
+                .evaluate(
+                    "(() => document.documentElement?.outerHTML ?? \"\")()",
+                    true,
+                )
                 .await?
                 .as_str()
                 .unwrap_or_default()
@@ -740,16 +766,30 @@ async fn run_action(
                     true,
                 )
                 .await?;
-            Ok(action_result(index, action_type, json!({ "snapshot": snapshot })))
+            Ok(action_result(
+                index,
+                action_type,
+                json!({ "snapshot": snapshot }),
+            ))
         }
         "assets" => {
             let max_items = optional_u64(action, &["maxItems", "max_items"]).unwrap_or(100);
             let assets = collect_page_assets(session, max_items).await?;
-            Ok(action_result(index, action_type, json!({ "assets": assets })))
+            Ok(action_result(
+                index,
+                action_type,
+                json!({ "assets": assets }),
+            ))
         }
         "bundle_assets" => {
-            let bundle_dir =
-                resolve_output_path(cwd, optional_string(action, "path").or_else(|| optional_string(action, "output_path")), asset_dir, "bundle", index, "");
+            let bundle_dir = resolve_output_path(
+                cwd,
+                optional_string(action, "path").or_else(|| optional_string(action, "output_path")),
+                asset_dir,
+                "bundle",
+                index,
+                "",
+            );
             fs::create_dir_all(&bundle_dir).await.ok();
             let include = normalize_asset_include(action.get("include"));
             let max_downloads = optional_u64(action, &["maxDownloads", "max_downloads"])
@@ -760,7 +800,11 @@ async fn run_action(
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true);
 
-            let assets = collect_page_assets(session, optional_u64(action, &["maxItems", "max_items"]).unwrap_or(100)).await?;
+            let assets = collect_page_assets(
+                session,
+                optional_u64(action, &["maxItems", "max_items"]).unwrap_or(100),
+            )
+            .await?;
             let candidates = flatten_asset_candidates(&assets)
                 .into_iter()
                 .filter(|asset| include.iter().any(|kind| kind == &asset.kind))
@@ -862,7 +906,8 @@ async fn run_action(
             Ok(action_result(index, action_type, json!({ "value": value })))
         }
         "text" => {
-            let selector = optional_string(action, "selector").unwrap_or_else(|| "body".to_string());
+            let selector =
+                optional_string(action, "selector").unwrap_or_else(|| "body".to_string());
             let max_chars = optional_u64(action, &["maxChars", "max_chars"])
                 .unwrap_or(4_000)
                 .clamp(500, 20_000) as usize;
@@ -975,7 +1020,9 @@ async fn run_action(
                 }),
             ))
         }
-        other => Err(format!("Unsupported browser action at index {index}: {other}")),
+        other => Err(format!(
+            "Unsupported browser action at index {index}: {other}"
+        )),
     }
 }
 
@@ -1035,7 +1082,11 @@ impl BrowserSession {
         self.client.command(method, params).await
     }
 
-    async fn evaluate(&mut self, script: &str, return_by_value: bool) -> Result<serde_json::Value, String> {
+    async fn evaluate(
+        &mut self,
+        script: &str,
+        return_by_value: bool,
+    ) -> Result<serde_json::Value, String> {
         let result = self
             .command(
                 "Runtime.evaluate",
@@ -1054,9 +1105,7 @@ impl BrowserSession {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
                 .unwrap_or_else(|| exception.to_string());
-            return Err(format!(
-                "JavaScript evaluation failed: {message}"
-            ));
+            return Err(format!("JavaScript evaluation failed: {message}"));
         }
 
         let value = result
@@ -1083,7 +1132,8 @@ impl BrowserSession {
     }
 
     async fn reload(&mut self, timeout_ms: u64) -> Result<(), String> {
-        self.command("Page.reload", json!({ "ignoreCache": false })).await?;
+        self.command("Page.reload", json!({ "ignoreCache": false }))
+            .await?;
         self.wait_document_ready(timeout_ms).await
     }
 
@@ -1106,8 +1156,11 @@ impl BrowserSession {
             .and_then(|entry| entry.get("id"))
             .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| "Navigation history is unavailable for back".to_string())?;
-        self.command("Page.navigateToHistoryEntry", json!({ "entryId": target_entry }))
-            .await?;
+        self.command(
+            "Page.navigateToHistoryEntry",
+            json!({ "entryId": target_entry }),
+        )
+        .await?;
         self.wait_document_ready(timeout_ms).await
     }
 
@@ -1130,13 +1183,17 @@ impl BrowserSession {
             .and_then(|entry| entry.get("id"))
             .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| "Navigation history is unavailable for forward".to_string())?;
-        self.command("Page.navigateToHistoryEntry", json!({ "entryId": target_entry }))
-            .await?;
+        self.command(
+            "Page.navigateToHistoryEntry",
+            json!({ "entryId": target_entry }),
+        )
+        .await?;
         self.wait_document_ready(timeout_ms).await
     }
 
     async fn wait_document_ready(&mut self, timeout_ms: u64) -> Result<(), String> {
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms.clamp(1_000, MAX_WAIT_TIMEOUT_MS));
+        let deadline =
+            Instant::now() + Duration::from_millis(timeout_ms.clamp(1_000, MAX_WAIT_TIMEOUT_MS));
         loop {
             ensure_not_cancelled(&self.cancel_flag)?;
             let state = self
@@ -1149,7 +1206,9 @@ impl BrowserSession {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(format!("Timed out waiting for document readiness after {timeout_ms} ms"));
+                return Err(format!(
+                    "Timed out waiting for document readiness after {timeout_ms} ms"
+                ));
             }
             sleep(Duration::from_millis(80)).await;
         }
@@ -1287,8 +1346,9 @@ struct CdpClient {
 
 impl CdpClient {
     async fn connect(ws_url: &str) -> Result<Self, String> {
-        let (stream, _) =
-            connect_async(ws_url).await.map_err(|e| format!("CDP connect failed: {e}"))?;
+        let (stream, _) = connect_async(ws_url)
+            .await
+            .map_err(|e| format!("CDP connect failed: {e}"))?;
         Ok(Self { stream, next_id: 1 })
     }
 
@@ -1304,7 +1364,8 @@ impl CdpClient {
             "method": method,
             "params": params
         });
-        let text = serde_json::to_string(&payload).map_err(|e| format!("CDP encode failed: {e}"))?;
+        let text =
+            serde_json::to_string(&payload).map_err(|e| format!("CDP encode failed: {e}"))?;
         self.stream
             .send(Message::Text(text))
             .await
@@ -1338,10 +1399,12 @@ impl CdpClient {
 
 fn parse_ws_message_json(message: Message) -> Result<serde_json::Value, String> {
     match message {
-        Message::Text(text) => serde_json::from_str(&text)
-            .map_err(|e| format!("CDP json parse failed: {e}")),
+        Message::Text(text) => {
+            serde_json::from_str(&text).map_err(|e| format!("CDP json parse failed: {e}"))
+        }
         Message::Binary(bytes) => {
-            let text = String::from_utf8(bytes).map_err(|e| format!("CDP utf8 parse failed: {e}"))?;
+            let text =
+                String::from_utf8(bytes).map_err(|e| format!("CDP utf8 parse failed: {e}"))?;
             serde_json::from_str(&text).map_err(|e| format!("CDP json parse failed: {e}"))
         }
         Message::Ping(_) | Message::Pong(_) => Ok(serde_json::Value::Null),
@@ -1412,10 +1475,7 @@ async fn create_tab_http(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("about:blank");
-    let endpoint = format!(
-        "{cdp_endpoint}/json/new?{}",
-        encode_query_component(target)
-    );
+    let endpoint = format!("{cdp_endpoint}/json/new?{}", encode_query_component(target));
     let response = http
         .put(endpoint)
         .send()
@@ -1776,7 +1836,10 @@ fn required_string(action: &serde_json::Value, key: &str) -> Result<String, Stri
 }
 
 fn optional_string(action: &serde_json::Value, key: &str) -> Option<String> {
-    action.get(key).and_then(serde_json::Value::as_str).map(|value| value.to_string())
+    action
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(|value| value.to_string())
 }
 
 fn required_number(action: &serde_json::Value, key: &str) -> Result<f64, String> {
@@ -1830,7 +1893,10 @@ fn resolve_output_path(
     index: usize,
     extension: &str,
 ) -> PathBuf {
-    if let Some(path) = raw.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
+    if let Some(path) = raw
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
         let candidate = PathBuf::from(path);
         if candidate.is_absolute() {
             return candidate;
@@ -1981,4 +2047,3 @@ mod tests {
         );
     }
 }
-

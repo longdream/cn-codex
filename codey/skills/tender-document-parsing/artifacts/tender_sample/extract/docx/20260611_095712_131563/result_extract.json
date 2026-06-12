@@ -1,0 +1,108 @@
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "document_name": "tender_sample.docx",
+    "document_type": "docx",
+    "chunk_count": 1,
+    "retrieval_hit_count": 0,
+    "result": {
+      "project_name": "tender_sample",
+      "strategy": "local_rule_extract",
+      "total_chars": 46,
+      "categories": [
+        {
+          "category": "项目名称",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "招标编号",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "保证金信息",
+          "count": 1,
+          "items": [
+            {
+              "content": "投标保证金金额：1000元",
+              "pages": []
+            }
+          ]
+        },
+        {
+          "category": "废标项",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "投标截止时间",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "开标时间",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "投标地点",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "企业资质要求",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "人员资质要求",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "技术参数要求",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "商务条款",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "评分标准",
+          "count": 1,
+          "items": [
+            {
+              "content": "评分标准详见附件",
+              "pages": []
+            }
+          ]
+        },
+        {
+          "category": "标书结构要求",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "密封要求",
+          "count": 0,
+          "items": []
+        },
+        {
+          "category": "法务及BC重点关注信息",
+          "count": 1,
+          "items": [
+            {
+              "content": "10.2 采购廉洁承诺函",
+              "pages": []
+            }
+          ]
+        }
+      ],
+      "supplemental_items": []
+    }
+  }
+}

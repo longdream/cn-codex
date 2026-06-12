@@ -47,14 +47,37 @@ pub fn greet(name: &str) -> String {
     format!("CN-Codex ready for {name}.")
 }
 
+fn normalize_windows_verbatim_prefix(raw: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let trimmed = raw.trim();
+        if let Some(rest) = trimmed.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = trimmed.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+        return trimmed.to_string();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        raw.trim().to_string()
+    }
+}
+
 #[tauri::command]
 pub async fn get_server_status(state: State<'_, AppState>) -> AppResult<ServerStatus> {
+    let cwd = state.cwd.read().await.clone();
     Ok(ServerStatus {
         initialized: true,
         current_thread_id: state.current_thread_id.read().await.clone(),
-        cwd: state.cwd.read().await.clone(),
+        // 将 Windows 扩展前缀路径转换为常规显示路径，避免前端直接看到 `\\?\`。
+        cwd: normalize_windows_verbatim_prefix(&cwd),
         locale: state.locale.read().await.clone(),
-        config_dir: state.workspace_config_dir.to_string_lossy().to_string(),
-        config_path: state.config_path.to_string_lossy().to_string(),
+        config_dir: normalize_windows_verbatim_prefix(
+            &state.workspace_config_dir.to_string_lossy(),
+        ),
+        config_path: normalize_windows_verbatim_prefix(&state.config_path.to_string_lossy()),
     })
 }

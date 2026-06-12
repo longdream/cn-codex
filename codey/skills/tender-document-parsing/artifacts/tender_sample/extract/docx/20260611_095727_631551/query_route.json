@@ -1,0 +1,11 @@
+{
+  "mode": "source",
+  "source_char_count": 46,
+  "threshold": 50000,
+  "preferred_search_target": "source",
+  "preferred_reason": "source_char_count=46 <= threshold=50000",
+  "source_md_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095727_631551\\source.md",
+  "chunks_json_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095727_631551\\chunks.json",
+  "chunk_dir_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095727_631551\\chunks",
+  "generated_at": "20260611_095727_658461"
+}

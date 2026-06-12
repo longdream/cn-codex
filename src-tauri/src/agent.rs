@@ -144,7 +144,7 @@ impl AgentEngine {
         let model = config.resolve_model();
         if model.is_empty() {
             return Err(AppError::Custom(
-                "未配置模型。请在设置中选择一个模型后再试。".to_string()
+                "未配置模型。请在设置中选择一个模型后再试。".to_string(),
             ));
         }
         let (provider_id, provider) = config.resolve_provider();
@@ -295,14 +295,14 @@ impl AgentEngine {
         const MAX_INTENT_RETRIES: u32 = 2;
 
         if !prompt_hook_blocked {
-        for iteration in 0..max_iterations {
+            for iteration in 0..max_iterations {
                 if self.is_cancelled() {
                     info!("Turn {turn_id} cancelled by user at iteration {iteration}");
                     break;
                 }
-            info!("Agent loop iteration {iteration} for turn {turn_id}");
+                info!("Agent loop iteration {iteration} for turn {turn_id}");
 
-            let history = self.thread_store.get_thread_messages(thread_id).await;
+                let history = self.thread_store.get_thread_messages(thread_id).await;
                 let internal_messages = self.build_internal_messages(
                     config,
                     &history,
@@ -318,19 +318,19 @@ impl AgentEngine {
                     .tool_specs_with_mcp(config.web_search_enabled())
                     .await;
 
-            let result = self
-                .stream_completion(
-                    app_handle,
-                    &base_url,
-                    &api_key,
-                    &model,
+                let result = self
+                    .stream_completion(
+                        app_handle,
+                        &base_url,
+                        &api_key,
+                        &model,
                         &wire_api,
                         internal_messages,
-                    if tools.is_empty() { None } else { Some(tools) },
-                )
-                .await;
+                        if tools.is_empty() { None } else { Some(tools) },
+                    )
+                    .await;
 
-            match result {
+                match result {
                     Ok(CompletionResult::Message {
                         ref text,
                         ref usage,
@@ -347,15 +347,15 @@ impl AgentEngine {
                                 recorder.record(&provider_id, &model, thread_id, u);
                             }
                         }
-                    if text.is_empty() && iteration > 0 {
-                        info!("Empty message after tool execution, sending minimal signal");
-                        app_handle
-                            .emit(
-                                "agent-message-delta",
-                                serde_json::json!({ "delta": "(completed)" }),
-                            )
-                            .ok();
-                    }
+                        if text.is_empty() && iteration > 0 {
+                            info!("Empty message after tool execution, sending minimal signal");
+                            app_handle
+                                .emit(
+                                    "agent-message-delta",
+                                    serde_json::json!({ "delta": "(completed)" }),
+                                )
+                                .ok();
+                        }
 
                         if !text.is_empty()
                             && iteration > 0
@@ -382,23 +382,23 @@ impl AgentEngine {
                             continue;
                         }
 
-                    let content = if text.is_empty() && iteration > 0 {
-                        String::new()
-                    } else {
-                        text.clone()
-                    };
-                    if !content.is_empty() || iteration == 0 {
-                        let msg = ThreadMessage {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            role: "assistant".to_string(),
-                                content: content.clone(),
-                            timestamp: now_secs(),
-                            tool_call_id: None,
-                            tool_name: None,
-                            tool_calls: None,
+                        let content = if text.is_empty() && iteration > 0 {
+                            String::new()
+                        } else {
+                            text.clone()
                         };
-                        self.thread_store.add_message(thread_id, msg).await?;
-                    }
+                        if !content.is_empty() || iteration == 0 {
+                            let msg = ThreadMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                role: "assistant".to_string(),
+                                content: content.clone(),
+                                timestamp: now_secs(),
+                                tool_call_id: None,
+                                tool_name: None,
+                                tool_calls: None,
+                            };
+                            self.thread_store.add_message(thread_id, msg).await?;
+                        }
                         let git_status_now = git_status_snapshot(&effective_cwd).await;
                         merge_git_changes(&mut changed_files, &git_status_before, &git_status_now);
                         let budget_limited_now = if turn_mode == "goal" {
@@ -453,8 +453,8 @@ impl AgentEngine {
                             }
                         }
                         stop_hooks_satisfied = true;
-                    break;
-                }
+                        break;
+                    }
                     Ok(CompletionResult::ToolCalls {
                         calls,
                         preceding_text,
@@ -475,70 +475,71 @@ impl AgentEngine {
                             }
                         }
 
-                    if !preceding_text.is_empty() {
-                        let text_msg = ThreadMessage {
+                        if !preceding_text.is_empty() {
+                            let text_msg = ThreadMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                role: "assistant".to_string(),
+                                content: preceding_text,
+                                timestamp: now_secs(),
+                                tool_call_id: None,
+                                tool_name: None,
+                                tool_calls: None,
+                            };
+                            self.thread_store.add_message(thread_id, text_msg).await?;
+                        }
+
+                        let tc_infos: Vec<ToolCallInfo> = calls
+                            .iter()
+                            .map(|c| ToolCallInfo {
+                                id: c.id.clone(),
+                                name: c.name.clone(),
+                                arguments: c.arguments.clone(),
+                            })
+                            .collect();
+                        let assistant_tc_msg = ThreadMessage {
                             id: uuid::Uuid::new_v4().to_string(),
                             role: "assistant".to_string(),
-                            content: preceding_text,
+                            content: String::new(),
                             timestamp: now_secs(),
                             tool_call_id: None,
                             tool_name: None,
-                            tool_calls: None,
+                            tool_calls: Some(tc_infos),
                         };
-                        self.thread_store.add_message(thread_id, text_msg).await?;
-                    }
+                        self.thread_store
+                            .add_message(thread_id, assistant_tc_msg)
+                            .await?;
 
-                    let tc_infos: Vec<ToolCallInfo> = calls
-                        .iter()
-                        .map(|c| ToolCallInfo {
-                            id: c.id.clone(),
-                            name: c.name.clone(),
-                            arguments: c.arguments.clone(),
-                        })
-                        .collect();
-                    let assistant_tc_msg = ThreadMessage {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        role: "assistant".to_string(),
-                        content: String::new(),
-                        timestamp: now_secs(),
-                        tool_call_id: None,
-                        tool_name: None,
-                        tool_calls: Some(tc_infos),
-                    };
-                    self.thread_store
-                        .add_message(thread_id, assistant_tc_msg)
-                        .await?;
-
-                    let calls_json: Vec<serde_json::Value> = calls
-                        .iter()
-                        .map(|c| {
-                            serde_json::json!({
-                                "id": c.id,
-                                "name": c.name,
-                                "arguments": c.arguments,
+                        let calls_json: Vec<serde_json::Value> = calls
+                            .iter()
+                            .map(|c| {
+                                serde_json::json!({
+                                    "id": c.id,
+                                    "name": c.name,
+                                    "arguments": c.arguments,
+                                })
                             })
-                        })
-                        .collect();
-                    app_handle
-                        .emit(
-                            "tool-calls-start",
-                            serde_json::json!({
-                                "threadId": thread_id,
-                                "calls": calls_json,
-                            }),
-                        )
-                        .ok();
+                            .collect();
+                        app_handle
+                            .emit(
+                                "tool-calls-start",
+                                serde_json::json!({
+                                    "threadId": thread_id,
+                                    "calls": calls_json,
+                                }),
+                            )
+                            .ok();
 
-                    let mut results_json: Vec<serde_json::Value> = Vec::new();
+                        let mut results_json: Vec<serde_json::Value> = Vec::new();
 
                         for mut call in calls {
-                        info!("Tool call: {} args={}", call.name, call.arguments);
+                            info!("Tool call: {} args={}", call.name, call.arguments);
                             // 若用户已点击停止，则跳过工具执行，并主动补发结束状态，
                             // 防止前端工具卡片一直停留在 running。
                             if self.is_cancelled() {
                                 let interrupted_call_id = call.id.clone();
                                 let interrupted_tool_name = call.name.clone();
-                                let interrupted_output = "Tool execution skipped: interrupted by user.".to_string();
+                                let interrupted_output =
+                                    "Tool execution skipped: interrupted by user.".to_string();
                                 app_handle
                                     .emit(
                                         "tool-exec-end",
@@ -612,10 +613,10 @@ impl AgentEngine {
                             }
 
                             let requested_file_changes = file_changes_from_tool_call(&call);
-                        let tool_result = self
-                            .tool_executor
-                            .read()
-                            .await
+                            let tool_result = self
+                                .tool_executor
+                                .read()
+                                .await
                                 .execute(
                                     &call.name,
                                     &call.arguments,
@@ -623,12 +624,12 @@ impl AgentEngine {
                                     app_handle,
                                     thread_id,
                                 )
-                            .await;
+                                .await;
 
                             let (mut result_content, success) = match tool_result {
-                            Ok(output) => (output, true),
-                            Err(e) => (format!("Tool execution error: {e}"), false),
-                        };
+                                Ok(output) => (output, true),
+                                Err(e) => (format!("Tool execution error: {e}"), false),
+                            };
                             let mut has_subagent_stop_feedback = false;
                             if success && call.name == "close_agent" {
                                 let subagent_stop_hook_results = hook_runtime
@@ -687,46 +688,46 @@ impl AgentEngine {
                                 }
                             }
 
-                        results_json.push(serde_json::json!({
-                            "id": call.id,
-                            "tool": call.name,
-                            "success": success,
-                                "postHookFeedback": has_post_hook_feedback,
-                                "subagentStopHookFeedback": has_subagent_stop_feedback,
-                        }));
+                            results_json.push(serde_json::json!({
+                                "id": call.id,
+                                "tool": call.name,
+                                "success": success,
+                                    "postHookFeedback": has_post_hook_feedback,
+                                    "subagentStopHookFeedback": has_subagent_stop_feedback,
+                            }));
 
-                        let tool_msg = ThreadMessage {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            role: "tool".to_string(),
-                            content: result_content,
-                            timestamp: now_secs(),
-                            tool_call_id: Some(call.id.clone()),
-                            tool_name: Some(call.name.clone()),
-                            tool_calls: None,
-                        };
-                        self.thread_store.add_message(thread_id, tool_msg).await?;
-                    }
+                            let tool_msg = ThreadMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                role: "tool".to_string(),
+                                content: result_content,
+                                timestamp: now_secs(),
+                                tool_call_id: Some(call.id.clone()),
+                                tool_name: Some(call.name.clone()),
+                                tool_calls: None,
+                            };
+                            self.thread_store.add_message(thread_id, tool_msg).await?;
+                        }
 
-                    app_handle
-                        .emit(
-                            "tool-calls-end",
-                            serde_json::json!({
-                                "threadId": thread_id,
-                                "results": results_json,
-                            }),
-                        )
-                        .ok();
+                        app_handle
+                            .emit(
+                                "tool-calls-end",
+                                serde_json::json!({
+                                    "threadId": thread_id,
+                                    "results": results_json,
+                                }),
+                            )
+                            .ok();
                         stop_hooks_ran_for_last_stop = false;
-                }
-                Err(e) => {
-                    error!("Iteration {iteration}: LLM request failed: {e}");
-                    app_handle
-                        .emit(
-                            "server-error",
-                            serde_json::json!({ "message": e.to_string() }),
-                        )
-                        .ok();
-                    break;
+                    }
+                    Err(e) => {
+                        error!("Iteration {iteration}: LLM request failed: {e}");
+                        app_handle
+                            .emit(
+                                "server-error",
+                                serde_json::json!({ "message": e.to_string() }),
+                            )
+                            .ok();
+                        break;
                     }
                 }
             }
@@ -823,7 +824,7 @@ impl AgentEngine {
                     thread_id,
                     HOOK_FILE_CHANGE,
                     &effective_cwd,
-                serde_json::json!({
+                    serde_json::json!({
                         "turnId": &turn_id,
                         "mode": &turn_mode,
                         "cwd": &effective_cwd,
@@ -1279,7 +1280,10 @@ impl AgentEngine {
         // 如果返回的是非流式 JSON（某些中转站即使请求 stream=true 也返回完整 JSON）
         if content_type.contains("application/json") && !content_type.contains("stream") {
             let body_text = response.text().await.unwrap_or_default();
-            info!("Non-streaming JSON response received (first 300 chars): {}", &body_text[..body_text.len().min(300)]);
+            info!(
+                "Non-streaming JSON response received (first 300 chars): {}",
+                &body_text[..body_text.len().min(300)]
+            );
             return self.parse_non_streaming_chat_response(&body_text, app_handle);
         }
 
@@ -1315,8 +1319,8 @@ impl AgentEngine {
                     if finish_reason.is_none() {
                         finish_reason = Some("stop".to_string());
                     }
-                                continue;
-                            }
+                    continue;
+                }
 
                 // 使用 adapter 解析 SSE 行
                 let events = adapter.parse_stream_line(&line);
@@ -1324,10 +1328,10 @@ impl AgentEngine {
                     match event {
                         StreamEvent::TextDelta(text) => {
                             full_text.push_str(&text);
-                                                app_handle
+                            app_handle
                                 .emit("agent-message-delta", serde_json::json!({ "delta": text }))
-                                                    .ok();
-                                            }
+                                .ok();
+                        }
                         StreamEvent::ToolCallDelta {
                             index,
                             id,
@@ -1335,21 +1339,21 @@ impl AgentEngine {
                             arguments,
                         } => {
                             while tool_calls.len() <= index {
-                                                    tool_calls.push(ToolCallAccumulator::default());
-                                                }
+                                tool_calls.push(ToolCallAccumulator::default());
+                            }
                             let acc = &mut tool_calls[index];
                             if let Some(id) = id {
-                                                    acc.id = id;
-                                                }
+                                acc.id = id;
+                            }
                             if let Some(ref name) = name {
                                 if !name.is_empty() {
                                     acc.name = name.clone();
                                 }
-                                                    }
+                            }
                             if let Some(args) = arguments {
-                                                        acc.arguments.push_str(&args);
-                                                    }
-                                                }
+                                acc.arguments.push_str(&args);
+                            }
+                        }
                         StreamEvent::Done {
                             finish_reason: reason,
                         } => {
@@ -1392,11 +1396,11 @@ impl AgentEngine {
         );
 
         // 如果流结束但没有任何内容也没有 finish_reason，可能是连接异常或响应格式不兼容
-        if full_text.is_empty()
-            && valid_tool_calls.is_empty()
-            && finish_reason.is_none()
-        {
-            warn!("Stream ended with no content and no finish_reason. Buffer remainder: {:?}", &buffer[..buffer.len().min(200)]);
+        if full_text.is_empty() && valid_tool_calls.is_empty() && finish_reason.is_none() {
+            warn!(
+                "Stream ended with no content and no finish_reason. Buffer remainder: {:?}",
+                &buffer[..buffer.len().min(200)]
+            );
             return Err(AppError::Custom(
                 "LLM returned empty stream - the provider may not support the current request format. \
                  Try switching wire_api or check the provider's compatibility."
@@ -1424,12 +1428,16 @@ impl AgentEngine {
         body: &str,
         app_handle: &AppHandle,
     ) -> AppResult<CompletionResult> {
-        let json: serde_json::Value = serde_json::from_str(body)
-            .map_err(|e| AppError::Custom(format!("Failed to parse non-streaming response: {e}")))?;
+        let json: serde_json::Value = serde_json::from_str(body).map_err(|e| {
+            AppError::Custom(format!("Failed to parse non-streaming response: {e}"))
+        })?;
 
         // 检查是否有 error
         if let Some(err) = json.get("error") {
-            let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error");
             return Err(AppError::Custom(format!("LLM API error: {msg}")));
         }
 
@@ -1446,7 +1454,10 @@ impl AgentEngine {
         // 提取 usage
         let usage_info = json.get("usage").map(|u| UsageInfo {
             prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            completion_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            completion_tokens: u
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
             total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
         });
 
@@ -1461,7 +1472,11 @@ impl AgentEngine {
                         let func = tc.get("function")?;
                         let name = func.get("name")?.as_str()?.to_string();
                         let arguments = func.get("arguments")?.as_str()?.to_string();
-                        Some(ToolCallRequest { id, name, arguments })
+                        Some(ToolCallRequest {
+                            id,
+                            name,
+                            arguments,
+                        })
                     })
                     .collect()
             })
@@ -2013,8 +2028,7 @@ fn git_status_disappeared_to_action(status: &str) -> String {
 
 async fn git_status_snapshot(cwd: &Path) -> GitStatusSnapshot {
     let mut cmd = Command::new("git");
-    cmd.args(["status", "--porcelain"])
-        .current_dir(cwd);
+    cmd.args(["status", "--porcelain"]).current_dir(cwd);
     #[cfg(windows)]
     cmd.no_console();
     let Ok(output) = cmd.output().await else {

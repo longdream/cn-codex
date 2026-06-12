@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose};
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
+use encoding_rs::{Encoding, IBM866, WINDOWS_1252};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -156,6 +158,8 @@ struct ShellArgs {
     #[serde(default)]
     timeout_ms: Option<u64>,
     #[serde(default)]
+    block_until_ms: Option<u64>,
+    #[serde(default)]
     login: Option<bool>,
     #[serde(default)]
     sandbox_permissions: Option<String>,
@@ -166,6 +170,10 @@ struct ShellArgs {
     #[serde(default)]
     additional_permissions: Option<serde_json::Value>,
 }
+
+const SHELL_TIMEOUT_MIN_MS: u64 = 1_000;
+const SHELL_TIMEOUT_MAX_MS: u64 = 3_600_000;
+const SHELL_TIMEOUT_DEFAULT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -862,7 +870,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "shell",
-                    "description": "Runs a shell command and returns its output. Accepts CN-Codex's legacy argv array or Codex-style script strings. Supports workdir, timeout_ms, login, and sandbox permission approval fields.",
+                    "description": "Runs a shell command and returns its output. Accepts CN-Codex's legacy argv array or Codex-style script strings. Supports workdir, timeout_ms (or block_until_ms), login, and sandbox permission approval fields.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -883,8 +891,14 @@ impl ToolExecutor {
                             "timeout_ms": {
                                 "type": "integer",
                                 "minimum": 1000,
-                                "maximum": 120000,
-                                "description": "Maximum command runtime. Defaults to 30000 ms."
+                                "maximum": 3600000,
+                                "description": "Maximum command runtime in milliseconds. Defaults to 30000 ms. Valid range: 1000-3600000."
+                            },
+                            "block_until_ms": {
+                                "type": "integer",
+                                "minimum": 1000,
+                                "maximum": 3600000,
+                                "description": "Compatibility alias for timeout_ms."
                             },
                             "login": {
                                 "type": "boolean",
@@ -917,7 +931,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "shell_command",
-                    "description": "Codex-compatible shell tool. Runs a PowerShell command on Windows or a shell script on Unix and returns output. Supports workdir, timeout_ms, login, sandbox_permissions, justification, prefix_rule, and additional_permissions.",
+                    "description": "Codex-compatible shell tool. Runs a PowerShell command on Windows or a shell script on Unix and returns output. Supports workdir, timeout_ms (or block_until_ms), login, sandbox_permissions, justification, prefix_rule, and additional_permissions.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -938,8 +952,14 @@ impl ToolExecutor {
                             "timeout_ms": {
                                 "type": "integer",
                                 "minimum": 1000,
-                                "maximum": 120000,
-                                "description": "Maximum command runtime. Defaults to 30000 ms."
+                                "maximum": 3600000,
+                                "description": "Maximum command runtime in milliseconds. Defaults to 30000 ms. Valid range: 1000-3600000."
+                            },
+                            "block_until_ms": {
+                                "type": "integer",
+                                "minimum": 1000,
+                                "maximum": 3600000,
+                                "description": "Compatibility alias for timeout_ms."
                             },
                             "login": {
                                 "type": "boolean",
@@ -2578,6 +2598,15 @@ impl ToolExecutor {
             return Ok(msg);
         }
 
+        let timeout_ms = match resolve_shell_timeout_ms(&args) {
+            Ok(timeout_ms) => timeout_ms,
+            Err(msg) => {
+                self.emit_tool_start(app_handle, thread_id, call_id, tool_name, &cmd_display);
+                self.emit_tool_end(app_handle, thread_id, call_id, tool_name, -1, &msg);
+                return Ok(msg);
+            }
+        };
+
         info!("Executing shell: {cmd_display}");
 
         self.emit_tool_start(app_handle, thread_id, call_id, tool_name, &cmd_display);
@@ -2601,7 +2630,7 @@ impl ToolExecutor {
                 "method": "commandExecution",
                 "params": {
                     "command": cmd_display,
-                    "cwd": workdir.to_string_lossy(),
+                    "cwd": normalize_windows_verbatim_prefix(&workdir.to_string_lossy()),
                     "reason": reason,
                     "sandbox_permissions": args.sandbox_permissions.clone(),
                     "prefix_rule": args.prefix_rule.clone(),
@@ -2629,84 +2658,89 @@ impl ToolExecutor {
             .stderr(Stdio::piped());
         #[cfg(windows)]
         cmd.no_console();
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| crate::error::AppError::Custom(format!("Failed to spawn command: {e}")))?;
 
         let child_stdout = child.stdout.take();
         let child_stderr = child.stderr.take();
 
-        let stdout_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut out) = child_stdout {
-                tokio::io::AsyncReadExt::read_to_end(&mut out, &mut buf)
-                    .await
-                    .ok();
+        let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stdout_collector = stdout_buffer.clone();
+        let stderr_collector = stderr_buffer.clone();
+
+        let mut stdout_handle = tokio::spawn(async move {
+            if let Some(out) = child_stdout {
+                collect_shell_stream_bytes(out, stdout_collector).await;
             }
-            buf
         });
-        let stderr_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut err) = child_stderr {
-                tokio::io::AsyncReadExt::read_to_end(&mut err, &mut buf)
-                    .await
-                    .ok();
+        let mut stderr_handle = tokio::spawn(async move {
+            if let Some(err) = child_stderr {
+                collect_shell_stream_bytes(err, stderr_collector).await;
             }
-            buf
         });
 
-        let timeout_ms = args.timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000);
         let child = Arc::new(Mutex::new(child));
         self.register_active_tool_process(thread_id, call_id, tool_name, child.clone())
             .await;
 
         let result = match wait_for_child_with_timeout(&child, timeout_ms).await {
             WaitChildResult::Exited(status) => {
-                let stdout_bytes = stdout_handle.await.unwrap_or_default();
-                let stderr_bytes = stderr_handle.await.unwrap_or_default();
-                let stdout = String::from_utf8_lossy(&stdout_bytes);
-                let stderr = String::from_utf8_lossy(&stderr_bytes);
+                wait_for_shell_stream_task(&mut stdout_handle, 1_500).await;
+                wait_for_shell_stream_task(&mut stderr_handle, 1_500).await;
+                let stdout = decode_command_output_bytes(&stdout_buffer.lock().await);
+                let stderr = decode_command_output_bytes(&stderr_buffer.lock().await);
                 let exit_code = status.code().unwrap_or(-1);
-
-                let output = if exit_code == 0 {
-                    if stderr.is_empty() {
-                        stdout.to_string()
-                    } else {
-                        format!("{stdout}\n[stderr]\n{stderr}")
-                    }
-                } else {
-                    format!("[exit code: {exit_code}]\n{stdout}\n[stderr]\n{stderr}")
-                };
-
-                let truncated = truncate_output(&output, 8000);
+                let output = format_shell_command_output(exit_code, &stdout, &stderr);
+                let truncated = truncate_shell_output(&output, 12_000);
                 self.emit_tool_end(
                     app_handle, thread_id, call_id, tool_name, exit_code, &truncated,
                 );
                 Ok(truncated)
             }
             WaitChildResult::Failed(error) => {
-                stdout_handle.abort();
-                stderr_handle.abort();
-                let msg = format!("Failed to wait for command: {error}");
+                wait_for_shell_stream_task(&mut stdout_handle, 300).await;
+                wait_for_shell_stream_task(&mut stderr_handle, 300).await;
+                let stdout = decode_command_output_bytes(&stdout_buffer.lock().await);
+                let stderr = decode_command_output_bytes(&stderr_buffer.lock().await);
+                let partial =
+                    truncate_shell_output(&format_shell_partial_output(&stdout, &stderr), 10_000);
+                let msg = if partial.trim().is_empty() {
+                    format!("Failed to wait for command: {error}")
+                } else {
+                    format!(
+                        "Failed to wait for command: {error}\n\nPartial output captured before failure:\n{partial}"
+                    )
+                };
                 self.emit_tool_end(app_handle, thread_id, call_id, tool_name, -1, &msg);
                 Ok(msg)
             }
             WaitChildResult::TimedOut => {
-                {
-                    let mut guard = child.lock().await;
-                    let _ = guard.kill().await;
-                }
-                stdout_handle.abort();
-                stderr_handle.abort();
+                terminate_shell_child(&child).await;
+                wait_for_shell_stream_task(&mut stdout_handle, 1_200).await;
+                wait_for_shell_stream_task(&mut stderr_handle, 1_200).await;
                 info!("Shell command timed out after {timeout_ms} ms: {cmd_display}");
-                let msg = format!(
-                    "Command timed out after {timeout_ms} ms.\nThe command '{cmd_display}' did not complete within the time limit.\nIf this is a long-running process (like a server), it has been terminated.\nConsider using a different approach for long-running processes."
-                );
+                let stdout = decode_command_output_bytes(&stdout_buffer.lock().await);
+                let stderr = decode_command_output_bytes(&stderr_buffer.lock().await);
+                let partial =
+                    truncate_shell_output(&format_shell_partial_output(&stdout, &stderr), 10_000);
+                let msg = if partial.trim().is_empty() {
+                    format!(
+                        "Command timed out after {timeout_ms} ms.\nThe command '{cmd_display}' did not complete before the deadline and was terminated.\nNo partial output was captured."
+                    )
+                } else {
+                    format!(
+                        "Command timed out after {timeout_ms} ms.\nThe command '{cmd_display}' did not complete before the deadline and was terminated.\n\nPartial output captured before termination:\n{partial}"
+                    )
+                };
                 self.emit_tool_end(app_handle, thread_id, call_id, tool_name, 124, &msg);
                 Ok(msg)
             }
         };
 
-        self.unregister_active_tool_process(thread_id, call_id).await;
+        self.unregister_active_tool_process(thread_id, call_id)
+            .await;
         result
     }
 
@@ -2773,7 +2807,7 @@ impl ToolExecutor {
                 "method": "commandExecution",
                 "params": {
                     "command": cmd,
-                    "cwd": workdir.to_string_lossy(),
+                    "cwd": normalize_windows_verbatim_prefix(&workdir.to_string_lossy()),
                     "reason": reason,
                     "sandbox_permissions": args.sandbox_permissions.clone(),
                     "prefix_rule": args.prefix_rule.clone(),
@@ -2790,7 +2824,8 @@ impl ToolExecutor {
 
         let (program, cmd_args) = exec_command_program_and_args(&args);
         let mut spawn_cmd = Command::new(&program);
-        spawn_cmd.args(&cmd_args)
+        spawn_cmd
+            .args(&cmd_args)
             .current_dir(&workdir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -2838,7 +2873,7 @@ impl ToolExecutor {
             id: session_id,
             process_id,
             command: cmd.to_string(),
-            cwd: workdir.to_string_lossy().to_string(),
+            cwd: normalize_windows_verbatim_prefix(&workdir.to_string_lossy()),
             started_at_ms: now_millis(),
             output,
             cursor,
@@ -3838,10 +3873,7 @@ impl ToolExecutor {
             }
             Ok(Err(error)) => {
                 let (error_code, hint) = classify_browser_run_error(&error);
-                (
-                    -1,
-                    browser_run_failure_json(error_code, &error, Some(hint)),
-                )
+                (-1, browser_run_failure_json(error_code, &error, Some(hint)))
             }
             Err(_) => (
                 124,
@@ -4784,7 +4816,8 @@ impl ToolExecutor {
             .stderr(Stdio::piped());
         #[cfg(windows)]
         cmd.no_console();
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| format!("Failed to spawn git: {e}"))?;
 
         let child_stdout = child.stdout.take();
@@ -6629,12 +6662,7 @@ impl ToolExecutor {
         });
 
         let browser_output = self
-            .exec_browser_run(
-                &browser_args.to_string(),
-                call_id,
-                app_handle,
-                thread_id,
-            )
+            .exec_browser_run(&browser_args.to_string(), call_id, app_handle, thread_id)
             .await;
 
         if let Ok(ref raw) = browser_output {
@@ -6679,7 +6707,9 @@ impl ToolExecutor {
             }
         }
 
-        format!("No web search results found for: {query} (tried API, Baidu, and DuckDuckGo browser search)")
+        format!(
+            "No web search results found for: {query} (tried API, Baidu, and DuckDuckGo browser search)"
+        )
     }
 
     async fn exec_web_fetch(
@@ -7276,7 +7306,10 @@ enum WaitChildResult {
 /// 说明：
 /// - 不直接 `child.wait().await`，避免在等待期间长时间独占 child 的可变借用；
 /// - 这样 interrupt 逻辑仍可获取 child 并执行 kill。
-async fn wait_for_child_with_timeout(child: &Arc<Mutex<Child>>, timeout_ms: u64) -> WaitChildResult {
+async fn wait_for_child_with_timeout(
+    child: &Arc<Mutex<Child>>,
+    timeout_ms: u64,
+) -> WaitChildResult {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         let wait_result = {
@@ -7295,6 +7328,46 @@ async fn wait_for_child_with_timeout(child: &Arc<Mutex<Child>>, timeout_ms: u64)
             Err(error) => return WaitChildResult::Failed(error.to_string()),
         }
     }
+}
+
+async fn collect_shell_stream_bytes<R>(mut reader: R, output: Arc<Mutex<Vec<u8>>>)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let mut buf = [0u8; 4096];
+    loop {
+        let Ok(n) = reader.read(&mut buf).await else {
+            break;
+        };
+        if n == 0 {
+            break;
+        }
+        output.lock().await.extend_from_slice(&buf[..n]);
+    }
+}
+
+async fn wait_for_shell_stream_task(handle: &mut tokio::task::JoinHandle<()>, timeout_ms: u64) {
+    if tokio::time::timeout(Duration::from_millis(timeout_ms), &mut *handle)
+        .await
+        .is_err()
+    {
+        handle.abort();
+    }
+}
+
+async fn terminate_shell_child(child: &Arc<Mutex<Child>>) {
+    let pid = {
+        let guard = child.lock().await;
+        guard.id()
+    };
+    if let Some(pid) = pid {
+        if let Err(error) = kill_process_tree(pid).await {
+            info!("Failed to kill process tree {pid}, fallback to child.kill(): {error}");
+        }
+    }
+
+    let mut guard = child.lock().await;
+    let _ = guard.kill().await;
 }
 
 fn apply_browser_defaults(_workspace_config_dir: &Path, payload: &mut serde_json::Value) {
@@ -7509,10 +7582,10 @@ async fn run_subagent_process(
     match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait()).await {
         Ok(Ok(status)) => {
             subagent_stdin.lock().await.remove(&id);
-            let stdout = String::from_utf8_lossy(&stdout_handle.await.unwrap_or_default())
+            let stdout = decode_command_output_bytes(&stdout_handle.await.unwrap_or_default())
                 .trim()
                 .to_string();
-            let stderr = String::from_utf8_lossy(&stderr_handle.await.unwrap_or_default())
+            let stderr = decode_command_output_bytes(&stderr_handle.await.unwrap_or_default())
                 .trim()
                 .to_string();
             let exit_code = status.code().unwrap_or(-1);
@@ -7996,8 +8069,12 @@ async fn kill_process_tree(pid: u32) -> Result<(), String> {
         return Ok(());
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = decode_command_output_bytes(&output.stdout)
+        .trim()
+        .to_string();
+    let stderr = decode_command_output_bytes(&output.stderr)
+        .trim()
+        .to_string();
     let details = if !stderr.is_empty() {
         stderr
     } else if !stdout.is_empty() {
@@ -9642,9 +9719,9 @@ fn code_review_git_args(mode: &str, base_ref: Option<&str>, paths: &[String]) ->
 
 fn truncate_bytes_to_string(bytes: &[u8], max_bytes: usize) -> String {
     if bytes.len() <= max_bytes {
-        return String::from_utf8_lossy(bytes).to_string();
+        return decode_command_output_bytes(bytes);
     }
-    let mut output = String::from_utf8_lossy(&bytes[..max_bytes]).to_string();
+    let mut output = decode_command_output_bytes(&bytes[..max_bytes]);
     output.push_str(&format!(
         "\n\n... [truncated {} bytes] ...",
         bytes.len().saturating_sub(max_bytes)
@@ -11057,20 +11134,58 @@ async fn wait_for_approval_result(
 
 fn resolve_command_cwd(base: &Path, cwd: Option<&str>) -> PathBuf {
     let Some(cwd) = cwd.filter(|value| !value.trim().is_empty()) else {
-        return base.to_path_buf();
+        let base_display = normalize_windows_verbatim_prefix(&base.to_string_lossy());
+        return PathBuf::from(windows_display_path_to_access_path(&base_display));
     };
-    let path = PathBuf::from(cwd);
-    if path.is_absolute() {
+
+    let normalized = normalize_windows_verbatim_prefix(cwd);
+    let path = PathBuf::from(&normalized);
+    let resolved = if path.is_absolute() {
         path
     } else {
         base.join(path)
-    }
+    };
+    let display = normalize_windows_verbatim_prefix(&resolved.to_string_lossy());
+    PathBuf::from(windows_display_path_to_access_path(&display))
 }
 
 fn shell_command_display(command: &ShellCommandArg) -> String {
     match command {
         ShellCommandArg::Script(script) => script.trim().to_string(),
         ShellCommandArg::Argv(argv) => argv.join(" ").trim().to_string(),
+    }
+}
+
+fn resolve_shell_timeout_ms(args: &ShellArgs) -> Result<u64, String> {
+    let timeout_ms = args
+        .timeout_ms
+        .or(args.block_until_ms)
+        .unwrap_or(SHELL_TIMEOUT_DEFAULT_MS);
+    if timeout_ms < SHELL_TIMEOUT_MIN_MS {
+        return Err(format!(
+            "Error: shell timeout must be at least {SHELL_TIMEOUT_MIN_MS} ms (received {timeout_ms})."
+        ));
+    }
+    if timeout_ms > SHELL_TIMEOUT_MAX_MS {
+        return Err(format!(
+            "Error: shell timeout exceeds {SHELL_TIMEOUT_MAX_MS} ms (received {timeout_ms})."
+        ));
+    }
+    Ok(timeout_ms)
+}
+
+const POWERSHELL_UTF8_OUTPUT_PREFIX: &str =
+    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;\n";
+
+fn inject_powershell_utf8_prefix(script: &str) -> String {
+    let trimmed = script.trim_start();
+    if trimmed
+        .to_ascii_lowercase()
+        .starts_with("[console]::outputencoding")
+    {
+        script.to_string()
+    } else {
+        format!("{POWERSHELL_UTF8_OUTPUT_PREFIX}{script}")
     }
 }
 
@@ -11133,7 +11248,7 @@ fn normalize_sandbox_permissions(value: Option<&str>) -> Option<String> {
 }
 
 fn shell_program_and_args_windows(script: &str, login: Option<bool>) -> (String, Vec<String>) {
-    let ps_script = script.replace(" && ", "; ");
+    let ps_script = inject_powershell_utf8_prefix(&script.replace(" && ", "; "));
     let mut args = Vec::new();
     if login == Some(false) {
         args.push("-NoProfile".to_string());
@@ -11176,6 +11291,14 @@ fn exec_command_program_and_args(args: &ExecCommandArgs) -> (String, Vec<String>
         if shell_name == "cmd.exe" || shell_name == "cmd" {
             return (shell, vec!["/C".to_string(), args.cmd.clone()]);
         }
+        let command_script = if shell_name.contains("powershell")
+            || shell_name == "pwsh.exe"
+            || shell_name == "pwsh"
+        {
+            inject_powershell_utf8_prefix(&args.cmd)
+        } else {
+            args.cmd.clone()
+        };
         let mut shell_args = Vec::new();
         if args.login == Some(false) {
             shell_args.push("-NoProfile".to_string());
@@ -11183,7 +11306,7 @@ fn exec_command_program_and_args(args: &ExecCommandArgs) -> (String, Vec<String>
         shell_args.push("-ExecutionPolicy".to_string());
         shell_args.push("Bypass".to_string());
         shell_args.push("-Command".to_string());
-        shell_args.push(args.cmd.clone());
+        shell_args.push(command_script);
         (shell, shell_args)
     } else {
         let shell = args
@@ -11273,7 +11396,7 @@ async fn collect_exec_output<R>(
         if n == 0 {
             break;
         }
-        let chunk = String::from_utf8_lossy(&buf[..n]);
+        let chunk = decode_command_output_bytes(&buf[..n]);
         let mut output = output.lock().await;
         if let Some(prefix) = prefix
             && !wrote_prefix
@@ -11778,16 +11901,13 @@ fn parse_browser_search_results(
         if action.get("type").and_then(|v| v.as_str()) != Some("eval") {
             continue;
         }
-        let value_str = action
-            .get("value")
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                action
-                    .get("value")
-                    .and_then(|v| serde_json::to_string(v).ok())
-                    .as_deref()
-                    .map(|_| "")
-            })?;
+        let value_str = action.get("value").and_then(|v| v.as_str()).or_else(|| {
+            action
+                .get("value")
+                .and_then(|v| serde_json::to_string(v).ok())
+                .as_deref()
+                .map(|_| "")
+        })?;
 
         let items: Vec<serde_json::Value> = serde_json::from_str(value_str).ok()?;
         let mut results = Vec::new();
@@ -12006,6 +12126,296 @@ fn classify_browser_run_error(error: &str) -> (&'static str, &'static str) {
         "JS_INJECTION_FAILED",
         "请检查页面是否可访问、动作参数是否正确，并重试。",
     )
+}
+
+// Windows-1252 在 0x80-0x9F 区间定义了“智能引号/破折号”等符号。
+// 在某些短输出中，chardetng 可能把这段字节误判成 IBM866（会显示成西里尔字符），
+// 因此这里保留与 Codex 同步的最小兜底逻辑：仅在“ASCII + 该符号字节”形态下强制回退 CP1252。
+const WINDOWS_1252_PUNCT_BYTES: [u8; 8] = [0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x99];
+
+fn decode_command_output_bytes(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    if let Ok(utf8) = std::str::from_utf8(bytes) {
+        return utf8.to_owned();
+    }
+
+    let encoding = detect_output_encoding(bytes);
+    let (decoded, _, had_errors) = encoding.decode(bytes);
+    if had_errors {
+        String::from_utf8_lossy(bytes).into_owned()
+    } else {
+        decoded.into_owned()
+    }
+}
+
+fn detect_output_encoding(bytes: &[u8]) -> &'static Encoding {
+    let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
+    detector.feed(bytes, true);
+    let encoding = detector.guess(None, Utf8Detection::Allow);
+    if encoding == IBM866 && looks_like_windows_1252_punctuation(bytes) {
+        return WINDOWS_1252;
+    }
+    encoding
+}
+
+fn looks_like_windows_1252_punctuation(bytes: &[u8]) -> bool {
+    let mut saw_extended_punctuation = false;
+    let mut saw_ascii_word = false;
+
+    for &byte in bytes {
+        if byte >= 0xA0 {
+            return false;
+        }
+        if (0x80..=0x9F).contains(&byte) {
+            if !is_windows_1252_punct(byte) {
+                return false;
+            }
+            saw_extended_punctuation = true;
+        }
+        if byte.is_ascii_alphabetic() {
+            saw_ascii_word = true;
+        }
+    }
+
+    saw_extended_punctuation && saw_ascii_word
+}
+
+fn is_windows_1252_punct(byte: u8) -> bool {
+    WINDOWS_1252_PUNCT_BYTES.contains(&byte)
+}
+
+fn normalize_windows_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r#"\\?\UNC\"#) {
+        return format!(r#"\\{rest}"#);
+    }
+    if let Some(rest) = path.strip_prefix(r#"\\.\UNC\"#) {
+        return format!(r#"\\{rest}"#);
+    }
+    if let Some(rest) = path.strip_prefix(r#"\\?\"#) {
+        return rest.to_string();
+    }
+    if let Some(rest) = path.strip_prefix(r#"\\.\"#)
+        && is_windows_drive_absolute_path(rest)
+    {
+        return rest.to_string();
+    }
+    path.to_string()
+}
+
+fn is_windows_drive_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+fn windows_display_path_to_access_path(path: &str) -> String {
+    if !cfg!(windows) {
+        return path.to_string();
+    }
+
+    const WINDOWS_LONG_PATH_THRESHOLD: usize = 240;
+
+    if path.starts_with(r#"\\?\"#) || path.starts_with(r#"\\.\"#) {
+        return path.to_string();
+    }
+    if let Some(rest) = path.strip_prefix(r#"\\"#) {
+        if path.len() >= WINDOWS_LONG_PATH_THRESHOLD {
+            return format!(r#"\\?\UNC\{rest}"#);
+        }
+        return path.to_string();
+    }
+    if is_windows_drive_absolute_path(path) {
+        if path.len() >= WINDOWS_LONG_PATH_THRESHOLD {
+            return format!(r#"\\?\{path}"#);
+        }
+        return path.to_string();
+    }
+    path.to_string()
+}
+
+fn normalize_windows_paths_in_text(text: &str) -> String {
+    text.lines()
+        .map(|line| line.replace(r#"\\?\UNC\"#, r#"\\"#).replace(r#"\\?\"#, ""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_shell_partial_output(stdout: &str, stderr: &str) -> String {
+    let combined = combine_stdout_stderr(stdout, stderr);
+    if combined.trim().is_empty() {
+        return combined;
+    }
+    let normalized = normalize_windows_paths_in_text(&combined);
+    append_shell_artifact_hints(&normalized)
+}
+
+fn format_shell_command_output(exit_code: i32, stdout: &str, stderr: &str) -> String {
+    let partial = format_shell_partial_output(stdout, stderr);
+    if exit_code == 0 {
+        partial
+    } else if partial.trim().is_empty() {
+        format!("[exit code: {exit_code}]")
+    } else {
+        format!("[exit code: {exit_code}]\n{partial}")
+    }
+}
+
+fn append_shell_artifact_hints(output: &str) -> String {
+    if output.contains("[artifact hints]") {
+        return output.to_string();
+    }
+    let hints = extract_shell_artifact_hints(output, 12);
+    if hints.is_empty() {
+        return output.to_string();
+    }
+
+    let mut enriched = output.to_string();
+    enriched.push_str("\n\n[artifact hints]\n");
+    for hint in hints {
+        enriched.push_str("- ");
+        enriched.push_str(&hint);
+        enriched.push('\n');
+    }
+    enriched
+}
+
+fn extract_shell_artifact_hints(output: &str, max_lines: usize) -> Vec<String> {
+    let mut hints = Vec::new();
+    let mut seen = BTreeSet::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let normalized_line = normalize_windows_paths_in_text(trimmed);
+        if !looks_like_shell_priority_line(&normalized_line) {
+            continue;
+        }
+        if seen.insert(normalized_line.clone()) {
+            hints.push(normalized_line.clone());
+            if hints.len() >= max_lines {
+                break;
+            }
+        }
+
+        // 这里额外回传 display_path -> access_path 映射，避免后续二次读取时
+        // 因 `\\?\` 前缀或 UNC 长路径形态差异导致“展示可见但读取失败”。
+        if let Some(path) = extract_first_path_candidate(&normalized_line) {
+            let display = normalize_windows_verbatim_prefix(&path);
+            let access = windows_display_path_to_access_path(&display);
+            if access != display {
+                let mapping = format!("path mapping: {display} -> {access}");
+                if seen.insert(mapping.clone()) {
+                    hints.push(mapping);
+                    if hints.len() >= max_lines {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    hints
+}
+
+fn looks_like_shell_priority_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let keywords = [
+        "artifact",
+        "result_extract.json",
+        "prepared_payload.json",
+        "source.md",
+        "chunks",
+        "chapter",
+        "summary",
+        "output_path",
+        "result_path",
+        "cache",
+        "标书",
+        "章节",
+        "摘要",
+        "路径",
+    ];
+    keywords.iter().any(|keyword| lower.contains(keyword))
+        || line.contains(":\\")
+        || line.contains(":/")
+        || line.contains(r#"\\"#)
+}
+
+fn extract_first_path_candidate(line: &str) -> Option<String> {
+    let separators = [
+        '"', '\'', ',', ';', '(', ')', '[', ']', '{', '}', '<', '>', '\t', '\r', '\n',
+    ];
+    for raw in line.split(|ch: char| ch.is_whitespace() || separators.contains(&ch)) {
+        let candidate = raw.trim_matches(|ch: char| matches!(ch, '.' | ':' | '!' | '?'));
+        if candidate.is_empty() {
+            continue;
+        }
+        let normalized = normalize_windows_verbatim_prefix(candidate);
+        if normalized.contains(":\\")
+            || normalized.contains(":/")
+            || normalized.starts_with(r#"\\"#)
+        {
+            return Some(normalized);
+        }
+    }
+    None
+}
+
+fn truncate_shell_output(output: &str, max_chars: usize) -> String {
+    if output.len() <= max_chars {
+        return output.to_string();
+    }
+
+    let priority_lines = extract_shell_artifact_hints(output, 12);
+    if priority_lines.is_empty() {
+        return truncate_output(output, max_chars);
+    }
+
+    let mut priority_block = String::from("[priority lines]\n");
+    for line in priority_lines {
+        priority_block.push_str("- ");
+        priority_block.push_str(&line);
+        priority_block.push('\n');
+    }
+
+    let reserve = priority_block.len().saturating_add(220);
+    let core_budget = max_chars.saturating_sub(reserve).max(max_chars / 3);
+    let head_budget = core_budget / 2;
+    let tail_budget = core_budget.saturating_sub(head_budget);
+    let head = take_prefix_chars(output, head_budget);
+    let tail = take_suffix_chars(output, tail_budget);
+    let truncated = output
+        .chars()
+        .count()
+        .saturating_sub(head.chars().count().saturating_add(tail.chars().count()));
+
+    let merged = format!(
+        "{head}\n\n... [truncated {truncated} chars; kept priority lines] ...\n\n{priority_block}\n{tail}"
+    );
+    if merged.len() > max_chars.saturating_add(512) {
+        truncate_output(&merged, max_chars)
+    } else {
+        merged
+    }
+}
+
+fn take_prefix_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn take_suffix_chars(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .rev()
+        .take(max_chars)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 fn truncate_output(s: &str, max_chars: usize) -> String {
@@ -13601,8 +14011,9 @@ rl.on("line", (line) => {
 
     #[test]
     fn classify_browser_run_error_maps_cdp_unavailable() {
-        let (code, hint) =
-            classify_browser_run_error("WEBVIEW_CDP_UNAVAILABLE: cannot connect to http://127.0.0.1:9242");
+        let (code, hint) = classify_browser_run_error(
+            "WEBVIEW_CDP_UNAVAILABLE: cannot connect to http://127.0.0.1:9242",
+        );
         assert_eq!(code, "WEBVIEW_CDP_UNAVAILABLE");
         assert!(hint.contains("CDP"));
     }
@@ -14387,6 +14798,88 @@ index 1111111..2222222 100644
         )
         .unwrap();
         assert_eq!(shell_command_display(&argv.command), "pnpm test -- --run");
+
+        let alias_timeout: ShellArgs = serde_json::from_str(
+            r#"{
+                "command": "echo alias",
+                "block_until_ms": 45000
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(alias_timeout.timeout_ms, None);
+        assert_eq!(alias_timeout.block_until_ms, Some(45000));
+        assert_eq!(resolve_shell_timeout_ms(&alias_timeout).unwrap(), 45000);
+    }
+
+    #[test]
+    fn shell_timeout_contract_enforces_explicit_bounds() {
+        let mut args = ShellArgs {
+            command: ShellCommandArg::Script("echo ok".to_string()),
+            workdir: None,
+            timeout_ms: Some(999),
+            block_until_ms: None,
+            login: None,
+            sandbox_permissions: None,
+            justification: None,
+            prefix_rule: None,
+            additional_permissions: None,
+        };
+        assert!(
+            resolve_shell_timeout_ms(&args)
+                .unwrap_err()
+                .contains("at least")
+        );
+
+        args.timeout_ms = Some(3_600_001);
+        assert!(
+            resolve_shell_timeout_ms(&args)
+                .unwrap_err()
+                .contains("exceeds")
+        );
+
+        args.timeout_ms = None;
+        args.block_until_ms = Some(60_000);
+        assert_eq!(resolve_shell_timeout_ms(&args).unwrap(), 60_000);
+    }
+
+    #[test]
+    fn decode_command_output_bytes_supports_gbk_cp1252_and_utf8() {
+        let utf8 = "路径 C:/workspace/result.json";
+        assert_eq!(decode_command_output_bytes(utf8.as_bytes()), utf8);
+
+        let (gbk_bytes, _, _) = encoding_rs::GBK.encode("中文输出");
+        assert_eq!(decode_command_output_bytes(&gbk_bytes), "中文输出");
+
+        let (cp1252_bytes, _, _) = WINDOWS_1252.encode("“quoted” test");
+        let decoded = decode_command_output_bytes(&cp1252_bytes);
+        assert!(decoded.contains("quoted"));
+        assert!(decoded.contains('“'));
+        assert!(decoded.contains('”'));
+    }
+
+    #[test]
+    fn normalize_windows_path_helpers_strip_verbatim_prefix() {
+        assert_eq!(
+            normalize_windows_verbatim_prefix(r#"\\?\C:\work\out\result.json"#),
+            r#"C:\work\out\result.json"#
+        );
+        assert_eq!(
+            normalize_windows_verbatim_prefix(r#"\\?\UNC\server\share\result.json"#),
+            r#"\\server\share\result.json"#
+        );
+    }
+
+    #[test]
+    fn truncate_shell_output_keeps_priority_lines() {
+        let mut source = String::new();
+        source.push_str(&"x".repeat(3500));
+        source.push_str("\nartifact root: C:\\work\\artifact\\run-1\n");
+        source.push_str("result_extract.json: C:\\work\\artifact\\run-1\\result_extract.json\n");
+        source.push_str(&"y".repeat(3500));
+
+        let truncated = truncate_shell_output(&source, 1200);
+        assert!(truncated.contains("priority lines"));
+        assert!(truncated.contains("result_extract.json"));
     }
 
     #[test]
@@ -14395,6 +14888,7 @@ index 1111111..2222222 100644
             command: ShellCommandArg::Script("echo ok".to_string()),
             workdir: None,
             timeout_ms: None,
+            block_until_ms: None,
             login: None,
             sandbox_permissions: Some("use_default".to_string()),
             justification: None,

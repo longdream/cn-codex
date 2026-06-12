@@ -40,6 +40,8 @@ async-trait = "0.1"
 rusqlite = { version = "0.34", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
+chardetng = "1.0.0"
+encoding_rs = "0.8.35"
 
 [profile.dev]
 opt-level = 0

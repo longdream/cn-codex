@@ -1,0 +1,40 @@
+{
+  "document_name": "bid_sample.docx",
+  "document_type": "docx",
+  "token_estimate": 39,
+  "source_char_count": 39,
+  "source_to_chunk_threshold": 50000,
+  "preferred_search_target": "source",
+  "preferred_reason": "source_char_count=39 <= threshold=50000",
+  "query_route_file": "C:\\Users\\junlong\\.psacowork\\skills\\bid-review\\artifacts\\bid_sample\\review_bid\\docx\\20260611_095727_662448\\query_route.json",
+  "query_route": {
+    "mode": "source",
+    "source_char_count": 39,
+    "threshold": 50000,
+    "preferred_search_target": "source",
+    "preferred_reason": "source_char_count=39 <= threshold=50000",
+    "source_md_path": "C:\\Users\\junlong\\.psacowork\\skills\\bid-review\\artifacts\\bid_sample\\review_bid\\docx\\20260611_095727_662448\\source.md",
+    "chunks_json_path": "C:\\Users\\junlong\\.psacowork\\skills\\bid-review\\artifacts\\bid_sample\\review_bid\\docx\\20260611_095727_662448\\chunks.json",
+    "chunk_dir_path": "C:\\Users\\junlong\\.psacowork\\skills\\bid-review\\artifacts\\bid_sample\\review_bid\\docx\\20260611_095727_662448\\chunks",
+    "generated_at": "20260611_095727_693347"
+  },
+  "strategy": "single_direct_llm",
+  "chunks_json": [
+    {
+      "chunk_id": "chunk_0001",
+      "chapter": "全文",
+      "section": "全文",
+      "content": "# 第一章 商务应答\n我方已提交采购廉洁承诺函。\n投标保证金金额：1000元。"
+    }
+  ],
+  "retrieval_hits_json": [],
+  "need_global_search_confirmation": false,
+  "file_fingerprint": {
+    "path": "C:\\Users\\junlong\\AppData\\Local\\Temp\\p2200_test\\bid_sample.docx",
+    "size_bytes": 36741,
+    "mtime_ns": 1781143015521762500,
+    "sha256": "1e2ee98c0836cbe6c73380d7cf4db77c9ffa079e525273299e3d3e3c83f102f2"
+  },
+  "force_refresh_requested": true,
+  "cache_lookup_skipped": true
+}

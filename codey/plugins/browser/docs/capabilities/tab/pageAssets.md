@@ -1,4 +1,5 @@
 # Tab Capability: pageAssets
+
 Asset inventory and bundling for the current rendered page state. Use `list()` to inspect assets already observed in the tab's current state. If lazy-loaded content or another UI state matters, load that state first, then call `list()` again so the inventory reflects what is currently observable. Use `bundle()` to export discovered file assets into a temporary local artifact directory. Prefer `kinds` for broad acquisition and `assetIds` for narrow follow-up. Do not navigate directly to asset URLs just to fetch them.
 
 ```ts

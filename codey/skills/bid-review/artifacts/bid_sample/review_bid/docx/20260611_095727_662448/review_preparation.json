@@ -1,0 +1,157 @@
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "tender_document_name": "tender_sample.docx",
+    "bid_document_name": "bid_sample.docx",
+    "tender_artifact_dir": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095727_631551",
+    "bid_artifact_dir": "C:\\Users\\junlong\\.psacowork\\skills\\bid-review\\artifacts\\bid_sample\\review_bid\\docx\\20260611_095727_662448",
+    "tender_query_route_file": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095727_631551\\query_route.json",
+    "bid_query_route_file": "C:\\Users\\junlong\\.psacowork\\skills\\bid-review\\artifacts\\bid_sample\\review_bid\\docx\\20260611_095727_662448\\query_route.json",
+    "tender_query_route": {
+      "mode": "source",
+      "source_char_count": 46,
+      "threshold": 50000,
+      "preferred_search_target": "source",
+      "preferred_reason": "source_char_count=46 <= threshold=50000",
+      "source_md_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095727_631551\\source.md",
+      "chunks_json_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095727_631551\\chunks.json",
+      "chunk_dir_path": "C:\\Users\\junlong\\.psacowork\\skills\\tender-document-parsing\\artifacts\\tender_sample\\extract\\docx\\20260611_095727_631551\\chunks",
+      "generated_at": "20260611_095727_658461"
+    },
+    "bid_query_route": {
+      "mode": "source",
+      "source_char_count": 39,
+      "threshold": 50000,
+      "preferred_search_target": "source",
+      "preferred_reason": "source_char_count=39 <= threshold=50000",
+      "source_md_path": "C:\\Users\\junlong\\.psacowork\\skills\\bid-review\\artifacts\\bid_sample\\review_bid\\docx\\20260611_095727_662448\\source.md",
+      "chunks_json_path": "C:\\Users\\junlong\\.psacowork\\skills\\bid-review\\artifacts\\bid_sample\\review_bid\\docx\\20260611_095727_662448\\chunks.json",
+      "chunk_dir_path": "C:\\Users\\junlong\\.psacowork\\skills\\bid-review\\artifacts\\bid_sample\\review_bid\\docx\\20260611_095727_662448\\chunks",
+      "generated_at": "20260611_095727_693347"
+    },
+    "tender_source_char_count": 46,
+    "bid_source_char_count": 39,
+    "tender_preferred_search_target": "source",
+    "bid_preferred_search_target": "source",
+    "tender_preferred_reason": "source_char_count=46 <= threshold=50000",
+    "bid_preferred_reason": "source_char_count=39 <= threshold=50000",
+    "source_to_chunk_threshold": 50000,
+    "key_info": {
+      "document_name": "tender_sample.docx",
+      "document_type": "docx",
+      "chunk_count": 1,
+      "retrieval_hit_count": 0,
+      "result": {
+        "project_name": "tender_sample",
+        "strategy": "local_rule_extract",
+        "total_chars": 46,
+        "categories": [
+          {
+            "category": "项目名称",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "招标编号",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "保证金信息",
+            "count": 1,
+            "items": [
+              {
+                "content": "投标保证金金额：1000元",
+                "pages": []
+              }
+            ]
+          },
+          {
+            "category": "废标项",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "投标截止时间",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "开标时间",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "投标地点",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "企业资质要求",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "人员资质要求",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "技术参数要求",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "商务条款",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "评分标准",
+            "count": 1,
+            "items": [
+              {
+                "content": "评分标准详见附件",
+                "pages": []
+              }
+            ]
+          },
+          {
+            "category": "标书结构要求",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "密封要求",
+            "count": 0,
+            "items": []
+          },
+          {
+            "category": "法务及BC重点关注信息",
+            "count": 1,
+            "items": [
+              {
+                "content": "10.2 采购廉洁承诺函",
+                "pages": []
+              }
+            ]
+          }
+        ],
+        "supplemental_items": []
+      }
+    },
+    "ask_ai_strategy_text": "请由 Cowork 基于以下上下文自主发起策略问询：\n1) 招标文件关键分类命中：保证金信息(1)、评分标准(1)、法务及BC重点关注信息(1)\n2) 先围绕废标项/保证金/评分标准追问证据是否完整，再追问响应充分性与整改优先级。\n3) 问询输出要求：\n   - 风险等级必须使用中文\"高风险/中等风险/低风险\"，禁止输出 high/medium/low。\n   - 每条结论须附带至少 2 段证据（招标证据 + 标书实质证据），且标书证据不得仅为引用/目录/模板。\n   - 每条结论须附带章节定位（章节/小节）与原文证据片段。\n   - 证据不足时输出\"证据不足/待补充\"，不得强行定性。",
+    "bid_chunks_count": 1,
+    "tender_chunks_count": 1,
+    "internal_refresh_state": {
+      "force_refresh_arg": true,
+      "tender_force_refresh_requested": true,
+      "bid_force_refresh_requested": true,
+      "tender_cache_lookup_skipped": true,
+      "bid_cache_lookup_skipped": true,
+      "tender_cache_hit": false,
+      "bid_cache_hit": false
+    }
+  }
+}

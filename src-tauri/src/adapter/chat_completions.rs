@@ -176,7 +176,9 @@ impl ProviderAdapter for ChatCompletionsAdapter {
                             events.push(StreamEvent::ToolCallDelta {
                                 index: idx,
                                 id: dtc.id,
-                                name: func.and_then(|f| f.name.as_ref().filter(|n| !n.is_empty()).cloned()),
+                                name: func.and_then(|f| {
+                                    f.name.as_ref().filter(|n| !n.is_empty()).cloned()
+                                }),
                                 arguments: func.and_then(|f| f.arguments.clone()),
                             });
                         }
@@ -200,7 +202,10 @@ fn chat_completions_message(msg: &InternalMessage) -> serde_json::Value {
         }
         "user" => {
             // user content 可能是字符串或多模态数组，直接传递
-            let content = msg.content.clone().unwrap_or(serde_json::Value::String(String::new()));
+            let content = msg
+                .content
+                .clone()
+                .unwrap_or(serde_json::Value::String(String::new()));
             serde_json::json!({
                 "role": "user",
                 "content": content,
@@ -276,4 +281,3 @@ fn content_is_empty_value(val: &serde_json::Value) -> bool {
         _ => false,
     }
 }
-

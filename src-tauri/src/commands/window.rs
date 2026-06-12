@@ -79,7 +79,15 @@ pub async fn window_open_browser(
     let pos_y = y.unwrap_or(0.0);
     let w = width.unwrap_or(400.0);
     let h = height.unwrap_or(600.0);
-    open_browser_embedded(&app, &state.workspace_config_dir, url.as_deref(), pos_x, pos_y, w, h)
+    open_browser_embedded(
+        &app,
+        &state.workspace_config_dir,
+        url.as_deref(),
+        pos_x,
+        pos_y,
+        w,
+        h,
+    )
 }
 
 #[tauri::command]
@@ -160,13 +168,15 @@ pub fn open_browser_embedded(
     let browser_dir = workspace_config_dir.join("browser");
     fs::create_dir_all(&browser_dir)?;
 
-    let main_window = app.get_window("main")
+    let main_window = app
+        .get_window("main")
         .ok_or_else(|| AppError::Custom("Main window not found".to_string()))?;
 
-    let webview_builder = WebviewBuilder::new(BROWSER_WEBVIEW_LABEL, WebviewUrl::External(browser_url))
-        .enable_clipboard_access()
-        .data_directory(browser_dir.join("webview-data"))
-        .additional_browser_args(&browser_additional_args());
+    let webview_builder =
+        WebviewBuilder::new(BROWSER_WEBVIEW_LABEL, WebviewUrl::External(browser_url))
+            .enable_clipboard_access()
+            .data_directory(browser_dir.join("webview-data"))
+            .additional_browser_args(&browser_additional_args());
 
     main_window.add_child(
         webview_builder,
@@ -265,11 +275,34 @@ fn looks_like_local_dev_host(value: &str) -> bool {
         || lower.starts_with("::1")
 }
 
+fn normalize_windows_verbatim_prefix(raw: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let trimmed = raw.trim();
+        if let Some(rest) = trimmed.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = trimmed.strip_prefix(r"\\?\") {
+            return rest.to_string();
+        }
+        return trimmed.to_string();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        raw.trim().to_string()
+    }
+}
+
 #[tauri::command]
 pub async fn reveal_in_explorer(path: String) -> AppResult<()> {
-    let p = std::path::Path::new(&path);
+    // 统一移除 Windows 扩展前缀，确保 exists 校验与 explorer 打开行为一致。
+    let display_path = normalize_windows_verbatim_prefix(&path);
+    let p = std::path::Path::new(&display_path);
     if !p.exists() {
-        return Err(AppError::Custom(format!("Path does not exist: {path}")));
+        return Err(AppError::Custom(format!(
+            "Path does not exist: {display_path}"
+        )));
     }
 
     #[cfg(target_os = "windows")]
@@ -278,14 +311,14 @@ pub async fn reveal_in_explorer(path: String) -> AppResult<()> {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         if p.is_dir() {
             std::process::Command::new("explorer")
-                .arg(&path)
+                .arg(&display_path)
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .map_err(|e| AppError::Custom(format!("Failed to open explorer: {e}")))?;
         } else {
             std::process::Command::new("explorer")
                 .arg("/select,")
-                .arg(&path)
+                .arg(&display_path)
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .map_err(|e| AppError::Custom(format!("Failed to open explorer: {e}")))?;
@@ -296,13 +329,13 @@ pub async fn reveal_in_explorer(path: String) -> AppResult<()> {
     {
         if p.is_dir() {
             std::process::Command::new("open")
-                .arg(&path)
+                .arg(&display_path)
                 .spawn()
                 .map_err(|e| AppError::Custom(format!("Failed to open finder: {e}")))?;
         } else {
             std::process::Command::new("open")
                 .arg("-R")
-                .arg(&path)
+                .arg(&display_path)
                 .spawn()
                 .map_err(|e| AppError::Custom(format!("Failed to open finder: {e}")))?;
         }
@@ -310,7 +343,11 @@ pub async fn reveal_in_explorer(path: String) -> AppResult<()> {
 
     #[cfg(target_os = "linux")]
     {
-        let dir = if p.is_dir() { p.to_path_buf() } else { p.parent().unwrap_or(p).to_path_buf() };
+        let dir = if p.is_dir() {
+            p.to_path_buf()
+        } else {
+            p.parent().unwrap_or(p).to_path_buf()
+        };
         std::process::Command::new("xdg-open")
             .arg(dir)
             .spawn()
@@ -369,5 +406,17 @@ mod tests {
     fn browser_cdp_endpoint_uses_loopback_debug_port() {
         assert_eq!(browser_cdp_endpoint(), "http://127.0.0.1:9242");
         assert!(browser_additional_args().contains("--remote-debugging-port=9242"));
+    }
+
+    #[test]
+    fn normalize_windows_verbatim_prefix_strips_verbatim_prefix() {
+        assert_eq!(
+            normalize_windows_verbatim_prefix(r"\\?\E:\work\cn-codex\codey"),
+            r"E:\work\cn-codex\codey"
+        );
+        assert_eq!(
+            normalize_windows_verbatim_prefix(r"\\?\UNC\server\share\folder"),
+            r"\\server\share\folder"
+        );
     }
 }

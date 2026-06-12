@@ -461,6 +461,11 @@ textarea:focus {
   -webkit-user-select: text;
 }
 
+.chat-prose * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .chat-prose p {
   margin: 0.5rem 0;
 }
@@ -483,6 +488,17 @@ textarea:focus {
     "SFMono-Regular",
     Consolas,
     monospace;
+  font-size: var(--text-code);
+  color: var(--chat-prose);
+}
+
+.chat-md-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--chat-line);
+  border-radius: var(--radius-sm);
+  background: var(--chat-paper);
   font-size: var(--text-code);
   color: var(--chat-prose);
 }

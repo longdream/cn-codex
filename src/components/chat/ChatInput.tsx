@@ -56,6 +56,9 @@ export function ChatInput({
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const attachedFiles = useAppStore((s) => s.attachedFiles);
   const currentGoal = useAppStore((s) => s.currentGoal);
+  // 目标模式运行态：只在 goal + active 时视为“整体执行中”。
+  // 聊天模式不受该状态影响。
+  const goalRunning = mode === "goal" && currentGoal?.status === "active";
 
   // 供应商相关
   const providers = useAppStore((s) => s.providers);
@@ -98,7 +101,8 @@ export function ChatInput({
   }, []);
 
   const handleSubmit = useCallback(() => {
-    if (isStreaming) return;
+    // 仅目标模式在 active 时禁止提交；聊天模式行为保持不变。
+    if (isStreaming || goalRunning) return;
     const trimmed = text.trim();
     if ((!trimmed && attachedFiles.length === 0) || disabled) return;
     const filesToSend = attachedFiles;
@@ -148,7 +152,7 @@ export function ChatInput({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [attachedFiles, currentGoal, disabled, isStreaming, mode, onGoalCommand, onSend, text]);
+  }, [attachedFiles, currentGoal, disabled, goalRunning, isStreaming, mode, onGoalCommand, onSend, text]);
 
   const goalStatusLabel = useMemo(() => {
     if (!currentGoal) {
@@ -168,7 +172,7 @@ export function ChatInput({
     (event: React.KeyboardEvent) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (!isStreaming) {
+        if (!isStreaming && !goalRunning) {
           handleSubmit();
         }
       }
@@ -177,7 +181,7 @@ export function ChatInput({
         setShowModelMenu(false);
       }
     },
-    [handleSubmit, isStreaming],
+    [goalRunning, handleSubmit, isStreaming],
   );
 
   const handleChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -286,7 +290,10 @@ export function ChatInput({
             if (command.name === "goal") {
               setMode("goal");
             } else if (command.name === "plan" || command.name === "help" || command.name === "compact") {
-              onSend(`/${command.name}`, mode, []);
+              // 目标模式 active 时，阻止所有发送入口（含斜杠快捷发送）。
+              if (!goalRunning) {
+                onSend(`/${command.name}`, mode, []);
+              }
             }
             setText("");
             setShowSlash(false);
@@ -470,7 +477,7 @@ export function ChatInput({
             className="chat-composer-input max-h-[200px] min-h-[78px] w-full flex-1 resize-none bg-transparent py-2 text-base leading-relaxed text-[var(--chat-prose)] placeholder:text-[var(--chat-faint)] outline-none disabled:opacity-50"
           />
 
-          {isStreaming ? (
+          {isStreaming || goalRunning ? (
             <button
               type="button"
               onClick={onInterrupt}
