@@ -82,8 +82,6 @@ pub struct ConfigToml {
     pub mcp_servers: HashMap<String, toml::Value>,
     #[serde(default)]
     pub hooks: HashMap<String, toml::Value>,
-    #[serde(default)]
-    pub disabled_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,11 +297,6 @@ impl ConfigToml {
             "web_search" => self.web_search = value.as_str().map(String::from),
             "instructions" => self.instructions = value.as_str().map(String::from),
             "sandbox" => self.sandbox = value.as_str().map(String::from),
-            "disabled_skills" => {
-                if let Ok(list) = serde_json::from_value::<Vec<String>>(value.clone()) {
-                    self.disabled_skills = list;
-                }
-            }
             other if other.starts_with("model_providers.") => {
                 let provider_key = &other["model_providers.".len()..];
                 if let Ok(info) = serde_json::from_value::<ModelProviderInfo>(value.clone()) {

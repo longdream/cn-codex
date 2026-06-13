@@ -200,8 +200,6 @@
   "settings.skills.category.docBid": "Documents / Bidding",
   "settings.skills.category.mediaDesign": "Media / Design",
   "settings.skills.category.other": "Other",
-  "settings.skills.enable": "Enable this skill",
-  "settings.skills.disable": "Disable this skill",
   "settings.integration.description": "View workspace paths and configured MCP servers.",
   "settings.integration.workspaceConfig": "Workspace Config",
   "settings.integration.workspaceHint": "CN-Codex now reads and writes its local runtime config from the project-level codey directory.",

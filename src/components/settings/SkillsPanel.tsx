@@ -1,7 +1,7 @@
 import { IconChevronDown, IconChevronRight } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useIntl } from "react-intl";
-import { skillList, skillRead, skillSetEnabled } from "../../api";
+import { skillList, skillRead } from "../../api";
 import type { SkillSummary } from "../../types/skill";
 
 interface SkillCategory {
@@ -102,19 +102,6 @@ export function SkillsPanel() {
       setSkillContent(detail.content);
     } catch (err) {
       console.error("Failed to read skill:", err);
-    }
-  };
-
-  const handleToggleEnabled = async (skill: SkillSummary, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const newEnabled = !skill.enabled;
-    try {
-      await skillSetEnabled(skill.id, newEnabled);
-      setSkills((prev) =>
-        prev.map((s) => (s.id === skill.id ? { ...s, enabled: newEnabled } : s)),
-      );
-    } catch (err) {
-      console.error("Failed to toggle skill:", err);
     }
   };
 
@@ -227,32 +214,13 @@ export function SkillsPanel() {
                     <div className="border-t border-[var(--border-subtle)]">
                       {group.skills.map((skill) => (
                         <div key={skill.id}>
-                          <div className="flex w-full items-center px-4 py-3 pl-8 transition-colors hover:bg-[var(--surface-elevated)]">
-                            <button
-                              onClick={(e) => handleToggleEnabled(skill, e)}
-                              className="mr-3 flex shrink-0 items-center justify-center"
-                              title={skill.enabled ? intl.formatMessage({ id: "settings.skills.disable" }) : intl.formatMessage({ id: "settings.skills.enable" })}
-                            >
-                              <span
-                                className={`flex h-4 w-4 items-center justify-center rounded border transition-colors ${
-                                  skill.enabled
-                                    ? "border-[var(--accent)] bg-[var(--accent)] text-white"
-                                    : "border-[var(--border-strong)] bg-transparent"
-                                }`}
-                              >
-                                {skill.enabled && (
-                                  <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
-                                    <path d="M1 4L3.5 6.5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                                  </svg>
-                                )}
-                              </span>
-                            </button>
-                            <button
-                              onClick={() => handleViewSkill(skill.id)}
-                              className="flex flex-1 items-center justify-between gap-4 text-left"
-                            >
+                          <div
+                            onClick={() => handleViewSkill(skill.id)}
+                            className="w-full cursor-pointer select-text px-4 py-3 pl-10 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+                          >
+                            <div className="flex items-center justify-between gap-4">
                               <div className="space-y-0.5">
-                                <p className={`text-[13px] font-medium ${skill.enabled ? "text-[var(--text-strong)]" : "text-[var(--text-muted)]"}`}>{skill.name}</p>
+                                <p className="text-[13px] font-medium text-[var(--text-strong)]">{skill.name}</p>
                                 {skill.description && (
                                   <p className="text-xs text-[var(--text-muted)]">{skill.description}</p>
                                 )}
@@ -264,14 +232,14 @@ export function SkillsPanel() {
                                   selectedSkill === skill.id ? "rotate-180" : ""
                                 }`}
                               />
-                            </button>
+                            </div>
                           </div>
                           {selectedSkill === skill.id && skillContent && (
                             <div className="border-t border-[var(--border-subtle)] px-4 py-4 pl-10">
                               <p className="mb-3 text-xs uppercase tracking-[0.16em] text-[var(--text-faint)]">
                                 {intl.formatMessage({ id: "settings.integration.skillPreview" })}
                               </p>
-                              <pre className="thin-scrollbar max-h-72 overflow-y-auto whitespace-pre-wrap rounded-2xl bg-[var(--surface-main)]/72 p-4 text-xs text-[var(--text-base)]">
+                              <pre className="thin-scrollbar max-h-72 select-text overflow-y-auto whitespace-pre-wrap rounded-2xl bg-[var(--surface-main)]/72 p-4 text-xs text-[var(--text-base)]">
                                 {skillContent}
                               </pre>
                             </div>

@@ -8,7 +8,3 @@ export async function skillList(): Promise<SkillSummary[]> {
 export async function skillRead(skillId: string): Promise<SkillDetail> {
   return invoke("skill_read", { skillId });
 }
-
-export async function skillSetEnabled(skillId: string, enabled: boolean): Promise<void> {
-  return invoke("skill_set_enabled", { skillId, enabled });
-}
