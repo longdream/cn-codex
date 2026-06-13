@@ -11,6 +11,7 @@ import {
   type TokenUsage,
   type ToolCallItem,
 } from "../stores/appStore";
+import { resolveApproval } from "../api/approval";
 
 interface TurnEventPayload {
   threadId: string;
@@ -18,6 +19,7 @@ interface TurnEventPayload {
   turn: {
     id: string;
     mode?: ChatMode;
+    cwd?: string;
     startedAt?: number;
     completedAt?: number;
     durationMs?: number;
@@ -41,6 +43,7 @@ function runSummaryFromTurn(turn: TurnEventPayload["turn"]): RunSummary | null {
   return {
     turnId: turn.id,
     mode: turn.mode === "goal" ? "goal" : "chat",
+    cwd: turn.cwd,
     startedAt: toTimestamp(turn.startedAt),
     completedAt: toTimestamp(turn.completedAt),
     durationMs: turn.durationMs,
@@ -471,6 +474,25 @@ export function useTauriEvents() {
           method?: string;
           params?: Record<string, unknown>;
         }>("server-request", (e) => {
+          const method = e.payload.method ?? "";
+          const isUserInput =
+            method.includes("request_user_input") ||
+            method.includes("requestUserInput");
+
+          if (useAppStore.getState().autoApprove && !isUserInput) {
+            const reqId = e.payload.requestId ?? e.payload.id ?? "";
+            const isPermissions =
+              method.includes("request_permissions") ||
+              method.includes("requestPermissions");
+            const decision = isPermissions
+              ? { permissions: e.payload.params?.permissions ?? {}, scope: "turn", strict_auto_review: false }
+              : { decision: "accept" };
+            resolveApproval(reqId, decision).catch((err) =>
+              console.error("Auto-approve failed:", err),
+            );
+            return;
+          }
+
           window.dispatchEvent(
             new CustomEvent("cn-codex:server-request", { detail: e.payload }),
           );

@@ -62,13 +62,17 @@ impl ProviderAdapter for ResponsesAdapter {
         model: &str,
         messages: &[InternalMessage],
         tools: Option<&[serde_json::Value]>,
+        max_tokens: Option<i64>,
     ) -> serde_json::Value {
-        let input: Vec<serde_json::Value> =
-            messages.iter().map(responses_input_from_message).collect();
+        let input: Vec<serde_json::Value> = messages
+            .iter()
+            .flat_map(responses_input_items_from_message)
+            .collect();
 
         let mut body = serde_json::json!({
             "model": model,
             "input": input,
+            "max_output_tokens": max_tokens.unwrap_or(131072),
             "stream": true,
         });
 
@@ -192,12 +196,12 @@ impl ProviderAdapter for ResponsesAdapter {
     }
 }
 
-fn responses_input_from_message(msg: &InternalMessage) -> serde_json::Value {
+fn responses_input_items_from_message(msg: &InternalMessage) -> Vec<serde_json::Value> {
     if msg.role == "system" {
-        return serde_json::json!({
+        return vec![serde_json::json!({
             "role": "developer",
             "content": content_as_text(&msg.content)
-        });
+        })];
     }
 
     if msg.role == "tool" {
@@ -205,52 +209,54 @@ fn responses_input_from_message(msg: &InternalMessage) -> serde_json::Value {
         let output = content_as_text(&msg.content);
         if msg.name.as_deref() == Some("tool_search") {
             if let Some(tools) = tool_search_output_tools(&output) {
-                return serde_json::json!({
+                return vec![serde_json::json!({
                     "type": "tool_search_output",
                     "call_id": call_id,
                     "status": "completed",
                     "execution": "client",
                     "tools": tools
-                });
+                })];
             }
         }
         if msg.name.as_deref() == Some("apply_patch") {
-            return serde_json::json!({
+            return vec![serde_json::json!({
                 "type": "custom_tool_call_output",
                 "call_id": call_id,
                 "name": "apply_patch",
                 "output": output
-            });
+            })];
         }
 
-        return serde_json::json!({
+        return vec![serde_json::json!({
             "type": "function_call_output",
             "call_id": call_id,
             "output": output
-        });
+        })];
     }
 
     if msg.role == "assistant" && msg.tool_calls.is_some() {
         let tcs = msg.tool_calls.as_ref().unwrap();
-        let mut parts = Vec::new();
+        let mut items = Vec::new();
+
         let content = content_as_text(&msg.content);
         if !content.is_empty() {
-            parts.push(serde_json::json!({
-                "type": "output_text",
-                "text": content
+            items.push(serde_json::json!({
+                "role": "assistant",
+                "content": content
             }));
         }
-        parts.extend(tcs.iter().map(|tc| {
+
+        for tc in tcs {
             if tc.function.name == "tool_search" {
                 let arguments = serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
                     .unwrap_or_else(|_| serde_json::json!({}));
-                serde_json::json!({
+                items.push(serde_json::json!({
                     "type": "tool_search_call",
                     "call_id": tc.id,
                     "status": "completed",
                     "execution": "client",
                     "arguments": arguments
-                })
+                }));
             } else if tc.function.name == "apply_patch"
                 && tc
                     .function
@@ -258,32 +264,29 @@ fn responses_input_from_message(msg: &InternalMessage) -> serde_json::Value {
                     .trim_start()
                     .starts_with("*** Begin Patch")
             {
-                serde_json::json!({
+                items.push(serde_json::json!({
                     "type": "custom_tool_call",
                     "call_id": tc.id,
                     "name": tc.function.name,
                     "input": tc.function.arguments
-                })
+                }));
             } else {
-                serde_json::json!({
+                items.push(serde_json::json!({
                     "type": "function_call",
                     "call_id": tc.id,
                     "name": tc.function.name,
                     "arguments": tc.function.arguments
-                })
+                }));
             }
-        }));
+        }
 
-        return serde_json::json!({
-            "role": "assistant",
-            "content": parts
-        });
+        return items;
     }
 
-    serde_json::json!({
+    vec![serde_json::json!({
         "role": msg.role,
         "content": content_to_responses_content(&msg.content)
-    })
+    })]
 }
 
 fn responses_tool_from_function_spec(tool: &serde_json::Value) -> Option<serde_json::Value> {
@@ -426,7 +429,7 @@ mod tests {
             }),
         ];
 
-        let body = adapter.build_body("gpt-5", &[], Some(&tools));
+        let body = adapter.build_body("gpt-5", &[], Some(&tools), None);
 
         assert_eq!(
             body.pointer("/tools/0/type")
@@ -484,15 +487,15 @@ mod tests {
             },
         ];
 
-        let body = adapter.build_body("gpt-5", &messages, None);
+        let body = adapter.build_body("gpt-5", &messages, None, None);
 
         assert_eq!(
-            body.pointer("/input/0/content/0/type")
+            body.pointer("/input/0/type")
                 .and_then(serde_json::Value::as_str),
             Some("custom_tool_call")
         );
         assert_eq!(
-            body.pointer("/input/0/content/0/input")
+            body.pointer("/input/0/input")
                 .and_then(serde_json::Value::as_str),
             Some(patch)
         );
@@ -624,15 +627,15 @@ mod tests {
             },
         ];
 
-        let body = adapter.build_body("gpt-5", &messages, None);
+        let body = adapter.build_body("gpt-5", &messages, None, None);
 
         assert_eq!(
-            body.pointer("/input/0/content/0/type")
+            body.pointer("/input/0/type")
                 .and_then(serde_json::Value::as_str),
             Some("tool_search_call")
         );
         assert_eq!(
-            body.pointer("/input/0/content/0/arguments/query")
+            body.pointer("/input/0/arguments/query")
                 .and_then(serde_json::Value::as_str),
             Some("browser")
         );
@@ -700,7 +703,7 @@ mod tests {
             name: Some("tool_search".to_string()),
         }];
 
-        let body = adapter.build_body("gpt-5", &messages, None);
+        let body = adapter.build_body("gpt-5", &messages, None, None);
 
         assert_eq!(
             body.pointer("/input/0/type")
@@ -735,7 +738,7 @@ mod tests {
             name: Some("tool_search".to_string()),
         }];
 
-        let body = adapter.build_body("gpt-5", &messages, None);
+        let body = adapter.build_body("gpt-5", &messages, None, None);
 
         assert_eq!(
             body.pointer("/input/0/type")

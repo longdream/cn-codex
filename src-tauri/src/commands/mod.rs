@@ -2,9 +2,7 @@ pub mod account;
 pub mod approval;
 pub mod config;
 pub mod hook;
-pub mod llm;
 pub mod model;
-pub mod npm_tool;
 pub mod plugin;
 pub mod skill;
 pub mod thread;
@@ -22,9 +20,7 @@ pub use account::*;
 pub use approval::*;
 pub use config::*;
 pub use hook::*;
-pub use llm::*;
 pub use model::*;
-pub use npm_tool::*;
 pub use plugin::*;
 pub use skill::*;
 pub use thread::*;
@@ -49,7 +45,7 @@ pub fn greet(name: &str) -> String {
     format!("CN-Codex ready for {name}.")
 }
 
-fn normalize_windows_verbatim_prefix(raw: &str) -> String {
+pub(crate) fn normalize_windows_verbatim_prefix(raw: &str) -> String {
     #[cfg(target_os = "windows")]
     {
         let trimmed = raw.trim();

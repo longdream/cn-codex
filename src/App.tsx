@@ -5,11 +5,13 @@ import {
   standaloneInit,
   standaloneConfigRead,
 } from "./api";
+import { getUserHomeDir } from "./api/window";
 import { ChatPage } from "./components/chat/ChatPage";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { RightPanel } from "./components/layout/RightPanel";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TitleBar } from "./components/layout/TitleBar";
+import { ApprovalModal } from "./components/approval/ApprovalModal";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import enUS from "./i18n/en-US/common.json";
@@ -62,6 +64,13 @@ function App() {
 
     try {
       await standaloneInit();
+
+      try {
+        const homeDir = await getUserHomeDir();
+        useAppStore.getState().setUserHomeDir(homeDir);
+      } catch {
+        // Home dir is best-effort
+      }
 
       try {
         const status = await getServerStatus();
@@ -140,6 +149,7 @@ function App() {
           </div>
         </div>
         {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+        <ApprovalModal />
       </IntlProvider>
     </ErrorBoundary>
   );

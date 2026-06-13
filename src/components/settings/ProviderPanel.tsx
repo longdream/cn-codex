@@ -36,9 +36,10 @@ export function ProviderPanel() {
     apiKey: string;
     baseUrl: string;
     wireApi: string;
+    maxOutputTokens: string;
     newModelId: string;
     newModelLabel: string;
-  }>({ name: "", apiKey: "", baseUrl: "", wireApi: "", newModelId: "", newModelLabel: "" });
+  }>({ name: "", apiKey: "", baseUrl: "", wireApi: "", maxOutputTokens: "131072", newModelId: "", newModelLabel: "" });
 
   const selectedProvider = useMemo(
     () => providers.find((p) => p.id === selectedId) ?? null,
@@ -68,12 +69,14 @@ export function ProviderPanel() {
       apiKey: "",
       baseUrl: selectedProvider.baseUrl,
       wireApi: selectedProvider.wireApi,
+      maxOutputTokens: String(selectedProvider.maxOutputTokens ?? 131072),
     }));
   }, [
     selectedProvider?.id,
     selectedProvider?.name,
     selectedProvider?.baseUrl,
     selectedProvider?.wireApi,
+    selectedProvider?.maxOutputTokens,
   ]);
 
   // 选中实例时加载配置到编辑表单
@@ -87,6 +90,7 @@ export function ProviderPanel() {
         apiKey: "",
         baseUrl: provider.baseUrl,
         wireApi: provider.wireApi,
+        maxOutputTokens: String(provider.maxOutputTokens ?? 131072),
         newModelId: "",
         newModelLabel: "",
       });
@@ -130,10 +134,14 @@ export function ProviderPanel() {
       const trimmedApiKey = editForm.apiKey.trim();
       const trimmedWireApi = editForm.wireApi.trim();
 
+      const parsedMaxTokens = parseInt(editForm.maxOutputTokens, 10);
+      const maxOutputTokens = Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : 131072;
+
       const updates: Partial<ProviderConfig> = {
         name: trimmedName,
         baseUrl: trimmedBaseUrl,
         wireApi: trimmedWireApi || selectedProvider.wireApi,
+        maxOutputTokens,
       };
       if (trimmedApiKey) {
         updates.apiKey = trimmedApiKey;
@@ -155,6 +163,7 @@ export function ProviderPanel() {
           { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
           { keyPath: "model", value: defaultModel, mergeStrategy: "replace" },
           { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
+          { keyPath: "max_output_tokens", value: maxOutputTokens, mergeStrategy: "replace" },
         ];
         await standaloneConfigWrite(edits);
       }
@@ -393,6 +402,23 @@ export function ProviderPanel() {
                   intl.formatMessage({
                     id: `settings.provider.transportHint.${editForm.wireApi}`,
                   })}
+              </p>
+            </div>
+
+            {/* 最大输出 Token */}
+            <div className="space-y-1.5">
+              <label className="settings-field-label">
+                {intl.formatMessage({ id: "settings.provider.maxOutputTokens" })}
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={editForm.maxOutputTokens}
+                onChange={(e) => setEditForm((f) => ({ ...f, maxOutputTokens: e.target.value }))}
+                className="app-input w-56"
+              />
+              <p className="text-[11px] text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "settings.provider.maxOutputTokensHint" })}
               </p>
             </div>
 

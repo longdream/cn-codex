@@ -64,6 +64,8 @@ export interface ProviderConfig {
   isCustom: boolean;
   /** 创建时间戳（用于排序） */
   createdAt: number;
+  /** 单次回复最大输出 token 数 */
+  maxOutputTokens: number;
 }
 
 /** 附件文件（输入框增强用） */

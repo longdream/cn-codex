@@ -7,6 +7,7 @@ import {
   IconMessage2,
   IconPaperclip,
   IconPlugConnected,
+  IconShieldCheck,
   IconSquare,
   IconTargetArrow,
   IconX,
@@ -57,6 +58,7 @@ interface ChatInputProps {
   disabled: boolean;
   mode: ChatMode;
   onGoalCommand?: (command: ParsedGoalCommand) => void;
+  isGeneralMode?: boolean;
 }
 
 export function ChatInput({
@@ -66,6 +68,7 @@ export function ChatInput({
   disabled,
   mode,
   onGoalCommand,
+  isGeneralMode = false,
 }: ChatInputProps) {
   const intl = useIntl();
   const [text, setText] = useState("");
@@ -79,6 +82,8 @@ export function ChatInput({
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const attachedFiles = useAppStore((s) => s.attachedFiles);
   const currentGoal = useAppStore((s) => s.currentGoal);
+  const autoApprove = useAppStore((s) => s.autoApprove);
+  const setAutoApprove = useAppStore((s) => s.setAutoApprove);
   // 目标模式运行态：只在 goal + active 时视为“整体执行中”。
   // 聊天模式不受该状态影响。
   const goalRunning = mode === "goal" && currentGoal?.status === "active";
@@ -477,6 +482,14 @@ export function ChatInput({
       <div className="mx-auto max-w-[1180px]">
         <div className="chat-composer-shell px-4 pb-3 pt-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          {isGeneralMode ? (
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] px-3 py-1">
+              <IconMessage2 size={12} stroke={1.8} className="text-[var(--accent)]" />
+              <span className="text-[11px] font-medium text-[var(--chat-prose)]">
+                {intl.formatMessage({ id: "chat.mode.chat" })}
+              </span>
+            </div>
+          ) : (
           <div className="inline-flex rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] p-1">
             <button
               type="button"
@@ -505,8 +518,9 @@ export function ChatInput({
               {intl.formatMessage({ id: "chat.mode.goal" })}
             </button>
           </div>
+          )}
 
-          {mode === "goal" && (
+          {!isGeneralMode && mode === "goal" && (
             <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${goalStatusClass}`}>
               {goalStatusLabel}
             </span>
@@ -620,6 +634,20 @@ export function ChatInput({
               <IconCpu size={12} stroke={1.8} className="flex-shrink-0" />
               <span className="max-w-[190px] truncate">{displayModel}</span>
               <IconChevronDown size={10} stroke={2} className="flex-shrink-0 opacity-60" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setAutoApprove(!autoApprove)}
+              className={`flex items-center gap-1 rounded-full px-2 py-1 transition-colors ${
+                autoApprove
+                  ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                  : "hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+              }`}
+              title={intl.formatMessage({ id: autoApprove ? "chat.autoApproveOn" : "chat.autoApproveOff" })}
+            >
+              <IconShieldCheck size={12} stroke={1.8} className="flex-shrink-0" />
+              <span className="truncate">{intl.formatMessage({ id: "chat.autoApprove" })}</span>
             </button>
           </div>
           <div className="flex min-w-0 items-center gap-2">

@@ -11,6 +11,7 @@ import {
 } from "../../api";
 import {
   useAppStore,
+  GENERAL_PROJECT_ID,
   type ChatMode,
   type ChatSendOptions,
   type ThreadGoal,
@@ -38,10 +39,11 @@ export function ChatPage() {
       options: ChatSendOptions = {},
     ) => {
       const state = useAppStore.getState();
-      const cwd = state.workspaceCwd;
+      const inGeneral = state.currentProjectId === GENERAL_PROJECT_ID;
+      const cwd = state.workspaceCwd || state.projectRoot || state.userHomeDir;
       if (!cwd) return;
-      // 仅目标模式 active 时阻断发送，聊天模式语义保持不变。
-      const goalRunning = mode === "goal" && state.currentGoal?.status === "active";
+      const actualMode: ChatMode = inGeneral ? "chat" : mode;
+      const goalRunning = actualMode === "goal" && state.currentGoal?.status === "active";
       if (goalRunning) return;
       const displayText = formatUserMessageDisplay(text, attachments);
 
@@ -81,7 +83,7 @@ export function ChatPage() {
           threadId,
           text,
           cwd,
-          mode,
+          actualMode,
           attachments,
           options.goalBudgetTokens,
         );
@@ -241,7 +243,9 @@ export function ChatPage() {
     });
   }, [messages]);
 
-  const hasProject = !!currentProjectId && !!workspaceCwd;
+  const isGeneralMode = currentProjectId === GENERAL_PROJECT_ID;
+  const hasProject = (!!currentProjectId && !!workspaceCwd) || isGeneralMode;
+  const effectiveMode = isGeneralMode ? "chat" : chatMode;
   const showEmpty = messages.length === 0 && !isStreaming;
 
   if (!hasProject) {
@@ -265,11 +269,10 @@ export function ChatPage() {
         <div className="flex items-center justify-end px-4 py-1.5 border-b border-[var(--chat-line)]">
           <button
             onClick={handleCopyAll}
-            className="chat-copy-button flex items-center gap-1 px-2 py-1 text-[11px] transition-[color,background]"
-            title={intl.formatMessage({ id: "chat.copyAll" })}
+            className="chat-copy-button flex items-center justify-center h-6 w-6 transition-[color,background]"
+            title={intl.formatMessage({ id: copyDone ? "chat.copied" : "chat.copyAll" })}
           >
-            {copyDone ? <IconCheck size={12} stroke={2} /> : <IconCopy size={12} stroke={2} />}
-            {intl.formatMessage({ id: copyDone ? "chat.copied" : "chat.copyAll" })}
+            {copyDone ? <IconCheck size={14} stroke={2} /> : <IconCopy size={14} stroke={2} />}
           </button>
         </div>
       )}
@@ -291,8 +294,9 @@ export function ChatPage() {
         onInterrupt={handleInterrupt}
         isStreaming={isStreaming}
         disabled={!initialized || !hasProject}
-        mode={chatMode}
+        mode={effectiveMode}
         onGoalCommand={handleGoalCommand}
+        isGeneralMode={isGeneralMode}
       />
     </div>
   );

@@ -4,6 +4,7 @@ import {
   IconFolder,
   IconFolderOpen,
   IconFolderPlus,
+  IconMessage2,
   IconMessagePlus,
   IconRefresh,
   IconSearch,
@@ -14,7 +15,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useIntl } from "react-intl";
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealInExplorer } from "../../api/window";
-import { useAppStore, type Project } from "../../stores/appStore";
+import { useAppStore, GENERAL_PROJECT_ID, type Project } from "../../stores/appStore";
 import { ContextMenu, type ContextMenuEntry, type ContextMenuPosition } from "../common/ContextMenu";
 
 function formatThreadTime(timestamp: number, locale: string): string {
@@ -56,6 +57,8 @@ export function Sidebar() {
     }
   }, []);
 
+  const isGeneralMode = currentProjectId === GENERAL_PROJECT_ID;
+
   const handleNewChat = useCallback(async () => {
     if (creating || !currentProjectId) return;
     setCreating(true);
@@ -66,25 +69,44 @@ export function Sidebar() {
     }
   }, [creating, currentProjectId, createThread]);
 
-  const projectThreads = useMemo(() => {
+  const handleNewGeneralChat = useCallback(async () => {
+    if (creating) return;
+    setCreating(true);
+    try {
+      if (!isGeneralMode) {
+        useAppStore.getState().selectGeneralMode();
+      }
+      await createThread();
+    } finally {
+      setCreating(false);
+    }
+  }, [creating, isGeneralMode, createThread]);
+
+  const { projectThreads, generalThreads } = useMemo(() => {
     const map = new Map<string, typeof threads>();
+    const general: typeof threads = [];
     for (const p of projects) {
       map.set(p.id, []);
     }
     for (const t of threads) {
       const pid = t.projectId ?? threadProjectMap[t.id];
-      if (pid && map.has(pid)) {
+      if (pid === GENERAL_PROJECT_ID) {
+        general.push(t);
+      } else if (pid && map.has(pid)) {
         map.get(pid)!.push(t);
       }
     }
     for (const [, list] of map) {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     }
-    return map;
+    general.sort((a, b) => b.updatedAt - a.updatedAt);
+    return { projectThreads: map, generalThreads: general };
   }, [projects, threads, threadProjectMap]);
 
-  const filteredProjectThreads = useMemo(() => {
-    if (!searchQuery.trim()) return projectThreads;
+  const { filteredProjectThreads, filteredGeneralThreads } = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return { filteredProjectThreads: projectThreads, filteredGeneralThreads: generalThreads };
+    }
     const q = searchQuery.toLowerCase();
     const filtered = new Map<string, typeof threads>();
     for (const [pid, list] of projectThreads) {
@@ -97,8 +119,13 @@ export function Sidebar() {
         filtered.set(pid, matching);
       }
     }
-    return filtered;
-  }, [projectThreads, searchQuery]);
+    const filteredGeneral = generalThreads.filter(
+      (t) =>
+        (t.name?.toLowerCase().includes(q)) ||
+        t.preview.toLowerCase().includes(q),
+    );
+    return { filteredProjectThreads: filtered, filteredGeneralThreads: filteredGeneral };
+  }, [projectThreads, generalThreads, searchQuery]);
 
   return (
     <aside className="thin-scrollbar flex h-full w-[16rem] flex-shrink-0 flex-col overflow-hidden bg-[var(--surface-sidebar)]">
@@ -166,8 +193,30 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Project groups */}
+      {/* General + Project groups */}
       <div className="flex-1 overflow-y-auto px-2 py-2">
+        {/* General chats section */}
+        <GeneralChatGroup
+          threads={filteredGeneralThreads}
+          isActive={isGeneralMode}
+          currentThreadId={currentThreadId}
+          onSelect={() => useAppStore.getState().selectGeneralMode()}
+          onNewChat={handleNewGeneralChat}
+          onThreadClick={(threadId) => {
+            if (!isGeneralMode) {
+              useAppStore.getState().selectGeneralMode();
+            }
+            void loadThread(threadId);
+          }}
+          onThreadDelete={(threadId) => useAppStore.getState().deleteThread(threadId)}
+          locale={intl.locale}
+        />
+
+        {/* Divider */}
+        {projects.length > 0 && (
+          <div className="my-2 border-t border-[var(--border-subtle)]" />
+        )}
+
         {projects.length === 0 ? (
           <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] px-3 py-6 text-center">
             <IconFolder size={24} stroke={1.5} className="mx-auto mb-2 text-[var(--text-faint)]" />
@@ -216,6 +265,104 @@ export function Sidebar() {
         </button>
       </div>
     </aside>
+  );
+}
+
+function GeneralChatGroup({
+  threads,
+  isActive,
+  currentThreadId,
+  onSelect,
+  onNewChat,
+  onThreadClick,
+  onThreadDelete,
+  locale,
+}: {
+  threads: Array<{ id: string; name?: string; preview: string; updatedAt: number }>;
+  isActive: boolean;
+  currentThreadId: string | null;
+  onSelect: () => void;
+  onNewChat: () => void;
+  onThreadClick: (threadId: string) => void;
+  onThreadDelete: (threadId: string) => void;
+  locale: string;
+}) {
+  const intl = useIntl();
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <div className="mb-1">
+      {/* General header */}
+      <div
+        onClick={() => {
+          onSelect();
+          setExpanded(true);
+        }}
+        className={`group flex w-full cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs transition-colors ${
+          isActive
+            ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+            : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+        }`}
+      >
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded(!expanded);
+          }}
+          className="flex-shrink-0 opacity-60 hover:opacity-100"
+        >
+          {expanded ? (
+            <IconChevronDown size={12} stroke={2} />
+          ) : (
+            <IconChevronRight size={12} stroke={2} />
+          )}
+        </button>
+        <IconMessage2 size={13} stroke={1.8} className="flex-shrink-0" />
+        <span className="min-w-0 flex-1 truncate font-medium">
+          {intl.formatMessage({ id: "sidebar.generalChats" })}
+        </span>
+        <span className="flex-shrink-0 text-[11px] opacity-60">{threads.length}</span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onNewChat();
+          }}
+          className="flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-60 hover:!opacity-100"
+          title={intl.formatMessage({ id: "sidebar.newGeneralChat" })}
+        >
+          <IconMessagePlus size={12} stroke={1.8} />
+        </button>
+      </div>
+
+      {/* Thread list */}
+      {expanded && (
+        <div className="ml-3 mt-0.5 space-y-0.5 border-l border-[var(--border-subtle)] pl-2">
+          {threads.length === 0 ? (
+            <button
+              onClick={onNewChat}
+              className="w-full px-2 py-1.5 text-left text-[11px] text-[var(--text-faint)] hover:text-[var(--accent)] transition-colors"
+            >
+              {intl.formatMessage({ id: "sidebar.newGeneralChatHint" })}
+            </button>
+          ) : (
+            threads.map((thread) => {
+              const title = thread.name || thread.preview || intl.formatMessage({ id: "chat.threadUntitled" });
+              return (
+                <ThreadItem
+                  key={thread.id}
+                  thread={thread}
+                  title={title}
+                  isCurrent={currentThreadId === thread.id}
+                  locale={locale}
+                  onClick={() => onThreadClick(thread.id)}
+                  onDelete={() => onThreadDelete(thread.id)}
+                />
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

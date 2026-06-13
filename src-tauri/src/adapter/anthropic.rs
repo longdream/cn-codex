@@ -49,6 +49,7 @@ impl ProviderAdapter for AnthropicAdapter {
         model: &str,
         messages: &[InternalMessage],
         tools: Option<&[serde_json::Value]>,
+        max_tokens: Option<i64>,
     ) -> serde_json::Value {
         // Anthropic 的 system message 需要提取为顶层 system 字段
         let mut system_text = String::new();
@@ -117,7 +118,7 @@ impl ProviderAdapter for AnthropicAdapter {
         let mut body = serde_json::json!({
             "model": model,
             "messages": api_messages,
-            "max_tokens": 8192,
+            "max_tokens": max_tokens.unwrap_or(131072),
             "stream": true,
         });
 

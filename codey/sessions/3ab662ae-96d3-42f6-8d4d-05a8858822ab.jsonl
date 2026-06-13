@@ -1,0 +1,9 @@
+{"type":"thread_meta","thread_id":"3ab662ae-96d3-42f6-8d4d-05a8858822ab","name":null,"created_at":1781342604,"model":"ernie-4.5-turbo-128k-preview"}
+{"type":"turn_start","turn_id":"f3bb4d61-8653-45c1-9520-76c12c902430","started_at":1781342611,"mode":"chat","goal_budget_tokens":null}
+{"type":"message","id":"26a04cd8-1d37-4889-b7fb-4aaee1fb4be5","role":"user","content":"你好","timestamp":1781342611,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"message","id":"984c5186-b189-4e6a-b28b-331783f511fe","role":"system","content":"All tool executions have completed. You MUST now provide a brief summary: what was done, any errors encountered, and suggested next steps. Do NOT call any more tools.","timestamp":1781342611,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"turn_end","turn_id":"f3bb4d61-8653-45c1-9520-76c12c902430","completed_at":1781342611,"duration_ms":534,"changed_files":[],"usage":null,"budget_limited":false}
+{"type":"turn_start","turn_id":"1bace6c6-bbbd-47a8-9647-0da0b17581ab","started_at":1781342659,"mode":"chat","goal_budget_tokens":null}
+{"type":"message","id":"e63a764f-9d34-4d3e-8cb4-766fc4163e27","role":"user","content":"你好","timestamp":1781342659,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"message","id":"3ce23747-4cd0-4cb8-b0ff-9d7d799293d9","role":"system","content":"All tool executions have completed. You MUST now provide a brief summary: what was done, any errors encountered, and suggested next steps. Do NOT call any more tools.","timestamp":1781342660,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"turn_end","turn_id":"1bace6c6-bbbd-47a8-9647-0da0b17581ab","completed_at":1781342660,"duration_ms":383,"changed_files":[],"usage":null,"budget_limited":false}

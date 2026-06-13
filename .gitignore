@@ -24,3 +24,7 @@ Thumbs.db
 codey/browser/webview-data/
 codey/browser/screenshots/
 codey/browser/visible-browser.json
+
+# Embedded Node.js (bundled at publish time, not checked into git)
+codey/node/
+tools/node-cache/

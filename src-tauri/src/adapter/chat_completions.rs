@@ -86,6 +86,7 @@ impl ProviderAdapter for ChatCompletionsAdapter {
         model: &str,
         messages: &[InternalMessage],
         tools: Option<&[serde_json::Value]>,
+        max_tokens: Option<i64>,
     ) -> serde_json::Value {
         let formatted_messages: Vec<serde_json::Value> = messages
             .iter()
@@ -95,6 +96,7 @@ impl ProviderAdapter for ChatCompletionsAdapter {
         let mut body = serde_json::json!({
             "model": model,
             "messages": formatted_messages,
+            "max_tokens": max_tokens.unwrap_or(131072),
             "stream": true,
             "stream_options": { "include_usage": true },
         });

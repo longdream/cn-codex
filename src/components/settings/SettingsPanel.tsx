@@ -3,8 +3,9 @@ import { useState } from "react";
 import { useIntl } from "react-intl";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { ProviderPanel } from "./ProviderPanel";
-import { LlmTiersPanel } from "./LlmTiersPanel";
 import { IntegrationPanel } from "./IntegrationPanel";
+import { PluginsPanel } from "./PluginsPanel";
+import { SkillsPanel } from "./SkillsPanel";
 import { HooksPanel } from "./HooksPanel";
 import { UsageDashboard } from "./UsageDashboard";
 
@@ -12,7 +13,7 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "llm" | "usage" | "integration" | "hooks";
+type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "hooks";
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const intl = useIntl();
@@ -34,11 +35,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       detail: intl.formatMessage({ id: "settings.provider.description" }),
     },
     {
-      id: "llm",
-      label: intl.formatMessage({ id: "settings.llmTier" }),
-      detail: intl.formatMessage({ id: "settings.llmTier.description" }),
-    },
-    {
       id: "usage",
       label: intl.formatMessage({ id: "settings.usage", defaultMessage: "用量追踪" }),
       detail: intl.formatMessage({ id: "settings.usage.description", defaultMessage: "查看 Token 用量和费用统计" }),
@@ -47,6 +43,16 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       id: "integration",
       label: intl.formatMessage({ id: "settings.integration" }),
       detail: intl.formatMessage({ id: "settings.integration.description" }),
+    },
+    {
+      id: "plugins",
+      label: intl.formatMessage({ id: "settings.plugins" }),
+      detail: intl.formatMessage({ id: "settings.plugins.description" }),
+    },
+    {
+      id: "skills",
+      label: intl.formatMessage({ id: "settings.skills" }),
+      detail: intl.formatMessage({ id: "settings.skills.description" }),
     },
     {
       id: "hooks",
@@ -139,9 +145,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             )}
 
             {tab === "provider" && <ProviderPanel />}
-            {tab === "llm" && <LlmTiersPanel />}
             {tab === "usage" && <UsageDashboard />}
             {tab === "integration" && <IntegrationPanel />}
+            {tab === "plugins" && <PluginsPanel />}
+            {tab === "skills" && <SkillsPanel />}
             {tab === "hooks" && <HooksPanel />}
           </div>
         </section>

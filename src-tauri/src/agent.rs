@@ -322,6 +322,10 @@ impl AgentEngine {
 
         let mut intent_retries: u32 = 0;
         const MAX_INTENT_RETRIES: u32 = 2;
+        let max_goal_continuations: usize = 10;
+        let mut goal_continuation_count: usize = 0;
+
+        'goal_loop: loop {
 
         if !prompt_hook_blocked {
             for iteration in 0..max_iterations {
@@ -356,6 +360,7 @@ impl AgentEngine {
                         &wire_api,
                         internal_messages,
                         if tools.is_empty() { None } else { Some(tools) },
+                        config.max_output_tokens,
                     )
                     .await;
 
@@ -798,6 +803,7 @@ impl AgentEngine {
                     &wire_api,
                     internal_messages,
                     None,
+                    config.max_output_tokens,
                 )
                 .await;
             let summary_text = match summary_result {
@@ -841,6 +847,53 @@ impl AgentEngine {
                 self.thread_store.add_message(thread_id, msg).await?;
             }
         }
+
+        // Goal continuation: if goal is still Active, inject continuation prompt
+        // and restart the agent loop instead of ending the turn.
+        if turn_mode != "goal" || self.is_cancelled() || prompt_hook_blocked {
+            break 'goal_loop;
+        }
+        let continuation_goal = self
+            .thread_store
+            .get_thread(thread_id)
+            .await
+            .and_then(|t| t.goal);
+        let should_continue = continuation_goal
+            .as_ref()
+            .is_some_and(|g| g.status == ThreadGoalStatus::Active);
+        if !should_continue || goal_continuation_count >= max_goal_continuations {
+            break 'goal_loop;
+        }
+        goal_continuation_count += 1;
+        info!(
+            "Goal continuation {goal_continuation_count}/{max_goal_continuations} for turn {turn_id}"
+        );
+        let continuation_msg = ThreadMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            role: "system".to_string(),
+            content: build_goal_continuation_prompt(continuation_goal.as_ref().unwrap()),
+            timestamp: now_secs(),
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        };
+        self.thread_store
+            .add_message(thread_id, continuation_msg)
+            .await?;
+        app_handle
+            .emit(
+                "goal-continuation",
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "continuation": goal_continuation_count,
+                }),
+            )
+            .ok();
+        stop_hooks_satisfied = false;
+        stop_hooks_ran_for_last_stop = false;
+        intent_retries = 0;
+
+        } // end 'goal_loop
 
         info!("Turn {turn_id} completed for thread {thread_id}");
 
@@ -903,7 +956,7 @@ impl AgentEngine {
             &git_status_after_hooks,
         );
         let duration_ms = turn_timer.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        let goal_after = if turn_mode == "goal" {
+        let mut goal_after = if turn_mode == "goal" {
             self.thread_store
                 .record_goal_usage(thread_id, turn_usage.total_tokens)
                 .await?
@@ -914,6 +967,15 @@ impl AgentEngine {
             .as_ref()
             .is_some_and(|goal| goal.status == ThreadGoalStatus::BudgetLimited)
             || budget_limited;
+        if let Some(ref goal) = goal_after {
+            if goal.status == ThreadGoalStatus::Active {
+                let paused = self
+                    .thread_store
+                    .set_thread_goal_status(thread_id, ThreadGoalStatus::Paused)
+                    .await?;
+                goal_after = Some(paused);
+            }
+        }
         let completed_at = self
             .thread_store
             .end_turn(
@@ -932,6 +994,7 @@ impl AgentEngine {
             "turn": {
                 "id": &turn_id,
                 "mode": &turn_mode,
+                "cwd": effective_cwd.to_string_lossy(),
                 "startedAt": turn_started_at_ms,
                 "completedAt": completed_at * 1000,
                 "durationMs": duration_ms,
@@ -970,10 +1033,24 @@ impl AgentEngine {
         let mode_instructions = if mode == "goal" {
             "\n\nGoal mode is active. Treat the latest user message as a concrete objective, not a casual chat prompt. \
              Keep working through the available tools until the objective is genuinely handled or you hit a real blocker. \
-             Prefer implementation and verification over proposals. Give concise progress updates as you work, and finish \
-             with a short outcome summary that mentions verification and the important files changed."
+             Do NOT stop after just planning or updating the plan — actually create the files, run the commands, and \
+             complete the work. Prefer implementation and verification over proposals. Give concise progress updates \
+             as you work, and finish with a short outcome summary that mentions verification and the important files changed."
         } else {
             ""
+        };
+        let is_project_mode = effective_cwd != self.cwd;
+        let file_creation_policy = if is_project_mode {
+            "FILE CREATION POLICY: You are working inside a project directory. \
+             Create files and folders directly in the current working directory. \
+             Do NOT use `codey/workspace/` — that is only for general chat mode."
+        } else {
+            "FILE CREATION POLICY: You are in general chat mode (no specific project). \
+             When creating new projects, folders, or generated output files \
+             (e.g. video projects, web apps, scripts), always place them under the `codey/workspace/` \
+             subdirectory within the current working directory. Create the `codey/workspace/` directory \
+             if it does not exist. Do NOT create project folders directly in the working directory root. \
+             This keeps user-generated content organized."
         };
 
         format!(
@@ -1045,6 +1122,8 @@ impl AgentEngine {
              \n\
              All file paths in tool calls should be relative to the working directory unless \
              the user specifies an absolute path.\n\
+             \n\
+             {file_creation_policy}\n\
              \n\
              WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
              use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \
@@ -1267,6 +1346,7 @@ impl AgentEngine {
         wire_api: &str,
         messages: Vec<InternalMessage>,
         tools: Option<Vec<serde_json::Value>>,
+        max_tokens: Option<i64>,
     ) -> AppResult<CompletionResult> {
         // 根据 wire_api 选择 adapter
         let adapter = adapter::get_adapter(wire_api);
@@ -1274,7 +1354,7 @@ impl AgentEngine {
         let url = adapter.build_url(base_url, model);
         let headers = adapter.build_headers(api_key);
         let tools_slice = tools.as_deref();
-        let body = adapter.build_body(model, &messages, tools_slice);
+        let body = adapter.build_body(model, &messages, tools_slice, max_tokens);
 
         info!("LLM request: wire_api={wire_api}, url={url}, model={model}");
         if tracing::enabled!(tracing::Level::DEBUG) {
@@ -2023,12 +2103,60 @@ fn patch_body_from_tool_args(arguments: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn paths_match(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let na = a.replace('\\', "/");
+    let nb = b.replace('\\', "/");
+    if na == nb {
+        return true;
+    }
+    let sa = na.trim_start_matches('/');
+    let sb = nb.trim_start_matches('/');
+    sa.ends_with(sb) || sb.ends_with(sa)
+}
+
+fn build_goal_continuation_prompt(goal: &ThreadGoal) -> String {
+    let budget_info = if let Some(budget) = goal.token_budget {
+        let remaining = budget.saturating_sub(goal.tokens_used);
+        format!(
+            "Tokens used: {}, budget: {}, remaining: {}.",
+            goal.tokens_used, budget, remaining
+        )
+    } else {
+        format!("Tokens used: {}.", goal.tokens_used)
+    };
+    format!(
+        "Continue working toward the active thread goal.\n\n\
+         <objective>\n{}\n</objective>\n\n\
+         {budget_info}\n\n\
+         Keep working through the available tools until the objective is genuinely \
+         handled. Do NOT stop after just planning — actually create the files, run \
+         the commands, and complete the work. If the goal is fully achieved, provide \
+         a short completion summary.",
+        goal.objective,
+    )
+}
+
+fn is_internal_runtime_file(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let p = normalized.trim_start_matches('/');
+    const PATTERNS: &[&str] = &[
+        "codey/usage",
+        "codey/sessions/",
+        "codey/config.toml",
+        "codey/memories/",
+    ];
+    PATTERNS.iter().any(|pat| p.contains(pat))
+}
+
 fn push_file_change(changes: &mut Vec<FileChange>, change: FileChange) {
-    if change.path.trim().is_empty() {
+    if change.path.trim().is_empty() || is_internal_runtime_file(&change.path) {
         return;
     }
 
-    if let Some(existing) = changes.iter_mut().find(|item| item.path == change.path) {
+    if let Some(existing) = changes.iter_mut().find(|item| paths_match(&item.path, &change.path)) {
         existing.action = change.action;
         return;
     }

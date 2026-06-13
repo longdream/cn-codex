@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: #070b14; font-family: "Inter", sans-serif; }
+      body { color: #f4f7fb; }
+      .stage { position: relative; width: 100%; height: 100%; background: radial-gradient(circle at top, rgba(59,130,246,.18), transparent 35%), linear-gradient(135deg, #050816 0%, #0b1220 55%, #101828 100%); }
+      .panel { position: absolute; inset: 86px 96px; border: 1px solid rgba(148,163,184,.16); border-radius: 28px; background: rgba(15, 23, 42, .62); backdrop-filter: blur(18px); box-shadow: 0 30px 80px rgba(0,0,0,.35); padding: 72px 84px; }
+      .eyebrow { display: inline-flex; align-items: center; gap: 12px; padding: 12px 18px; border-radius: 999px; background: rgba(59,130,246,.14); color: #93c5fd; font-size: 22px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      .title { margin-top: 28px; font-size: 78px; line-height: 1.04; font-weight: 800; letter-spacing: -0.03em; }
+      .subtitle { margin-top: 22px; font-size: 30px; line-height: 1.6; color: #cbd5e1; max-width: 1260px; }
+      .tag { position: absolute; top: 48px; right: 96px; padding: 14px 20px; border-radius: 16px; background: rgba(16,185,129,.14); color: #86efac; font-size: 20px; font-weight: 700; }
+      .big-card { position: absolute; left: 96px; top: 228px; width: 764px; padding: 36px; border-radius: 28px; background: linear-gradient(180deg, rgba(15,23,42,.9), rgba(15,23,42,.65)); border: 1px solid rgba(148,163,184,.18); }
+      .card-title { font-size: 26px; font-weight: 700; color: #93c5fd; }
+      .card-list { margin-top: 20px; display: grid; gap: 16px; }
+      .card-item { padding: 18px 20px; border-radius: 18px; background: rgba(30,41,59,.72); border: 1px solid rgba(148,163,184,.12); font-size: 22px; line-height: 1.5; color: #e2e8f0; }
+      .workflow { position: absolute; right: 96px; top: 228px; width: 704px; display: grid; gap: 18px; }
+      .workflow-item { display: flex; align-items: flex-start; gap: 18px; padding: 22px 24px; border-radius: 20px; background: rgba(2,6,23,.45); border: 1px solid rgba(148,163,184,.12); }
+      .bubble { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; flex: 0 0 auto; background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; font-weight: 800; }
+      .workflow-item strong { display: block; font-size: 24px; margin-bottom: 8px; }
+      .workflow-item span { font-size: 18px; color: #cbd5e1; line-height: 1.55; }
+      .code { position: absolute; left: 96px; right: 96px; top: 218px; border-radius: 28px; padding: 34px 38px; background: #020617; border: 1px solid rgba(148,163,184,.18); font-family: "JetBrains Mono", monospace; font-size: 22px; line-height: 1.8; color: #cbd5e1; }
+      .code .kw { color: #c084fc; } .code .fn { color: #fbbf24; } .code .st { color: #86efac; } .code .cm { color: #64748b; }
+      .terminal { position: absolute; left: 96px; top: 238px; width: 1080px; border-radius: 26px; background: #020617; border: 1px solid rgba(148,163,184,.18); padding: 28px; font-family: "JetBrains Mono", monospace; }
+      .terminal-head { display: flex; gap: 8px; margin-bottom: 20px; }
+      .dot { width: 12px; height: 12px; border-radius: 999px; }
+      .line { font-size: 20px; line-height: 1.8; color: #dbeafe; }
+      .line .prompt { color: #60a5fa; } .line .ok { color: #4ade80; } .line .warn { color: #f59e0b; }
+      .badge-list { position: absolute; right: 96px; top: 238px; width: 560px; display: grid; gap: 16px; }
+      .badge { padding: 22px 24px; border-radius: 20px; background: rgba(30,41,59,.66); border: 1px solid rgba(148,163,184,.12); font-size: 22px; line-height: 1.55; }
+      .badge strong { display: block; margin-bottom: 8px; font-size: 24px; }
+      .final { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
+      .final .emoji { font-size: 110px; margin-bottom: 18px; }
+      .final .final-title { font-size: 84px; font-weight: 800; letter-spacing: -0.03em; }
+      .final .final-subtitle { margin-top: 16px; font-size: 30px; color: #cbd5e1; }
+    </style>
+  </head>
+  <body>
+    <div id="root" class="stage" data-composition-id="main" data-start="0" data-duration="58" data-width="1920" data-height="1080">
+      <section id="scene1" class="clip panel" data-start="0" data-duration="6" data-track-index="1">
+        <div class="eyebrow">Project Story</div>
+        <div class="tag">从 0 到 1 的开发视频</div>
+        <div class="title">一个项目是怎么开发出来的？</div>
+        <div class="subtitle">我们把完整过程拆成 6 个阶段：需求、设计、架构、开发、测试、上线。每一步都不是孤立的，而是相互推动，最终拼成可以交付的产品。</div>
+      </section>
+      <section id="scene2" class="clip panel" data-start="6" data-duration="8" data-track-index="2">
+        <div class="eyebrow">01 · Define</div>
+        <div class="title" style="font-size: 66px;">先把要做什么讲清楚</div>
+        <div class="subtitle" style="max-width: 1100px;">开发第一步不是写代码，而是明确问题：目标用户是谁、核心场景是什么、成功标准如何衡量。</div>
+        <div class="big-card">
+          <div class="card-title">需求清单</div>
+          <div class="card-list">
+            <div class="card-item">梳理用户痛点，定义 MVP 范围</div>
+            <div class="card-item">列出核心功能：登录、创建、查询、编辑、统计</div>
+            <div class="card-item">确认里程碑：原型、首版、内测、发布</div>
+          </div>
+        </div>
+      </section>
+      <section id="scene3" class="clip panel" data-start="14" data-duration="8" data-track-index="3">
+        <div class="eyebrow">02 · Design</div>
+        <div class="title" style="font-size: 66px;">把产品体验设计出来</div>
+        <div class="subtitle" style="max-width: 1120px;">这里会先做信息架构，再画页面草图，最后确认视觉风格和交互细节，让团队在同一张图上对齐。</div>
+        <div class="workflow">
+          <div class="workflow-item"><div class="bubble">A</div><div><strong>信息架构</strong><span>整理页面层级和导航关系，确保用户路径清晰。</span></div></div>
+          <div class="workflow-item"><div class="bubble">B</div><div><strong>原型设计</strong><span>快速确认布局、按钮、状态与流程，减少后期返工。</span></div></div>
+          <div class="workflow-item"><div class="bubble">C</div><div><strong>视觉规范</strong><span>统一颜色、字号、间距和组件样式，建立设计系统。</span></div></div>
+        </div>
+      </section>
+      <section id="scene4" class="clip panel" data-start="22" data-duration="10" data-track-index="4">
+        <div class="eyebrow">03 · Build</div>
+        <div class="title" style="font-size: 66px;">把设计变成可运行的代码</div>
+        <div class="subtitle" style="max-width: 1080px;">前端负责页面和交互，后端负责接口和数据，数据库负责存储。代码开发通常按模块拆分，边写边联调。</div>
+        <div class="code">
+          <div><span class="cm">// 先搭起应用骨架</span></div>
+          <div><span class="kw">const</span> <span class="fn">createApp</span> = () =&gt; ({</div>
+          <div>&nbsp;&nbsp;init() { <span class="fn">loadConfig</span>(); <span class="fn">bindEvents</span>(); },</div>
+          <div>&nbsp;&nbsp;render() { <span class="fn">mountViews</span>(); <span class="fn">syncState</span>(); },</div>
+          <div>&nbsp;&nbsp;submit() { <span class="fn">callApi</span>(<span class="st">"/api/save"</span>); }</div>
+          <div>});</div>
+          <div><span class="kw">const</span> app = <span class="fn">createApp</span>();</div>
+          <div>app.init();</div>
+        </div>
+      </section>
+      <section id="scene5" class="clip panel" data-start="32" data-duration="8" data-track-index="5">
+        <div class="eyebrow">04 · Verify</div>
+        <div class="title" style="font-size: 66px;">用测试保证结果可靠</div>
+        <div class="subtitle" style="max-width: 1120px;">单元测试、接口联调、回归测试会一起进行。目标不是“代码能跑”，而是“改动后依然稳定”。</div>
+        <div class="terminal">
+          <div class="terminal-head"><div class="dot" style="background: #ef4444;"></div><div class="dot" style="background: #f59e0b;"></div><div class="dot" style="background: #22c55e;"></div></div>
+          <div class="line"><span class="prompt">$</span> npm run test</div>
+          <div class="line"><span class="ok">✓</span> 核心逻辑测试通过</div>
+          <div class="line"><span class="ok">✓</span> 接口契约校验通过</div>
+          <div class="line"><span class="warn">⚠</span> 发现一个边界场景需要优化</div>
+          <div class="line"><span class="ok">✓</span> 回归测试全部通过</div>
+        </div>
+        <div class="badge-list">
+          <div class="badge"><strong>调试</strong>定位问题、复现 bug、修正异常分支。</div>
+          <div class="badge"><strong>性能</strong>检查首屏、接口、渲染和资源大小。</div>
+        </div>
+      </section>
+      <section id="scene6" class="clip panel" data-start="40" data-duration="8" data-track-index="6">
+        <div class="eyebrow">05 · Ship</div>
+        <div class="title" style="font-size: 66px;">打包、部署、上线</div>
+        <div class="subtitle" style="max-width: 1100px;">当功能稳定后，就进入构建与发布：生成生产包、上传服务器、灰度发布、监控上线状态。</div>
+        <div class="terminal" style="width: 960px;">
+          <div class="terminal-head"><div class="dot" style="background: #ef4444;"></div><div class="dot" style="background: #f59e0b;"></div><div class="dot" style="background: #22c55e;"></div></div>
+          <div class="line"><span class="prompt">$</span> npm run build</div>
+          <div class="line"><span class="ok">✓</span> Production bundle ready</div>
+          <div class="line"><span class="prompt">$</span> npm run deploy</div>
+          <div class="line"><span class="ok">✓</span> Release published successfully</div>
+        </div>
+      </section>
+      <section id="scene7" class="clip panel" data-start="48" data-duration="10" data-track-index="7">
+        <div class="final"><div><div class="emoji">🎉</div><div class="final-title">项目完成并上线</div><div class="final-subtitle">一个产品从想法到交付，需要规划、协作和持续验证。</div></div></div>
+      </section>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      tl.from("#scene1 .eyebrow", { opacity: 0, y: 12, duration: 0.45 }, 0);
+      tl.from("#scene1 .tag", { opacity: 0, x: 20, duration: 0.45 }, 0.15);
+      tl.from("#scene1 .title", { opacity: 0, y: 38, duration: 0.7 }, 0.2);
+      tl.from("#scene1 .subtitle", { opacity: 0, y: 28, duration: 0.6 }, 0.45);
+      tl.from("#scene2 .title", { opacity: 0, y: 30, duration: 0.55 }, 6);
+      tl.from("#scene2 .subtitle", { opacity: 0, y: 24, duration: 0.55 }, 6.15);
+      tl.from("#scene2 .big-card", { opacity: 0, y: 40, duration: 0.65 }, 6.4);
+      tl.from("#scene2 .card-item", { opacity: 0, x: -24, duration: 0.35, stagger: 0.12 }, 6.75);
+      tl.from("#scene3 .title", { opacity: 0, y: 30, duration: 0.55 }, 14);
+      tl.from("#scene3 .subtitle", { opacity: 0, y: 20, duration: 0.5 }, 14.14);
+      tl.from("#scene3 .workflow-item", { opacity: 0, x: 42, duration: 0.55, stagger: 0.14 }, 14.5);
+      tl.from("#scene4 .title", { opacity: 0, y: 30, duration: 0.55 }, 22);
+      tl.from("#scene4 .subtitle", { opacity: 0, y: 20, duration: 0.5 }, 22.14);
+      tl.from("#scene4 .code", { opacity: 0, y: 42, duration: 0.75 }, 22.45);
+      tl.from("#scene5 .title", { opacity: 0, y: 30, duration: 0.55 }, 32);
+      tl.from("#scene5 .subtitle", { opacity: 0, y: 20, duration: 0.5 }, 32.14);
+      tl.from("#scene5 .terminal", { opacity: 0, y: 40, duration: 0.65 }, 32.4);
+      tl.from("#scene5 .badge", { opacity: 0, x: 20, duration: 0.45, stagger: 0.12 }, 33.1);
+      tl.from("#scene6 .title", { opacity: 0, y: 30, duration: 0.55 }, 40);
+      tl.from("#scene6 .subtitle", { opacity: 0, y: 20, duration: 0.5 }, 40.12);
+      tl.from("#scene6 .terminal", { opacity: 0, x: -38, duration: 0.65 }, 40.35);
+      tl.from("#scene7 .emoji", { opacity: 0, scale: 0.3, rotation: -12, duration: 0.55 }, 48.2);
+      tl.from("#scene7 .final-title", { opacity: 0, y: 28, duration: 0.55 }, 48.45);
+      tl.from("#scene7 .final-subtitle", { opacity: 0, y: 18, duration: 0.5 }, 48.72);
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

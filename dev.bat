@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul 2>&1
-setlocal
+setlocal enabledelayedexpansion
 set "DEV_PORT=1420"
 
 echo ============================================
@@ -59,6 +59,56 @@ if "%PORT_WAS_BUSY%"=="0" (
         exit /b 1
     )
 )
+
+:: Ensure embedded Node.js is available for online tools (hyperframes etc.)
+echo.
+echo Checking embedded Node.js for online tools...
+echo [%date% %time%] Checking embedded Node.js>>logs\dev.log
+if not exist "codey\node\node.exe" (
+    set "NODE_VERSION=22.16.0"
+    set "NODE_ARCHIVE=node-v22.16.0-win-x64.zip"
+    set "NODE_URL=https://nodejs.org/dist/v22.16.0/node-v22.16.0-win-x64.zip"
+    set "NODE_CACHE=tools\node-cache"
+    if not exist "!NODE_CACHE!" mkdir "!NODE_CACHE!"
+    if not exist "!NODE_CACHE!\!NODE_ARCHIVE!" (
+        echo [INFO] Downloading Node.js v22.16.0 portable...
+        echo [%date% %time%] Downloading Node.js v22.16.0>>logs\dev.log
+        powershell -Command "Invoke-WebRequest -Uri '!NODE_URL!' -OutFile '!NODE_CACHE!\!NODE_ARCHIVE!'" 2>nul
+        if errorlevel 1 (
+            echo [WARN] Failed to download Node.js. Online tools will use system Node if available.
+            echo [%date% %time%] WARN: Node.js download failed>>logs\dev.log
+            goto :skip_node_setup
+        )
+    ) else (
+        echo [INFO] Using cached Node.js archive.
+    )
+    echo [INFO] Extracting Node.js to codey\node\...
+    set "NODE_TMP=codey\_node_tmp"
+    powershell -Command "Expand-Archive -Path '!NODE_CACHE!\!NODE_ARCHIVE!' -DestinationPath '!NODE_TMP!' -Force" 2>nul
+    if errorlevel 1 (
+        echo [WARN] Failed to extract Node.js archive.
+        echo [%date% %time%] WARN: Node.js extraction failed>>logs\dev.log
+        if exist "!NODE_TMP!" rmdir /s /q "!NODE_TMP!"
+        goto :skip_node_setup
+    )
+    set "NODE_EXTRACTED=!NODE_TMP!\node-v22.16.0-win-x64"
+    mkdir "codey\node" 2>nul
+    copy "!NODE_EXTRACTED!\node.exe" "codey\node\" >nul
+    copy "!NODE_EXTRACTED!\npm" "codey\node\" >nul 2>&1
+    copy "!NODE_EXTRACTED!\npm.cmd" "codey\node\" >nul 2>&1
+    copy "!NODE_EXTRACTED!\npx" "codey\node\" >nul 2>&1
+    copy "!NODE_EXTRACTED!\npx.cmd" "codey\node\" >nul 2>&1
+    if exist "!NODE_EXTRACTED!\node_modules" (
+        xcopy "!NODE_EXTRACTED!\node_modules" "codey\node\node_modules\" /E /I /Q /Y >nul
+    )
+    if exist "!NODE_TMP!" rmdir /s /q "!NODE_TMP!"
+    echo [INFO] Embedded Node.js v22.16.0 ready at codey\node\
+    echo [%date% %time%] Embedded Node.js ready>>logs\dev.log
+) else (
+    echo [INFO] Embedded Node.js already present at codey\node\node.exe
+    echo [%date% %time%] Embedded Node.js already present>>logs\dev.log
+)
+:skip_node_setup
 
 echo.
 echo Starting Tauri dev server (Vite HMR on http://localhost:%DEV_PORT%)...

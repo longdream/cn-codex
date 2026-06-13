@@ -11,6 +11,8 @@ import type {
 } from "../api";
 import type { ProviderConfig, ProviderPreset, ProviderModel, AttachedFile } from "../types/provider";
 
+export const GENERAL_PROJECT_ID = "__general__";
+
 export type ChatMode = "chat" | "goal";
 export type GoalStatus = ThreadGoalStatus;
 export type ThreadGoal = ApiThreadGoal;
@@ -39,6 +41,7 @@ export interface TokenUsage {
 export interface RunSummary {
   turnId: string;
   mode: ChatMode;
+  cwd?: string;
   startedAt?: number;
   completedAt?: number;
   durationMs?: number;
@@ -113,6 +116,7 @@ interface RawThreadItem {
 interface RawTurn {
   id: string;
   items?: RawThreadItem[];
+  cwd?: string | null;
   startedAt?: number | null;
   completedAt?: number | null;
   mode?: ChatMode | null;
@@ -298,6 +302,7 @@ function normalizeRunSummary(turn: RawTurn): RunSummary | null {
   return {
     turnId: turn.id,
     mode: turn.mode === "goal" ? "goal" : "chat",
+    cwd: turn.cwd ?? undefined,
     startedAt: turn.startedAt ? toMillis(turn.startedAt) : undefined,
     completedAt: turn.completedAt ? toMillis(turn.completedAt) : undefined,
     durationMs: turn.durationMs ?? undefined,
@@ -435,6 +440,7 @@ const CONFIGURED_MODELS_KEY = "cn-codex-configured-models";
 const ACTIVE_MODEL_KEY = "cn-codex-active-model";
 const PROVIDERS_KEY = "cn-codex-providers";
 const ACTIVE_PROVIDER_KEY = "cn-codex-active-provider";
+const AUTO_APPROVE_KEY = "cn-codex-auto-approve";
 
 /**
  * 供应商预设模板列表
@@ -548,6 +554,7 @@ export function createProviderFromPreset(
     models: [...preset.defaultModels],
     isCustom: preset.type === "custom",
     createdAt: Date.now(),
+    maxOutputTokens: 131072,
   };
 }
 
@@ -561,6 +568,7 @@ function loadProviders(): ProviderConfig[] {
         ...p,
         type: p.type ?? p.id ?? "custom",
         createdAt: p.createdAt ?? Date.now(),
+        maxOutputTokens: p.maxOutputTokens ?? 131072,
       }));
     }
   } catch { /* 忽略解析错误 */ }
@@ -634,11 +642,12 @@ function saveThreadProjectMap(map: Record<string, string>) {
   localStorage.setItem(THREAD_PROJECT_KEY, JSON.stringify(map));
 }
 
-function loadActiveProject(projects: Project[]): { id: string; cwd: string } | null {
+function loadActiveProject(projects: Project[]): { id: string; cwd: string | null } | null {
   try {
     const raw = localStorage.getItem(ACTIVE_PROJECT_KEY);
     if (!raw) return null;
     const saved = JSON.parse(raw) as { id: string; cwd: string };
+    if (saved.id === GENERAL_PROJECT_ID) return { id: saved.id, cwd: null };
     if (projects.some((p) => p.id === saved.id)) return saved;
     return null;
   } catch {
@@ -696,6 +705,7 @@ interface AppState {
   browserPanelUrl: string | null;
   browserPanelTitle: string | null;
   browserPanelStatus: "idle" | "running" | "success" | "failed";
+  autoApprove: boolean;
 
   setInitialized: (v: boolean) => void;
   setInitError: (err: string | null) => void;
@@ -731,8 +741,14 @@ interface AppState {
   removeAttachedFile: (index: number) => void;
   clearAttachedFiles: () => void;
 
+  userHomeDir: string | null;
+  setUserHomeDir: (dir: string) => void;
+
+  projectRoot: string | null;
+
   addProject: (cwd: string) => string;
   selectProject: (projectId: string) => void;
+  selectGeneralMode: () => void;
   removeProject: (projectId: string) => void;
 
   setThreads: (threads: ThreadSummary[]) => void;
@@ -753,6 +769,7 @@ interface AppState {
   setRightPanelVisible: (v: boolean) => void;
   toggleRightPanel: () => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
+  setAutoApprove: (v: boolean) => void;
   setBrowserPanelState: (state: Partial<{
     url: string | null;
     title: string | null;
@@ -783,6 +800,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   configDir: null,
   configPath: null,
 
+  userHomeDir: null,
+  projectRoot: null,
+
   projects: _initialProjects,
   currentProjectId: _restoredActive?.id ?? null,
   threadProjectMap: loadThreadProjectMap(),
@@ -794,6 +814,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   chatMode: "chat",
   currentGoal: null,
   showSettings: false,
+  autoApprove: localStorage.getItem(AUTO_APPROVE_KEY) === "true",
   rightPanelVisible: false,
   rightPanelTab: "browser",
   browserPanelUrl: null,
@@ -840,12 +861,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     return configuredModels.find((m) => m.id === activeModelId) ?? null;
   },
   setServerRuntime: (runtime) =>
-    set((s) => ({
-      workspaceCwd: s.currentProjectId ? s.workspaceCwd : runtime.cwd,
-      configDir: runtime.configDir,
-      configPath: runtime.configPath,
-    })),
+    set((s) => {
+      const isGeneral = s.currentProjectId === GENERAL_PROJECT_ID;
+      return {
+        projectRoot: runtime.cwd,
+        workspaceCwd: !s.currentProjectId || isGeneral ? runtime.cwd : s.workspaceCwd,
+        configDir: runtime.configDir,
+        configPath: runtime.configPath,
+      };
+    }),
   setWorkspaceCwd: (cwd) => set({ workspaceCwd: cwd }),
+
+  setUserHomeDir: (dir) => set({ userHomeDir: dir }),
 
   addProject: (cwd: string) => {
     const id = crypto.randomUUID();
@@ -879,6 +906,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       isStreaming: false,
       currentTurnId: null,
       currentGoal: null,
+    });
+  },
+
+  selectGeneralMode: () => {
+    const cwd = get().projectRoot ?? get().userHomeDir;
+    saveActiveProject(GENERAL_PROJECT_ID, cwd);
+    set({
+      currentProjectId: GENERAL_PROJECT_ID,
+      workspaceCwd: cwd,
+      currentThreadId: null,
+      messages: [],
+      streamingText: "",
+      isStreaming: false,
+      currentTurnId: null,
+      currentGoal: null,
+      chatMode: "chat",
     });
   },
 
@@ -940,6 +983,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
         { keyPath: "model", value: defaultModel, mergeStrategy: "replace" },
         { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
+        { keyPath: "max_output_tokens", value: provider.maxOutputTokens ?? 131072, mergeStrategy: "replace" },
       ]).catch((err) => console.error("Failed to sync provider config:", err));
     }
   },
@@ -1012,8 +1056,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (projectId && !thread.projectId) {
       thread.projectId = projectId;
     }
-    if (projectId && thread.projectId === projectId) {
-      const map = { ...get().threadProjectMap, [thread.id]: projectId };
+    const effectivePid = thread.projectId ?? projectId;
+    if (effectivePid) {
+      const map = { ...get().threadProjectMap, [thread.id]: effectivePid };
       saveThreadProjectMap(map);
       set((s) => ({ threads: [thread, ...s.threads], threadProjectMap: map }));
     } else {
@@ -1120,6 +1165,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setChatMode: (mode) => set({ chatMode: mode }),
   setCurrentGoal: (goal) => set({ currentGoal: normalizeThreadGoal(goal) }),
   setShowSettings: (v) => set({ showSettings: v }),
+  setAutoApprove: (v) => {
+    localStorage.setItem(AUTO_APPROVE_KEY, String(v));
+    set({ autoApprove: v });
+  },
   setRightPanelVisible: (v) => set({ rightPanelVisible: v }),
   toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
   setRightPanelTab: (tab) => set({ rightPanelTab: tab, rightPanelVisible: true }),
@@ -1136,6 +1185,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const threadId = resp?.thread?.id ?? null;
       if (threadId) {
         const projectId = get().currentProjectId;
+        const isGeneral = projectId === GENERAL_PROJECT_ID;
         set({
           currentThreadId: threadId,
           messages: [],
@@ -1143,6 +1193,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           isStreaming: false,
           currentTurnId: null,
           currentGoal: null,
+          ...(isGeneral ? { chatMode: "chat" as ChatMode } : {}),
         });
         const newThread: ThreadSummary = {
           id: threadId,

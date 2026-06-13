@@ -28,6 +28,7 @@ pub trait ProviderAdapter: Send + Sync {
         model: &str,
         messages: &[InternalMessage],
         tools: Option<&[serde_json::Value]>,
+        max_tokens: Option<i64>,
     ) -> serde_json::Value;
 
     /// 判断 SSE 行是否表示流结束

@@ -309,16 +309,16 @@ pub async fn reveal_in_explorer(path: String) -> AppResult<()> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let win_path = display_path.replace('/', "\\");
         if p.is_dir() {
             std::process::Command::new("explorer")
-                .arg(&display_path)
+                .arg(&win_path)
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .map_err(|e| AppError::Custom(format!("Failed to open explorer: {e}")))?;
         } else {
             std::process::Command::new("explorer")
-                .arg("/select,")
-                .arg(&display_path)
+                .arg(format!("/select,{win_path}"))
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .map_err(|e| AppError::Custom(format!("Failed to open explorer: {e}")))?;
@@ -367,6 +367,15 @@ pub async fn window_toggle_devtools(app: AppHandle) -> AppResult<()> {
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_user_home_dir() -> AppResult<String> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| AppError::Custom("Could not determine user home directory".into()))?;
+    Ok(super::normalize_windows_verbatim_prefix(&home.to_string_lossy()))
 }
 
 #[cfg(test)]

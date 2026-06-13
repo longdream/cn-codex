@@ -67,6 +67,8 @@ pub struct ConfigToml {
     #[serde(default)]
     pub model_context_window: Option<i64>,
     #[serde(default)]
+    pub max_output_tokens: Option<i64>,
+    #[serde(default)]
     pub approval_policy: Option<String>,
     #[serde(default)]
     pub web_search: Option<String>,
@@ -290,6 +292,7 @@ impl ConfigToml {
                 self.model_reasoning_effort = value.as_str().map(String::from);
             }
             "model_context_window" => self.model_context_window = value.as_i64(),
+            "max_output_tokens" => self.max_output_tokens = value.as_i64(),
             "approval_policy" => self.approval_policy = value.as_str().map(String::from),
             "web_search" => self.web_search = value.as_str().map(String::from),
             "instructions" => self.instructions = value.as_str().map(String::from),

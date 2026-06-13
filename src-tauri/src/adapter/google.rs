@@ -41,6 +41,7 @@ impl ProviderAdapter for GoogleAdapter {
         _model: &str,
         messages: &[InternalMessage],
         tools: Option<&[serde_json::Value]>,
+        max_tokens: Option<i64>,
     ) -> serde_json::Value {
         // 转换为 Gemini contents 格式
         let mut system_text = String::new();
@@ -136,6 +137,10 @@ impl ProviderAdapter for GoogleAdapter {
                 }]);
             }
         }
+
+        body["generationConfig"] = serde_json::json!({
+            "maxOutputTokens": max_tokens.unwrap_or(131072)
+        });
 
         body
     }

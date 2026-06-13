@@ -6,7 +6,6 @@ pub mod config_system;
 pub mod document_parser;
 pub mod error;
 pub mod hook_runtime;
-pub mod llm_tiers;
 pub mod plugin_loader;
 pub mod protocol;
 pub mod standalone;
@@ -77,21 +76,9 @@ pub fn run() {
             // Approval
             commands::resolve_approval,
             commands::reject_approval,
-            // LLM Tiers
-            commands::llm_get_tiers,
-            commands::llm_set_tier,
-            commands::llm_resolve_tier,
-            commands::llm_get_usage,
-            commands::llm_record_usage,
-            commands::llm_bind_scene,
             // Skills
             commands::skill_list,
             commands::skill_read,
-            // Npm tools
-            commands::npm_tool_list,
-            commands::npm_tool_check,
-            commands::npm_tool_install,
-            commands::npm_tool_uninstall,
             // Plugins
             commands::plugin_list,
             commands::plugin_read,
@@ -129,6 +116,7 @@ pub fn run() {
             commands::window_close_browser,
             commands::reveal_in_explorer,
             commands::window_toggle_devtools,
+            commands::get_user_home_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CN-Codex");

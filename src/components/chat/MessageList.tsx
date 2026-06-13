@@ -188,12 +188,12 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="chat-copy-button absolute right-0 top-0 flex items-center gap-1 px-2 py-1 text-[11px] opacity-0 transition-[opacity,color,background] hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)] group-hover:opacity-100"
-    >
-      {copied ? <IconCheck size={12} stroke={2} /> : <IconCopy size={12} stroke={2} />}
-      {copied
+      className="chat-copy-button absolute right-0 top-0 flex items-center justify-center h-6 w-6 opacity-0 transition-[opacity,color,background] hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)] group-hover:opacity-100"
+      title={copied
         ? intl.formatMessage({ id: "chat.copied" })
         : intl.formatMessage({ id: "chat.copy" })}
+    >
+      {copied ? <IconCheck size={14} stroke={2} /> : <IconCopy size={14} stroke={2} />}
     </button>
   );
 }
@@ -203,7 +203,8 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
   const changedFiles = summary.changedFiles ?? [];
   const usage = summary.usage;
   const goalBudgetTokens = summary.goalBudgetTokens;
-  const workspaceCwd = useAppStore((s) => s.workspaceCwd);
+  const globalCwd = useAppStore((s) => s.workspaceCwd);
+  const workspaceCwd = summary.cwd ?? globalCwd;
 
   return (
     <section className="max-w-[1100px]">

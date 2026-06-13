@@ -12,7 +12,7 @@ HyperFrames 是一个开源框架，可以将 HTML、CSS 和可控动画渲染�
 
 - Node.js 22+
 - FFmpeg
-- 已通过 Settings > Integration > 在线工具安装 hyperframes，或手动 `npm install -g hyperframes`
+- `npm install -g hyperframes`
 
 ## 常用命令
 

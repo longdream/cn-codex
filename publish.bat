@@ -68,7 +68,7 @@ if not exist "%ICONS_DIR%\128x128.png" (
 )
 
 :: Clean previous publish folder
-echo [1/6] Cleaning previous publish folder...
+echo [1/7] Cleaning previous publish folder...
 if exist "%PUBLISH_DIR%" (
     rmdir /s /q "%PUBLISH_DIR%"
 )
@@ -76,7 +76,7 @@ mkdir "%PUBLISH_DIR%"
 
 :: Install frontend dependencies only when node_modules is missing.
 :: This avoids unnecessary dependency resolution on every publish run.
-echo [2/6] Checking frontend dependencies...
+echo [2/7] Checking frontend dependencies...
 cd /d "%PROJECT_DIR%"
 if not exist "%PROJECT_DIR%node_modules" (
     echo   - node_modules not found, running pnpm install...
@@ -94,7 +94,7 @@ if not exist "%PROJECT_DIR%node_modules" (
 )
 
 :: Build Tauri app in release mode (portable only, no installer bundle)
-echo [3/6] Building Tauri release (portable, no installer)...
+echo [3/7] Building Tauri release (portable, no installer)...
 :: For release speed, default is incremental publish without cargo clean.
 :: If cache corruption is suspected, run "publish.bat clean" for full rebuild.
 if "%FORCE_FULL_REBUILD%"=="1" (
@@ -120,7 +120,7 @@ if %errorlevel% neq 0 (
 )
 
 :: Copy artifacts to publish folder
-echo [4/6] Copying portable artifacts to publish folder...
+echo [4/7] Copying portable artifacts to publish folder...
 
 set "RELEASE_DIR=%PROJECT_DIR%src-tauri\target\release"
 
@@ -139,7 +139,7 @@ for %%f in ("%RELEASE_DIR%\*.dll") do (
 )
 
 :: Copy codey/ resources (skills + plugins only)
-echo [5/6] Copying codey runtime resources...
+echo [5/7] Copying codey runtime resources...
 
 set "CODEY_DEST=%PUBLISH_DIR%\codey"
 mkdir "%CODEY_DEST%"
@@ -180,8 +180,61 @@ if exist "%CODEY_DEST%\browser\webview-data" rmdir /s /q "%CODEY_DEST%\browser\w
 if exist "%CODEY_DEST%\browser\screenshots" rmdir /s /q "%CODEY_DEST%\browser\screenshots"
 if exist "%CODEY_DEST%\browser\visible-browser.json" del "%CODEY_DEST%\browser\visible-browser.json"
 
+:: Bundle embedded Node.js portable runtime into codey/node/
+echo [6/7] Bundling embedded Node.js portable...
+
+set "NODE_VERSION=22.16.0"
+set "NODE_ARCHIVE=node-v%NODE_VERSION%-win-x64.zip"
+set "NODE_URL=https://nodejs.org/dist/v%NODE_VERSION%/%NODE_ARCHIVE%"
+set "NODE_CACHE_DIR=%PROJECT_DIR%tools\node-cache"
+set "NODE_DEST=%CODEY_DEST%\node"
+
+:: Use cached download if available, otherwise download
+if not exist "%NODE_CACHE_DIR%" mkdir "%NODE_CACHE_DIR%"
+if not exist "%NODE_CACHE_DIR%\%NODE_ARCHIVE%" (
+    echo   - Downloading Node.js v%NODE_VERSION% portable...
+    powershell -Command "Invoke-WebRequest -Uri '%NODE_URL%' -OutFile '%NODE_CACHE_DIR%\%NODE_ARCHIVE%'" 2>nul
+    if %errorlevel% neq 0 (
+        echo [WARN] Failed to download Node.js. Online tools will require user-installed Node.
+        goto :skip_node
+    )
+    echo   - Downloaded to tools/node-cache/
+) else (
+    echo   - Using cached Node.js archive from tools/node-cache/
+)
+
+:: Extract to temporary directory then copy essentials
+set "NODE_TMP=%CODEY_DEST%\_node_tmp"
+echo   - Extracting Node.js portable...
+powershell -Command "Expand-Archive -Path '%NODE_CACHE_DIR%\%NODE_ARCHIVE%' -DestinationPath '%NODE_TMP%' -Force" 2>nul
+if %errorlevel% neq 0 (
+    echo [WARN] Failed to extract Node.js archive.
+    if exist "%NODE_TMP%" rmdir /s /q "%NODE_TMP%"
+    goto :skip_node
+)
+
+:: Move essential files only (node.exe, npm, npx, node_modules/npm)
+set "NODE_EXTRACTED=%NODE_TMP%\node-v%NODE_VERSION%-win-x64"
+mkdir "%NODE_DEST%"
+copy "%NODE_EXTRACTED%\node.exe" "%NODE_DEST%\" >nul
+copy "%NODE_EXTRACTED%\npm" "%NODE_DEST%\" >nul 2>&1
+copy "%NODE_EXTRACTED%\npm.cmd" "%NODE_DEST%\" >nul 2>&1
+copy "%NODE_EXTRACTED%\npx" "%NODE_DEST%\" >nul 2>&1
+copy "%NODE_EXTRACTED%\npx.cmd" "%NODE_DEST%\" >nul 2>&1
+copy "%NODE_EXTRACTED%\corepack" "%NODE_DEST%\" >nul 2>&1
+copy "%NODE_EXTRACTED%\corepack.cmd" "%NODE_DEST%\" >nul 2>&1
+if exist "%NODE_EXTRACTED%\node_modules" (
+    xcopy "%NODE_EXTRACTED%\node_modules" "%NODE_DEST%\node_modules\" /E /I /Q /Y >nul
+)
+echo   - codey/node/ bundled (Node.js v%NODE_VERSION%)
+
+:: Cleanup temp
+if exist "%NODE_TMP%" rmdir /s /q "%NODE_TMP%"
+
+:skip_node
+
 echo.
-echo [6/6] Build complete!
+echo [7/7] Build complete!
 echo.
 echo ============================================
 echo   Output: %PUBLISH_DIR%

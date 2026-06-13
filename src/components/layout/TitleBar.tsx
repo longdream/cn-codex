@@ -1,11 +1,10 @@
 import {
   windowClose,
-  windowCloseBrowser,
   windowMinimize,
   windowToggleMaximize,
 } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
-import { IconBrowser, IconLayoutSidebarRight } from "@tabler/icons-react";
+import { IconLayoutSidebarRight } from "@tabler/icons-react";
 
 function runWindowAction(action: () => Promise<void>, label: string) {
   const onError = (err: unknown) => {
@@ -24,7 +23,6 @@ export function TitleBar() {
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const setRightPanelVisible = useAppStore((s) => s.setRightPanelVisible);
-  const setBrowserPanelState = useAppStore((s) => s.setBrowserPanelState);
 
   const handleDoubleClick = () => {
     runWindowAction(windowToggleMaximize, "toggle maximize");
@@ -52,37 +50,6 @@ export function TitleBar() {
       <div className="flex h-full items-center">
         <button
           type="button"
-          aria-label="Toggle browser panel"
-          onClick={() => {
-            if (rightPanelVisible && rightPanelTab === "browser") {
-              runWindowAction(async () => {
-                try {
-                  // 先关闭子 WebView，避免右侧面板隐藏后遗留“白色覆盖层”。
-                  await windowCloseBrowser();
-                } finally {
-                  // 无论关闭是否报错，都要收敛 UI 状态，防止界面卡在旧 URL/旧状态。
-                  setBrowserPanelState({
-                    status: "idle",
-                    url: null,
-                    title: null,
-                  });
-                  setRightPanelVisible(false);
-                }
-              }, "close browser panel");
-            } else {
-              setRightPanelTab("browser");
-            }
-          }}
-          className={`flex h-full w-11 items-center justify-center transition-colors ${
-            rightPanelVisible && rightPanelTab === "browser"
-              ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-              : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)]"
-          }`}
-        >
-          <IconBrowser size={15} stroke={1.8} />
-        </button>
-        <button
-          type="button"
           aria-label="Toggle project panel"
           onClick={() => {
             if (rightPanelVisible && rightPanelTab === "project") {
@@ -92,7 +59,7 @@ export function TitleBar() {
             }
           }}
           className={`flex h-full w-11 items-center justify-center transition-colors ${
-            rightPanelVisible && rightPanelTab === "project"
+            rightPanelVisible
               ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
               : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)]"
           }`}

@@ -5,7 +5,6 @@ use tokio::sync::{RwLock, mpsc};
 
 use crate::agent::AgentEngine;
 use crate::config_system::ConfigManager;
-use crate::llm_tiers::LlmTiersManager;
 use crate::protocol::{JSONRPCErrorError, RequestId};
 use crate::standalone::StandaloneState;
 use crate::thread_store::ThreadStore;
@@ -28,7 +27,6 @@ pub enum ApprovalAction {
 
 pub struct AppState {
     pub locale: RwLock<String>,
-    pub llm_tiers: RwLock<LlmTiersManager>,
     pub current_thread_id: RwLock<Option<String>>,
     pub project_root: PathBuf,
     pub workspace_config_dir: PathBuf,
@@ -131,7 +129,6 @@ impl AppState {
 
         Self {
             locale: RwLock::new("zh-CN".to_string()),
-            llm_tiers: RwLock::new(LlmTiersManager::default()),
             current_thread_id: RwLock::new(None),
             project_root,
             workspace_config_dir,
