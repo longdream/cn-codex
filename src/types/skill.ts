@@ -4,6 +4,7 @@ export interface SkillSummary {
   description: string;
   tags: string[];
   path: string;
+  enabled: boolean;
 }
 
 export interface SkillDetail {
@@ -13,4 +14,5 @@ export interface SkillDetail {
   tags: string[];
   path: string;
   content: string;
+  enabled: boolean;
 }

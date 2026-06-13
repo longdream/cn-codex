@@ -13,6 +13,7 @@ pub struct SkillSummary {
     pub description: String,
     pub tags: Vec<String>,
     pub path: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -24,6 +25,7 @@ pub struct SkillDetail {
     pub tags: Vec<String>,
     pub path: String,
     pub content: String,
+    pub enabled: bool,
 }
 
 fn get_skills_dir(state: &AppState) -> PathBuf {
@@ -70,6 +72,8 @@ pub async fn skill_list(state: State<'_, AppState>) -> AppResult<Vec<SkillSummar
         return Ok(vec![]);
     }
 
+    let disabled_skills = state.config_manager.read()?.disabled_skills.clone();
+
     let mut skills = Vec::new();
     let entries = std::fs::read_dir(&skills_dir)
         .map_err(|e| AppError::Custom(format!("Failed to read skills dir: {e}")))?;
@@ -99,6 +103,7 @@ pub async fn skill_list(state: State<'_, AppState>) -> AppResult<Vec<SkillSummar
             description,
             tags,
             path: skill_md.to_string_lossy().to_string(),
+            enabled: !disabled_skills.contains(&id),
             id,
         });
     }
@@ -121,6 +126,12 @@ pub async fn skill_read(state: State<'_, AppState>, skill_id: String) -> AppResu
 
     let (name, description, tags) = parse_skill_frontmatter(&content);
 
+    let enabled = !state
+        .config_manager
+        .read()?
+        .disabled_skills
+        .contains(&skill_id);
+
     Ok(SkillDetail {
         name: if name.is_empty() {
             skill_id.clone()
@@ -132,7 +143,24 @@ pub async fn skill_read(state: State<'_, AppState>, skill_id: String) -> AppResu
         path: skill_md.to_string_lossy().to_string(),
         id: skill_id,
         content,
+        enabled,
     })
+}
+
+#[tauri::command]
+pub async fn skill_set_enabled(
+    state: State<'_, AppState>,
+    skill_id: String,
+    enabled: bool,
+) -> AppResult<()> {
+    let mut config = state.config_manager.read()?;
+    if enabled {
+        config.disabled_skills.retain(|id| id != &skill_id);
+    } else if !config.disabled_skills.contains(&skill_id) {
+        config.disabled_skills.push(skill_id);
+    }
+    config.save(&state.config_path)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -79,6 +79,7 @@ pub fn run() {
             // Skills
             commands::skill_list,
             commands::skill_read,
+            commands::skill_set_enabled,
             // Plugins
             commands::plugin_list,
             commands::plugin_read,

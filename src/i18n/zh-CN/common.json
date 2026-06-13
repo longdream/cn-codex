@@ -165,6 +165,8 @@
   "settings.skills.category.docBid": "文档 / 招标",
   "settings.skills.category.mediaDesign": "多媒体 / 设计",
   "settings.skills.category.other": "其他",
+  "settings.skills.enable": "启用此技能",
+  "settings.skills.disable": "禁用此技能",
   "settings.integration.description": "查看工作区路径与已配置的 MCP 服务。",
   "settings.integration.workspaceConfig": "工作区配置",
   "settings.integration.workspaceHint": "CN-Codex 现在只会从项目级 codey 目录读取和写入本地运行配置。",
