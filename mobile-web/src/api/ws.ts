@@ -4,10 +4,18 @@ import { fetchThreadMessages, genId } from "./http";
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+function getRoomId(): string | null {
+  const match = window.location.pathname.match(/^\/m\/([^/]+)/);
+  return match ? match[1] : null;
+}
+
 export function connectWebSocket() {
   if (socket?.readyState === WebSocket.OPEN) return;
 
-  const wsUrl = `ws://${window.location.host}/ws`;
+  const roomId = getRoomId();
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsPath = roomId ? `/ws/${roomId}` : `/ws`;
+  const wsUrl = `${protocol}//${window.location.host}${wsPath}`;
   socket = new WebSocket(wsUrl);
 
   socket.onopen = () => {

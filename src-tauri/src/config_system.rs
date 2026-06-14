@@ -84,6 +84,8 @@ pub struct ConfigToml {
     pub model_auto_compact_token_limit: Option<i64>,
     #[serde(default)]
     pub hooks: HashMap<String, toml::Value>,
+    #[serde(default)]
+    pub relay_server_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,6 +303,9 @@ impl ConfigToml {
             "sandbox" => self.sandbox = value.as_str().map(String::from),
             "model_auto_compact_token_limit" => {
                 self.model_auto_compact_token_limit = value.as_i64();
+            }
+            "relay_server_url" => {
+                self.relay_server_url = value.as_str().map(String::from).filter(|s| !s.is_empty());
             }
             other if other.starts_with("model_providers.") => {
                 let provider_key = &other["model_providers.".len()..];

@@ -26,12 +26,20 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [webServerEnabled, setWebServerEnabled] = useState(false);
   const [webServerUrl, setWebServerUrl] = useState<string | null>(null);
   const [webServerLoading, setWebServerLoading] = useState(false);
+  const [relayServerUrl, setRelayServerUrl] = useState("");
+  const [relaySaving, setRelaySaving] = useState(false);
 
   useEffect(() => {
     invoke<boolean>("get_mobile_server_status").then((running) => {
       setWebServerEnabled(running);
       if (running) {
         invoke<string>("get_mobile_server_url").then(setWebServerUrl).catch(() => {});
+      }
+    }).catch(() => {});
+    // 加载 relay 服务器配置
+    invoke<{ config?: { relay_server_url?: string } }>("standalone_config_read").then((result) => {
+      if (result?.config?.relay_server_url) {
+        setRelayServerUrl(result.config.relay_server_url);
       }
     }).catch(() => {});
   }, []);
@@ -205,6 +213,45 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       {webServerUrl}
                     </p>
                   )}
+                </section>
+
+                <section className="settings-card space-y-3">
+                  <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                    中转服务器（公网访问）
+                  </h4>
+                  <p className="text-xs text-[var(--text-faint)]">
+                    配置后二维码将指向中转服务器地址，手机无需与 PC 在同一局域网
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={relayServerUrl}
+                      onChange={(e) => setRelayServerUrl(e.target.value)}
+                      placeholder="http://your-server.com:8080"
+                      className="app-input flex-1 max-w-sm"
+                    />
+                    <button
+                      disabled={relaySaving}
+                      onClick={async () => {
+                        setRelaySaving(true);
+                        try {
+                          await invoke("standalone_config_write", {
+                            edits: [{ keyPath: "relay_server_url", value: relayServerUrl || "" }],
+                          });
+                        } catch (err) {
+                          console.error("Save relay url failed:", err);
+                        } finally {
+                          setRelaySaving(false);
+                        }
+                      }}
+                      className="app-button-secondary text-xs"
+                    >
+                      {relaySaving ? "保存中..." : "保存"}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-faint)]">
+                    留空则使用局域网直连模式。保存后需重新开启 Web 服务生效。
+                  </p>
                 </section>
               </div>
             )}

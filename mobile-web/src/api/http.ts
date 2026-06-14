@@ -1,4 +1,4 @@
-import { useMobileStore } from "../stores/mobileStore";
+import { MobileMessage, useMobileStore } from "../stores/mobileStore";
 
 export function genId(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -10,13 +10,22 @@ export function genId(): string {
   });
 }
 
-function getBaseUrl(): string {
-  return window.location.origin;
+function getRoomId(): string | null {
+  const match = window.location.pathname.match(/^\/m\/([^/]+)/);
+  return match ? match[1] : null;
+}
+
+export function getApiBase(): string {
+  const roomId = getRoomId();
+  if (roomId) {
+    return `${window.location.origin}/api/${roomId}`;
+  }
+  return `${window.location.origin}/api`;
 }
 
 export async function fetchThreads() {
   try {
-    const res = await fetch(`${getBaseUrl()}/api/threads`);
+    const res = await fetch(`${getApiBase()}/threads`);
     const data = await res.json();
     useMobileStore.getState().setThreads(data);
   } catch (e) {
@@ -26,7 +35,7 @@ export async function fetchThreads() {
 
 export async function fetchActiveThread() {
   try {
-    const res = await fetch(`${getBaseUrl()}/api/active-thread`);
+    const res = await fetch(`${getApiBase()}/active-thread`);
     const data = await res.json();
     const threadId = data.threadId as string | null;
     useMobileStore.getState().setActiveThreadId(threadId);
@@ -41,7 +50,7 @@ export async function fetchActiveThread() {
 
 export async function fetchThreadMessages(threadId: string) {
   try {
-    const res = await fetch(`${getBaseUrl()}/api/threads/${threadId}/messages`);
+    const res = await fetch(`${getApiBase()}/threads/${threadId}/messages`);
     if (!res.ok) {
       console.error("Messages API error:", res.status);
       return;
@@ -51,9 +60,9 @@ export async function fetchThreadMessages(threadId: string) {
       console.error("Messages API returned non-array:", typeof data);
       return;
     }
-    const messages = data.map((m: { role: string; content: string; timestamp: number }) => ({
+    const messages: MobileMessage[] = data.map((m: { role: string; content: string; timestamp: number }) => ({
       id: genId(),
-      role: m.role as "user" | "assistant" | "system" | "tool",
+      role: m.role as MobileMessage["role"],
       content: m.content || "",
       timestamp: m.timestamp,
     }));
@@ -64,7 +73,7 @@ export async function fetchThreadMessages(threadId: string) {
 }
 
 export async function sendMessage(threadId: string, message: string) {
-  const res = await fetch(`${getBaseUrl()}/api/threads/${threadId}/chat`, {
+  const res = await fetch(`${getApiBase()}/threads/${threadId}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message }),

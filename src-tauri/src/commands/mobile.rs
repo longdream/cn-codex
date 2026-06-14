@@ -7,6 +7,14 @@ use crate::mobile_server;
 use crate::state::AppState;
 use crate::{MOBILE_SERVER, MobileServerInfo};
 
+/// relay 模式的运行时信息
+static RELAY_INFO: std::sync::OnceLock<RelayInfo> = std::sync::OnceLock::new();
+
+struct RelayInfo {
+    relay_url: String,
+    room_id: String,
+}
+
 #[tauri::command]
 pub async fn start_mobile_server(
     app_handle: AppHandle,
@@ -14,7 +22,13 @@ pub async fn start_mobile_server(
 ) -> Result<String, String> {
     tracing::info!("[mobile] start_mobile_server called");
 
+    // 如果已经有 relay 信息，直接返回 relay URL
+    if let Some(relay_info) = RELAY_INFO.get() {
+        return Ok(format!("{}/m/{}", relay_info.relay_url, relay_info.room_id));
+    }
+
     if MOBILE_SERVER.get().is_some() {
+        // 已启动本地服务
         let ip = mobile_server::get_local_ip();
         let port = MOBILE_SERVER.get().unwrap().port;
         tracing::info!("[mobile] already running on port {port}");
@@ -36,16 +50,16 @@ pub async fn start_mobile_server(
         broadcast_tx: broadcast_tx.clone(),
         thread_store,
         current_thread_id,
-        app_handle,
+        app_handle: app_handle.clone(),
         agent_engine,
-        config_manager,
+        config_manager: config_manager.clone(),
     });
 
     tracing::info!("[mobile] spawning server...");
     let tx_for_set = broadcast_tx.clone();
 
     let result = tauri::async_runtime::spawn(async move {
-        mobile_server::start(mobile_state, static_dir, 19527).await
+        mobile_server::start(mobile_state.clone(), static_dir, 19527).await
     })
     .await
     .map_err(|e| format!("任务异常: {e}"))?
@@ -58,15 +72,48 @@ pub async fn start_mobile_server(
         broadcast_tx: tx_for_set,
     });
 
+    // 检查是否配置了 relay server
+    let relay_url = config_manager
+        .read()
+        .ok()
+        .and_then(|c| c.relay_server_url.clone())
+        .filter(|u| !u.is_empty());
+
+    if let Some(relay_url) = relay_url {
+        let room_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string();
+        tracing::info!("[mobile] relay mode: url={relay_url}, room_id={room_id}");
+
+        // 获取 mobile_state 再启动 relay client
+        let mobile_info = MOBILE_SERVER.get().unwrap();
+        let relay_mobile_state = Arc::new(mobile_server::MobileServerState {
+            broadcast_tx: mobile_info.broadcast_tx.clone(),
+            thread_store: state.thread_store.clone(),
+            current_thread_id: state.current_thread_id.clone(),
+            app_handle,
+            agent_engine: state.agent_engine.clone(),
+            config_manager,
+        });
+
+        crate::relay_client::start_relay_client(
+            relay_url.clone(),
+            room_id.clone(),
+            relay_mobile_state,
+        );
+
+        let _ = RELAY_INFO.set(RelayInfo {
+            relay_url: relay_url.clone(),
+            room_id: room_id.clone(),
+        });
+
+        return Ok(format!("{}/m/{room_id}", relay_url));
+    }
+
     let ip = mobile_server::get_local_ip();
     Ok(format!("http://{ip}:{result}"))
 }
 
 #[tauri::command]
 pub fn stop_mobile_server() -> Result<(), String> {
-    // OnceLock 无法 reset，服务会保持到进程退出。
-    // 实际效果：标记为"已停止"即可，前端不再显示为可用。
-    // 如需真正停止需要用 tokio CancellationToken，当前简化处理。
     Ok(())
 }
 
@@ -77,6 +124,11 @@ pub fn get_mobile_server_status() -> Result<bool, String> {
 
 #[tauri::command]
 pub fn get_mobile_server_url() -> Result<String, String> {
+    // 优先返回 relay URL
+    if let Some(relay_info) = RELAY_INFO.get() {
+        return Ok(format!("{}/m/{}", relay_info.relay_url, relay_info.room_id));
+    }
+
     let info = MOBILE_SERVER.get().ok_or("Mobile server not started")?;
     let ip = mobile_server::get_local_ip();
     Ok(format!("http://{ip}:{}", info.port))

@@ -4,6 +4,8 @@ dist/
 
 # Rust
 src-tauri/target/
+relay-server/target/
+relay-server/publish/
 
 # Node
 node_modules/

@@ -8,6 +8,7 @@ pub mod document_parser;
 pub mod error;
 pub mod hook_runtime;
 pub mod mobile_server;
+pub mod relay_client;
 pub mod plugin_loader;
 pub mod protocol;
 pub mod standalone;
