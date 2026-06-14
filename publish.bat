@@ -180,6 +180,9 @@ if exist "%CODEY_DEST%\browser\webview-data" rmdir /s /q "%CODEY_DEST%\browser\w
 if exist "%CODEY_DEST%\browser\screenshots" rmdir /s /q "%CODEY_DEST%\browser\screenshots"
 if exist "%CODEY_DEST%\browser\visible-browser.json" del "%CODEY_DEST%\browser\visible-browser.json"
 
+:: Remove any residual WebView2 user data from publish dir
+for /d %%d in ("%PUBLISH_DIR%\EBWebView*") do rmdir /s /q "%%d" 2>nul
+
 :: Bundle embedded Node.js portable runtime into codey/node/
 echo [6/7] Bundling embedded Node.js portable...
 

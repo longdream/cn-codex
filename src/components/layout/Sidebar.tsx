@@ -218,7 +218,10 @@ export function Sidebar() {
         )}
 
         {projects.length === 0 ? (
-          <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] px-3 py-6 text-center">
+          <div
+            onClick={handleAddProject}
+            className="cursor-pointer rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] px-3 py-6 text-center transition-colors hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]/30"
+          >
             <IconFolder size={24} stroke={1.5} className="mx-auto mb-2 text-[var(--text-faint)]" />
             <p className="text-xs font-medium text-[var(--text-muted)]">
               {intl.formatMessage({ id: "project.empty" })}

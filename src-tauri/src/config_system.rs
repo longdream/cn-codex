@@ -81,6 +81,8 @@ pub struct ConfigToml {
     #[serde(default)]
     pub mcp_servers: HashMap<String, toml::Value>,
     #[serde(default)]
+    pub model_auto_compact_token_limit: Option<i64>,
+    #[serde(default)]
     pub hooks: HashMap<String, toml::Value>,
 }
 
@@ -297,6 +299,9 @@ impl ConfigToml {
             "web_search" => self.web_search = value.as_str().map(String::from),
             "instructions" => self.instructions = value.as_str().map(String::from),
             "sandbox" => self.sandbox = value.as_str().map(String::from),
+            "model_auto_compact_token_limit" => {
+                self.model_auto_compact_token_limit = value.as_i64();
+            }
             other if other.starts_with("model_providers.") => {
                 let provider_key = &other["model_providers.".len()..];
                 if let Ok(info) = serde_json::from_value::<ModelProviderInfo>(value.clone()) {

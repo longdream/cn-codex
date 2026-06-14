@@ -29,6 +29,9 @@ pub struct TurnUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    /// 最后一次单次 API 调用返回的 prompt_tokens（代表当前 context 实际大小）
+    #[serde(default)]
+    pub last_single_prompt_tokens: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -326,6 +329,61 @@ impl ThreadStore {
             .map_err(|e| AppError::Custom(format!("Failed to serialize rollout: {e}")))?;
         writeln!(file, "{json}")
             .map_err(|e| AppError::Custom(format!("Failed to write rollout: {e}")))?;
+        Ok(())
+    }
+
+    fn rewrite_thread_file(&self, thread_id: &str, thread: &StoredThread) -> AppResult<()> {
+        let path = self.thread_file(thread_id);
+        let mut file = std::fs::File::create(&path)
+            .map_err(|e| AppError::Custom(format!("Failed to create rollout file: {e}")))?;
+
+        let meta = RolloutLine::ThreadMeta {
+            thread_id: thread.id.clone(),
+            name: thread.name.clone(),
+            created_at: thread.created_at,
+            model: thread.model.clone(),
+        };
+        let json = serde_json::to_string(&meta)
+            .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
+        writeln!(file, "{json}")
+            .map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+
+        for turn in &thread.turns {
+            let ts = RolloutLine::TurnStart {
+                turn_id: turn.turn_id.clone(),
+                started_at: turn.started_at,
+                mode: turn.mode.clone(),
+                goal_budget_tokens: turn.goal_budget_tokens,
+            };
+            let json = serde_json::to_string(&ts)
+                .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
+            writeln!(file, "{json}")
+                .map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+
+            for msg in &turn.messages {
+                let line = RolloutLine::Message(msg.clone());
+                let json = serde_json::to_string(&line)
+                    .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
+                writeln!(file, "{json}")
+                    .map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+            }
+
+            if let Some(completed_at) = turn.completed_at {
+                let te = RolloutLine::TurnEnd {
+                    turn_id: turn.turn_id.clone(),
+                    completed_at,
+                    duration_ms: turn.duration_ms,
+                    changed_files: turn.changed_files.clone(),
+                    usage: turn.usage.clone(),
+                    budget_limited: turn.budget_limited,
+                };
+                let json = serde_json::to_string(&te)
+                    .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
+                writeln!(file, "{json}")
+                    .map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+            }
+        }
+
         Ok(())
     }
 
@@ -640,6 +698,72 @@ impl ThreadStore {
             .map(|t| t.all_messages().into_iter().cloned().collect())
             .unwrap_or_default()
     }
+
+    pub async fn get_thread_total_tokens(&self, thread_id: &str) -> u64 {
+        let threads = self.threads.read().await;
+        let Some(thread) = threads.get(thread_id) else {
+            return 0;
+        };
+        thread
+            .turns
+            .iter()
+            .rev()
+            .find_map(|t| t.usage.as_ref())
+            .map(|u| {
+                // 优先使用最后一次单次 API 的 prompt_tokens（真实 context 大小），
+                // 回退到 prompt_tokens（兼容旧数据和 compaction turn 的估算值）
+                if u.last_single_prompt_tokens > 0 {
+                    u.last_single_prompt_tokens
+                } else {
+                    u.prompt_tokens
+                }
+            })
+            .unwrap_or(0)
+    }
+
+    pub async fn replace_messages(
+        &self,
+        thread_id: &str,
+        new_messages: Vec<ThreadMessage>,
+    ) -> AppResult<()> {
+        let mut threads = self.threads.write().await;
+        let Some(thread) = threads.get_mut(thread_id) else {
+            return Err(AppError::Custom(format!(
+                "Thread not found: {thread_id}"
+            )));
+        };
+
+        // Estimate token count of compacted history to prevent re-triggering compaction
+        let estimated_tokens: u64 = new_messages
+            .iter()
+            .map(|m| (m.content.len() / 3) as u64)
+            .sum();
+
+        thread.turns.clear();
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let now = now_secs();
+        thread.turns.push(StoredTurn {
+            turn_id: turn_id.clone(),
+            started_at: now,
+            completed_at: Some(now),
+            mode: Some("compaction".to_string()),
+            duration_ms: None,
+            changed_files: Vec::new(),
+            usage: Some(TurnUsage {
+                prompt_tokens: estimated_tokens,
+                completion_tokens: 0,
+                total_tokens: estimated_tokens,
+                last_single_prompt_tokens: estimated_tokens,
+            }),
+            goal_budget_tokens: None,
+            budget_limited: false,
+            messages: new_messages.clone(),
+        });
+        thread.updated_at = now;
+
+        self.rewrite_thread_file(thread_id, thread)?;
+        Ok(())
+    }
 }
 
 fn now_secs() -> i64 {
@@ -673,6 +797,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 40,
             total_tokens: 140,
+            last_single_prompt_tokens: 100,
         };
         let thread_id = runtime.block_on(async {
             let thread = store

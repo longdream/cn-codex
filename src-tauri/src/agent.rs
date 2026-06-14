@@ -134,6 +134,33 @@ impl AgentEngine {
     ) -> AppResult<()> {
         self.cancel_flag.store(false, Ordering::SeqCst);
 
+        if user_input.trim() == "/compact" {
+            let (provider_id, provider) = config.resolve_provider();
+            let model = config.resolve_model();
+            let base_url = provider.resolve_base_url().ok_or_else(|| {
+                AppError::Custom(format!(
+                    "No base URL for provider '{provider_id}'. Configure it in settings."
+                ))
+            })?;
+            let api_key = provider.resolve_api_key().unwrap_or_default();
+            let wire_api = provider.wire_api.as_deref().unwrap_or("chat").to_string();
+
+            crate::compaction::run_compaction(
+                &self.http,
+                app_handle,
+                config,
+                &self.thread_store,
+                thread_id,
+                &base_url,
+                &api_key,
+                &model,
+                &wire_api,
+                Some(&self.cancel_flag),
+            )
+            .await?;
+            return Ok(());
+        }
+
         let turn_mode = match mode {
             Some("goal") => "goal",
             _ => "chat",
@@ -159,20 +186,6 @@ impl AgentEngine {
         } else {
             None
         };
-        if turn_mode == "goal" {
-            self.thread_store
-                .set_thread_goal(
-                    thread_id,
-                    user_input.to_string(),
-                    ThreadGoalStatus::Active,
-                    goal_budget_tokens,
-                )
-                .await?;
-        }
-        let turn_id = self
-            .thread_store
-            .start_turn(thread_id, Some(turn_mode.clone()), goal_budget_tokens)
-            .await?;
 
         let base_url = provider.resolve_base_url().ok_or_else(|| {
             AppError::Custom(format!(
@@ -180,8 +193,56 @@ impl AgentEngine {
             ))
         })?;
         let api_key = provider.resolve_api_key().unwrap_or_default();
-        // 获取 wire_api 格式（决定使用哪个 adapter）
         let wire_api = provider.wire_api.as_deref().unwrap_or("chat").to_string();
+
+        // Pre-turn compaction: 在 start_turn 之前执行，避免 replace_messages 破坏当前 turn
+        let pre_turn_tokens = self.thread_store.get_thread_total_tokens(thread_id).await;
+        if crate::compaction::should_compact(pre_turn_tokens, config) {
+            info!("Pre-turn compaction triggered: {pre_turn_tokens} tokens");
+            let _ = crate::compaction::run_compaction(
+                &self.http,
+                app_handle,
+                config,
+                &self.thread_store,
+                thread_id,
+                &base_url,
+                &api_key,
+                &model,
+                &wire_api,
+                Some(&self.cancel_flag),
+            )
+            .await;
+            if self.is_cancelled() {
+                return Ok(());
+            }
+        }
+
+        if turn_mode == "goal" {
+            let existing_goal = self
+                .thread_store
+                .get_thread(thread_id)
+                .await
+                .and_then(|t| t.goal);
+            if existing_goal.as_ref().is_some_and(|g| g.status != ThreadGoalStatus::Active) {
+                // Resume existing paused/blocked goal instead of creating a new one
+                self.thread_store
+                    .set_thread_goal_status(thread_id, ThreadGoalStatus::Active)
+                    .await?;
+            } else if existing_goal.is_none() {
+                self.thread_store
+                    .set_thread_goal(
+                        thread_id,
+                        user_input.to_string(),
+                        ThreadGoalStatus::Active,
+                        goal_budget_tokens,
+                    )
+                    .await?;
+            }
+        }
+        let turn_id = self
+            .thread_store
+            .start_turn(thread_id, Some(turn_mode.clone()), goal_budget_tokens)
+            .await?;
 
         let user_message_id = uuid::Uuid::new_v4().to_string();
         // 将文档附件提取的文本直接嵌入到消息 content 中进行持久化
@@ -224,19 +285,26 @@ impl AgentEngine {
         };
         self.thread_store.add_message(thread_id, user_msg).await?;
 
-        app_handle
-            .emit(
-                "turn-started",
-                serde_json::json!({
-                    "threadId": thread_id,
-                    "turn": {
-                        "id": &turn_id,
-                        "mode": &turn_mode,
-                        "startedAt": turn_started_at_ms,
-                    }
-                }),
-            )
-            .ok();
+        let goal_snapshot = if turn_mode == "goal" {
+            self.thread_store
+                .get_thread(thread_id)
+                .await
+                .and_then(|t| t.goal)
+        } else {
+            None
+        };
+        let mut turn_started_payload = serde_json::json!({
+            "threadId": thread_id,
+            "turn": {
+                "id": &turn_id,
+                "mode": &turn_mode,
+                "startedAt": turn_started_at_ms,
+            }
+        });
+        if let Some(ref goal) = goal_snapshot {
+            turn_started_payload["goal"] = serde_json::json!(goal);
+        }
+        app_handle.emit("turn-started", turn_started_payload).ok();
 
         let hook_runtime = HookRuntime::load(config, &self.cwd.join("codey"));
         if let Some(cwd) = override_cwd {
@@ -324,10 +392,37 @@ impl AgentEngine {
         const MAX_INTENT_RETRIES: u32 = 2;
         let max_goal_continuations: usize = 10;
         let mut goal_continuation_count: usize = 0;
+        // 追踪最近一次 API 调用返回的 prompt_tokens（代表当前 context 实际大小），
+        // 而非累加值，用于 mid-turn compaction 判断。
+        let mut last_prompt_tokens: u64 = 0;
 
         'goal_loop: loop {
 
         if !prompt_hook_blocked {
+            // Goal continuation 时检查是否需要 compaction（首次 compaction 已在 start_turn 之前完成）
+            if goal_continuation_count > 0 {
+                let pre_turn_tokens = self.thread_store.get_thread_total_tokens(thread_id).await;
+                if crate::compaction::should_compact(pre_turn_tokens, config) {
+                    info!("Goal continuation compaction triggered: {pre_turn_tokens} tokens");
+                    let _ = crate::compaction::run_compaction(
+                        &self.http,
+                        app_handle,
+                        config,
+                        &self.thread_store,
+                        thread_id,
+                        &base_url,
+                        &api_key,
+                        &model,
+                        &wire_api,
+                        Some(&self.cancel_flag),
+                    )
+                    .await;
+                    if self.is_cancelled() {
+                        break;
+                    }
+                }
+            }
+
             for iteration in 0..max_iterations {
                 if self.is_cancelled() {
                     info!("Turn {turn_id} cancelled by user at iteration {iteration}");
@@ -374,9 +469,9 @@ impl AgentEngine {
                             text.len(),
                             usage
                         );
-                        // 记录用量到 SQLite
                         if let Some(u) = usage {
                             add_turn_usage(&mut turn_usage, u);
+                            last_prompt_tokens = u.prompt_tokens;
                             if let Some(ref recorder) = self.usage_recorder {
                                 recorder.record(&provider_id, &model, thread_id, u);
                             }
@@ -501,9 +596,9 @@ impl AgentEngine {
                             preceding_text.len(),
                             usage
                         );
-                        // 记录用量到 SQLite
                         if let Some(ref u) = usage {
                             add_turn_usage(&mut turn_usage, u);
+                            last_prompt_tokens = u.prompt_tokens;
                             if let Some(ref recorder) = self.usage_recorder {
                                 recorder.record(&provider_id, &model, thread_id, u);
                             }
@@ -752,6 +847,24 @@ impl AgentEngine {
                             )
                             .ok();
                         stop_hooks_ran_for_last_stop = false;
+
+                        if crate::compaction::should_compact(last_prompt_tokens, config) {
+                            info!("Mid-turn compaction triggered: {last_prompt_tokens} prompt tokens (single API call)");
+                            let _ = crate::compaction::run_compaction(
+                                &self.http,
+                                app_handle,
+                                config,
+                                &self.thread_store,
+                                thread_id,
+                                &base_url,
+                                &api_key,
+                                &model,
+                                &wire_api,
+                                Some(&self.cancel_flag),
+                            )
+                            .await;
+                            last_prompt_tokens = 0;
+                        }
                     }
                     Err(e) => {
                         error!("Iteration {iteration}: LLM request failed: {e}");
@@ -976,6 +1089,7 @@ impl AgentEngine {
                 goal_after = Some(paused);
             }
         }
+        turn_usage.last_single_prompt_tokens = last_prompt_tokens;
         let completed_at = self
             .thread_store
             .end_turn(
@@ -2437,6 +2551,7 @@ mod tests {
             prompt_tokens: 700,
             completion_tokens: 300,
             total_tokens: 1_000,
+            ..Default::default()
         };
 
         assert!(turn_budget_limited(Some(1_000), &usage));
@@ -2567,6 +2682,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                ..Default::default()
             },
             Some(100),
             false,

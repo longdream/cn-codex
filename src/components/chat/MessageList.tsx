@@ -34,10 +34,11 @@ import { CodeBlock } from "./CodeBlock";
 interface MessageListProps {
   messages: ChatMessage[];
   streamingText: string;
+  streamingLabel: string;
   isStreaming: boolean;
 }
 
-export function MessageList({ messages, streamingText, isStreaming }: MessageListProps) {
+export function MessageList({ messages, streamingText, streamingLabel, isStreaming }: MessageListProps) {
   const intl = useIntl();
   const initialized = useAppStore((state) => state.initialized);
   const initError = useAppStore((state) => state.initError);
@@ -99,7 +100,7 @@ export function MessageList({ messages, streamingText, isStreaming }: MessageLis
           <article className="chat-answer group relative">
             <div className="chat-status-line mb-5 border-b border-[var(--chat-line)] pb-3">
               <IconLoader2 size={16} stroke={1.8} className="animate-spin text-[var(--accent)]" />
-              <span>{intl.formatMessage({ id: "chat.runSummary.running" })}</span>
+              <span>{streamingLabel || intl.formatMessage({ id: "chat.runSummary.running" })}</span>
               <IconChevronRight size={16} stroke={1.8} className="text-[var(--chat-faint)]" />
             </div>
             <div className="chat-prose max-w-[980px]">
@@ -116,7 +117,7 @@ export function MessageList({ messages, streamingText, isStreaming }: MessageLis
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-faint)]" style={{ animationDelay: "140ms" }} />
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-faint)]" style={{ animationDelay: "280ms" }} />
             </span>
-            {intl.formatMessage({ id: "chat.thinking" })}
+            {streamingLabel || intl.formatMessage({ id: "chat.thinking" })}
             <IconChevronRight size={16} stroke={1.8} className="text-[var(--chat-faint)]" />
           </div>
         )}

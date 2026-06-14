@@ -247,10 +247,11 @@ pub async fn standalone_chat(
 ) -> AppResult<serde_json::Value> {
     let config = state.config_manager.read()?;
     let override_cwd = cwd.map(std::path::PathBuf::from);
+    let is_goal_mode = mode.as_deref() == Some("goal");
     let mode = mode.as_deref();
     *state.current_thread_id.write().await = Some(thread_id.clone());
 
-    state
+    let result = state
         .agent_engine
         .run_turn(
             &app_handle,
@@ -262,8 +263,20 @@ pub async fn standalone_chat(
             mode,
             goal_budget_tokens,
         )
-        .await?;
+        .await;
 
+    if let Err(ref err) = result {
+        // Goal 模式下出错时将 goal 回退为 paused，避免前端状态卡死
+        if is_goal_mode {
+            info!("standalone_chat error in goal mode, reverting goal to paused: {err}");
+            let _ = state
+                .thread_store
+                .set_thread_goal_status(&thread_id, ThreadGoalStatus::Paused)
+                .await;
+        }
+    }
+
+    result?;
     Ok(serde_json::json!({ "status": "ok" }))
 }
 

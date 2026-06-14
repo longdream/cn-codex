@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { useIntl } from "react-intl";
 import { IconFolder, IconSparkles, IconCopy, IconCheck } from "@tabler/icons-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   standaloneChat,
   standaloneTurnInterrupt,
@@ -26,6 +27,7 @@ export function ChatPage() {
   const currentProjectId = useAppStore((s) => s.currentProjectId);
   const messages = useAppStore((s) => s.messages);
   const streamingText = useAppStore((s) => s.streamingText);
+  const streamingLabel = useAppStore((s) => s.streamingLabel);
   const isStreaming = useAppStore((s) => s.isStreaming);
   const initialized = useAppStore((s) => s.initialized);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
@@ -88,13 +90,18 @@ export function ChatPage() {
           options.goalBudgetTokens,
         );
       } catch (err) {
-        useAppStore.getState().setStreaming(false);
-        useAppStore.getState().addMessage({
+        const store = useAppStore.getState();
+        store.setStreaming(false);
+        store.addMessage({
           id: crypto.randomUUID(),
           role: "assistant",
           content: `Error: ${err}`,
           timestamp: Date.now(),
         });
+        // Goal 模式下后端已回退为 paused，前端同步状态
+        if (actualMode === "goal" && store.currentGoal) {
+          store.setCurrentGoal({ ...store.currentGoal, status: "paused" });
+        }
       }
     },
     [currentThreadId],
@@ -248,9 +255,23 @@ export function ChatPage() {
   const effectiveMode = isGeneralMode ? "chat" : chatMode;
   const showEmpty = messages.length === 0 && !isStreaming;
 
+  const handleAddProject = useCallback(async () => {
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (selected && typeof selected === "string") {
+        useAppStore.getState().addProject(selected);
+      }
+    } catch (err) {
+      console.error("Failed to open folder dialog:", err);
+    }
+  }, []);
+
   if (!hasProject) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-12">
+      <div
+        onClick={handleAddProject}
+        className="flex min-h-0 flex-1 cursor-pointer flex-col items-center justify-center px-6 py-12 transition-colors hover:bg-[var(--accent-soft)]/20"
+      >
         <div className="w-full max-w-sm text-center">
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-[var(--radius-lg)] bg-[var(--accent-soft)] text-[var(--accent)]">
             <IconFolder size={24} stroke={1.5} />
@@ -284,6 +305,7 @@ export function ChatPage() {
           <MessageList
             messages={messages}
             streamingText={streamingText}
+            streamingLabel={streamingLabel}
             isStreaming={isStreaming}
           />
         </>

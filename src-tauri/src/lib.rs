@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod agent;
 pub mod browser_automation;
 pub mod commands;
+pub mod compaction;
 pub mod config_system;
 pub mod document_parser;
 pub mod error;
@@ -85,6 +86,11 @@ pub fn run() {
             commands::plugin_set_enabled,
             commands::plugin_uninstall,
             commands::plugin_import_codex_cache,
+            // App State (SQLite KV)
+            commands::app_state_get,
+            commands::app_state_set,
+            commands::app_state_delete,
+            commands::app_state_get_all,
             // Standalone mode
             standalone::standalone_init,
             standalone::standalone_config_read,

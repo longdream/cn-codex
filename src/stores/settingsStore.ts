@@ -1,29 +1,10 @@
 import { create } from "zustand";
+import { appStateGet, appStateSet } from "../api/app_state";
 
-const STORAGE_KEY = "cn-codex-settings";
-
-function loadPersistedSettings(): { locale: string; theme: "dark" | "light" | "system" } {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        locale: parsed.locale ?? "zh-CN",
-        theme: parsed.theme ?? "dark",
-      };
-    }
-  } catch {
-    // Ignore parse errors
-  }
-  return { locale: "zh-CN", theme: "dark" };
-}
+const SETTINGS_KEY = "settings";
 
 function persist(state: { locale: string; theme: string }) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // Ignore storage errors
-  }
+  void appStateSet(SETTINGS_KEY, JSON.stringify(state));
 }
 
 interface SettingsState {
@@ -33,11 +14,9 @@ interface SettingsState {
   setTheme: (theme: "dark" | "light" | "system") => void;
 }
 
-const initial = loadPersistedSettings();
-
 export const useSettingsStore = create<SettingsState>((set, get) => ({
-  locale: initial.locale,
-  theme: initial.theme,
+  locale: "zh-CN",
+  theme: "dark",
   setLocale: (locale) => {
     set({ locale });
     persist({ locale, theme: get().theme });
@@ -47,3 +26,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persist({ locale: get().locale, theme });
   },
 }));
+
+/**
+ * 从 SQLite 加载 settings 到 store。
+ * 应在 App 挂载时调用一次。
+ */
+export async function initSettingsFromDb(): Promise<void> {
+  try {
+    const raw = await appStateGet(SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      useSettingsStore.setState({
+        locale: parsed.locale ?? "zh-CN",
+        theme: parsed.theme ?? "dark",
+      });
+    }
+  } catch {
+    // 首次使用，无数据，使用默认值
+  }
+}

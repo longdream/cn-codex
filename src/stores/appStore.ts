@@ -433,14 +433,16 @@ function mapTurnsToMessages(turns: RawTurn[]): ChatMessage[] {
   return messages;
 }
 
-const PROJECTS_KEY = "cn-codex-projects";
-const THREAD_PROJECT_KEY = "cn-codex-thread-projects";
-const ACTIVE_PROJECT_KEY = "cn-codex-active-project";
-const CONFIGURED_MODELS_KEY = "cn-codex-configured-models";
-const ACTIVE_MODEL_KEY = "cn-codex-active-model";
-const PROVIDERS_KEY = "cn-codex-providers";
-const ACTIVE_PROVIDER_KEY = "cn-codex-active-provider";
-const AUTO_APPROVE_KEY = "cn-codex-auto-approve";
+import { appStateSet, appStateDelete } from "../api/app_state";
+
+const PROJECTS_KEY = "projects";
+const THREAD_PROJECT_KEY = "thread-projects";
+const ACTIVE_PROJECT_KEY = "active-project";
+const CONFIGURED_MODELS_KEY = "configured-models";
+const ACTIVE_MODEL_KEY = "active-model";
+const PROVIDERS_KEY = "providers";
+const ACTIVE_PROVIDER_KEY = "active-provider";
+const AUTO_APPROVE_KEY = "auto-approve";
 
 /**
  * 供应商预设模板列表
@@ -558,108 +560,43 @@ export function createProviderFromPreset(
   };
 }
 
-function loadProviders(): ProviderConfig[] {
-  try {
-    const raw = localStorage.getItem(PROVIDERS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as ProviderConfig[];
-      // 兼容旧数据：如果实例缺少 type/createdAt 字段，进行修补
-      return parsed.map((p) => ({
-        ...p,
-        type: p.type ?? p.id ?? "custom",
-        createdAt: p.createdAt ?? Date.now(),
-        maxOutputTokens: p.maxOutputTokens ?? 131072,
-      }));
-    }
-  } catch { /* 忽略解析错误 */ }
-  return [];
-}
-
 function saveProviders(providers: ProviderConfig[]) {
-  localStorage.setItem(PROVIDERS_KEY, JSON.stringify(providers));
-}
-
-function loadActiveProviderId(): string | null {
-  return localStorage.getItem(ACTIVE_PROVIDER_KEY);
+  void appStateSet(PROVIDERS_KEY, JSON.stringify(providers));
 }
 
 function saveActiveProviderId(id: string | null) {
   if (id) {
-    localStorage.setItem(ACTIVE_PROVIDER_KEY, id);
+    void appStateSet(ACTIVE_PROVIDER_KEY, id);
   } else {
-    localStorage.removeItem(ACTIVE_PROVIDER_KEY);
-  }
-}
-
-function loadConfiguredModels(): ModelEntry[] {
-  try {
-    const raw = localStorage.getItem(CONFIGURED_MODELS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
+    void appStateDelete(ACTIVE_PROVIDER_KEY);
   }
 }
 
 function saveConfiguredModels(models: ModelEntry[]) {
-  localStorage.setItem(CONFIGURED_MODELS_KEY, JSON.stringify(models));
-}
-
-function loadActiveModelId(): string | null {
-  return localStorage.getItem(ACTIVE_MODEL_KEY);
+  void appStateSet(CONFIGURED_MODELS_KEY, JSON.stringify(models));
 }
 
 function saveActiveModelId(id: string | null) {
   if (id) {
-    localStorage.setItem(ACTIVE_MODEL_KEY, id);
+    void appStateSet(ACTIVE_MODEL_KEY, id);
   } else {
-    localStorage.removeItem(ACTIVE_MODEL_KEY);
-  }
-}
-
-function loadProjects(): Project[] {
-  try {
-    const raw = localStorage.getItem(PROJECTS_KEY);
-    return raw ? (JSON.parse(raw) as Project[]) : [];
-  } catch {
-    return [];
+    void appStateDelete(ACTIVE_MODEL_KEY);
   }
 }
 
 function saveProjects(projects: Project[]) {
-  localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
-}
-
-function loadThreadProjectMap(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(THREAD_PROJECT_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
-  } catch {
-    return {};
-  }
+  void appStateSet(PROJECTS_KEY, JSON.stringify(projects));
 }
 
 function saveThreadProjectMap(map: Record<string, string>) {
-  localStorage.setItem(THREAD_PROJECT_KEY, JSON.stringify(map));
-}
-
-function loadActiveProject(projects: Project[]): { id: string; cwd: string | null } | null {
-  try {
-    const raw = localStorage.getItem(ACTIVE_PROJECT_KEY);
-    if (!raw) return null;
-    const saved = JSON.parse(raw) as { id: string; cwd: string };
-    if (saved.id === GENERAL_PROJECT_ID) return { id: saved.id, cwd: null };
-    if (projects.some((p) => p.id === saved.id)) return saved;
-    return null;
-  } catch {
-    return null;
-  }
+  void appStateSet(THREAD_PROJECT_KEY, JSON.stringify(map));
 }
 
 function saveActiveProject(id: string | null, cwd: string | null) {
   if (id && cwd) {
-    localStorage.setItem(ACTIVE_PROJECT_KEY, JSON.stringify({ id, cwd }));
+    void appStateSet(ACTIVE_PROJECT_KEY, JSON.stringify({ id, cwd }));
   } else {
-    localStorage.removeItem(ACTIVE_PROJECT_KEY);
+    void appStateDelete(ACTIVE_PROJECT_KEY);
   }
 }
 
@@ -696,6 +633,7 @@ interface AppState {
   threads: ThreadSummary[];
   messages: ChatMessage[];
   streamingText: string;
+  streamingLabel: string;
   isStreaming: boolean;
   chatMode: ChatMode;
   currentGoal: ThreadGoal | null;
@@ -763,6 +701,7 @@ interface AppState {
   appendStreamingText: (delta: string) => void;
   clearStreamingText: () => void;
   setStreaming: (v: boolean) => void;
+  setStreamingLabel: (label: string) => void;
   setChatMode: (mode: ChatMode) => void;
   setCurrentGoal: (goal: ThreadGoal | null) => void;
   setShowSettings: (v: boolean) => void;
@@ -780,41 +719,37 @@ interface AppState {
   loadThread: (threadId: string) => Promise<void>;
 }
 
-const _initialProjects = loadProjects();
-const _restoredActive = loadActiveProject(_initialProjects);
-const _initialProviders = loadProviders();
-const _initialActiveProviderId = loadActiveProviderId() ?? _initialProviders[0]?.id ?? null;
-
 export const useAppStore = create<AppState>((set, get) => ({
   initialized: false,
   initError: null,
   currentThreadId: null,
   currentTurnId: null,
   currentModel: null,
-  configuredModels: loadConfiguredModels(),
-  activeModelId: loadActiveModelId(),
-  providers: _initialProviders,
-  activeProviderId: _initialActiveProviderId,
+  configuredModels: [],
+  activeModelId: null,
+  providers: [],
+  activeProviderId: null,
   attachedFiles: [],
-  workspaceCwd: _restoredActive?.cwd ?? null,
+  workspaceCwd: null,
   configDir: null,
   configPath: null,
 
   userHomeDir: null,
   projectRoot: null,
 
-  projects: _initialProjects,
-  currentProjectId: _restoredActive?.id ?? null,
-  threadProjectMap: loadThreadProjectMap(),
+  projects: [],
+  currentProjectId: null,
+  threadProjectMap: {},
 
   threads: [],
   messages: [],
   streamingText: "",
+  streamingLabel: "",
   isStreaming: false,
   chatMode: "chat",
   currentGoal: null,
   showSettings: false,
-  autoApprove: localStorage.getItem(AUTO_APPROVE_KEY) === "true",
+  autoApprove: false,
   rightPanelVisible: false,
   rightPanelTab: "browser",
   browserPanelUrl: null,
@@ -826,13 +761,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   retryInit: null,
   setRetryInit: (fn) => set({ retryInit: fn }),
   setCurrentThread: (id) => {
-    set({ currentThreadId: id, messages: [], streamingText: "", currentGoal: null });
+    set({ currentThreadId: id, messages: [], streamingText: "", streamingLabel: "", currentGoal: null });
   },
   startNewThreadWithMessage: (threadId, message) => {
     set({
       currentThreadId: threadId,
       messages: [message],
       streamingText: "",
+      streamingLabel: "",
       isStreaming: false,
       currentGoal: null,
     });
@@ -1160,13 +1096,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   appendStreamingText: (delta) =>
     set((s) => ({ streamingText: s.streamingText + delta })),
-  clearStreamingText: () => set({ streamingText: "" }),
-  setStreaming: (v) => set({ isStreaming: v }),
+  clearStreamingText: () => set({ streamingText: "", streamingLabel: "" }),
+  setStreaming: (v) => set(v ? { isStreaming: true } : { isStreaming: false, streamingLabel: "" }),
+  setStreamingLabel: (label) => set({ streamingLabel: label }),
   setChatMode: (mode) => set({ chatMode: mode }),
   setCurrentGoal: (goal) => set({ currentGoal: normalizeThreadGoal(goal) }),
   setShowSettings: (v) => set({ showSettings: v }),
   setAutoApprove: (v) => {
-    localStorage.setItem(AUTO_APPROVE_KEY, String(v));
+    void appStateSet(AUTO_APPROVE_KEY, String(v));
     set({ autoApprove: v });
   },
   setRightPanelVisible: (v) => set({ rightPanelVisible: v }),
@@ -1285,3 +1222,76 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 }));
+
+/**
+ * 从 SQLite 加载所有持久化状态到 store。
+ * 应在 App 挂载时调用一次。
+ */
+export async function initStoreFromDb(): Promise<void> {
+  const { appStateGetAll } = await import("../api/app_state");
+  const all = await appStateGetAll();
+
+  let projects: Project[] = [];
+  let threadProjectMap: Record<string, string> = {};
+  let providers: ProviderConfig[] = [];
+  let activeProviderId: string | null = null;
+  let configuredModels: ModelEntry[] = [];
+  let activeModelId: string | null = null;
+  let autoApprove = false;
+  let currentProjectId: string | null = null;
+  let workspaceCwd: string | null = null;
+
+  try {
+    if (all[PROJECTS_KEY]) projects = JSON.parse(all[PROJECTS_KEY]) as Project[];
+  } catch { /* ignore */ }
+
+  try {
+    if (all[THREAD_PROJECT_KEY]) threadProjectMap = JSON.parse(all[THREAD_PROJECT_KEY]) as Record<string, string>;
+  } catch { /* ignore */ }
+
+  try {
+    if (all[PROVIDERS_KEY]) {
+      const parsed = JSON.parse(all[PROVIDERS_KEY]) as ProviderConfig[];
+      providers = parsed.map((p) => ({
+        ...p,
+        type: p.type ?? p.id ?? "custom",
+        createdAt: p.createdAt ?? Date.now(),
+        maxOutputTokens: p.maxOutputTokens ?? 131072,
+      }));
+    }
+  } catch { /* ignore */ }
+
+  activeProviderId = all[ACTIVE_PROVIDER_KEY] ?? providers[0]?.id ?? null;
+
+  try {
+    if (all[CONFIGURED_MODELS_KEY]) configuredModels = JSON.parse(all[CONFIGURED_MODELS_KEY]) as ModelEntry[];
+  } catch { /* ignore */ }
+
+  activeModelId = all[ACTIVE_MODEL_KEY] ?? null;
+  autoApprove = all[AUTO_APPROVE_KEY] === "true";
+
+  try {
+    if (all[ACTIVE_PROJECT_KEY]) {
+      const saved = JSON.parse(all[ACTIVE_PROJECT_KEY]) as { id: string; cwd: string };
+      if (saved.id === GENERAL_PROJECT_ID) {
+        currentProjectId = saved.id;
+        workspaceCwd = null;
+      } else if (projects.some((p) => p.id === saved.id)) {
+        currentProjectId = saved.id;
+        workspaceCwd = saved.cwd;
+      }
+    }
+  } catch { /* ignore */ }
+
+  useAppStore.setState({
+    projects,
+    threadProjectMap,
+    providers,
+    activeProviderId,
+    configuredModels,
+    activeModelId,
+    autoApprove,
+    currentProjectId,
+    workspaceCwd,
+  });
+}

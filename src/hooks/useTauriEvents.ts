@@ -81,6 +81,35 @@ function normalizeTokenBudget(value?: number | null): number | undefined {
   return Math.floor(budget);
 }
 
+function toolActivityLabel(calls: Array<{ name: string; arguments: string }>): string {
+  if (calls.length === 0) return "正在执行...";
+  const first = calls[0];
+  const base = first.name;
+  const labelMap: Record<string, string> = {
+    shell: "执行命令",
+    shell_command: "执行命令",
+    exec_command: "执行命令",
+    read_file: "读取文件",
+    write_file: "写入文件",
+    apply_patch: "修改文件",
+    list_directory: "浏览目录",
+    tool_search: "搜索",
+    code_review: "代码审查",
+    browser_run: "浏览网页",
+    image_generate: "生成图片",
+    view_image: "查看图片",
+    spawn_agent: "启动子任务",
+    update_plan: "更新计划",
+  };
+  const desc = base.startsWith("mcp__")
+    ? "调用 MCP 工具"
+    : (labelMap[base] ?? base);
+  const detail = toolDisplayLabel(first.name, first.arguments);
+  const suffix = calls.length > 1 ? ` (+${calls.length - 1})` : "";
+  const shortDetail = detail.length > 40 ? detail.slice(0, 37) + "..." : detail;
+  return `${desc}: ${shortDetail}${suffix}`;
+}
+
 function toolDisplayLabel(name: string, args: string): string {
   if (name === "apply_patch") {
     const path = firstPatchPath(args);
@@ -281,16 +310,29 @@ export function useTauriEvents() {
     const setup = async () => {
       const listeners: Array<Promise<UnlistenFn>> = [
         listen<{ delta: string }>("agent-message-delta", (e) => {
-          const delta = e.payload.delta;
-          useAppStore.getState().appendStreamingText(delta);
+          const store = useAppStore.getState();
+          const currentLen = store.streamingText.length;
+          if (currentLen === 0) {
+            store.setStreamingLabel("正在生成响应...");
+          } else if (currentLen > 200 && currentLen <= 220) {
+            store.setStreamingLabel("正在组织答案结构...");
+          } else if (currentLen > 800 && currentLen <= 820) {
+            store.setStreamingLabel("正在汇总信息...");
+          }
+          store.appendStreamingText(e.payload.delta);
         }),
 
         listen<TurnEventPayload>(
           "turn-started",
           (e) => {
-            useAppStore.getState().setCurrentTurnId(e.payload.turn?.id ?? null);
-            useAppStore.getState().setStreaming(true);
-            useAppStore.getState().clearStreamingText();
+            const store = useAppStore.getState();
+            store.setCurrentTurnId(e.payload.turn?.id ?? null);
+            store.setStreaming(true);
+            store.clearStreamingText();
+            store.setStreamingLabel("正在处理请求...");
+            if ("goal" in e.payload) {
+              store.setCurrentGoal(e.payload.goal ?? null);
+            }
           },
         ),
 
@@ -376,6 +418,7 @@ export function useTauriEvents() {
             timestamp: Date.now(),
             toolCalls: items,
           });
+          store.setStreamingLabel(toolActivityLabel(e.payload.calls));
         }),
 
         listen<{ threadId: string; callId?: string; tool: string; exitCode?: number; output?: string }>(
@@ -450,6 +493,10 @@ export function useTauriEvents() {
             }
           },
         ),
+
+        listen<{ threadId: string }>("compaction-started", () => {}),
+
+        listen<{ threadId: string; summaryLength: number }>("context-compacted", () => {}),
 
         listen<{ error?: { message?: string }; message?: string; threadId?: string }>(
           "server-error",

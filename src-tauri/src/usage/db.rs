@@ -129,6 +129,12 @@ impl UsageDb {
                 prompt_price_per_1m REAL NOT NULL DEFAULT 0.0,
                 completion_price_per_1m REAL NOT NULL DEFAULT 0.0,
                 updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
             );",
         )
         .map_err(|e| AppError::Custom(format!("Migration failed: {e}")))?;
@@ -314,6 +320,70 @@ impl UsageDb {
             })
             .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
 
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| AppError::Custom(format!("Row error: {e}")))?);
+        }
+        Ok(results)
+    }
+
+    /// 获取 app_state 中的值
+    pub fn state_get(&self, key: &str) -> AppResult<Option<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        let mut stmt = conn
+            .prepare("SELECT value FROM app_state WHERE key = ?1")
+            .map_err(|e| AppError::Custom(format!("Prepare failed: {e}")))?;
+        let result = stmt
+            .query_row(params![key], |row| row.get::<_, String>(0))
+            .ok();
+        Ok(result)
+    }
+
+    /// 设置 app_state 中的值（upsert）
+    pub fn state_set(&self, key: &str, value: &str) -> AppResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO app_state (key, value, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            params![key, value, now],
+        )
+        .map_err(|e| AppError::Custom(format!("Upsert failed: {e}")))?;
+        Ok(())
+    }
+
+    /// 删除 app_state 中的值
+    pub fn state_delete(&self, key: &str) -> AppResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        conn.execute("DELETE FROM app_state WHERE key = ?1", params![key])
+            .map_err(|e| AppError::Custom(format!("Delete failed: {e}")))?;
+        Ok(())
+    }
+
+    /// 批量获取 app_state 中的所有 key-value
+    pub fn state_get_all(&self) -> AppResult<Vec<(String, String)>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM app_state")
+            .map_err(|e| AppError::Custom(format!("Prepare failed: {e}")))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row.map_err(|e| AppError::Custom(format!("Row error: {e}")))?);

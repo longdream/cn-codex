@@ -16,8 +16,8 @@ import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import enUS from "./i18n/en-US/common.json";
 import zhCN from "./i18n/zh-CN/common.json";
-import { useAppStore } from "./stores/appStore";
-import { useSettingsStore } from "./stores/settingsStore";
+import { useAppStore, initStoreFromDb } from "./stores/appStore";
+import { useSettingsStore, initSettingsFromDb } from "./stores/settingsStore";
 
 const messages: Record<string, Record<string, string>> = {
   "zh-CN": zhCN,
@@ -64,6 +64,9 @@ function App() {
 
     try {
       await standaloneInit();
+
+      // 从 SQLite 加载持久化状态
+      await Promise.all([initStoreFromDb(), initSettingsFromDb()]);
 
       try {
         const homeDir = await getUserHomeDir();

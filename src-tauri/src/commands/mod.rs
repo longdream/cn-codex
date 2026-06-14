@@ -1,4 +1,5 @@
 pub mod account;
+pub mod app_state;
 pub mod approval;
 pub mod config;
 pub mod hook;
@@ -17,6 +18,7 @@ use crate::error::AppResult;
 use crate::state::AppState;
 
 pub use account::*;
+pub use app_state::*;
 pub use approval::*;
 pub use config::*;
 pub use hook::*;
