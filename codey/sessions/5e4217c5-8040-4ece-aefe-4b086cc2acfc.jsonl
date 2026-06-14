@@ -1,5 +1,0 @@
-{"type":"thread_meta","thread_id":"5e4217c5-8040-4ece-aefe-4b086cc2acfc","name":null,"created_at":1780818484,"model":"deepseek-v4-flash-260425"}
-{"type":"turn_start","turn_id":"ab5d4104-df69-4dd3-a400-b59b61538cef","started_at":1780818484}
-{"type":"message","id":"6c4e64ca-5c4c-4acb-ab56-9aa6d9dec856","role":"user","content":"你好","timestamp":1780818484,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"message","id":"88992e1d-98a0-490e-a101-f06bfe24d3d9","role":"assistant","content":"你好！有什么可以帮你的吗？😊","timestamp":1780818486,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"turn_end","turn_id":"ab5d4104-df69-4dd3-a400-b59b61538cef","completed_at":1780818486}

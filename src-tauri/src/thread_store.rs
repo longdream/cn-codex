@@ -721,6 +721,17 @@ impl ThreadStore {
             .unwrap_or(0)
     }
 
+    pub async fn delete_thread(&self, thread_id: &str) -> AppResult<()> {
+        let path = self.thread_file(thread_id);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| {
+                crate::error::AppError::Custom(format!("Failed to delete thread file: {e}"))
+            })?;
+        }
+        self.threads.write().await.remove(thread_id);
+        Ok(())
+    }
+
     pub async fn replace_messages(
         &self,
         thread_id: &str,

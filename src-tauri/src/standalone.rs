@@ -79,13 +79,13 @@ pub async fn standalone_thread_list(state: State<'_, AppState>) -> AppResult<ser
     let threads = state.thread_store.list_threads().await;
     let list: Vec<serde_json::Value> = threads
         .iter()
+        .filter(|t| !t.turns.is_empty())
         .map(|t| {
             serde_json::json!({
                 "id": t.id,
                 "name": t.name,
                 "preview": t.preview(),
                 "updatedAt": t.updated_at,
-                "archived": false,
             })
         })
         .collect();

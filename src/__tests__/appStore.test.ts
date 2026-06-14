@@ -119,9 +119,9 @@ describe("appStore", () => {
   describe("addThread", () => {
     it("prepends new thread to list", () => {
       useAppStore.setState({
-        threads: [{ id: "old", preview: "", updatedAt: 1, archived: false }],
+        threads: [{ id: "old", preview: "", updatedAt: 1 }],
       });
-      useAppStore.getState().addThread({ id: "new", preview: "", updatedAt: 2, archived: false });
+      useAppStore.getState().addThread({ id: "new", preview: "", updatedAt: 2 });
       const threads = useAppStore.getState().threads;
       expect(threads[0].id).toBe("new");
       expect(threads[1].id).toBe("old");
@@ -146,7 +146,7 @@ describe("appStore", () => {
 
     it("does not duplicate existing thread", async () => {
       useAppStore.setState({
-        threads: [{ id: "t-abc", preview: "", updatedAt: 1, archived: false }],
+        threads: [{ id: "t-abc", preview: "", updatedAt: 1 }],
       });
       mockInvoke.mockResolvedValueOnce({ thread: { id: "t-abc" } });
       await useAppStore.getState().createThread();
@@ -155,18 +155,21 @@ describe("appStore", () => {
   });
 
   describe("loadThreads", () => {
-    it("filters out archived threads", async () => {
+    it("filters threads not in threadProjectMap and deletes them", async () => {
+      useAppStore.setState({
+        threadProjectMap: { "t1": "proj1", "t3": "proj1" },
+      });
       mockInvoke.mockResolvedValueOnce({
         data: [
-          { id: "t1", name: "Active", archived: false, updatedAt: 1 },
-          { id: "t2", name: "Archived", archived: true, updatedAt: 2 },
-          { id: "t3", name: "Also Active", archived: false, updatedAt: 3 },
+          { id: "t1", name: "Active", updatedAt: 1 },
+          { id: "t2", name: "Orphaned", updatedAt: 2 },
+          { id: "t3", name: "Also Active", updatedAt: 3 },
         ],
       });
       await useAppStore.getState().loadThreads();
       const threads = useAppStore.getState().threads;
       expect(threads).toHaveLength(2);
-      expect(threads.every((t) => !t.archived)).toBe(true);
+      expect(threads.map((t) => t.id).sort()).toEqual(["t1", "t3"]);
     });
   });
 

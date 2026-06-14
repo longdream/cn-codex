@@ -482,6 +482,7 @@ pub fn is_supported_mcp_http_url(url: Option<&str>) -> bool {
     })
 }
 
+#[derive(Clone)]
 pub struct ConfigManager {
     config_path: PathBuf,
 }

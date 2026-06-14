@@ -1,5 +1,0 @@
-{"type":"thread_meta","thread_id":"f144d395-7fad-492a-9d54-dc1639f9d399","name":null,"created_at":1781162971,"model":"l-deepseek-v4-flash"}
-{"type":"turn_start","turn_id":"182fc006-79f3-46d2-b794-6fec1c8f1f11","started_at":1781162979,"mode":"chat","goal_budget_tokens":null}
-{"type":"message","id":"88648ff8-3f0a-4ed1-b18e-e60b3676ef7d","role":"user","content":"你好","timestamp":1781162979,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"message","id":"5251e620-6140-48d5-a9b4-c09289f1a945","role":"assistant","content":"你好！我是 Codey，一个编程助手。有什么可以帮你的吗？","timestamp":1781162984,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"turn_end","turn_id":"182fc006-79f3-46d2-b794-6fec1c8f1f11","completed_at":1781162986,"duration_ms":8567,"changed_files":[],"usage":{"promptTokens":12069,"completionTokens":17,"totalTokens":12086},"budget_limited":false}

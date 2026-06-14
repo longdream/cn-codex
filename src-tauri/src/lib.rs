@@ -7,6 +7,7 @@ pub mod config_system;
 pub mod document_parser;
 pub mod error;
 pub mod hook_runtime;
+pub mod mobile_server;
 pub mod plugin_loader;
 pub mod protocol;
 pub mod standalone;
@@ -16,6 +17,17 @@ pub mod tool_executor;
 pub mod usage;
 
 use state::AppState;
+use tauri::Manager;
+
+use tokio::sync::broadcast;
+
+/// 移动端服务器运行时信息
+pub struct MobileServerInfo {
+    pub port: u16,
+    pub broadcast_tx: broadcast::Sender<mobile_server::BroadcastEvent>,
+}
+
+pub static MOBILE_SERVER: std::sync::OnceLock<MobileServerInfo> = std::sync::OnceLock::new();
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -33,11 +45,10 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .setup(|_app| {
+        .setup(|app| {
             #[cfg(debug_assertions)]
             {
-                use tauri::Manager;
-                if let Some(webview) = _app.get_webview_window("main") {
+                if let Some(webview) = app.get_webview_window("main") {
                     webview.open_devtools();
                 }
             }
@@ -123,6 +134,12 @@ pub fn run() {
             commands::reveal_in_explorer,
             commands::window_toggle_devtools,
             commands::get_user_home_dir,
+            // Mobile server
+            commands::start_mobile_server,
+            commands::stop_mobile_server,
+            commands::get_mobile_server_status,
+            commands::get_mobile_server_url,
+            commands::get_qrcode_svg,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CN-Codex");

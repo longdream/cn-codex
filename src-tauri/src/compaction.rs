@@ -139,12 +139,9 @@ pub async fn run_compaction(
 ) -> AppResult<()> {
     info!("Starting context compaction for thread {thread_id}");
 
-    app_handle
-        .emit(
-            "compaction-started",
-            serde_json::json!({ "threadId": thread_id }),
-        )
-        .ok();
+    let payload = serde_json::json!({ "threadId": thread_id });
+    app_handle.emit("compaction-started", payload.clone()).ok();
+    crate::mobile_server::broadcast("compaction-started", payload);
 
     let history = thread_store.get_thread_messages(thread_id).await;
     if history.is_empty() {
@@ -256,15 +253,12 @@ pub async fn run_compaction(
         .replace_messages(thread_id, new_history)
         .await?;
 
-    app_handle
-        .emit(
-            "context-compacted",
-            serde_json::json!({
-                "threadId": thread_id,
-                "summaryLength": summary_text.len(),
-            }),
-        )
-        .ok();
+    let compacted_payload = serde_json::json!({
+        "threadId": thread_id,
+        "summaryLength": summary_text.len(),
+    });
+    app_handle.emit("context-compacted", compacted_payload.clone()).ok();
+    crate::mobile_server::broadcast("context-compacted", compacted_payload);
 
     info!("Context compaction applied for thread {thread_id}");
     Ok(())

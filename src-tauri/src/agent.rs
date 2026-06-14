@@ -32,6 +32,12 @@ use crate::adapter::{
         text_content,
     },
 };
+
+/// emit 到前端 + 同时广播到移动端 WebSocket
+fn emit_and_broadcast(app_handle: &AppHandle, event: &str, payload: serde_json::Value) {
+    app_handle.emit(event, payload.clone()).ok();
+    crate::mobile_server::broadcast(event, payload);
+}
 use crate::config_system::ConfigToml;
 use crate::error::{AppError, AppResult};
 use crate::hook_runtime::{
@@ -304,7 +310,7 @@ impl AgentEngine {
         if let Some(ref goal) = goal_snapshot {
             turn_started_payload["goal"] = serde_json::json!(goal);
         }
-        app_handle.emit("turn-started", turn_started_payload).ok();
+        emit_and_broadcast(app_handle, "turn-started", turn_started_payload);
 
         let hook_runtime = HookRuntime::load(config, &self.cwd.join("codey"));
         if let Some(cwd) = override_cwd {
@@ -449,6 +455,7 @@ impl AgentEngine {
                 let result = self
                     .stream_completion(
                         app_handle,
+                        thread_id,
                         &base_url,
                         &api_key,
                         &model,
@@ -478,12 +485,11 @@ impl AgentEngine {
                         }
                         if text.is_empty() && iteration > 0 {
                             info!("Empty message after tool execution, sending minimal signal");
-                            app_handle
-                                .emit(
-                                    "agent-message-delta",
-                                    serde_json::json!({ "delta": "(completed)" }),
-                                )
-                                .ok();
+                            emit_and_broadcast(
+                                app_handle,
+                                "agent-message-delta",
+                                serde_json::json!({ "threadId": thread_id, "delta": "(completed)" }),
+                            );
                         }
 
                         if !text.is_empty()
@@ -648,15 +654,14 @@ impl AgentEngine {
                                 })
                             })
                             .collect();
-                        app_handle
-                            .emit(
-                                "tool-calls-start",
-                                serde_json::json!({
-                                    "threadId": thread_id,
-                                    "calls": calls_json,
-                                }),
-                            )
-                            .ok();
+                        emit_and_broadcast(
+                            app_handle,
+                            "tool-calls-start",
+                            serde_json::json!({
+                                "threadId": thread_id,
+                                "calls": calls_json,
+                            }),
+                        );
 
                         let mut results_json: Vec<serde_json::Value> = Vec::new();
 
@@ -669,18 +674,17 @@ impl AgentEngine {
                                 let interrupted_tool_name = call.name.clone();
                                 let interrupted_output =
                                     "Tool execution skipped: interrupted by user.".to_string();
-                                app_handle
-                                    .emit(
-                                        "tool-exec-end",
-                                        serde_json::json!({
-                                            "threadId": thread_id,
-                                            "callId": interrupted_call_id,
-                                            "tool": interrupted_tool_name,
-                                            "exitCode": -1,
-                                            "output": interrupted_output.clone(),
-                                        }),
-                                    )
-                                    .ok();
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "tool-exec-end",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "callId": interrupted_call_id,
+                                        "tool": interrupted_tool_name,
+                                        "exitCode": -1,
+                                        "output": interrupted_output.clone(),
+                                    }),
+                                );
                                 results_json.push(serde_json::json!({
                                     "id": call.id.clone(),
                                     "tool": call.name.clone(),
@@ -837,15 +841,14 @@ impl AgentEngine {
                             self.thread_store.add_message(thread_id, tool_msg).await?;
                         }
 
-                        app_handle
-                            .emit(
-                                "tool-calls-end",
-                                serde_json::json!({
-                                    "threadId": thread_id,
-                                    "results": results_json,
-                                }),
-                            )
-                            .ok();
+                        emit_and_broadcast(
+                            app_handle,
+                            "tool-calls-end",
+                            serde_json::json!({
+                                "threadId": thread_id,
+                                "results": results_json,
+                            }),
+                        );
                         stop_hooks_ran_for_last_stop = false;
 
                         if crate::compaction::should_compact(last_prompt_tokens, config) {
@@ -868,12 +871,11 @@ impl AgentEngine {
                     }
                     Err(e) => {
                         error!("Iteration {iteration}: LLM request failed: {e}");
-                        app_handle
-                            .emit(
-                                "server-error",
-                                serde_json::json!({ "message": e.to_string() }),
-                            )
-                            .ok();
+                        emit_and_broadcast(
+                            app_handle,
+                            "server-error",
+                            serde_json::json!({ "threadId": thread_id, "message": e.to_string() }),
+                        );
                         break;
                     }
                 }
@@ -910,6 +912,7 @@ impl AgentEngine {
             let summary_result = self
                 .stream_completion(
                     app_handle,
+                    thread_id,
                     &base_url,
                     &api_key,
                     &model,
@@ -993,15 +996,14 @@ impl AgentEngine {
         self.thread_store
             .add_message(thread_id, continuation_msg)
             .await?;
-        app_handle
-            .emit(
-                "goal-continuation",
-                serde_json::json!({
-                    "threadId": thread_id,
-                    "continuation": goal_continuation_count,
-                }),
-            )
-            .ok();
+        emit_and_broadcast(
+            app_handle,
+            "goal-continuation",
+            serde_json::json!({
+                "threadId": thread_id,
+                "continuation": goal_continuation_count,
+            }),
+        );
         stop_hooks_satisfied = false;
         stop_hooks_ran_for_last_stop = false;
         intent_retries = 0;
@@ -1121,7 +1123,7 @@ impl AgentEngine {
         if turn_mode == "goal" {
             completed_payload["goal"] = serde_json::json!(goal_after);
         }
-        app_handle.emit("turn-completed", completed_payload).ok();
+        emit_and_broadcast(app_handle, "turn-completed", completed_payload);
         Ok(())
     }
 
@@ -1454,6 +1456,7 @@ impl AgentEngine {
     async fn stream_completion(
         &self,
         app_handle: &AppHandle,
+        thread_id: &str,
         base_url: &str,
         api_key: &str,
         model: &str,
@@ -1512,7 +1515,7 @@ impl AgentEngine {
                 "Non-streaming JSON response received (first 300 chars): {}",
                 &body_text[..body_text.len().min(300)]
             );
-            return self.parse_non_streaming_chat_response(&body_text, app_handle);
+            return self.parse_non_streaming_chat_response(&body_text, app_handle, thread_id);
         }
 
         // 流式解析
@@ -1556,9 +1559,11 @@ impl AgentEngine {
                     match event {
                         StreamEvent::TextDelta(text) => {
                             full_text.push_str(&text);
-                            app_handle
-                                .emit("agent-message-delta", serde_json::json!({ "delta": text }))
-                                .ok();
+                            emit_and_broadcast(
+                                app_handle,
+                                "agent-message-delta",
+                                serde_json::json!({ "threadId": thread_id, "delta": text }),
+                            );
                         }
                         StreamEvent::ToolCallDelta {
                             index,
@@ -1670,6 +1675,7 @@ impl AgentEngine {
         &self,
         body: &str,
         app_handle: &AppHandle,
+        thread_id: &str,
     ) -> AppResult<CompletionResult> {
         let json: serde_json::Value = serde_json::from_str(body).map_err(|e| {
             AppError::Custom(format!("Failed to parse non-streaming response: {e}"))
@@ -1727,9 +1733,11 @@ impl AgentEngine {
 
         // 发送文本增量事件
         if !text.is_empty() {
-            app_handle
-                .emit("agent-message-delta", serde_json::json!({ "delta": &text }))
-                .ok();
+            emit_and_broadcast(
+                app_handle,
+                "agent-message-delta",
+                serde_json::json!({ "threadId": thread_id, "delta": &text }),
+            );
         }
 
         if !tool_calls.is_empty() {

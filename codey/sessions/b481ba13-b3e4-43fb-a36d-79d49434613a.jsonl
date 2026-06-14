@@ -1,8 +1,0 @@
-{"type":"thread_meta","thread_id":"b481ba13-b3e4-43fb-a36d-79d49434613a","name":null,"created_at":1780834245,"model":"deepseek-v4-flash-260425"}
-{"type":"turn_start","turn_id":"f9d0e4a6-b3a4-4352-a574-6b2639b37ff9","started_at":1780834247}
-{"type":"message","id":"6cbe8216-42d2-4340-803b-59e89228373f","role":"user","content":"写一个贪吃蛇程序，需要用js还需要用sqlite支撑","timestamp":1780834247,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"message","id":"b0a620b7-b806-4a5e-be69-97a6a1206e44","role":"assistant","content":"","timestamp":1780834253,"tool_call_id":null,"tool_name":null,"tool_calls":[{"id":"call_bs983re7v1ognt7l7kmbvdy8","name":"shell","arguments":"{\"command\": [\"mkdir\", \"-p\", \"snake-game/public\"]}"}]}
-{"type":"message","id":"82c6b8ff-c4d1-4f13-bdce-315d975b04fa","role":"tool","content":"[exit code: 1]\n\n[stderr]\n�����﷨����ȷ��\r\n","timestamp":1780834253,"tool_call_id":"call_bs983re7v1ognt7l7kmbvdy8","tool_name":"shell","tool_calls":null}
-{"type":"message","id":"d969e2ae-c1fa-445c-a62b-2ef8805f5fb5","role":"assistant","content":"","timestamp":1780834254,"tool_call_id":null,"tool_name":null,"tool_calls":[{"id":"call_dyifwgg4rqq1h1ziopgv5acr","name":"shell","arguments":"{\"command\": [\"cmd\", \"/c\", \"mkdir snake-game\\\\public\"]}"}]}
-{"type":"message","id":"2579e50c-07fb-4a00-846f-f55cece36cef","role":"tool","content":"[exit code: 1]\n\n[stderr]\n��Ŀ¼���ļ� snake-game\\public �Ѿ����ڡ�\r\n","timestamp":1780834254,"tool_call_id":"call_dyifwgg4rqq1h1ziopgv5acr","tool_name":"shell","tool_calls":null}
-{"type":"turn_end","turn_id":"f9d0e4a6-b3a4-4352-a574-6b2639b37ff9","completed_at":1780834254}

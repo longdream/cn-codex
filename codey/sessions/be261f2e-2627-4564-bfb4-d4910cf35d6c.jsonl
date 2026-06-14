@@ -1,5 +1,0 @@
-{"type":"thread_meta","thread_id":"be261f2e-2627-4564-bfb4-d4910cf35d6c","name":null,"created_at":1781054435,"model":""}
-{"type":"turn_start","turn_id":"1ace294a-0ca6-45ba-93c3-67aa79ec02d0","started_at":1781054435,"mode":"chat","goal_budget_tokens":null}
-{"type":"message","id":"1206aff3-7243-437b-9f78-11c939c26401","role":"user","content":"用JS做一个贪吃蛇","timestamp":1781054435,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"message","id":"3ec319bf-53f4-4887-afbd-246e8b8be717","role":"system","content":"All tool executions have completed. You MUST now provide a brief summary: what was done, any errors encountered, and suggested next steps. Do NOT call any more tools.","timestamp":1781054436,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"turn_end","turn_id":"1ace294a-0ca6-45ba-93c3-67aa79ec02d0","completed_at":1781054437,"duration_ms":2135,"changed_files":[],"usage":null,"budget_limited":false}

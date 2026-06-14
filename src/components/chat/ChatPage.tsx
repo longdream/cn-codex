@@ -67,7 +67,6 @@ export function ChatPage() {
               id: threadId,
               preview: displayText.slice(0, 60),
               updatedAt: Date.now(),
-              archived: false,
               projectId: useAppStore.getState().currentProjectId ?? undefined,
             });
           }

@@ -51,9 +51,9 @@ pub async fn thread_read(
 pub async fn thread_archive(
     state: State<'_, AppState>,
     params: ThreadArchiveParams,
-) -> AppResult<ThreadArchiveResponse> {
-    let _ = (state, params);
-    Err(not_supported())
+) -> AppResult<serde_json::Value> {
+    state.thread_store.delete_thread(&params.thread_id).await?;
+    Ok(serde_json::json!({ "status": "ok" }))
 }
 
 #[tauri::command]

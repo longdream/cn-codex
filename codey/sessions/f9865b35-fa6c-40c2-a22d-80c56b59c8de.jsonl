@@ -1,5 +1,0 @@
-{"type":"thread_meta","thread_id":"f9865b35-fa6c-40c2-a22d-80c56b59c8de","name":null,"created_at":1781336561,"model":"qwen3.5-9b"}
-{"type":"turn_start","turn_id":"c97ac9ce-a2fc-4772-a9b0-f907c63adefe","started_at":1781336565,"mode":"chat","goal_budget_tokens":null}
-{"type":"message","id":"7f3cc79d-5897-4370-bc76-3b81810a1a3f","role":"user","content":"你好","timestamp":1781336565,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"message","id":"0e268f8e-f7ad-47e1-be20-40d5fc424327","role":"assistant","content":"你好！我是 Codey，你的编程助手。我可以帮助你进行各种编程任务，比如：\n\n- 代码编写、审查和优化\n- 调试和解决错误\n- 项目管理和规划\n- 代码生成和重构\n- 运行命令和测试\n- 搜索相关信息和资源\n\n你今天想让我帮你做什么呢？","timestamp":1781336567,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"turn_end","turn_id":"c97ac9ce-a2fc-4772-a9b0-f907c63adefe","completed_at":1781336567,"duration_ms":2077,"changed_files":[],"usage":{"promptTokens":12327,"completionTokens":91,"totalTokens":12418},"budget_limited":false}

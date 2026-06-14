@@ -1,10 +1,12 @@
+import { useState } from "react";
 import {
   windowClose,
   windowMinimize,
   windowToggleMaximize,
 } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
-import { IconLayoutSidebarRight } from "@tabler/icons-react";
+import { IconLayoutSidebarRight, IconQrcode } from "@tabler/icons-react";
+import { QrCodePopover } from "../common/QrCodePopover";
 
 function runWindowAction(action: () => Promise<void>, label: string) {
   const onError = (err: unknown) => {
@@ -23,6 +25,7 @@ export function TitleBar() {
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const setRightPanelVisible = useAppStore((s) => s.setRightPanelVisible);
+  const [showQr, setShowQr] = useState(false);
 
   const handleDoubleClick = () => {
     runWindowAction(windowToggleMaximize, "toggle maximize");
@@ -48,6 +51,21 @@ export function TitleBar() {
       </div>
 
       <div className="flex h-full items-center">
+        <div className="relative">
+          <button
+            type="button"
+            aria-label="Mobile QR Code"
+            onClick={() => setShowQr(!showQr)}
+            className={`flex h-full w-11 items-center justify-center transition-colors ${
+              showQr
+                ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)]"
+            }`}
+          >
+            <IconQrcode size={15} stroke={1.8} />
+          </button>
+          {showQr && <QrCodePopover onClose={() => setShowQr(false)} />}
+        </div>
         <button
           type="button"
           aria-label="Toggle project panel"

@@ -4,6 +4,7 @@ import {
   standaloneThreadCreate,
   standaloneThreadList,
   standaloneThreadRead,
+  threadArchive,
 } from "../api";
 import type {
   ThreadGoal as ApiThreadGoal,
@@ -77,7 +78,6 @@ export interface ThreadSummary {
   name?: string;
   preview: string;
   updatedAt: number;
-  archived: boolean;
   projectId?: string;
 }
 
@@ -1017,6 +1017,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? { currentThreadId: null, messages: [], streamingText: "", currentTurnId: null }
         : {}),
     });
+    threadArchive(threadId).catch(() => {});
   },
 
   setMessages: (messages) => set({ messages }),
@@ -1136,7 +1137,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           id: threadId,
           preview: "",
           updatedAt: Date.now(),
-          archived: false,
           projectId: projectId ?? undefined,
         };
         if (projectId) {
@@ -1163,15 +1163,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const resp = await standaloneThreadList();
       const tpMap = get().threadProjectMap;
-      const threads: ThreadSummary[] = (resp?.data ?? []).map((t) => ({
-        id: t.id,
-        name: t.name,
-        preview: t.preview ?? t.name ?? "",
-        updatedAt: t.updatedAt ?? Date.now(),
-        archived: t.archived ?? false,
-        projectId: tpMap[t.id],
-      }));
-      set({ threads: threads.filter((t) => !t.archived) });
+      const knownIds = new Set(Object.keys(tpMap));
+      const backendThreads = resp?.data ?? [];
+
+      const toDelete = backendThreads.filter((t) => !knownIds.has(t.id));
+      for (const t of toDelete) {
+        threadArchive(t.id).catch(() => {});
+      }
+
+      const threads: ThreadSummary[] = backendThreads
+        .filter((t) => knownIds.has(t.id))
+        .map((t) => ({
+          id: t.id,
+          name: t.name,
+          preview: t.preview ?? t.name ?? "",
+          updatedAt: t.updatedAt ?? Date.now(),
+          projectId: tpMap[t.id],
+        }));
+      set({ threads });
     } catch (err) {
       console.error("Failed to load threads:", err);
     }
@@ -1200,7 +1209,6 @@ export const useAppStore = create<AppState>((set, get) => ({
             name: rawThread.name ?? existing?.name,
             preview: existing?.preview ?? "",
             updatedAt: existing?.updatedAt ?? Date.now(),
-            archived: existing?.archived ?? false,
             projectId: existing?.projectId,
           };
           const threads = existing

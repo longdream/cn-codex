@@ -3,6 +3,7 @@ pub mod app_state;
 pub mod approval;
 pub mod config;
 pub mod hook;
+pub mod mobile;
 pub mod model;
 pub mod plugin;
 pub mod skill;
@@ -28,6 +29,7 @@ pub use skill::*;
 pub use thread::*;
 pub use turn::*;
 pub use usage::*;
+pub use mobile::*;
 pub use window::*;
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,4 +1,0 @@
-{"type":"thread_meta","thread_id":"d9ac0c33-7463-4541-9a34-077b488df7d0","name":null,"created_at":1780922173,"model":"doubao-seed-2-0-code-preview-260215"}
-{"type":"turn_start","turn_id":"cd276066-3111-4711-9ad8-66a4f7d8ab88","started_at":1780922179}
-{"type":"message","id":"ac60e1c2-3f63-4db6-8a0a-09ed10cf6667","role":"user","content":"写一个贪吃蛇程序，需要用js还需要用sqlite支撑","timestamp":1780922179,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"turn_end","turn_id":"cd276066-3111-4711-9ad8-66a4f7d8ab88","completed_at":1780922180}

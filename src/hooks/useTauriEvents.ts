@@ -309,8 +309,11 @@ export function useTauriEvents() {
 
     const setup = async () => {
       const listeners: Array<Promise<UnlistenFn>> = [
-        listen<{ delta: string }>("agent-message-delta", (e) => {
+        listen<{ delta: string; threadId?: string }>("agent-message-delta", (e) => {
           const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
           const currentLen = store.streamingText.length;
           if (currentLen === 0) {
             store.setStreamingLabel("正在生成响应...");
@@ -326,6 +329,9 @@ export function useTauriEvents() {
           "turn-started",
           (e) => {
             const store = useAppStore.getState();
+            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+              return;
+            }
             store.setCurrentTurnId(e.payload.turn?.id ?? null);
             store.setStreaming(true);
             store.clearStreamingText();
@@ -340,6 +346,9 @@ export function useTauriEvents() {
           "turn-completed",
           (e) => {
             const store = useAppStore.getState();
+            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+              return;
+            }
             const text = store.streamingText;
             if (text) {
               store.addMessage({
@@ -371,6 +380,9 @@ export function useTauriEvents() {
           calls: Array<{ id: string; name: string; arguments: string }>;
         }>("tool-calls-start", (e) => {
           const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
           const pendingText = store.streamingText;
           if (pendingText) {
             store.addMessage({
@@ -424,8 +436,11 @@ export function useTauriEvents() {
         listen<{ threadId: string; callId?: string; tool: string; exitCode?: number; output?: string }>(
           "tool-exec-end",
           (e) => {
-            const status = e.payload.exitCode === 0 ? "success" : "failed";
             const store = useAppStore.getState();
+            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+              return;
+            }
+            const status = e.payload.exitCode === 0 ? "success" : "failed";
             const output = e.payload.output;
 
             if (e.payload.tool === "browser_run") {
@@ -470,6 +485,10 @@ export function useTauriEvents() {
           path?: string;
           changes?: Array<Record<string, unknown>>;
         }>("file-change-patch-updated", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
           const toolId = e.payload.callId ?? e.payload.itemId;
           if (!toolId) {
             return;
@@ -484,6 +503,9 @@ export function useTauriEvents() {
           "tool-calls-end",
           (e) => {
             const store = useAppStore.getState();
+            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+              return;
+            }
             for (const result of e.payload.results ?? []) {
               store.updateToolCallStatus(
                 result.id,
@@ -501,12 +523,16 @@ export function useTauriEvents() {
         listen<{ error?: { message?: string }; message?: string; threadId?: string }>(
           "server-error",
           (e) => {
+            const store = useAppStore.getState();
+            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+              return;
+            }
             console.error("[event] server-error:", e.payload);
             const msg =
               e.payload.message ??
               e.payload.error?.message ??
               JSON.stringify(e.payload);
-            useAppStore.getState().addMessage({
+            store.addMessage({
               id: crypto.randomUUID(),
               role: "system",
               content: `Error: ${msg}`,

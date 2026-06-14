@@ -2525,18 +2525,15 @@ impl ToolExecutor {
         } else {
             output.to_string()
         };
-        app_handle
-            .emit(
-                "tool-exec-end",
-                serde_json::json!({
-                    "threadId": thread_id,
-                    "callId": call_id,
-                    "tool": tool,
-                    "exitCode": exit_code,
-                    "output": truncated_output,
-                }),
-            )
-            .ok();
+        let payload = serde_json::json!({
+            "threadId": thread_id,
+            "callId": call_id,
+            "tool": tool,
+            "exitCode": exit_code,
+            "output": truncated_output,
+        });
+        app_handle.emit("tool-exec-end", payload.clone()).ok();
+        crate::mobile_server::broadcast("tool-exec-end", payload);
     }
 
     fn emit_apply_patch_progress(

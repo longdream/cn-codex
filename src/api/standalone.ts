@@ -43,10 +43,13 @@ export async function standaloneThreadList(): Promise<{
     name?: string;
     preview?: string;
     updatedAt?: number;
-    archived?: boolean;
   }>;
 }> {
   return invoke("standalone_thread_list");
+}
+
+export async function threadArchive(threadId: string): Promise<{ status: string }> {
+  return invoke("thread_archive", { params: { threadId } });
 }
 
 export async function standaloneThreadRead(threadId: string): Promise<{

@@ -27,7 +27,7 @@ pub enum ApprovalAction {
 
 pub struct AppState {
     pub locale: RwLock<String>,
-    pub current_thread_id: RwLock<Option<String>>,
+    pub current_thread_id: Arc<RwLock<Option<String>>>,
     pub project_root: PathBuf,
     pub workspace_config_dir: PathBuf,
     pub config_path: PathBuf,
@@ -37,7 +37,7 @@ pub struct AppState {
     pub standalone: StandaloneState,
     pub config_manager: ConfigManager,
     pub thread_store: Arc<ThreadStore>,
-    pub agent_engine: AgentEngine,
+    pub agent_engine: Arc<AgentEngine>,
     /// 用量数据库
     pub usage_db: Arc<UsageDb>,
     /// 价格表
@@ -126,10 +126,11 @@ impl AppState {
         // 将 recorder 注入 agent engine
         let recorder_arc = Arc::new(UsageRecorder::new(usage_db.clone(), pricing_table.clone()));
         agent_engine.set_usage_recorder(recorder_arc);
+        let agent_engine = Arc::new(agent_engine);
 
         Self {
             locale: RwLock::new("zh-CN".to_string()),
-            current_thread_id: RwLock::new(None),
+            current_thread_id: Arc::new(RwLock::new(None)),
             project_root,
             workspace_config_dir,
             config_path,

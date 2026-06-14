@@ -1,6 +1,7 @@
 import { IconX } from "@tabler/icons-react";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
+import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { ProviderPanel } from "./ProviderPanel";
 import { IntegrationPanel } from "./IntegrationPanel";
@@ -22,6 +23,38 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const setLocale = useSettingsStore((state) => state.setLocale);
   const setTheme = useSettingsStore((state) => state.setTheme);
   const [tab, setTab] = useState<SettingsTab>("provider");
+  const [webServerEnabled, setWebServerEnabled] = useState(false);
+  const [webServerUrl, setWebServerUrl] = useState<string | null>(null);
+  const [webServerLoading, setWebServerLoading] = useState(false);
+
+  useEffect(() => {
+    invoke<boolean>("get_mobile_server_status").then((running) => {
+      setWebServerEnabled(running);
+      if (running) {
+        invoke<string>("get_mobile_server_url").then(setWebServerUrl).catch(() => {});
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleWebServerToggle = useCallback(async () => {
+    if (webServerLoading) return;
+    setWebServerLoading(true);
+    try {
+      if (!webServerEnabled) {
+        const url = await invoke<string>("start_mobile_server");
+        setWebServerEnabled(true);
+        setWebServerUrl(url);
+      } else {
+        await invoke("stop_mobile_server");
+        setWebServerEnabled(false);
+        setWebServerUrl(null);
+      }
+    } catch (err) {
+      console.error("Web server toggle failed:", err);
+    } finally {
+      setWebServerLoading(false);
+    }
+  }, [webServerEnabled, webServerLoading]);
 
   const tabs: Array<{ id: SettingsTab; label: string; detail: string }> = [
     {
@@ -140,6 +173,38 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       </button>
                     ))}
                   </div>
+                </section>
+
+                <section className="settings-card space-y-3">
+                  <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                    Web 服务（手机同步）
+                  </h4>
+                  <p className="text-xs text-[var(--text-faint)]">
+                    开启后可通过手机扫码实时查看 PC 端对话内容
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleWebServerToggle}
+                      disabled={webServerLoading}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                        webServerEnabled ? "bg-[var(--accent)]" : "bg-[var(--border-subtle)]"
+                      } ${webServerLoading ? "opacity-50" : ""}`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+                          webServerEnabled ? "translate-x-[18px]" : "translate-x-[3px]"
+                        }`}
+                      />
+                    </button>
+                    <span className="text-xs text-[var(--text-muted)]">
+                      {webServerLoading ? "正在操作..." : webServerEnabled ? "已开启" : "已关闭"}
+                    </span>
+                  </div>
+                  {webServerEnabled && webServerUrl && (
+                    <p className="font-mono text-[11px] text-[var(--text-muted)]">
+                      {webServerUrl}
+                    </p>
+                  )}
                 </section>
               </div>
             )}

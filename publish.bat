@@ -93,8 +93,29 @@ if not exist "%PROJECT_DIR%node_modules" (
     echo   - node_modules exists, skip install for faster publish.
 )
 
+:: Build mobile-web
+echo [3/8] Building mobile-web...
+cd /d "%PROJECT_DIR%mobile-web"
+if not exist "%PROJECT_DIR%mobile-web\node_modules" (
+    echo   - Installing mobile-web dependencies...
+    call pnpm install
+    if %errorlevel% neq 0 (
+        echo [ERROR] mobile-web pnpm install failed.
+        pause
+        exit /b 1
+    )
+)
+call pnpm build
+if %errorlevel% neq 0 (
+    echo [ERROR] mobile-web build failed.
+    pause
+    exit /b 1
+)
+echo   - mobile-web built to mobile-dist/
+cd /d "%PROJECT_DIR%"
+
 :: Build Tauri app in release mode (portable only, no installer bundle)
-echo [3/7] Building Tauri release (portable, no installer)...
+echo [4/8] Building Tauri release (portable, no installer)...
 :: For release speed, default is incremental publish without cargo clean.
 :: If cache corruption is suspected, run "publish.bat clean" for full rebuild.
 if "%FORCE_FULL_REBUILD%"=="1" (
@@ -120,7 +141,7 @@ if %errorlevel% neq 0 (
 )
 
 :: Copy artifacts to publish folder
-echo [4/7] Copying portable artifacts to publish folder...
+echo [5/8] Copying portable artifacts to publish folder...
 
 set "RELEASE_DIR=%PROJECT_DIR%src-tauri\target\release"
 
@@ -139,7 +160,7 @@ for %%f in ("%RELEASE_DIR%\*.dll") do (
 )
 
 :: Copy codey/ resources (skills + plugins only)
-echo [5/7] Copying codey runtime resources...
+echo [6/8] Copying codey runtime resources...
 
 set "CODEY_DEST=%PUBLISH_DIR%\codey"
 mkdir "%CODEY_DEST%"
@@ -183,8 +204,20 @@ if exist "%CODEY_DEST%\browser\visible-browser.json" del "%CODEY_DEST%\browser\v
 :: Remove any residual WebView2 user data from publish dir
 for /d %%d in ("%PUBLISH_DIR%\EBWebView*") do rmdir /s /q "%%d" 2>nul
 
+:: Copy mobile-dist to publish
+echo [7/8] Copying mobile-dist...
+set "MOBILE_DIST_SRC=%PROJECT_DIR%mobile-dist"
+set "MOBILE_DIST_DEST=%PUBLISH_DIR%\mobile-dist"
+if exist "%MOBILE_DIST_SRC%" (
+    xcopy "%MOBILE_DIST_SRC%" "%MOBILE_DIST_DEST%\" /E /I /Q /Y >nul
+    echo   - mobile-dist/ copied
+) else (
+    mkdir "%MOBILE_DIST_DEST%"
+    echo   - mobile-dist/ (empty, mobile-web not built)
+)
+
 :: Bundle embedded Node.js portable runtime into codey/node/
-echo [6/7] Bundling embedded Node.js portable...
+echo [8/8] Bundling embedded Node.js portable...
 
 set "NODE_VERSION=22.16.0"
 set "NODE_ARCHIVE=node-v%NODE_VERSION%-win-x64.zip"
@@ -237,7 +270,7 @@ if exist "%NODE_TMP%" rmdir /s /q "%NODE_TMP%"
 :skip_node
 
 echo.
-echo [7/7] Build complete!
+echo Build complete!
 echo.
 echo ============================================
 echo   Output: %PUBLISH_DIR%
