@@ -137,6 +137,7 @@ impl AgentEngine {
         override_cwd: Option<&Path>,
         mode: Option<&str>,
         goal_budget_tokens: Option<u64>,
+        robot_id: Option<&str>,
     ) -> AppResult<()> {
         self.cancel_flag.store(false, Ordering::SeqCst);
 
@@ -169,6 +170,8 @@ impl AgentEngine {
 
         let turn_mode = match mode {
             Some("goal") => "goal",
+            Some("robot-create") => "robot-create",
+            Some("robot-modify") => "robot-modify",
             _ => "chat",
         }
         .to_string();
@@ -444,13 +447,28 @@ impl AgentEngine {
                     &turn_mode,
                     Some(user_message_id.as_str()),
                     &attachments,
+                    robot_id,
                 );
-                let tools = self
-                    .tool_executor
-                    .write()
-                    .await
-                    .tool_specs_with_mcp(config.web_search_enabled())
-                    .await;
+                let tools =
+                    if turn_mode == "robot-create" || turn_mode == "robot-modify" {
+                        self.tool_executor
+                            .write()
+                            .await
+                            .tool_specs(false)
+                            .into_iter()
+                            .filter(|spec| {
+                                spec.pointer("/function/name")
+                                    .and_then(|v| v.as_str())
+                                    == Some("robot_save")
+                            })
+                            .collect()
+                    } else {
+                        self.tool_executor
+                            .write()
+                            .await
+                            .tool_specs_with_mcp(config.web_search_enabled())
+                            .await
+                    };
 
                 let result = self
                     .stream_completion(
@@ -908,6 +926,7 @@ impl AgentEngine {
                 &turn_mode,
                 Some(user_message_id.as_str()),
                 &[],
+                robot_id,
             );
             let summary_result = self
                 .stream_completion(
@@ -1127,7 +1146,35 @@ impl AgentEngine {
         Ok(())
     }
 
-    fn build_system_prompt(&self, config: &ConfigToml, effective_cwd: &Path, mode: &str) -> String {
+    fn build_system_prompt(
+        &self,
+        config: &ConfigToml,
+        effective_cwd: &Path,
+        mode: &str,
+        robot_id: Option<&str>,
+    ) -> String {
+        if mode == "robot-create" {
+            return self.build_robot_create_prompt(config, effective_cwd);
+        }
+
+        if mode == "robot-modify" {
+            if let Some(rid) = robot_id {
+                if let Some(prompt) =
+                    self.build_robot_modify_prompt(config, effective_cwd, rid)
+                {
+                    return prompt;
+                }
+            }
+            return self.build_robot_create_prompt(config, effective_cwd);
+        }
+
+        if let Some(rid) = robot_id {
+            if let Some(robot_prompt) = self.build_robot_execution_prompt(config, effective_cwd, rid)
+            {
+                return robot_prompt;
+            }
+        }
+
         let cwd_str = effective_cwd.to_string_lossy();
         let os_info = std::env::consts::OS;
         let arch_info = std::env::consts::ARCH;
@@ -1335,6 +1382,273 @@ impl AgentEngine {
     fn render_plugin_apps_prompt(&self) -> String {
         render_plugin_apps_prompt_for_config_dir(&self.cwd.join("codey"))
     }
+
+    fn build_robot_create_prompt(&self, config: &ConfigToml, effective_cwd: &Path) -> String {
+        let cwd_str = effective_cwd.to_string_lossy();
+        let os_info = std::env::consts::OS;
+        let arch_info = std::env::consts::ARCH;
+        let workspace_config_dir = self.cwd.join("codey");
+
+        let available_skills =
+            crate::robot_loader::list_all_available_skills(&workspace_config_dir);
+        let mut skills_list = String::new();
+        let mut local_section = String::new();
+        let mut plugin_section = String::new();
+
+        for skill in &available_skills {
+            let desc = if skill.description.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", skill.description)
+            };
+            match skill.source.as_str() {
+                "local" => {
+                    local_section.push_str(&format!("- {}{desc}\n", skill.id));
+                }
+                "plugin" => {
+                    let plugin_id = skill.plugin_id.as_deref().unwrap_or("unknown");
+                    plugin_section
+                        .push_str(&format!("- {plugin_id} > {}{desc}\n", skill.id));
+                }
+                _ => {}
+            }
+        }
+
+        if !local_section.is_empty() {
+            skills_list.push_str("Available Local Skills:\n");
+            skills_list.push_str(&local_section);
+        }
+        if !plugin_section.is_empty() {
+            skills_list.push_str("\nAvailable Plugin Skills:\n");
+            skills_list.push_str(&plugin_section);
+        }
+        if skills_list.is_empty() {
+            skills_list.push_str("No skills are currently available.\n");
+        }
+
+        let user_instructions = config
+            .instructions
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("\n\nAdditional instructions from user:\n{s}"))
+            .unwrap_or_default();
+
+        format!(
+            "You are a Robot Configuration Expert. Your job is to create a specialized AI robot \
+             by analyzing available skills and composing them into an effective workflow.\n\
+             \n\
+             Environment:\n\
+             - Working directory: {cwd_str}\n\
+             - OS: {os_info} ({arch_info})\n\
+             \n\
+             {skills_list}\n\
+             \n\
+             ## robot.json Specification\n\
+             \n\
+             The robot configuration must follow this JSON format:\n\
+             ```json\n\
+             {{\n\
+               \"name\": \"Robot Name\",\n\
+               \"description\": \"What this robot does\",\n\
+               \"icon\": \"icon-identifier\",\n\
+               \"skills\": [\"local-skill-id-1\", \"local-skill-id-2\"],\n\
+               \"pluginSkills\": [\n\
+                 {{ \"pluginId\": \"plugin-name\", \"skillId\": \"skill-name\" }}\n\
+               ],\n\
+               \"workflow\": [\n\
+                 \"1. First step...\",\n\
+                 \"2. Second step...\"\n\
+               ],\n\
+               \"systemPrompt\": \"You are an expert at... Your role is to...\"\n\
+             }}\n\
+             ```\n\
+             \n\
+             - `skills`: Local skill IDs from codey/skills/ directory.\n\
+             - `pluginSkills`: Plugin skill references (pluginId + skillId from the plugin skills list above).\n\
+             - `workflow`: Ordered steps describing how to use the skills together.\n\
+             - `systemPrompt`: Role definition, behavior rules, and output format for the robot.\n\
+             \n\
+             ## Creation Guidelines\n\
+             \n\
+             1. Analyze the user's description to understand what they want the robot to do.\n\
+             2. Select the most relevant 3-8 skills from the available list.\n\
+             3. Design a clear workflow that describes the skill invocation order and transition logic.\n\
+             4. Write a systemPrompt that defines the robot's identity, behavior rules, and output format.\n\
+             5. Choose a concise, descriptive `id` for the robot directory (lowercase, hyphenated).\n\
+             6. Call the `robot_save` tool with the id and config to create the robot.\n\
+             7. After creating, briefly explain what skills were selected and why.\n\
+             \n\
+             You have access to the `robot_save` tool. Use it to save the robot configuration.\n\
+             \n\
+             IMPORTANT: Only select skills that actually exist in the available skills list above. \
+             Do NOT invent skill IDs that are not listed.\n\
+             \n\
+             CRITICAL: You ONLY have access to the `robot_save` tool. Do NOT try to read files, \
+             list directories, run shell commands, or use any other tool. Your sole task is to \
+             analyze the user's description and compose a robot configuration based on the \
+             available skills listed above, then call `robot_save`.{user_instructions}"
+        )
+    }
+
+    fn build_robot_modify_prompt(
+        &self,
+        config: &ConfigToml,
+        effective_cwd: &Path,
+        robot_id: &str,
+    ) -> Option<String> {
+        let workspace_config_dir = self.cwd.join("codey");
+        let detail = crate::robot_loader::read_robot(&workspace_config_dir, robot_id)?;
+
+        let current_config_json =
+            serde_json::to_string_pretty(&detail.config).unwrap_or_default();
+
+        let cwd_str = effective_cwd.to_string_lossy();
+        let os_info = std::env::consts::OS;
+        let arch_info = std::env::consts::ARCH;
+
+        let available_skills =
+            crate::robot_loader::list_all_available_skills(&workspace_config_dir);
+        let mut skills_list = String::new();
+        let mut local_section = String::new();
+        let mut plugin_section = String::new();
+
+        for skill in &available_skills {
+            let desc = if skill.description.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", skill.description)
+            };
+            match skill.source.as_str() {
+                "local" => {
+                    local_section.push_str(&format!("- {}{desc}\n", skill.id));
+                }
+                "plugin" => {
+                    let plugin_id = skill.plugin_id.as_deref().unwrap_or("unknown");
+                    plugin_section
+                        .push_str(&format!("- {plugin_id} > {}{desc}\n", skill.id));
+                }
+                _ => {}
+            }
+        }
+        if !local_section.is_empty() {
+            skills_list.push_str("Available Local Skills:\n");
+            skills_list.push_str(&local_section);
+        }
+        if !plugin_section.is_empty() {
+            skills_list.push_str("\nAvailable Plugin Skills:\n");
+            skills_list.push_str(&plugin_section);
+        }
+
+        let user_instructions = config
+            .instructions
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("\n\nAdditional instructions from user:\n{s}"))
+            .unwrap_or_default();
+
+        Some(format!(
+            "You are a Robot Configuration Expert. Your job is to MODIFY an existing robot \
+             configuration based on the user's instructions.\n\
+             \n\
+             Environment:\n\
+             - Working directory: {cwd_str}\n\
+             - OS: {os_info} ({arch_info})\n\
+             \n\
+             ## Current Robot Configuration (id: {robot_id})\n\
+             \n\
+             ```json\n\
+             {current_config_json}\n\
+             ```\n\
+             \n\
+             {skills_list}\n\
+             \n\
+             ## Modification Guidelines\n\
+             \n\
+             1. Read the user's modification request carefully.\n\
+             2. Modify ONLY the parts the user mentions. Keep everything else unchanged.\n\
+             3. If the user wants to add/remove skills, update the `skills` and `pluginSkills` arrays.\n\
+             4. If the user wants to change the workflow, update the `workflow` array.\n\
+             5. If the user wants to change behavior, update the `systemPrompt`.\n\
+             6. Use the SAME `id` (\"{robot_id}\") when calling `robot_save` to overwrite the config.\n\
+             7. After modifying, briefly explain what was changed.\n\
+             \n\
+             Only select skills that actually exist in the available skills list above.\n\
+             \n\
+             CRITICAL: You ONLY have access to the `robot_save` tool. Do NOT try to read files, \
+             list directories, run shell commands, or use any other tool. Analyze the user's \
+             request, modify the configuration above, and call `robot_save`.{user_instructions}"
+        ))
+    }
+
+    fn build_robot_execution_prompt(
+        &self,
+        config: &ConfigToml,
+        effective_cwd: &Path,
+        robot_id: &str,
+    ) -> Option<String> {
+        let workspace_config_dir = self.cwd.join("codey");
+        let detail = crate::robot_loader::read_robot(&workspace_config_dir, robot_id)?;
+        let skill_contents =
+            crate::robot_loader::collect_robot_skill_contents(&workspace_config_dir, &detail.config);
+
+        let cwd_str = effective_cwd.to_string_lossy();
+        let os_info = std::env::consts::OS;
+        let arch_info = std::env::consts::ARCH;
+
+        let mut skills_block = String::new();
+        for (label, content) in &skill_contents {
+            skills_block.push_str(&format!("\n--- Skill: {label} ---\n"));
+            let truncated = if content.len() > 8000 {
+                &content[..8000]
+            } else {
+                content.as_str()
+            };
+            skills_block.push_str(truncated);
+            skills_block.push('\n');
+        }
+
+        let mut workflow_block = String::new();
+        for step in &detail.config.workflow {
+            workflow_block.push_str(&format!("- {step}\n"));
+        }
+
+        let user_instructions = config
+            .instructions
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("\n\nAdditional instructions from user:\n{s}"))
+            .unwrap_or_default();
+
+        let web_tool_instructions = if config.web_search_enabled() {
+            "             - web_search: Search the web for current information.\n\
+             - web_fetch: Fetch a web page URL and return readable text.\n"
+        } else {
+            ""
+        };
+
+        Some(format!(
+            "{robot_prompt}\n\
+             \n\
+             Environment:\n\
+             - Working directory: {cwd_str}\n\
+             - OS: {os_info} ({arch_info})\n\
+             \n\
+             You have access to all standard tools (shell, read_file, write_file, etc.).\n\
+             {web_tool_instructions}\
+             \n\
+             ## Workflow\n\
+             {workflow_block}\n\
+             \n\
+             ## Loaded Skills\n\
+             {skills_block}\n\
+             \n\
+             Goal mode is active. Treat the latest user message as a concrete objective. \
+             Follow the workflow steps above and use the loaded skills to complete the task. \
+             Keep working through the available tools until the objective is genuinely handled. \
+             Give concise progress updates as you work, and finish with a short outcome summary.{user_instructions}",
+            robot_prompt = detail.config.system_prompt,
+        ))
+    }
 }
 
 fn render_plugin_apps_prompt_for_config_dir(config_dir: &Path) -> String {
@@ -1394,13 +1708,14 @@ impl AgentEngine {
         mode: &str,
         current_user_message_id: Option<&str>,
         attachments: &[UserAttachment],
+        robot_id: Option<&str>,
     ) -> Vec<InternalMessage> {
         let mut messages = Vec::new();
 
         // system prompt
         messages.push(InternalMessage {
             role: "system".to_string(),
-            content: text_content(self.build_system_prompt(config, effective_cwd, mode)),
+            content: text_content(self.build_system_prompt(config, effective_cwd, mode, robot_id)),
             tool_calls: None,
             tool_call_id: None,
             name: None,

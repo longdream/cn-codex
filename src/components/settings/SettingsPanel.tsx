@@ -8,13 +8,14 @@ import { IntegrationPanel } from "./IntegrationPanel";
 import { PluginsPanel } from "./PluginsPanel";
 import { SkillsPanel } from "./SkillsPanel";
 import { HooksPanel } from "./HooksPanel";
+import { RobotsPanel } from "./RobotsPanel";
 import { UsageDashboard } from "./UsageDashboard";
 
 interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "hooks";
+type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "hooks";
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const intl = useIntl();
@@ -100,6 +101,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       id: "skills",
       label: intl.formatMessage({ id: "settings.skills" }),
       detail: intl.formatMessage({ id: "settings.skills.description" }),
+    },
+    {
+      id: "robots",
+      label: intl.formatMessage({ id: "settings.robots" }),
+      detail: intl.formatMessage({ id: "settings.robots.description" }),
     },
     {
       id: "hooks",
@@ -270,6 +276,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "integration" && <IntegrationPanel />}
             {tab === "plugins" && <PluginsPanel />}
             {tab === "skills" && <SkillsPanel />}
+            {tab === "robots" && <RobotsPanel />}
             {tab === "hooks" && <HooksPanel />}
           </div>
         </section>

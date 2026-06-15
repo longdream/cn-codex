@@ -244,6 +244,7 @@ pub async fn standalone_chat(
     cwd: Option<String>,
     mode: Option<String>,
     goal_budget_tokens: Option<u64>,
+    robot_id: Option<String>,
 ) -> AppResult<serde_json::Value> {
     let config = state.config_manager.read()?;
     let override_cwd = cwd.map(std::path::PathBuf::from);
@@ -262,6 +263,7 @@ pub async fn standalone_chat(
             override_cwd.as_deref(),
             mode,
             goal_budget_tokens,
+            robot_id.as_deref(),
         )
         .await;
 

@@ -586,6 +586,13 @@ export function useTauriEvents() {
             new CustomEvent("cn-codex:server-request", { detail: e.payload }),
           );
         }),
+
+        listen<{ robotId: string; name: string }>("robot-created", (e) => {
+          window.dispatchEvent(new CustomEvent("robot-list-changed"));
+          const store = useAppStore.getState();
+          store.setSelectedRobotId(e.payload.robotId);
+          store.setRobotCreateMode(false);
+        }),
       ];
 
       const fns = await Promise.all(listeners);

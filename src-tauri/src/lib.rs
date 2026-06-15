@@ -10,6 +10,7 @@ pub mod hook_runtime;
 pub mod mobile_server;
 pub mod relay_client;
 pub mod plugin_loader;
+pub mod robot_loader;
 pub mod protocol;
 pub mod standalone;
 pub mod state;
@@ -135,6 +136,10 @@ pub fn run() {
             commands::plugin_set_enabled,
             commands::plugin_uninstall,
             commands::plugin_import_codex_cache,
+            // Robots
+            commands::robot_list,
+            commands::robot_read,
+            commands::robot_delete,
             // App State (SQLite KV)
             commands::app_state_get,
             commands::app_state_set,

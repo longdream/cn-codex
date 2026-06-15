@@ -146,9 +146,10 @@ export async function standaloneChat(
   threadId: string,
   message: string,
   cwd?: string,
-  mode?: "chat" | "goal",
+  mode?: "chat" | "goal" | "robot-create" | "robot-modify",
   attachments?: AttachedFile[],
   goalBudgetTokens?: number,
+  robotId?: string,
 ): Promise<{ status: string }> {
   return invoke("standalone_chat", {
     threadId,
@@ -157,6 +158,7 @@ export async function standaloneChat(
     mode,
     attachments,
     goalBudgetTokens,
+    robotId,
   });
 }
 

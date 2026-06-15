@@ -287,6 +287,7 @@ async fn send_message_handler(
                 None,
                 None,
                 None,
+                None,
             )
             .await
         {

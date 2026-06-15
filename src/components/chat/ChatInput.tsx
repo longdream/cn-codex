@@ -7,17 +7,21 @@ import {
   IconMessage2,
   IconPaperclip,
   IconPlugConnected,
+  IconPlus,
+  IconRobot,
   IconShieldCheck,
   IconSquare,
   IconTargetArrow,
   IconX,
 } from "@tabler/icons-react";
-import { useCallback, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
 import { useAppStore, type ChatMode, type ChatSendOptions } from "../../stores/appStore";
 import { SlashCommandPanel, getDefaultSlashCommands } from "./SlashCommandPanel";
 import type { AttachedFile } from "../../types/provider";
 import { readFileForAttach } from "../../api/window";
+import { robotList } from "../../api/robot";
+import type { RobotSummary } from "../../types/robot";
 
 /** 支持的文档 MIME 类型和扩展名 */
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
@@ -47,12 +51,18 @@ function guessTypeFromExt(name: string): string {
   return map[ext] ?? "application/octet-stream";
 }
 
+export interface ChatSendExtendedOptions extends ChatSendOptions {
+  robotId?: string;
+  robotCreateMode?: boolean;
+  robotModifyMode?: boolean;
+}
+
 interface ChatInputProps {
   onSend: (
     text: string,
     mode: ChatMode,
     attachments: AttachedFile[],
-    options?: ChatSendOptions,
+    options?: ChatSendExtendedOptions,
   ) => void;
   onInterrupt?: () => void;
   isStreaming: boolean;
@@ -75,6 +85,9 @@ export function ChatInput({
   const [text, setText] = useState("");
   const [showSlash, setShowSlash] = useState(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [showRobotMenu, setShowRobotMenu] = useState(false);
+  const [robots, setRobots] = useState<RobotSummary[]>([]);
+  const [robotModifyMode, setRobotModifyMode] = useState(false);
   const [visionWarning, setVisionWarning] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -85,6 +98,10 @@ export function ChatInput({
   const currentGoal = useAppStore((s) => s.currentGoal);
   const autoApprove = useAppStore((s) => s.autoApprove);
   const setAutoApprove = useAppStore((s) => s.setAutoApprove);
+  const selectedRobotId = useAppStore((s) => s.selectedRobotId);
+  const robotCreateMode = useAppStore((s) => s.robotCreateMode);
+  const setSelectedRobotId = useAppStore((s) => s.setSelectedRobotId);
+  const setRobotCreateMode = useAppStore((s) => s.setRobotCreateMode);
   // 目标模式运行态：只在 goal + active 时视为“整体执行中”。
   // 聊天模式不受该状态影响。
   const goalRunning = mode === "goal" && currentGoal?.status === "active";
@@ -112,6 +129,20 @@ export function ChatInput({
     ?? activeProvider?.name
     ?? defaultProvider;
 
+  useEffect(() => {
+    robotList().then(setRobots).catch(() => setRobots([]));
+    const handler = () => {
+      robotList().then(setRobots).catch(() => setRobots([]));
+    };
+    window.addEventListener("robot-list-changed", handler);
+    return () => window.removeEventListener("robot-list-changed", handler);
+  }, []);
+
+  const selectedRobotName = useMemo(
+    () => robots.find((r) => r.id === selectedRobotId)?.name ?? null,
+    [robots, selectedRobotId],
+  );
+
   const setMode = useCallback((nextMode: ChatMode) => {
     useAppStore.getState().setChatMode(nextMode);
     textareaRef.current?.focus();
@@ -126,8 +157,17 @@ export function ChatInput({
     defaults.find((command) => command.name === "model")!.action = () => {
       useAppStore.getState().setShowSettings(true);
     };
+    if (selectedRobotId) {
+      defaults.push({
+        name: "modify",
+        description: intl.formatMessage({ id: "chat.slashModify" }),
+        action: () => {
+          setRobotModifyMode(true);
+        },
+      });
+    }
     return defaults;
-  }, []);
+  }, [selectedRobotId, intl]);
 
   const handleSubmit = useCallback(() => {
     // 仅目标模式在 active 时禁止提交；聊天模式行为保持不变。
@@ -172,6 +212,13 @@ export function ChatInput({
       if (goalCommand.action !== "set" || !goalCommand.objective) {
         useAppStore.getState().clearAttachedFiles();
       }
+    } else if (robotCreateMode) {
+      onSend(trimmed, mode, filesToSend, { robotCreateMode: true });
+    } else if (robotModifyMode && selectedRobotId) {
+      onSend(trimmed, mode, filesToSend, { robotModifyMode: true, robotId: selectedRobotId });
+      setRobotModifyMode(false);
+    } else if (selectedRobotId) {
+      onSend(trimmed, "goal", filesToSend, { robotId: selectedRobotId });
     } else {
       onSend(trimmed, mode, filesToSend);
     }
@@ -181,7 +228,7 @@ export function ChatInput({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [attachedFiles, currentGoal, disabled, goalRunning, isStreaming, mode, onGoalCommand, onSend, text]);
+  }, [attachedFiles, currentGoal, disabled, goalRunning, isStreaming, mode, onGoalCommand, onSend, robotModifyMode, selectedRobotId, text]);
 
   const goalStatusLabel = useMemo(() => {
     if (!currentGoal) {
@@ -208,6 +255,7 @@ export function ChatInput({
       if (event.key === "Escape") {
         setShowSlash(false);
         setShowModelMenu(false);
+        setShowRobotMenu(false);
       }
     },
     [goalRunning, handleSubmit, isStreaming],
@@ -413,8 +461,9 @@ export function ChatInput({
             command.action();
             if (command.name === "goal") {
               setMode("goal");
+            } else if (command.name === "modify") {
+              // /modify 仅设状态，不发送消息；用户输入修改描述后 submit
             } else if (command.name === "plan" || command.name === "help" || command.name === "compact") {
-              // 目标模式 active 时，阻止所有发送入口（含斜杠快捷发送）。
               if (!goalRunning) {
                 onSend(`/${command.name}`, mode, []);
               }
@@ -543,7 +592,82 @@ export function ChatInput({
           </div>
           )}
 
-          {!isGeneralMode && mode === "goal" && (
+          {!isGeneralMode && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowRobotMenu((v) => !v)}
+                className={`flex h-6 items-center gap-1 rounded-full border px-2.5 text-[11px] font-medium transition-colors ${
+                  selectedRobotId || robotCreateMode
+                    ? "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                    : "border-[var(--chat-line)] bg-[var(--chat-chip)] text-[var(--chat-muted)] hover:text-[var(--chat-prose)]"
+                }`}
+              >
+                <IconRobot size={12} stroke={1.8} />
+                <span className="max-w-[120px] truncate">
+                  {robotCreateMode
+                    ? intl.formatMessage({ id: "chat.robot.creating" })
+                    : robotModifyMode
+                      ? intl.formatMessage({ id: "chat.robot.modifying" })
+                      : selectedRobotName ?? intl.formatMessage({ id: "chat.robot.none" })}
+                </span>
+                <IconChevronDown size={10} stroke={2} className="opacity-60" />
+              </button>
+
+              {showRobotMenu && (
+                <div className="absolute left-0 top-full z-30 mt-1 min-w-[200px] rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] py-1 shadow-lg">
+                  <button
+                    onClick={() => {
+                      setSelectedRobotId(null);
+                      setRobotCreateMode(false);
+                      setShowRobotMenu(false);
+                    }}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors hover:bg-[var(--surface-elevated)] ${
+                      !selectedRobotId && !robotCreateMode ? "text-[var(--accent-strong)]" : "text-[var(--text-base)]"
+                    }`}
+                  >
+                    {intl.formatMessage({ id: "chat.robot.none" })}
+                  </button>
+                  {robots.map((robot) => (
+                    <button
+                      key={robot.id}
+                      onClick={() => {
+                        setSelectedRobotId(robot.id);
+                        setShowRobotMenu(false);
+                      }}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors hover:bg-[var(--surface-elevated)] ${
+                        selectedRobotId === robot.id ? "text-[var(--accent-strong)]" : "text-[var(--text-base)]"
+                      }`}
+                    >
+                      <IconRobot size={13} stroke={1.6} className="shrink-0 opacity-70" />
+                      <div className="min-w-0">
+                        <span className="block truncate font-medium">{robot.name}</span>
+                        {robot.description && (
+                          <span className="block truncate text-[11px] text-[var(--text-faint)]">
+                            {robot.description}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                  <div className="my-1 border-t border-[var(--chat-line)]" />
+                  <button
+                    onClick={() => {
+                      setRobotCreateMode(true);
+                      setShowRobotMenu(false);
+                      textareaRef.current?.focus();
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-[var(--accent-strong)] transition-colors hover:bg-[var(--surface-elevated)]"
+                  >
+                    <IconPlus size={13} stroke={1.8} className="shrink-0" />
+                    {intl.formatMessage({ id: "chat.robot.create" })}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {!isGeneralMode && mode === "goal" && !selectedRobotId && !robotCreateMode && (
             <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${goalStatusClass}`}>
               {goalStatusLabel}
             </span>
@@ -604,7 +728,7 @@ export function ChatInput({
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onInput={handleInput}
-            placeholder={intl.formatMessage({ id: "chat.placeholder" })}
+            placeholder={intl.formatMessage({ id: robotModifyMode ? "chat.robot.modifyPlaceholder" : robotCreateMode ? "chat.robot.placeholder" : "chat.placeholder" })}
             disabled={disabled}
             rows={2}
             className="chat-composer-input max-h-[200px] min-h-[78px] w-full flex-1 resize-none bg-transparent py-2 text-[13px] leading-relaxed text-[var(--chat-prose)] placeholder:text-[var(--chat-faint)] outline-none disabled:opacity-50"

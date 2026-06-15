@@ -1284,6 +1284,56 @@ impl ToolExecutor {
             serde_json::json!({
                 "type": "function",
                 "function": {
+                    "name": "robot_save",
+                    "description": "Create or update a Robot configuration. A Robot is a specialized AI role that binds a set of skills and a workflow. Only available in robot-create mode.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "Robot directory name (lowercase, hyphens, no spaces). E.g. 'code-reviewer', 'security-auditor'."
+                            },
+                            "config": {
+                                "type": "object",
+                                "description": "Complete robot.json content.",
+                                "properties": {
+                                    "name": { "type": "string", "description": "Human-readable robot name." },
+                                    "description": { "type": "string", "description": "What this robot does." },
+                                    "icon": { "type": "string", "description": "Icon identifier for the robot." },
+                                    "skills": {
+                                        "type": "array",
+                                        "items": { "type": "string" },
+                                        "description": "Local skill IDs from codey/skills/."
+                                    },
+                                    "pluginSkills": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "pluginId": { "type": "string" },
+                                                "skillId": { "type": "string" }
+                                            },
+                                            "required": ["pluginId", "skillId"]
+                                        },
+                                        "description": "Plugin skill references."
+                                    },
+                                    "workflow": {
+                                        "type": "array",
+                                        "items": { "type": "string" },
+                                        "description": "Ordered workflow steps describing how to use the skills."
+                                    },
+                                    "systemPrompt": { "type": "string", "description": "Role definition and behavior rules for the robot." }
+                                },
+                                "required": ["name", "description", "skills", "workflow", "systemPrompt"]
+                            }
+                        },
+                        "required": ["id", "config"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
                     "name": "code_review",
                     "description": "Review the current git diff or a diff against a base ref. It summarizes changed files, runs git diff --check, and flags obvious risks such as secret-looking additions, risky APIs, debug logging, and source changes without matching tests.",
                     "parameters": {
@@ -2344,6 +2394,10 @@ impl ToolExecutor {
             }
             "plugin_manage" => {
                 self.exec_plugin_manage(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "robot_save" => {
+                self.exec_robot_save(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "code_review" => {
@@ -4673,6 +4727,95 @@ impl ToolExecutor {
         let output = truncate_output(&output, 20_000);
         self.emit_tool_end(app_handle, thread_id, call_id, "plugin_manage", 0, &output);
         Ok(output)
+    }
+
+    async fn exec_robot_save(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct RobotSaveArgs {
+            id: Option<String>,
+            config: Option<serde_json::Value>,
+        }
+
+        let args: RobotSaveArgs = match serde_json::from_str(arguments) {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = format!("Invalid robot_save args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "robot_save", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let robot_id = args
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unnamed-robot");
+
+        self.emit_tool_start(app_handle, thread_id, call_id, "robot_save", robot_id);
+
+        let Some(config_value) = args.config else {
+            let msg = "robot_save requires a config object".to_string();
+            self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
+            return Ok(msg);
+        };
+
+        let mut config: crate::robot_loader::RobotConfig = match serde_json::from_value(config_value) {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("Invalid robot config: {e}");
+                self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if config.created_at == 0 {
+            config.created_at = now;
+        }
+        config.updated_at = now;
+
+        match crate::robot_loader::save_robot(&self.workspace_config_dir, robot_id, &config) {
+            Ok(detail) => {
+                let output = serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "created",
+                    "robotId": detail.id,
+                    "name": config.name,
+                    "path": detail.path,
+                    "skillsCount": config.skills.len() + config.plugin_skills.len(),
+                    "workflowSteps": config.workflow.len(),
+                }))
+                .unwrap_or_default();
+
+                app_handle
+                    .emit(
+                        "robot-created",
+                        serde_json::json!({
+                            "threadId": thread_id,
+                            "robotId": detail.id,
+                            "name": config.name,
+                        }),
+                    )
+                    .ok();
+
+                self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", 0, &output);
+                Ok(output)
+            }
+            Err(msg) => {
+                self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
+                Ok(msg)
+            }
+        }
     }
 
     async fn exec_code_review(

@@ -98,6 +98,7 @@ fn prepare_workspace_config_dir(project_root: &Path) -> PathBuf {
     let _ = std::fs::create_dir_all(workspace_dir.join("skills"));
     let _ = std::fs::create_dir_all(workspace_dir.join("plugins"));
     let _ = std::fs::create_dir_all(workspace_dir.join("memories"));
+    let _ = std::fs::create_dir_all(workspace_dir.join("robots"));
     workspace_dir
 }
 

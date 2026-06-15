@@ -645,6 +645,9 @@ interface AppState {
   browserPanelStatus: "idle" | "running" | "success" | "failed";
   autoApprove: boolean;
 
+  selectedRobotId: string | null;
+  robotCreateMode: boolean;
+
   setInitialized: (v: boolean) => void;
   setInitError: (err: string | null) => void;
   retryInit: (() => void) | null;
@@ -717,6 +720,8 @@ interface AppState {
   toggleRightPanel: () => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
   setAutoApprove: (v: boolean) => void;
+  setSelectedRobotId: (id: string | null) => void;
+  setRobotCreateMode: (v: boolean) => void;
   setBrowserPanelState: (state: Partial<{
     url: string | null;
     title: string | null;
@@ -758,6 +763,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentGoal: null,
   showSettings: false,
   autoApprove: false,
+  selectedRobotId: null,
+  robotCreateMode: false,
   rightPanelVisible: false,
   rightPanelTab: "browser",
   browserPanelUrl: null,
@@ -769,7 +776,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   retryInit: null,
   setRetryInit: (fn) => set({ retryInit: fn }),
   setCurrentThread: (id) => {
-    set({ currentThreadId: id, messages: [], streamingText: "", streamingLabel: "", currentGoal: null });
+    set({ currentThreadId: id, messages: [], streamingText: "", streamingLabel: "", currentGoal: null, selectedRobotId: null, robotCreateMode: false });
   },
   startNewThreadWithMessage: (threadId, message) => {
     set({
@@ -1145,6 +1152,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAutoApprove: (v) => {
     void appStateSet(AUTO_APPROVE_KEY, String(v));
     set({ autoApprove: v });
+  },
+  setSelectedRobotId: (id) => {
+    set({ selectedRobotId: id, robotCreateMode: false });
+    if (id) {
+      set({ chatMode: "goal" });
+    }
+  },
+  setRobotCreateMode: (v) => {
+    set({ robotCreateMode: v, selectedRobotId: null });
   },
   setRightPanelVisible: (v) => set({ rightPanelVisible: v }),
   toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),

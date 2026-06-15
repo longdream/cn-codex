@@ -14,11 +14,10 @@ import {
   useAppStore,
   GENERAL_PROJECT_ID,
   type ChatMode,
-  type ChatSendOptions,
   type ThreadGoal,
 } from "../../stores/appStore";
 import type { AttachedFile } from "../../types/provider";
-import { ChatInput, type ParsedGoalCommand } from "./ChatInput";
+import { ChatInput, type ParsedGoalCommand, type ChatSendExtendedOptions } from "./ChatInput";
 import { MessageList } from "./MessageList";
 
 export function ChatPage() {
@@ -38,13 +37,18 @@ export function ChatPage() {
       text: string,
       mode: ChatMode,
       attachments: AttachedFile[] = [],
-      options: ChatSendOptions = {},
+      options: ChatSendExtendedOptions = {},
     ) => {
       const state = useAppStore.getState();
       const inGeneral = state.currentProjectId === GENERAL_PROJECT_ID;
       const cwd = state.workspaceCwd || state.projectRoot || state.userHomeDir;
       if (!cwd) return;
-      const actualMode: ChatMode = inGeneral ? "chat" : mode;
+      let actualMode: ChatMode | "robot-create" | "robot-modify" = inGeneral ? "chat" : mode;
+      if (options.robotCreateMode) {
+        actualMode = "robot-create" as ChatMode;
+      } else if (options.robotModifyMode) {
+        actualMode = "robot-modify" as ChatMode;
+      }
       const goalRunning = actualMode === "goal" && state.currentGoal?.status === "active";
       if (goalRunning) return;
       const displayText = formatUserMessageDisplay(text, attachments);
@@ -99,9 +103,10 @@ export function ChatPage() {
           threadId,
           text,
           cwd,
-          actualMode,
+          actualMode as "chat" | "goal" | "robot-create" | "robot-modify",
           attachments,
           options.goalBudgetTokens,
+          options.robotId,
         );
       } catch (err) {
         const store = useAppStore.getState();
