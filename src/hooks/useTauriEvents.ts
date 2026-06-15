@@ -365,6 +365,22 @@ export function useTauriEvents() {
             if ("goal" in e.payload) {
               store.setCurrentGoal(e.payload.goal ?? null);
             }
+            const latestStore = useAppStore.getState();
+            const currentSummary = latestStore.threads.find((thread) => thread.id === e.payload.threadId);
+            if (currentSummary && currentSummary.preview.trim().length === 0) {
+              const userMessages = latestStore.messages.filter((message) => message.role === "user");
+              if (userMessages.length === 1) {
+                const preview = userMessages[0].content.trim().slice(0, 60);
+                if (preview) {
+                  // turn-completed 兜底：只在“仅有 1 条 user 消息”的新会话场景回填标题，
+                  // 既保证实时可见，又避免把历史旧会话批量回填（符合“仅修复未来会话”约束）。
+                  latestStore.updateThreadSummary(e.payload.threadId, {
+                    preview,
+                    updatedAt: Date.now(),
+                  });
+                }
+              }
+            }
             // turn 已结束但仍有 running 工具时，做一次兜底收敛，避免 UI 长时间转圈。
             store.markRunningToolCallsInterrupted(
               "Turn completed before tool status settled.",

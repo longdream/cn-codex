@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info};
 
 use crate::error::{AppError, AppResult};
@@ -171,6 +175,11 @@ enum RolloutLine {
 pub struct ThreadStore {
     sessions_dir: PathBuf,
     threads: Arc<RwLock<HashMap<String, StoredThread>>>,
+    /// 标记会话是否已完成首次磁盘加载。
+    /// 启动时保持 false，可显著缩短 AppState::new 的同步路径。
+    loaded: AtomicBool,
+    /// 确保首次加载只有一个任务执行，避免并发命令重复扫盘。
+    load_lock: Mutex<()>,
 }
 
 impl ThreadStore {
@@ -178,22 +187,64 @@ impl ThreadStore {
         let sessions_dir = workspace_dir.join("sessions");
         let _ = std::fs::create_dir_all(&sessions_dir);
 
-        let store = Self {
+        Self {
             sessions_dir,
             threads: Arc::new(RwLock::new(HashMap::new())),
-        };
-
-        store.load_all_sync();
-        store
+            loaded: AtomicBool::new(false),
+            load_lock: Mutex::new(()),
+        }
     }
 
     fn thread_file(&self, thread_id: &str) -> PathBuf {
         self.sessions_dir.join(format!("{thread_id}.jsonl"))
     }
 
-    fn load_all_sync(&self) {
-        let Ok(entries) = std::fs::read_dir(&self.sessions_dir) else {
+    /// 后台预热线程数据（可在 setup 阶段 fire-and-forget 调用）。
+    /// 即使未预热，首次读写线程时也会自动触发按需加载。
+    pub async fn preload_threads(&self) {
+        self.ensure_loaded().await;
+    }
+
+    /// 确保线程索引至少加载一次。
+    /// 采用“双重检查 + 互斥锁”避免并发请求重复扫盘。
+    async fn ensure_loaded(&self) {
+        if self.loaded.load(Ordering::Acquire) {
             return;
+        }
+
+        let _guard = self.load_lock.lock().await;
+        if self.loaded.load(Ordering::Acquire) {
+            return;
+        }
+
+        let sessions_dir = self.sessions_dir.clone();
+        let started_at = Instant::now();
+        let load_task = tokio::task::spawn_blocking(move || Self::load_all_sync(&sessions_dir));
+        let loaded_threads = match load_task.await {
+            Ok(threads) => threads,
+            Err(join_err) => {
+                error!(
+                    "ThreadStore lazy load task failed: {join_err}. fallback to empty thread map"
+                );
+                HashMap::new()
+            }
+        };
+
+        let loaded_count = loaded_threads.len();
+        *self.threads.write().await = loaded_threads;
+        self.loaded.store(true, Ordering::Release);
+        info!(
+            "ThreadStore lazy load completed: {} threads, {} ms",
+            loaded_count,
+            started_at.elapsed().as_millis()
+        );
+    }
+
+    /// 同步扫描 sessions 目录并重建内存索引。
+    /// 仅在 spawn_blocking 线程里调用，避免阻塞 async runtime。
+    fn load_all_sync(sessions_dir: &Path) -> HashMap<String, StoredThread> {
+        let Ok(entries) = std::fs::read_dir(sessions_dir) else {
+            return HashMap::new();
         };
 
         let mut threads = HashMap::new();
@@ -206,8 +257,7 @@ impl ThreadStore {
             }
         }
 
-        info!("Loaded {} threads from disk", threads.len());
-        *self.threads.blocking_write() = threads;
+        threads
     }
 
     fn load_thread_file(path: &Path) -> Option<StoredThread> {
@@ -388,6 +438,8 @@ impl ThreadStore {
     }
 
     pub async fn create_thread(&self, model: Option<String>) -> AppResult<StoredThread> {
+        // 先确保内存索引已与磁盘对齐，避免后续插入覆盖尚未加载的数据。
+        self.ensure_loaded().await;
         let thread_id = uuid::Uuid::new_v4().to_string();
         let now = now_secs();
 
@@ -421,6 +473,7 @@ impl ThreadStore {
         mode: Option<String>,
         goal_budget_tokens: Option<u64>,
     ) -> AppResult<String> {
+        self.ensure_loaded().await;
         let turn_id = uuid::Uuid::new_v4().to_string();
         let now = now_secs();
 
@@ -455,6 +508,7 @@ impl ThreadStore {
     }
 
     pub async fn add_message(&self, thread_id: &str, msg: ThreadMessage) -> AppResult<()> {
+        self.ensure_loaded().await;
         self.append_line(thread_id, &RolloutLine::Message(msg.clone()))?;
 
         let mut threads = self.threads.write().await;
@@ -476,6 +530,7 @@ impl ThreadStore {
         usage: Option<TurnUsage>,
         budget_limited: bool,
     ) -> AppResult<i64> {
+        self.ensure_loaded().await;
         let now = now_secs();
         self.append_line(
             thread_id,
@@ -504,6 +559,7 @@ impl ThreadStore {
     }
 
     pub async fn set_thread_name(&self, thread_id: &str, name: String) -> AppResult<()> {
+        self.ensure_loaded().await;
         let now = now_secs();
         self.append_line(
             thread_id,
@@ -528,6 +584,7 @@ impl ThreadStore {
         status: ThreadGoalStatus,
         token_budget: Option<u64>,
     ) -> AppResult<ThreadGoal> {
+        self.ensure_loaded().await;
         if objective.trim().is_empty() {
             return Err(AppError::Custom(
                 "Goal objective cannot be empty".to_string(),
@@ -564,6 +621,7 @@ impl ThreadStore {
         thread_id: &str,
         status: ThreadGoalStatus,
     ) -> AppResult<ThreadGoal> {
+        self.ensure_loaded().await;
         let current_goal = self
             .get_thread(thread_id)
             .await
@@ -594,6 +652,7 @@ impl ThreadStore {
         objective: String,
         token_budget: Option<u64>,
     ) -> AppResult<ThreadGoal> {
+        self.ensure_loaded().await;
         if objective.trim().is_empty() {
             return Err(AppError::Custom(
                 "Goal objective cannot be empty".to_string(),
@@ -628,6 +687,7 @@ impl ThreadStore {
     }
 
     pub async fn clear_thread_goal(&self, thread_id: &str) -> AppResult<()> {
+        self.ensure_loaded().await;
         if !self.threads.read().await.contains_key(thread_id) {
             return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
         }
@@ -648,6 +708,7 @@ impl ThreadStore {
         thread_id: &str,
         total_tokens: u64,
     ) -> AppResult<Option<ThreadGoal>> {
+        self.ensure_loaded().await;
         let Some(current_goal) = self
             .get_thread(thread_id)
             .await
@@ -681,6 +742,7 @@ impl ThreadStore {
     }
 
     pub async fn list_threads(&self) -> Vec<StoredThread> {
+        self.ensure_loaded().await;
         let threads = self.threads.read().await;
         let mut list: Vec<StoredThread> = threads.values().cloned().collect();
         list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -688,10 +750,12 @@ impl ThreadStore {
     }
 
     pub async fn get_thread(&self, thread_id: &str) -> Option<StoredThread> {
+        self.ensure_loaded().await;
         self.threads.read().await.get(thread_id).cloned()
     }
 
     pub async fn get_thread_messages(&self, thread_id: &str) -> Vec<ThreadMessage> {
+        self.ensure_loaded().await;
         let threads = self.threads.read().await;
         threads
             .get(thread_id)
@@ -700,6 +764,7 @@ impl ThreadStore {
     }
 
     pub async fn get_thread_total_tokens(&self, thread_id: &str) -> u64 {
+        self.ensure_loaded().await;
         let threads = self.threads.read().await;
         let Some(thread) = threads.get(thread_id) else {
             return 0;
@@ -722,6 +787,7 @@ impl ThreadStore {
     }
 
     pub async fn delete_thread(&self, thread_id: &str) -> AppResult<()> {
+        self.ensure_loaded().await;
         let path = self.thread_file(thread_id);
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| {
@@ -737,6 +803,7 @@ impl ThreadStore {
         thread_id: &str,
         new_messages: Vec<ThreadMessage>,
     ) -> AppResult<()> {
+        self.ensure_loaded().await;
         let mut threads = self.threads.write().await;
         let Some(thread) = threads.get_mut(thread_id) else {
             return Err(AppError::Custom(format!(

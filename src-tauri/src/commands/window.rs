@@ -66,6 +66,17 @@ pub fn window_close(window: Window) -> AppResult<()> {
 }
 
 #[tauri::command]
+pub fn window_show_main(app: AppHandle) -> AppResult<()> {
+    if let Some(window) = app.get_webview_window("main") {
+        // 仅在隐藏状态下执行 show，避免重复 show 导致额外窗口闪动。
+        if !window.is_visible().unwrap_or(true) {
+            window.show()?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn window_open_browser(
     app: AppHandle,
     state: State<'_, AppState>,

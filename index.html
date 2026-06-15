@@ -5,9 +5,41 @@
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CN-Codex</title>
+    <style>
+      /*
+       * 启动白屏兜底样式：
+       * 发布版在 JS/CSS 还未加载完成时，WebView 会先显示 index.html。
+       * 这里内联深色背景和轻量启动文案，避免用户先看到整窗纯白。
+       */
+      html, body, #root {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: #1a1a1a;
+      }
+
+      body {
+        color: #d1d5db;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      .boot-splash {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        opacity: 0.8;
+        user-select: none;
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- React 挂载前的占位内容；挂载后会被完整替换。 -->
+      <div class="boot-splash">CN-Codex 正在启动...</div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

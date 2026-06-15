@@ -24,6 +24,10 @@ export async function windowClose(): Promise<void> {
   await invoke("window_close");
 }
 
+export async function windowShowMain(): Promise<void> {
+  await invoke("window_show_main");
+}
+
 export async function windowOpenBrowser(
   url?: string,
   rect?: { x: number; y: number; width: number; height: number },

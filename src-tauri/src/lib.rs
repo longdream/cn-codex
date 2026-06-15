@@ -20,7 +20,9 @@ pub mod usage;
 use state::AppState;
 use tauri::Manager;
 
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
+use tracing::{info, warn};
 
 /// 移动端服务器运行时信息
 pub struct MobileServerInfo {
@@ -46,7 +48,43 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        .manage(AppState::new())
         .setup(|app| {
+            // 启动后台预热：把线程索引加载放到异步任务，避免阻塞窗口出现。
+            let preload_store = app.state::<AppState>().thread_store.clone();
+            tauri::async_runtime::spawn(async move {
+                let preload_started_at = Instant::now();
+                preload_store.preload_threads().await;
+                info!(
+                    "[startup][rust] thread_store_preload task finished in {} ms",
+                    preload_started_at.elapsed().as_millis()
+                );
+            });
+
+            // 兜底保护：若前端未及时发送“显示主窗口”请求，8 秒后强制显示一次，
+            // 避免极端异常导致窗口永久隐藏（可恢复性优先于完美无闪屏）。
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(8)).await;
+                if let Some(main_window) = app_handle.get_webview_window("main") {
+                    match main_window.is_visible() {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            if let Err(show_err) = main_window.show() {
+                                warn!("[startup][rust] fallback show main window failed: {show_err}");
+                            } else {
+                                warn!("[startup][rust] fallback showed main window after timeout");
+                            }
+                        }
+                        Err(visible_err) => {
+                            warn!(
+                                "[startup][rust] failed to query main window visibility: {visible_err}"
+                            );
+                        }
+                    }
+                }
+            });
+
             #[cfg(debug_assertions)]
             {
                 if let Some(webview) = app.get_webview_window("main") {
@@ -55,7 +93,6 @@ pub fn run() {
             }
             Ok(())
         })
-        .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::greet,
             commands::get_server_status,
@@ -128,6 +165,7 @@ pub fn run() {
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_close,
+            commands::window_show_main,
             commands::window_open_browser,
             commands::window_resize_browser,
             commands::window_navigate_browser,

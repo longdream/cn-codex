@@ -65,6 +65,7 @@ export function ChatPage() {
             useAppStore.getState().startNewThreadWithMessage(threadId, userMessage);
             useAppStore.getState().addThread({
               id: threadId,
+              // 新线程在创建当次就写入 preview，确保侧边栏能立即显示主题。
               preview: displayText.slice(0, 60),
               updatedAt: Date.now(),
               projectId: useAppStore.getState().currentProjectId ?? undefined,
@@ -76,6 +77,20 @@ export function ChatPage() {
         }
       } else {
         useAppStore.getState().addMessage(userMessage);
+        const currentThread = state.threads.find((thread) => thread.id === threadId);
+        const shouldSyncPreview =
+          state.messages.length === 0 &&
+          !!currentThread &&
+          currentThread.preview.trim().length === 0;
+        if (shouldSyncPreview) {
+          // 仅在“空白新会话发送第一条消息”时回填 preview：
+          // 1) 修复实时标题显示；
+          // 2) 避免批量改动历史会话（按需求仅修复未来会话）。
+          useAppStore.getState().updateThreadSummary(threadId, {
+            preview: displayText.slice(0, 60),
+            updatedAt: Date.now(),
+          });
+        }
       }
       if (!threadId) return;
 

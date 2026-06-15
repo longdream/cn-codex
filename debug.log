@@ -13,3 +13,7 @@
 [0611/153454.028:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: 系统找不到指定的文件。 (0x2)
 [0611/154722.664:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: 系统找不到指定的文件。 (0x2)
 [0611/155234.069:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: 系统找不到指定的文件。 (0x2)
+[0615/171331.878:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: 系统找不到指定的文件。 (0x2)
+[0615/171333.011:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: 系统找不到指定的文件。 (0x2)
+[0615/173323.605:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: 系统找不到指定的文件。 (0x2)
+[0615/173324.465:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: 系统找不到指定的文件。 (0x2)

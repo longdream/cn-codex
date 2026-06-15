@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{RwLock, mpsc};
+use tracing::info;
 
 use crate::agent::AgentEngine;
 use crate::config_system::ConfigManager;
@@ -101,32 +103,84 @@ fn prepare_workspace_config_dir(project_root: &Path) -> PathBuf {
 
 impl AppState {
     pub fn new() -> Self {
+        // 启动阶段耗时打点：用于定位“每次启动都慢”的真实瓶颈。
+        let startup_started_at = Instant::now();
+
+        let phase_started_at = Instant::now();
         let project_root = resolve_project_root();
+        info!(
+            "[startup][rust] resolve_project_root done in {} ms",
+            phase_started_at.elapsed().as_millis()
+        );
+
+        let phase_started_at = Instant::now();
         let workspace_config_dir = prepare_workspace_config_dir(&project_root);
+        info!(
+            "[startup][rust] prepare_workspace_config_dir done in {} ms",
+            phase_started_at.elapsed().as_millis()
+        );
         let config_path = workspace_config_dir.join("config.toml");
         let cwd = project_root.to_string_lossy().to_string();
 
         let (approval_tx, approval_rx) = mpsc::channel(64);
 
+        let phase_started_at = Instant::now();
         let config_manager = ConfigManager::new(config_path.clone());
+        info!(
+            "[startup][rust] config_manager_init done in {} ms",
+            phase_started_at.elapsed().as_millis()
+        );
+
+        let phase_started_at = Instant::now();
         let thread_store = Arc::new(ThreadStore::new(&workspace_config_dir));
+        info!(
+            "[startup][rust] thread_store_construct done in {} ms",
+            phase_started_at.elapsed().as_millis()
+        );
+
+        let phase_started_at = Instant::now();
         let tool_executor = ToolExecutor::with_workspace_config_dir(
             project_root.clone(),
             workspace_config_dir.clone(),
         );
+        info!(
+            "[startup][rust] tool_executor_init done in {} ms",
+            phase_started_at.elapsed().as_millis()
+        );
+
+        let phase_started_at = Instant::now();
         let mut agent_engine =
             AgentEngine::new(thread_store.clone(), tool_executor, project_root.clone())
                 .expect("failed to create agent engine");
+        info!(
+            "[startup][rust] agent_engine_init done in {} ms",
+            phase_started_at.elapsed().as_millis()
+        );
 
         // 初始化用量追踪
+        let phase_started_at = Instant::now();
         let db_path = workspace_config_dir.join("usage.db");
         let usage_db = Arc::new(UsageDb::open(&db_path).expect("failed to open usage database"));
         let pricing_table = Arc::new(std::sync::RwLock::new(PricingTable::new()));
+        info!(
+            "[startup][rust] usage_db_open done in {} ms",
+            phase_started_at.elapsed().as_millis()
+        );
 
         // 将 recorder 注入 agent engine
+        let phase_started_at = Instant::now();
         let recorder_arc = Arc::new(UsageRecorder::new(usage_db.clone(), pricing_table.clone()));
         agent_engine.set_usage_recorder(recorder_arc);
         let agent_engine = Arc::new(agent_engine);
+        info!(
+            "[startup][rust] usage_recorder_bind done in {} ms",
+            phase_started_at.elapsed().as_millis()
+        );
+
+        info!(
+            "[startup][rust] AppState::new total {} ms",
+            startup_started_at.elapsed().as_millis()
+        );
 
         Self {
             locale: RwLock::new("zh-CN".to_string()),

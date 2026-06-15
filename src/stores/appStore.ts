@@ -691,6 +691,14 @@ interface AppState {
 
   setThreads: (threads: ThreadSummary[]) => void;
   addThread: (thread: ThreadSummary) => void;
+  /**
+   * 按 threadId 局部更新会话摘要字段。
+   * 只允许更新侧边栏展示所需的轻量字段，避免误覆盖消息等重数据。
+   */
+  updateThreadSummary: (
+    threadId: string,
+    patch: Partial<Pick<ThreadSummary, "name" | "preview" | "updatedAt">>,
+  ) => void;
   /** 删除指定对话 */
   deleteThread: (threadId: string) => void;
   setMessages: (messages: ChatMessage[]) => void;
@@ -1001,6 +1009,37 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((s) => ({ threads: [thread, ...s.threads] }));
     }
   },
+  updateThreadSummary: (threadId, patch) =>
+    set((state) => {
+      const index = state.threads.findIndex((thread) => thread.id === threadId);
+      if (index < 0) {
+        return {};
+      }
+
+      const current = state.threads[index];
+      const nextName = patch.name !== undefined ? patch.name : current.name;
+      const nextPreview = patch.preview !== undefined ? patch.preview : current.preview;
+      const nextUpdatedAt = patch.updatedAt ?? current.updatedAt;
+
+      // 避免无意义 setState：字段都没变化时直接跳过，减少渲染抖动。
+      if (
+        nextName === current.name &&
+        nextPreview === current.preview &&
+        nextUpdatedAt === current.updatedAt
+      ) {
+        return {};
+      }
+
+      const nextThread: ThreadSummary = {
+        ...current,
+        name: nextName,
+        preview: nextPreview,
+        updatedAt: nextUpdatedAt,
+      };
+      const threads = [...state.threads];
+      threads[index] = nextThread;
+      return { threads };
+    }),
 
   deleteThread: (threadId: string) => {
     const isCurrent = get().currentThreadId === threadId;
