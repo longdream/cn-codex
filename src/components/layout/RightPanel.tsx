@@ -1,8 +1,10 @@
-import { IconBrowser, IconExternalLink, IconFolderOpen, IconX } from "@tabler/icons-react";
+import { IconBrowser, IconExternalLink, IconFolderOpen, IconRefresh, IconX } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useIntl } from "react-intl";
 import { useAppStore } from "../../stores/appStore";
 import { revealInExplorer, windowCloseBrowser, windowOpenBrowser, windowResizeBrowser } from "../../api/window";
+import { FileTree } from "./FileTree";
 
 function latestBrowserToolCall(messages: ReturnType<typeof useAppStore.getState>["messages"]) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -296,27 +298,48 @@ export function RightPanel() {
           </div>
         </div>
       ) : (
-        <div className="flex flex-1 flex-col p-3">
-          <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3">
-            <p className="text-xs font-semibold text-[var(--text-strong)]">Current project</p>
-            <p className="mt-2 break-all font-mono text-[11px] text-[var(--text-muted)]">
-              {workspaceCwd ?? "No project selected"}
-            </p>
-            <button
-              onClick={() => {
-                if (workspaceCwd) {
-                  void revealInExplorer(workspaceCwd);
-                }
-              }}
-              disabled={!workspaceCwd}
-              className="mt-3 flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-1.5 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text-strong)] disabled:opacity-40"
-            >
-              <IconFolderOpen size={14} stroke={1.8} />
-              Open in Explorer
-            </button>
-          </div>
-        </div>
+        <ProjectTab workspaceCwd={workspaceCwd} />
       )}
     </aside>
+  );
+}
+
+function ProjectTab({ workspaceCwd }: { workspaceCwd: string | null }) {
+  const intl = useIntl();
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const projectName = workspaceCwd
+    ? workspaceCwd.split(/[\\/]/).filter(Boolean).pop() ?? workspaceCwd
+    : null;
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-2">
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-[var(--text-strong)]" title={workspaceCwd ?? undefined}>
+          {projectName ?? intl.formatMessage({ id: "fileTree.noProject" })}
+        </span>
+        {workspaceCwd && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setRefreshKey((k) => k + 1)}
+              className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+              title={intl.formatMessage({ id: "fileTree.refresh" })}
+            >
+              <IconRefresh size={14} stroke={1.8} />
+            </button>
+            <button
+              type="button"
+              onClick={() => void revealInExplorer(workspaceCwd)}
+              className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+              title={intl.formatMessage({ id: "fileTree.openInExplorer" })}
+            >
+              <IconFolderOpen size={14} stroke={1.8} />
+            </button>
+          </div>
+        )}
+      </div>
+      <FileTree rootPath={workspaceCwd} refreshKey={refreshKey} />
+    </div>
   );
 }

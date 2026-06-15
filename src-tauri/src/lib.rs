@@ -173,6 +173,8 @@ pub fn run() {
             commands::reveal_in_explorer,
             commands::window_toggle_devtools,
             commands::get_user_home_dir,
+            commands::read_directory,
+            commands::read_file_for_attach,
             // Mobile server
             commands::start_mobile_server,
             commands::stop_mobile_server,

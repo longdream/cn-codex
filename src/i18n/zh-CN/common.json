@@ -305,5 +305,11 @@
   "settings.integration.mcpImportBtn": "导入",
   "settings.integration.mcpJsonHint": "粘贴 MCP 服务配置 JSON（格式：{ \"name\": { \"command\": \"...\", \"args\": [...] } }）",
   "settings.integration.mcpJsonInvalid": "无效的 JSON 格式，请检查后重试",
-  "settings.integration.mcpDeleteConfirm": "确定删除 MCP 服务 \"{name}\"？"
+  "settings.integration.mcpDeleteConfirm": "确定删除 MCP 服务 \"{name}\"？",
+  "fileTree.noProject": "未选择项目",
+  "fileTree.loading": "加载中...",
+  "fileTree.emptyDir": "空目录",
+  "fileTree.refresh": "刷新文件树",
+  "fileTree.openInExplorer": "在资源管理器中打开",
+  "fileTree.addToChat": "加入对话"
 }

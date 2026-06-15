@@ -78,4 +78,6 @@ export interface AttachedFile {
   dataUrl: string;
   /** 文件大小（字节） */
   size: number;
+  /** 项目内文件的绝对路径（来自文件树拖拽时设置） */
+  sourcePath?: string;
 }

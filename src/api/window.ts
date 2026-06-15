@@ -66,3 +66,27 @@ export async function revealInExplorer(path: string): Promise<void> {
 export async function getUserHomeDir(): Promise<string> {
   return invoke<string>("get_user_home_dir");
 }
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+}
+
+export async function readDirectory(path: string): Promise<FileEntry[]> {
+  return invoke<FileEntry[]>("read_directory", { path });
+}
+
+export interface FileAttachResult {
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+  size: number;
+  sourcePath: string;
+  truncated: boolean;
+}
+
+export async function readFileForAttach(path: string): Promise<FileAttachResult> {
+  return invoke<FileAttachResult>("read_file_for_attach", { path });
+}

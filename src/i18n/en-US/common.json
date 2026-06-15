@@ -305,5 +305,11 @@
   "settings.integration.mcpImportBtn": "Import",
   "settings.integration.mcpJsonHint": "Paste MCP server config JSON (format: { \"name\": { \"command\": \"...\", \"args\": [...] } })",
   "settings.integration.mcpJsonInvalid": "Invalid JSON format, please check and try again",
-  "settings.integration.mcpDeleteConfirm": "Delete MCP server \"{name}\"?"
+  "settings.integration.mcpDeleteConfirm": "Delete MCP server \"{name}\"?",
+  "fileTree.noProject": "No project selected",
+  "fileTree.loading": "Loading...",
+  "fileTree.emptyDir": "Empty directory",
+  "fileTree.refresh": "Refresh file tree",
+  "fileTree.openInExplorer": "Open in Explorer",
+  "fileTree.addToChat": "Add to Chat"
 }

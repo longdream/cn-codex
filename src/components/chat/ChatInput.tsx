@@ -17,6 +17,7 @@ import { useIntl } from "react-intl";
 import { useAppStore, type ChatMode, type ChatSendOptions } from "../../stores/appStore";
 import { SlashCommandPanel, getDefaultSlashCommands } from "./SlashCommandPanel";
 import type { AttachedFile } from "../../types/provider";
+import { readFileForAttach } from "../../api/window";
 
 /** 支持的文档 MIME 类型和扩展名 */
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
@@ -272,7 +273,7 @@ export function ChatInput({
     e.preventDefault();
     e.stopPropagation();
     dragCounter.current += 1;
-    if (e.dataTransfer.types.includes("Files")) {
+    if (e.dataTransfer.types.includes("Files") || e.dataTransfer.types.includes("application/x-cn-codex-file")) {
       setIsDragging(true);
     }
   }, []);
@@ -297,6 +298,28 @@ export function ChatInput({
     e.stopPropagation();
     setIsDragging(false);
     dragCounter.current = 0;
+
+    const projectFileData = e.dataTransfer.getData("application/x-cn-codex-file");
+    if (projectFileData) {
+      try {
+        const { path, name } = JSON.parse(projectFileData) as { path: string; name: string };
+        void readFileForAttach(path).then((result) => {
+          const attached: AttachedFile = {
+            name: result.name || name,
+            type: result.mimeType,
+            dataUrl: result.dataUrl,
+            size: result.size,
+            sourcePath: result.sourcePath,
+          };
+          useAppStore.getState().addAttachedFile(attached);
+        }).catch((err) => {
+          console.error("Failed to read project file:", err);
+        });
+      } catch {
+        console.error("Failed to parse project file data");
+      }
+      return;
+    }
 
     const files = e.dataTransfer.files;
     if (!files || files.length === 0) return;

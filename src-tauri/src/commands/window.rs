@@ -389,6 +389,177 @@ pub fn get_user_home_dir() -> AppResult<String> {
     Ok(super::normalize_windows_verbatim_prefix(&home.to_string_lossy()))
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+const HIDDEN_DIRS: &[&str] = &[
+    ".git",
+    ".svn",
+    ".hg",
+    "node_modules",
+    "target",
+    ".next",
+    ".nuxt",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    "dist",
+    ".vscode",
+    ".idea",
+    ".DS_Store",
+];
+
+#[tauri::command]
+pub async fn read_directory(path: String) -> AppResult<Vec<FileEntry>> {
+    let display_path = normalize_windows_verbatim_prefix(&path);
+    let dir = std::path::Path::new(&display_path);
+    if !dir.is_dir() {
+        return Err(AppError::Custom(format!(
+            "Path is not a directory: {display_path}"
+        )));
+    }
+
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+
+    let entries = fs::read_dir(dir)
+        .map_err(|e| AppError::Custom(format!("Failed to read directory: {e}")))?;
+
+    for entry in entries.flatten() {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if file_name.starts_with('.') && HIDDEN_DIRS.contains(&file_name.as_str()) {
+            continue;
+        }
+        if HIDDEN_DIRS.contains(&file_name.as_str()) {
+            continue;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        let entry_path = entry.path();
+        let abs_path = super::normalize_windows_verbatim_prefix(&entry_path.to_string_lossy());
+
+        let fe = FileEntry {
+            name: file_name,
+            path: abs_path,
+            is_dir: metadata.is_dir(),
+            size: metadata.len(),
+        };
+
+        if metadata.is_dir() {
+            dirs.push(fe);
+        } else {
+            files.push(fe);
+        }
+    }
+
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.append(&mut files);
+    Ok(dirs)
+}
+
+const MAX_ATTACH_SIZE: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAttachResult {
+    pub name: String,
+    pub mime_type: String,
+    pub data_url: String,
+    pub size: u64,
+    pub source_path: String,
+    pub truncated: bool,
+}
+
+#[tauri::command]
+pub async fn read_file_for_attach(path: String) -> AppResult<FileAttachResult> {
+    use base64::Engine;
+
+    let display_path = normalize_windows_verbatim_prefix(&path);
+    let file_path = std::path::Path::new(&display_path);
+    if !file_path.is_file() {
+        return Err(AppError::Custom(format!(
+            "Path is not a file: {display_path}"
+        )));
+    }
+
+    let metadata = fs::metadata(file_path)
+        .map_err(|e| AppError::Custom(format!("Failed to read file metadata: {e}")))?;
+    let file_size = metadata.len();
+    let file_name = file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let ext = file_path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "ts" | "tsx" | "jsx" => "text/typescript",
+        "rs" => "text/x-rust",
+        "py" => "text/x-python",
+        "md" => "text/markdown",
+        "txt" | "log" => "text/plain",
+        "toml" => "application/toml",
+        "yaml" | "yml" => "text/yaml",
+        "csv" => "text/csv",
+        "sh" | "bash" | "zsh" => "text/x-shellscript",
+        "sql" => "text/x-sql",
+        "go" => "text/x-go",
+        "java" => "text/x-java",
+        "c" | "h" => "text/x-c",
+        "cpp" | "cc" | "cxx" | "hpp" => "text/x-c++",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        _ => "application/octet-stream",
+    };
+
+    let truncated = file_size > MAX_ATTACH_SIZE;
+    let read_size = if truncated {
+        MAX_ATTACH_SIZE as usize
+    } else {
+        file_size as usize
+    };
+
+    let bytes = fs::read(file_path)
+        .map_err(|e| AppError::Custom(format!("Failed to read file: {e}")))?;
+    let actual_bytes = &bytes[..read_size.min(bytes.len())];
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(actual_bytes);
+    let data_url = format!("data:{mime};base64,{b64}");
+
+    Ok(FileAttachResult {
+        name: file_name,
+        mime_type: mime.to_string(),
+        data_url,
+        size: file_size,
+        source_path: display_path,
+        truncated,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
