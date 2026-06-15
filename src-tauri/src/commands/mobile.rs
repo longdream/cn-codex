@@ -15,6 +15,26 @@ struct RelayInfo {
     room_id: String,
 }
 
+/// 统一规范 relay 基础地址，避免配置里末尾 `/` 导致 `//m/...`、`//pc/...` 这类路径错误。
+/// 返回 None 代表输入为空或仅包含空白，调用方可按“未配置 relay”处理。
+fn normalize_relay_base_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed.trim_end_matches('/');
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+/// 统一拼装手机端访问地址，避免各处手写 `format!("{}/m/{}")` 再次引入双斜杠问题。
+fn build_relay_mobile_url(relay_base_url: &str, room_id: &str) -> String {
+    format!("{relay_base_url}/m/{room_id}")
+}
+
 #[tauri::command]
 pub async fn start_mobile_server(
     app_handle: AppHandle,
@@ -24,7 +44,10 @@ pub async fn start_mobile_server(
 
     // 如果已经有 relay 信息，直接返回 relay URL
     if let Some(relay_info) = RELAY_INFO.get() {
-        return Ok(format!("{}/m/{}", relay_info.relay_url, relay_info.room_id));
+        return Ok(build_relay_mobile_url(
+            &relay_info.relay_url,
+            &relay_info.room_id,
+        ));
     }
 
     if MOBILE_SERVER.get().is_some() {
@@ -77,7 +100,7 @@ pub async fn start_mobile_server(
         .read()
         .ok()
         .and_then(|c| c.relay_server_url.clone())
-        .filter(|u| !u.is_empty());
+        .and_then(|u| normalize_relay_base_url(&u));
 
     if let Some(relay_url) = relay_url {
         let room_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string();
@@ -105,7 +128,7 @@ pub async fn start_mobile_server(
             room_id: room_id.clone(),
         });
 
-        return Ok(format!("{}/m/{room_id}", relay_url));
+        return Ok(build_relay_mobile_url(&relay_url, &room_id));
     }
 
     let ip = mobile_server::get_local_ip();
@@ -126,7 +149,10 @@ pub fn get_mobile_server_status() -> Result<bool, String> {
 pub fn get_mobile_server_url() -> Result<String, String> {
     // 优先返回 relay URL
     if let Some(relay_info) = RELAY_INFO.get() {
-        return Ok(format!("{}/m/{}", relay_info.relay_url, relay_info.room_id));
+        return Ok(build_relay_mobile_url(
+            &relay_info.relay_url,
+            &relay_info.room_id,
+        ));
     }
 
     let info = MOBILE_SERVER.get().ok_or("Mobile server not started")?;

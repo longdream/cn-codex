@@ -62,7 +62,7 @@ const CATEGORIES: SkillCategory[] = [
   },
   {
     labelId: "settings.skills.category.mediaDesign",
-    ids: ["hyperframes", "taste-skill"],
+    ids: ["hyperframes", "taste-skill", "awesome-design-md"],
   },
 ];
 

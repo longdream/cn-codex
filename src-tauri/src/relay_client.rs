@@ -49,9 +49,21 @@ pub fn start_relay_client(
     });
 }
 
+/// relay 地址规范化：
+/// - 去掉首尾空白
+/// - 去掉末尾 `/`
+/// 这样可以避免拼接 ws 地址时出现 `//pc/{room_id}` 导致路由不匹配。
+fn normalize_relay_base_url(raw: &str) -> String {
+    raw.trim().trim_end_matches('/').to_string()
+}
+
 async fn relay_loop(relay_url: String, room_id: String, mobile_state: SharedMobileState) {
     loop {
-        let ws_url = format!("{}/pc/{room_id}", relay_url.replace("http://", "ws://").replace("https://", "wss://"));
+        let relay_base_url = normalize_relay_base_url(&relay_url);
+        let ws_base_url = relay_base_url
+            .replace("http://", "ws://")
+            .replace("https://", "wss://");
+        let ws_url = format!("{ws_base_url}/pc/{room_id}");
         info!("[relay_client] connecting to {ws_url}");
 
         match tokio_tungstenite::connect_async(&ws_url).await {

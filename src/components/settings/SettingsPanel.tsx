@@ -29,6 +29,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [relayServerUrl, setRelayServerUrl] = useState("");
   const [relaySaving, setRelaySaving] = useState(false);
 
+  // relay 地址规范化（去空白与末尾 `/`），避免配置被保存成 `http://host:8080/`
+  // 后续在拼接 `/m/...` 时出现 `//m/...`。
+  const normalizeRelayServerUrl = useCallback((value: string): string => {
+    return value.trim().replace(/\/+$/, "");
+  }, []);
+
   useEffect(() => {
     invoke<boolean>("get_mobile_server_status").then((running) => {
       setWebServerEnabled(running);
@@ -39,10 +45,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     // 加载 relay 服务器配置
     invoke<{ config?: { relay_server_url?: string } }>("standalone_config_read").then((result) => {
       if (result?.config?.relay_server_url) {
-        setRelayServerUrl(result.config.relay_server_url);
+        setRelayServerUrl(normalizeRelayServerUrl(result.config.relay_server_url));
       }
     }).catch(() => {});
-  }, []);
+  }, [normalizeRelayServerUrl]);
 
   const handleWebServerToggle = useCallback(async () => {
     if (webServerLoading) return;
@@ -235,9 +241,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       onClick={async () => {
                         setRelaySaving(true);
                         try {
+                          // 保存前统一规范化，确保后端与二维码使用的都是无尾斜杠地址。
+                          const normalizedRelayServerUrl = normalizeRelayServerUrl(relayServerUrl);
                           await invoke("standalone_config_write", {
-                            edits: [{ keyPath: "relay_server_url", value: relayServerUrl || "" }],
+                            edits: [{ keyPath: "relay_server_url", value: normalizedRelayServerUrl || "" }],
                           });
+                          setRelayServerUrl(normalizedRelayServerUrl);
                         } catch (err) {
                           console.error("Save relay url failed:", err);
                         } finally {

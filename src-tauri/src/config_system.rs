@@ -258,6 +258,23 @@ const RESERVED_PROVIDER_IDS: &[&str] = &[
     "amazon-bedrock",
 ];
 
+/// 统一整理 relay 地址：
+/// - 去除首尾空白
+/// - 去除末尾 `/`
+/// 这样在拼接 `/m/{room}` 与 `/pc/{room}` 时不会出现双斜杠。
+fn normalize_relay_server_url(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed.trim_end_matches('/');
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
 impl ConfigToml {
     pub fn load(path: &Path) -> AppResult<Self> {
         if !path.exists() {
@@ -305,7 +322,7 @@ impl ConfigToml {
                 self.model_auto_compact_token_limit = value.as_i64();
             }
             "relay_server_url" => {
-                self.relay_server_url = value.as_str().map(String::from).filter(|s| !s.is_empty());
+                self.relay_server_url = value.as_str().and_then(normalize_relay_server_url);
             }
             other if other.starts_with("model_providers.") => {
                 let provider_key = &other["model_providers.".len()..];
