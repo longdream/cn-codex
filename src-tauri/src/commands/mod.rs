@@ -12,6 +12,7 @@ pub mod thread;
 pub mod turn;
 pub mod usage;
 pub mod window;
+pub mod wps;
 
 use serde::Serialize;
 use tauri::State;
@@ -33,6 +34,7 @@ pub use turn::*;
 pub use usage::*;
 pub use mobile::*;
 pub use window::*;
+pub use wps::*;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

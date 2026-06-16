@@ -4,6 +4,7 @@ pub mod browser_automation;
 pub mod commands;
 pub mod compaction;
 pub mod config_system;
+pub mod conversation_logger;
 pub mod document_parser;
 pub mod error;
 pub mod hook_runtime;
@@ -19,9 +20,11 @@ pub mod terminal;
 pub mod thread_store;
 pub mod tool_executor;
 pub mod usage;
+pub mod wps_protocol;
+pub mod wps_server;
 
 use state::AppState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -86,6 +89,37 @@ pub fn run() {
                             );
                         }
                     }
+                }
+            });
+
+            // Spawn WPS event forwarding task.
+            let wps_server = app.state::<AppState>().wps_server.clone();
+            let wps_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut rx = match wps_server.take_event_receiver().await {
+                    Some(rx) => rx,
+                    None => return,
+                };
+                while let Some(event) = rx.recv().await {
+                    let (event_name, payload) = match event {
+                        wps_server::WpsEvent::Connected { conn_id, addin_name } => (
+                            "wps-connected",
+                            serde_json::json!({ "connId": conn_id, "addinName": addin_name }),
+                        ),
+                        wps_server::WpsEvent::Disconnected { conn_id } => (
+                            "wps-disconnected",
+                            serde_json::json!({ "connId": conn_id }),
+                        ),
+                        wps_server::WpsEvent::DocumentChanged { conn_id, document } => (
+                            "wps-document-changed",
+                            serde_json::json!({ "connId": conn_id, "document": document }),
+                        ),
+                        wps_server::WpsEvent::Notification { conn_id, method, params } => (
+                            "wps-notification",
+                            serde_json::json!({ "connId": conn_id, "method": method, "params": params }),
+                        ),
+                    };
+                    let _ = wps_app_handle.emit(event_name, payload);
                 }
             });
 
@@ -195,6 +229,11 @@ pub fn run() {
             commands::get_mobile_server_status,
             commands::get_mobile_server_url,
             commands::get_qrcode_svg,
+            // WPS server
+            commands::wps_start_server,
+            commands::wps_stop_server,
+            commands::wps_status,
+            commands::wps_execute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CN-Codex");

@@ -12,6 +12,7 @@ use crate::standalone::StandaloneState;
 use crate::thread_store::ThreadStore;
 use crate::tool_executor::ToolExecutor;
 use crate::usage::{PricingTable, UsageDb, UsageRecorder};
+use crate::wps_server::WpsServer;
 
 const WORKSPACE_CONFIG_DIR: &str = "codey";
 
@@ -44,6 +45,8 @@ pub struct AppState {
     pub usage_db: Arc<UsageDb>,
     /// 价格表
     pub pricing_table: Arc<std::sync::RwLock<PricingTable>>,
+    /// WPS WebSocket 服务
+    pub wps_server: Arc<WpsServer>,
 }
 
 fn canonicalize_or_keep(path: PathBuf) -> PathBuf {
@@ -178,6 +181,8 @@ impl AppState {
             phase_started_at.elapsed().as_millis()
         );
 
+        let wps_server = Arc::new(WpsServer::new());
+
         info!(
             "[startup][rust] AppState::new total {} ms",
             startup_started_at.elapsed().as_millis()
@@ -198,6 +203,7 @@ impl AppState {
             agent_engine,
             usage_db,
             pricing_table,
+            wps_server,
         }
     }
 }

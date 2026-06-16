@@ -1,0 +1,29 @@
+{
+  "name": "wps",
+  "version": "0.1.0",
+  "description": "Connect to WPS Office and control Word documents through the WPS JS Add-in. Enables AI-driven document creation, editing, formatting, and template operations.",
+  "keywords": [
+    "wps",
+    "word",
+    "document",
+    "office",
+    "文档"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "WPS Office",
+    "shortDescription": "通过 WPS 加载项控制 Word 文档",
+    "longDescription": "WPS Office 插件让 AI 助手可以直接操作 WPS 中的 Word 文档。支持打开/保存/关闭文档、插入和替换文本、设置字体和段落格式、操作书签和表格、添加批注、设置页眉页脚、插入图片、以及填充模板占位符。",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "brandColor": "#00A4FF",
+    "defaultPrompt": [
+      "帮我打开一个 Word 文档",
+      "在 WPS 中创建一份报告"
+    ]
+  }
+}
