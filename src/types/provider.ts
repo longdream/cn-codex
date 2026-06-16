@@ -12,6 +12,8 @@ export interface ProviderModel {
   id: string;
   label: string;
   supportsVision: boolean;
+  /** 上下文窗口大小（token），默认 65535 */
+  contextLength: number;
 }
 
 /**

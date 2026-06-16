@@ -43,6 +43,8 @@ export function Sidebar() {
   const threadProjectMap = useAppStore((s) => s.threadProjectMap);
   const createThread = useAppStore((s) => s.createThread);
   const loadThread = useAppStore((s) => s.loadThread);
+  const sidebarTab = useAppStore((s) => s.sidebarTab);
+  const setSidebarTab = useAppStore((s) => s.setSidebarTab);
   const [creating, setCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -175,6 +177,22 @@ export function Sidebar() {
         )}
       </div>
 
+      {/* Tabs */}
+      <div className="flex gap-1 px-3 pb-2">
+        <SidebarTabButton
+          active={sidebarTab === "chats"}
+          label={intl.formatMessage({ id: "sidebar.tabChats" })}
+          icon={<IconMessage2 size={13} stroke={1.8} />}
+          onClick={() => setSidebarTab("chats")}
+        />
+        <SidebarTabButton
+          active={sidebarTab === "projects"}
+          label={intl.formatMessage({ id: "sidebar.tabProjects" })}
+          icon={<IconFolder size={13} stroke={1.8} />}
+          onClick={() => setSidebarTab("projects")}
+        />
+      </div>
+
       {/* Search */}
       <div className="px-3 pb-2">
         <div className="relative">
@@ -193,67 +211,96 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* General + Project groups */}
+      {/* Tab content */}
       <div className="flex-1 overflow-y-auto px-2 py-2">
-        {/* General chats section */}
-        <GeneralChatGroup
-          threads={filteredGeneralThreads}
-          isActive={isGeneralMode}
-          currentThreadId={currentThreadId}
-          onSelect={() => useAppStore.getState().selectGeneralMode()}
-          onNewChat={handleNewGeneralChat}
-          onThreadClick={(threadId) => {
-            if (!isGeneralMode) {
-              useAppStore.getState().selectGeneralMode();
-            }
-            void loadThread(threadId);
-          }}
-          onThreadDelete={(threadId) => useAppStore.getState().deleteThread(threadId)}
-          locale={intl.locale}
-        />
-
-        {/* Divider */}
-        {projects.length > 0 && (
-          <div className="my-2 border-t border-[var(--border-subtle)]" />
-        )}
-
-        {projects.length === 0 ? (
-          <div
-            onClick={handleAddProject}
-            className="cursor-pointer rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] px-3 py-6 text-center transition-colors hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]/30"
-          >
-            <IconFolder size={24} stroke={1.5} className="mx-auto mb-2 text-[var(--text-faint)]" />
-            <p className="text-xs font-medium text-[var(--text-muted)]">
-              {intl.formatMessage({ id: "project.empty" })}
-            </p>
-            <p className="mt-1 text-[11px] text-[var(--text-faint)]">
-              {intl.formatMessage({ id: "project.emptyHint" })}
-            </p>
+        {sidebarTab === "chats" ? (
+          /* Chats tab: flat list of general conversations */
+          <div>
+            <div className="mb-1 flex items-center justify-between px-2">
+              <span className="text-[11px] font-medium text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "sidebar.generalChats" })}
+              </span>
+              <button
+                onClick={handleNewGeneralChat}
+                className="flex-shrink-0 text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
+                title={intl.formatMessage({ id: "sidebar.newGeneralChat" })}
+              >
+                <IconMessagePlus size={12} stroke={1.8} />
+              </button>
+            </div>
+            <div className="space-y-0.5">
+              {filteredGeneralThreads.length === 0 ? (
+                <button
+                  onClick={handleNewGeneralChat}
+                  className="w-full px-2 py-1.5 text-left text-[11px] text-[var(--text-faint)] hover:text-[var(--accent)] transition-colors"
+                >
+                  {intl.formatMessage({ id: "sidebar.newGeneralChatHint" })}
+                </button>
+              ) : (
+                filteredGeneralThreads.map((thread) => {
+                  const title = thread.name || thread.preview || intl.formatMessage({ id: "chat.threadUntitled" });
+                  return (
+                    <ThreadItem
+                      key={thread.id}
+                      thread={thread}
+                      title={title}
+                      isCurrent={currentThreadId === thread.id}
+                      locale={intl.locale}
+                      onClick={() => {
+                        if (!isGeneralMode) {
+                          useAppStore.getState().selectGeneralMode();
+                        }
+                        void loadThread(thread.id);
+                      }}
+                      onDelete={() => useAppStore.getState().deleteThread(thread.id)}
+                    />
+                  );
+                })
+              )}
+            </div>
           </div>
         ) : (
-          projects.map((project) => (
-            <ProjectGroup
-              key={project.id}
-              project={project}
-              threads={filteredProjectThreads.get(project.id) ?? []}
-              isActive={currentProjectId === project.id}
-              currentThreadId={currentThreadId}
-              onSelect={() => useAppStore.getState().selectProject(project.id)}
-              onRemove={() => useAppStore.getState().removeProject(project.id)}
-              onNewChat={() => {
-                useAppStore.getState().selectProject(project.id);
-                void createThread();
-              }}
-              onThreadClick={(threadId) => {
-                if (currentProjectId !== project.id) {
-                  useAppStore.getState().selectProject(project.id);
-                }
-                void loadThread(threadId);
-              }}
-              onThreadDelete={(threadId) => useAppStore.getState().deleteThread(threadId)}
-              locale={intl.locale}
-            />
-          ))
+          /* Projects tab: project groups with their threads */
+          <div>
+            {projects.length === 0 ? (
+              <div
+                onClick={handleAddProject}
+                className="cursor-pointer rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] px-3 py-6 text-center transition-colors hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]/30"
+              >
+                <IconFolder size={24} stroke={1.5} className="mx-auto mb-2 text-[var(--text-faint)]" />
+                <p className="text-xs font-medium text-[var(--text-muted)]">
+                  {intl.formatMessage({ id: "project.empty" })}
+                </p>
+                <p className="mt-1 text-[11px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "project.emptyHint" })}
+                </p>
+              </div>
+            ) : (
+              projects.map((project) => (
+                <ProjectGroup
+                  key={project.id}
+                  project={project}
+                  threads={filteredProjectThreads.get(project.id) ?? []}
+                  isActive={currentProjectId === project.id}
+                  currentThreadId={currentThreadId}
+                  onSelect={() => useAppStore.getState().selectProject(project.id)}
+                  onRemove={() => useAppStore.getState().removeProject(project.id)}
+                  onNewChat={() => {
+                    useAppStore.getState().selectProject(project.id);
+                    void createThread();
+                  }}
+                  onThreadClick={(threadId) => {
+                    if (currentProjectId !== project.id) {
+                      useAppStore.getState().selectProject(project.id);
+                    }
+                    void loadThread(threadId);
+                  }}
+                  onThreadDelete={(threadId) => useAppStore.getState().deleteThread(threadId)}
+                  locale={intl.locale}
+                />
+              ))
+            )}
+          </div>
         )}
       </div>
 
@@ -268,104 +315,6 @@ export function Sidebar() {
         </button>
       </div>
     </aside>
-  );
-}
-
-function GeneralChatGroup({
-  threads,
-  isActive,
-  currentThreadId,
-  onSelect,
-  onNewChat,
-  onThreadClick,
-  onThreadDelete,
-  locale,
-}: {
-  threads: Array<{ id: string; name?: string; preview: string; updatedAt: number }>;
-  isActive: boolean;
-  currentThreadId: string | null;
-  onSelect: () => void;
-  onNewChat: () => void;
-  onThreadClick: (threadId: string) => void;
-  onThreadDelete: (threadId: string) => void;
-  locale: string;
-}) {
-  const intl = useIntl();
-  const [expanded, setExpanded] = useState(true);
-
-  return (
-    <div className="mb-1">
-      {/* General header */}
-      <div
-        onClick={() => {
-          onSelect();
-          setExpanded(true);
-        }}
-        className={`group flex w-full cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs transition-colors ${
-          isActive
-            ? "bg-[var(--accent-soft)] text-[var(--accent)]"
-            : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-        }`}
-      >
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setExpanded(!expanded);
-          }}
-          className="flex-shrink-0 opacity-60 hover:opacity-100"
-        >
-          {expanded ? (
-            <IconChevronDown size={12} stroke={2} />
-          ) : (
-            <IconChevronRight size={12} stroke={2} />
-          )}
-        </button>
-        <IconMessage2 size={13} stroke={1.8} className="flex-shrink-0" />
-        <span className="min-w-0 flex-1 truncate font-medium">
-          {intl.formatMessage({ id: "sidebar.generalChats" })}
-        </span>
-        <span className="flex-shrink-0 text-[11px] opacity-60">{threads.length}</span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onNewChat();
-          }}
-          className="flex-shrink-0 opacity-0 transition-opacity group-hover:opacity-60 hover:!opacity-100"
-          title={intl.formatMessage({ id: "sidebar.newGeneralChat" })}
-        >
-          <IconMessagePlus size={12} stroke={1.8} />
-        </button>
-      </div>
-
-      {/* Thread list */}
-      {expanded && (
-        <div className="ml-3 mt-0.5 space-y-0.5 border-l border-[var(--border-subtle)] pl-2">
-          {threads.length === 0 ? (
-            <button
-              onClick={onNewChat}
-              className="w-full px-2 py-1.5 text-left text-[11px] text-[var(--text-faint)] hover:text-[var(--accent)] transition-colors"
-            >
-              {intl.formatMessage({ id: "sidebar.newGeneralChatHint" })}
-            </button>
-          ) : (
-            threads.map((thread) => {
-              const title = thread.name || thread.preview || intl.formatMessage({ id: "chat.threadUntitled" });
-              return (
-                <ThreadItem
-                  key={thread.id}
-                  thread={thread}
-                  title={title}
-                  isCurrent={currentThreadId === thread.id}
-                  locale={locale}
-                  onClick={() => onThreadClick(thread.id)}
-                  onDelete={() => onThreadDelete(thread.id)}
-                />
-              );
-            })
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -527,6 +476,32 @@ function ProjectGroup({
         </div>
       )}
     </div>
+  );
+}
+
+function SidebarTabButton({
+  active,
+  label,
+  icon,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex flex-1 items-center justify-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1.5 text-[11px] font-medium transition-colors ${
+        active
+          ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+          : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
 

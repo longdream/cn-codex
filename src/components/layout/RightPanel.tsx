@@ -1,10 +1,11 @@
-import { IconBrowser, IconExternalLink, IconFolderOpen, IconRefresh, IconX } from "@tabler/icons-react";
+import { IconBrowser, IconExternalLink, IconFolderOpen, IconRefresh, IconTerminal2, IconX } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import { useAppStore } from "../../stores/appStore";
 import { revealInExplorer, windowCloseBrowser, windowOpenBrowser, windowResizeBrowser } from "../../api/window";
 import { FileTree } from "./FileTree";
+import { TerminalPanel } from "./TerminalPanel";
 
 function latestBrowserToolCall(messages: ReturnType<typeof useAppStore.getState>["messages"]) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -227,6 +228,17 @@ export function RightPanel() {
           <IconFolderOpen size={14} stroke={1.8} />
           Project
         </button>
+        <button
+          onClick={() => setRightPanelTab("terminal")}
+          className={`flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1 text-xs transition-colors ${
+            rightPanelTab === "terminal"
+              ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+              : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+          }`}
+        >
+          <IconTerminal2 size={14} stroke={1.8} />
+          Terminal
+        </button>
       </div>
 
       {rightPanelTab === "browser" ? (
@@ -297,6 +309,8 @@ export function RightPanel() {
             )}
           </div>
         </div>
+      ) : rightPanelTab === "terminal" ? (
+        <TerminalPanel />
       ) : (
         <ProjectTab workspaceCwd={workspaceCwd} />
       )}

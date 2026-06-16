@@ -582,6 +582,35 @@ export function useTauriEvents() {
             return;
           }
 
+          // 自动审批 + 用户输入：如果所有问题都有选项，自动选择推荐项（第一个选项）
+          if (useAppStore.getState().autoApprove && isUserInput) {
+            const questions = e.payload.params?.questions;
+            if (
+              Array.isArray(questions) &&
+              questions.length > 0 &&
+              questions.every(
+                (q: Record<string, unknown>) =>
+                  Array.isArray(q.options) && q.options.length > 0,
+              )
+            ) {
+              const reqId = e.payload.requestId ?? e.payload.id ?? "";
+              const answers = Object.fromEntries(
+                questions.map((q: Record<string, unknown>) => [
+                  q.id,
+                  {
+                    answers: [
+                      (q.options as Array<Record<string, string>>)[0].label,
+                    ],
+                  },
+                ]),
+              );
+              resolveApproval(reqId, { answers }).catch((err) =>
+                console.error("Auto-approve user input failed:", err),
+              );
+              return;
+            }
+          }
+
           window.dispatchEvent(
             new CustomEvent("cn-codex:server-request", { detail: e.payload }),
           );

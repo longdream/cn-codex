@@ -80,6 +80,7 @@ pub struct AgentEngine {
     tool_executor: Arc<RwLock<ToolExecutor>>,
     cwd: PathBuf,
     usage_recorder: Option<Arc<UsageRecorder>>,
+    conversation_logger: Option<Arc<crate::conversation_logger::ConversationLogger>>,
     cancel_flag: Arc<AtomicBool>,
 }
 
@@ -90,7 +91,8 @@ impl AgentEngine {
         cwd: PathBuf,
     ) -> AppResult<Self> {
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(600))
             .build()
             .map_err(|e| AppError::Custom(format!("Failed to create HTTP client: {e}")))?;
 
@@ -100,6 +102,7 @@ impl AgentEngine {
             tool_executor: Arc::new(RwLock::new(tool_executor)),
             cwd,
             usage_recorder: None,
+            conversation_logger: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -107,6 +110,14 @@ impl AgentEngine {
     /// 设置用量记录器
     pub fn set_usage_recorder(&mut self, recorder: Arc<UsageRecorder>) {
         self.usage_recorder = Some(recorder);
+    }
+
+    /// 设置对话轨迹日志器
+    pub fn set_conversation_logger(
+        &mut self,
+        logger: Arc<crate::conversation_logger::ConversationLogger>,
+    ) {
+        self.conversation_logger = Some(logger);
     }
 
     /// 中断当前正在运行的 turn
@@ -428,6 +439,7 @@ impl AgentEngine {
         // 追踪最近一次 API 调用返回的 prompt_tokens（代表当前 context 实际大小），
         // 而非累加值，用于 mid-turn compaction 判断。
         let mut last_prompt_tokens: u64 = 0;
+        let mut mid_turn_compacted = false;
 
         'goal_loop: loop {
 
@@ -511,6 +523,7 @@ impl AgentEngine {
                         internal_messages,
                         if tools.is_empty() { None } else { Some(tools) },
                         config.max_output_tokens,
+                        iteration as u32,
                     )
                     .await;
 
@@ -952,8 +965,11 @@ impl AgentEngine {
                         );
                         stop_hooks_ran_for_last_stop = false;
 
-                        if crate::compaction::should_compact(last_prompt_tokens, config) {
+                        if !mid_turn_compacted
+                            && crate::compaction::should_compact(last_prompt_tokens, config)
+                        {
                             info!("Mid-turn compaction triggered: {last_prompt_tokens} prompt tokens (single API call)");
+                            let compaction_start = Instant::now();
                             let _ = crate::compaction::run_compaction(
                                 &self.http,
                                 app_handle,
@@ -967,7 +983,12 @@ impl AgentEngine {
                                 Some(&self.cancel_flag),
                             )
                             .await;
+                            info!(
+                                "Mid-turn compaction completed in {:.1}s",
+                                compaction_start.elapsed().as_secs_f64()
+                            );
                             last_prompt_tokens = 0;
+                            mid_turn_compacted = true;
                         }
                     }
                     Err(e) => {
@@ -1045,6 +1066,7 @@ impl AgentEngine {
                         internal_messages,
                         None,
                         config.max_output_tokens,
+                        u32::MAX,
                     )
                     .await;
                 let summary_text = match summary_result {
@@ -1848,6 +1870,7 @@ impl AgentEngine {
         messages: Vec<InternalMessage>,
         tools: Option<Vec<serde_json::Value>>,
         max_tokens: Option<i64>,
+        iteration: u32,
     ) -> AppResult<CompletionResult> {
         // 根据 wire_api 选择 adapter
         let adapter = adapter::get_adapter(wire_api);
@@ -1858,6 +1881,16 @@ impl AgentEngine {
         let body = adapter.build_body(model, &messages, tools_slice, max_tokens);
 
         info!("LLM request: wire_api={wire_api}, url={url}, model={model}");
+        if let Some(ref logger) = self.conversation_logger {
+            logger.log_request(
+                thread_id,
+                iteration,
+                model,
+                wire_api,
+                &messages,
+                tools_slice.map(|t| t.len()).unwrap_or(0),
+            );
+        }
         if tracing::enabled!(tracing::Level::DEBUG) {
             let body_preview = serde_json::to_string(&body)
                 .unwrap_or_default()
@@ -1867,6 +1900,7 @@ impl AgentEngine {
             tracing::debug!("LLM request body (first 500 chars): {body_preview}");
         }
 
+        let request_start = Instant::now();
         let response = self
             .http
             .post(&url)
@@ -1909,6 +1943,8 @@ impl AgentEngine {
         let mut usage_info: Option<UsageInfo> = None;
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut bytes_read: usize = 0;
+        let stream_start = Instant::now();
 
         while let Some(chunk) = stream.next().await {
             if self.is_cancelled() {
@@ -1916,7 +1952,29 @@ impl AgentEngine {
                 finish_reason = Some("interrupted".to_string());
                 break;
             }
-            let chunk = chunk.map_err(|e| AppError::Custom(format!("Stream read error: {e}")))?;
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => {
+                    let elapsed = stream_start.elapsed();
+                    warn!(
+                        "Stream read error after {bytes_read} bytes, {:.1}s elapsed: {e}",
+                        elapsed.as_secs_f64()
+                    );
+                    if !full_text.is_empty() || !tool_calls.is_empty() {
+                        warn!("Partial content available ({} chars text, {} tool calls), using as result",
+                            full_text.len(), tool_calls.len());
+                        if finish_reason.is_none() {
+                            finish_reason = Some("stream_error".to_string());
+                        }
+                        break;
+                    }
+                    return Err(AppError::Custom(format!(
+                        "Stream read error after {bytes_read} bytes, {:.1}s elapsed: {e}",
+                        elapsed.as_secs_f64()
+                    )));
+                }
+            };
+            bytes_read += chunk.len();
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
             while let Some(line_end) = buffer.find('\n') {
@@ -2041,6 +2099,32 @@ impl AgentEngine {
         } else {
             usage_info
         };
+
+        if let Some(ref logger) = self.conversation_logger {
+            let duration_ms = request_start.elapsed().as_millis() as u64;
+            let log_usage = usage_info.as_ref().map(|u| {
+                crate::conversation_logger::LogUsage {
+                    prompt_tokens: u.prompt_tokens,
+                    completion_tokens: u.completion_tokens,
+                    total_tokens: u.total_tokens,
+                }
+            });
+            let tc_tuples: Vec<(String, String, String)> = valid_tool_calls
+                .iter()
+                .map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone()))
+                .collect();
+            logger.log_response(
+                thread_id,
+                iteration,
+                model,
+                wire_api,
+                &full_text,
+                &tc_tuples,
+                log_usage,
+                finish_reason.as_deref(),
+                duration_ms,
+            );
+        }
 
         if !valid_tool_calls.is_empty() {
             Ok(CompletionResult::ToolCalls {

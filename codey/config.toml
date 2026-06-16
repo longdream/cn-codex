@@ -1,15 +1,10 @@
-model = "gpt-5.4"
+model = "c-deepseek-v4-flash"
 model_provider = "openai"
 model_reasoning_effort = "medium"
-max_output_tokens = 131072
+model_context_window = 65535
+max_output_tokens = 65535
 approval_policy = "on-request"
 web_search = "live"
-
-[model_providers.zhipu]
-base_url = "https://open.bigmodel.cn/api/paas/v4"
-experimental_bearer_token = "a82eb432f8dc486bb97322a9d21b6671.uMCTk2GndunsmQOj"
-wire_api = "chat"
-requires_openai_auth = false
 
 [model_providers.custom]
 base_url = "https://aistudio.baidu.com/llm/lmapi/v3"
@@ -17,17 +12,23 @@ experimental_bearer_token = "23abe608f0a84e57ddad8eafdfbc18852d10549d"
 wire_api = "chat"
 requires_openai_auth = false
 
-[model_providers.openai]
-base_url = "https://rayplus.site/v1"
-experimental_bearer_token = "sk-54f433732fa28bb48c75aa2039e354f5c732217f9c38fc2f5e7cb4564915ac05"
-wire_api = "chat"
-requires_openai_auth = true
-
 [model_providers.volcengine]
 base_url = "https://ark.cn-beijing.volces.com/api/v3"
 experimental_bearer_token = "633ef9cd-ef82-4311-9356-f4b99ec04150"
 wire_api = "chat"
 requires_openai_auth = false
+
+[model_providers.zhipu]
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+experimental_bearer_token = "a82eb432f8dc486bb97322a9d21b6671.uMCTk2GndunsmQOj"
+wire_api = "chat"
+requires_openai_auth = false
+
+[model_providers.openai]
+base_url = "https://ipsapro.isoftstone.com/thor/v1"
+experimental_bearer_token = "sk-TEFwAkqNR1tW7hmidcKEfmy3F5hoGPrZPNON985BGoPm5nFz"
+wire_api = "chat"
+requires_openai_auth = true
 
 [mcp_servers]
 

@@ -1,9 +1,0 @@
-{"type":"thread_meta","thread_id":"e2d5f30a-cdf8-4df3-9bf1-e62e8b5607c1","name":null,"created_at":1781527385,"model":"l-deepseek-v4-flash"}
-{"type":"turn_start","turn_id":"2948168d-50c2-481b-b9da-efec3537f899","started_at":1781527451,"mode":"chat","goal_budget_tokens":null}
-{"type":"message","id":"d41db3f0-7304-4ee6-bed2-a3c2dcbc25b4","role":"user","content":"你好","timestamp":1781527451,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"message","id":"444755c7-d22f-4944-854a-2db1219ca655","role":"system","content":"All tool executions have completed. You MUST now provide a brief summary: what was done, any errors encountered, and suggested next steps. Do NOT call any more tools.","timestamp":1781527451,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"turn_end","turn_id":"2948168d-50c2-481b-b9da-efec3537f899","completed_at":1781527452,"duration_ms":412,"changed_files":[],"usage":null,"budget_limited":false}
-{"type":"turn_start","turn_id":"34fe2dc6-e249-443f-90e6-757a2df61bc4","started_at":1781527505,"mode":"chat","goal_budget_tokens":null}
-{"type":"message","id":"67435f7c-0f3c-44ee-8c32-3c4da1e33924","role":"user","content":"你好","timestamp":1781527505,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"message","id":"855a5018-b3cf-4bcf-903d-1b3bfbfdb31f","role":"assistant","content":"你好！我是 Codey，你的代码助手。我可以帮助你完成各种编程任务，包括：\n\n- 编写和调试代码\n- 代码审查和优化\n- 项目管理和规划\n- 技术问题解答\n- 运行命令和测试\n- 等等...\n\n有什么我可以帮助你的吗？","timestamp":1781527511,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"turn_end","turn_id":"34fe2dc6-e249-443f-90e6-757a2df61bc4","completed_at":1781527512,"duration_ms":6650,"changed_files":[],"usage":{"promptTokens":12254,"completionTokens":78,"totalTokens":12332,"lastSinglePromptTokens":12254},"budget_limited":false}

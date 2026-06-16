@@ -9,6 +9,10 @@ import {
   IconExternalLink,
 } from "@tabler/icons-react";
 import {
+  IconEye,
+  IconEyeOff,
+} from "@tabler/icons-react";
+import {
   standaloneConfigWrite,
 } from "../../api";
 import { useAppStore, PROVIDER_PRESETS, createProviderFromPreset } from "../../stores/appStore";
@@ -39,7 +43,9 @@ export function ProviderPanel() {
     maxOutputTokens: string;
     newModelId: string;
     newModelLabel: string;
-  }>({ name: "", apiKey: "", baseUrl: "", wireApi: "", maxOutputTokens: "131072", newModelId: "", newModelLabel: "" });
+    newModelContextLength: string;
+    newModelSupportsVision: boolean;
+  }>({ name: "", apiKey: "", baseUrl: "", wireApi: "", maxOutputTokens: "131072", newModelId: "", newModelLabel: "", newModelContextLength: "65535", newModelSupportsVision: false });
 
   const selectedProvider = useMemo(
     () => providers.find((p) => p.id === selectedId) ?? null,
@@ -93,6 +99,8 @@ export function ProviderPanel() {
         maxOutputTokens: String(provider.maxOutputTokens ?? 131072),
         newModelId: "",
         newModelLabel: "",
+        newModelContextLength: "65535",
+        newModelSupportsVision: false,
       });
     }
   }, []);
@@ -125,6 +133,12 @@ export function ProviderPanel() {
   // 保存配置
   const handleSave = useCallback(async () => {
     if (!selectedProvider) return;
+
+    if (editForm.newModelId.trim()) {
+      setFeedback({ kind: "error", text: intl.formatMessage({ id: "settings.provider.unsavedModel" }) });
+      return;
+    }
+
     setSaving(true);
     setFeedback(null);
 
@@ -181,13 +195,15 @@ export function ProviderPanel() {
   // 添加模型
   const handleAddModel = useCallback(() => {
     if (!selectedProvider || !editForm.newModelId.trim()) return;
+    const parsedCtx = parseInt(editForm.newModelContextLength, 10);
     const model: ProviderModel = {
       id: editForm.newModelId.trim(),
       label: editForm.newModelLabel.trim() || editForm.newModelId.trim(),
-      supportsVision: false,
+      supportsVision: editForm.newModelSupportsVision,
+      contextLength: Number.isFinite(parsedCtx) && parsedCtx > 0 ? parsedCtx : 65535,
     };
     useAppStore.getState().addProviderModel(selectedProvider.id, model);
-    setEditForm((f) => ({ ...f, newModelId: "", newModelLabel: "" }));
+    setEditForm((f) => ({ ...f, newModelId: "", newModelLabel: "", newModelContextLength: "65535", newModelSupportsVision: false }));
   }, [selectedProvider, editForm]);
 
   // 删除模型
@@ -429,47 +445,64 @@ export function ProviderPanel() {
               </h4>
               <div className="space-y-1">
                 {selectedProvider.models.map((model) => (
-                  <div key={model.id} className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] px-3 py-1.5">
-                    <div className="min-w-0">
-                      <span className="text-xs font-medium text-[var(--text-strong)]">{model.label}</span>
-                      <span className="ml-2 break-all font-mono text-[11px] text-[var(--text-faint)]">{model.id}</span>
-                      {model.supportsVision && (
-                        <span className="ml-1 rounded-[var(--radius-sm)] bg-[var(--accent-soft)] px-1.5 py-0.5 text-[11px] text-[var(--accent-strong)]">Vision</span>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveModel(model.id)}
-                      className="shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-faint)] transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
-                    >
-                      <IconX size={12} stroke={2} />
-                    </button>
-                  </div>
+                  <ModelRow
+                    key={model.id}
+                    model={model}
+                    providerId={selectedProvider.id}
+                    onRemove={() => handleRemoveModel(model.id)}
+                  />
                 ))}
               </div>
               {/* 添加新模型 */}
-              <div className="flex items-center gap-2">
-                <input
-                  value={editForm.newModelId}
-                  onChange={(e) => setEditForm((f) => ({ ...f, newModelId: e.target.value }))}
-                  placeholder={intl.formatMessage({ id: "settings.provider.modelPlaceholder" })}
-                  className="app-input flex-1 text-xs"
-                  onKeyDown={(e) => { if (e.key === "Enter") handleAddModel(); }}
-                />
-                <input
-                  value={editForm.newModelLabel}
-                  onChange={(e) => setEditForm((f) => ({ ...f, newModelLabel: e.target.value }))}
-                  placeholder={intl.formatMessage({ id: "settings.provider.modelLabelPlaceholder" })}
-                  className="app-input flex-1 text-xs"
-                  onKeyDown={(e) => { if (e.key === "Enter") handleAddModel(); }}
-                />
-                <button
-                  type="button"
-                  onClick={handleAddModel}
-                  className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-soft)] text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent)] hover:text-white"
-                >
-                  <IconPlus size={12} stroke={2} />
-                </button>
+              <div className="space-y-2 rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] bg-[var(--surface-contrast)]/40 p-3">
+                <div className="flex items-center gap-2">
+                  <input
+                    value={editForm.newModelId}
+                    onChange={(e) => setEditForm((f) => ({ ...f, newModelId: e.target.value }))}
+                    placeholder={intl.formatMessage({ id: "settings.provider.modelPlaceholder" })}
+                    className="app-input flex-1 text-xs"
+                    onKeyDown={(e) => { if (e.key === "Enter") handleAddModel(); }}
+                  />
+                  <input
+                    value={editForm.newModelLabel}
+                    onChange={(e) => setEditForm((f) => ({ ...f, newModelLabel: e.target.value }))}
+                    placeholder={intl.formatMessage({ id: "settings.provider.modelLabelPlaceholder" })}
+                    className="app-input flex-1 text-xs"
+                    onKeyDown={(e) => { if (e.key === "Enter") handleAddModel(); }}
+                  />
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[11px] text-[var(--text-faint)]">
+                      {intl.formatMessage({ id: "settings.provider.contextLength" })}
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={editForm.newModelContextLength}
+                      onChange={(e) => setEditForm((f) => ({ ...f, newModelContextLength: e.target.value }))}
+                      className="app-input w-24 text-xs"
+                      onKeyDown={(e) => { if (e.key === "Enter") handleAddModel(); }}
+                    />
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-[var(--text-faint)]">
+                    <input
+                      type="checkbox"
+                      checked={editForm.newModelSupportsVision}
+                      onChange={(e) => setEditForm((f) => ({ ...f, newModelSupportsVision: e.target.checked }))}
+                      className="h-3.5 w-3.5 rounded border-[var(--border-subtle)] accent-[var(--accent)]"
+                    />
+                    {intl.formatMessage({ id: "settings.provider.supportsVision" })}
+                  </label>
+                  <div className="flex-1" />
+                  <button
+                    type="button"
+                    onClick={handleAddModel}
+                    className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-soft)] text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent)] hover:text-white"
+                  >
+                    <IconPlus size={12} stroke={2} />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -558,6 +591,103 @@ export function ProviderPanel() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ModelRow({
+  model,
+  providerId,
+  onRemove,
+}: {
+  model: ProviderModel;
+  providerId: string;
+  onRemove: () => void;
+}) {
+  const intl = useIntl();
+  const [editingCtx, setEditingCtx] = useState(false);
+  const [ctxValue, setCtxValue] = useState(String(model.contextLength ?? 65535));
+
+  const handleToggleVision = useCallback(() => {
+    useAppStore.getState().updateProviderModel(providerId, model.id, {
+      supportsVision: !model.supportsVision,
+    });
+  }, [providerId, model.id, model.supportsVision]);
+
+  const handleSaveContextLength = useCallback(() => {
+    const parsed = parseInt(ctxValue, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      useAppStore.getState().updateProviderModel(providerId, model.id, {
+        contextLength: parsed,
+      });
+    }
+    setEditingCtx(false);
+  }, [providerId, model.id, ctxValue]);
+
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] px-3 py-1.5">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium text-[var(--text-strong)]">{model.label}</span>
+          <span className="break-all font-mono text-[11px] text-[var(--text-faint)]">{model.id}</span>
+        </div>
+        <div className="mt-0.5 flex items-center gap-2">
+          {editingCtx ? (
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={1}
+                value={ctxValue}
+                onChange={(e) => setCtxValue(e.target.value)}
+                onBlur={handleSaveContextLength}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSaveContextLength();
+                  if (e.key === "Escape") setEditingCtx(false);
+                }}
+                className="app-input w-24 text-[11px]"
+                autoFocus
+              />
+              <span className="text-[10px] text-[var(--text-faint)]">tokens</span>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setCtxValue(String(model.contextLength ?? 65535));
+                setEditingCtx(true);
+              }}
+              className="text-[11px] text-[var(--text-faint)] hover:text-[var(--accent)] transition-colors"
+              title={intl.formatMessage({ id: "settings.provider.contextLengthHint" })}
+            >
+              {(model.contextLength ?? 65535).toLocaleString()} ctx
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleToggleVision}
+            className={`flex items-center gap-0.5 rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] transition-colors ${
+              model.supportsVision
+                ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                : "text-[var(--text-faint)] hover:text-[var(--text-muted)]"
+            }`}
+            title={intl.formatMessage({ id: "settings.provider.supportsVisionHint" })}
+          >
+            {model.supportsVision ? (
+              <IconEye size={11} stroke={1.8} />
+            ) : (
+              <IconEyeOff size={11} stroke={1.8} />
+            )}
+            Vision
+          </button>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-faint)] transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+      >
+        <IconX size={12} stroke={2} />
+      </button>
     </div>
   );
 }

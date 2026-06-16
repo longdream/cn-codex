@@ -15,6 +15,7 @@ pub mod robot_orchestrator;
 pub mod protocol;
 pub mod standalone;
 pub mod state;
+pub mod terminal;
 pub mod thread_store;
 pub mod tool_executor;
 pub mod usage;
@@ -51,6 +52,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .manage(AppState::new())
+        .manage(std::sync::Arc::new(terminal::TerminalManager::new()))
         .setup(|app| {
             // 启动后台预热：把线程索引加载放到异步任务，避免阻塞窗口出现。
             let preload_store = app.state::<AppState>().thread_store.clone();
@@ -182,6 +184,11 @@ pub fn run() {
             commands::read_directory,
             commands::read_file_for_attach,
             commands::read_text_file_preview,
+            // Terminal
+            terminal::terminal_create,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close,
             // Mobile server
             commands::start_mobile_server,
             commands::stop_mobile_server,

@@ -1,3 +1,4 @@
+use std::time::Instant;
 use tracing::info;
 
 use crate::adapter::{self, types::{InternalMessage, text_content, StreamEvent}};
@@ -137,6 +138,7 @@ pub async fn run_compaction(
     wire_api: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
 ) -> AppResult<()> {
+    let compaction_start = Instant::now();
     info!("Starting context compaction for thread {thread_id}");
 
     let payload = serde_json::json!({ "threadId": thread_id });
@@ -184,7 +186,14 @@ pub async fn run_compaction(
     let headers = adapter.build_headers(api_key);
     let body = adapter.build_body(model, &messages, None, config.max_output_tokens);
 
-    info!("Compaction LLM request: url={url}, model={model}");
+    let input_chars: usize = messages.iter().map(|m| {
+        m.content.as_ref().map(|c| c.to_string().len()).unwrap_or(0)
+    }).sum();
+    let estimated_input_tokens = input_chars / 3;
+    info!(
+        "Compaction LLM request: url={url}, model={model}, history_msgs={}, estimated_input_tokens={estimated_input_tokens}",
+        history.len()
+    );
 
     let response = http
         .post(&url)
@@ -242,8 +251,10 @@ pub async fn run_compaction(
 
     let summary_text = summary_text.trim().to_string();
     info!(
-        "Compaction complete. Summary length: {} chars",
-        summary_text.len()
+        "Compaction complete in {:.1}s. Summary: {} chars (~{} tokens). Input: ~{estimated_input_tokens} tokens",
+        compaction_start.elapsed().as_secs_f64(),
+        summary_text.len(),
+        summary_text.len() / 3
     );
 
     let user_messages = collect_user_messages(&history);

@@ -95,7 +95,8 @@ export interface ModelEntry {
   supportsVision: boolean;
 }
 
-export type RightPanelTab = "browser" | "project";
+export type RightPanelTab = "browser" | "project" | "terminal";
+export type SidebarTab = "chats" | "projects";
 
 interface RawToolCallInfo {
   id: string;
@@ -455,9 +456,9 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultBaseUrl: "https://api.openai.com/v1", defaultWireApi: "chat", requiresOpenAIAuth: true,
     signupUrl: "https://platform.openai.com/api-keys",
     defaultModels: [
-      { id: "gpt-4o", label: "GPT-4o", supportsVision: true },
-      { id: "gpt-4o-mini", label: "GPT-4o Mini", supportsVision: true },
-      { id: "o3-mini", label: "o3-mini", supportsVision: false },
+      { id: "gpt-4o", label: "GPT-4o", supportsVision: true, contextLength: 128000 },
+      { id: "gpt-4o-mini", label: "GPT-4o Mini", supportsVision: true, contextLength: 128000 },
+      { id: "o3-mini", label: "o3-mini", supportsVision: false, contextLength: 200000 },
     ],
   },
   {
@@ -465,72 +466,72 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultBaseUrl: "https://api.anthropic.com/v1", defaultWireApi: "anthropic", requiresOpenAIAuth: false,
     signupUrl: "https://console.anthropic.com/settings/keys",
     defaultModels: [
-      { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4", supportsVision: true },
-      { id: "claude-opus-4-20250514", label: "Claude Opus 4", supportsVision: true },
+      { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4", supportsVision: true, contextLength: 200000 },
+      { id: "claude-opus-4-20250514", label: "Claude Opus 4", supportsVision: true, contextLength: 200000 },
     ],
   },
   {
     type: "google", name: "Google Gemini", category: "global",
     defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://aistudio.google.com/apikey",
-    defaultModels: [{ id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", supportsVision: true }],
+    defaultModels: [{ id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", supportsVision: true, contextLength: 1000000 }],
   },
   {
     type: "deepseek", name: "DeepSeek", category: "china",
     defaultBaseUrl: "https://api.deepseek.com/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://platform.deepseek.com/api_keys",
     defaultModels: [
-      { id: "deepseek-chat", label: "DeepSeek Chat", supportsVision: false },
-      { id: "deepseek-reasoner", label: "DeepSeek Reasoner", supportsVision: false },
+      { id: "deepseek-chat", label: "DeepSeek Chat", supportsVision: false, contextLength: 65535 },
+      { id: "deepseek-reasoner", label: "DeepSeek Reasoner", supportsVision: false, contextLength: 65535 },
     ],
   },
   {
     type: "volcengine", name: "火山引擎 Ark", category: "china",
     defaultBaseUrl: "https://ark.cn-beijing.volces.com/api/v3", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
-    defaultModels: [{ id: "deepseek-v4-pro-260425", label: "DeepSeek V4 Pro", supportsVision: false }],
+    defaultModels: [{ id: "deepseek-v4-pro-260425", label: "DeepSeek V4 Pro", supportsVision: false, contextLength: 65535 }],
   },
   {
     type: "qwen", name: "通义千问", category: "china",
     defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://dashscope.console.aliyun.com/apiKey",
-    defaultModels: [{ id: "qwen-max", label: "Qwen Max", supportsVision: true }],
+    defaultModels: [{ id: "qwen-max", label: "Qwen Max", supportsVision: true, contextLength: 32768 }],
   },
   {
     type: "zhipu", name: "智谱 AI", category: "china",
     defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://open.bigmodel.cn/usercenter/apikeys",
-    defaultModels: [{ id: "glm-4-plus", label: "GLM-4 Plus", supportsVision: true }],
+    defaultModels: [{ id: "glm-4-plus", label: "GLM-4 Plus", supportsVision: true, contextLength: 128000 }],
   },
   {
     type: "moonshot", name: "Moonshot AI", category: "china",
     defaultBaseUrl: "https://api.moonshot.cn/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://platform.moonshot.cn/console/api-keys",
-    defaultModels: [{ id: "moonshot-v1-128k", label: "Moonshot V1 128K", supportsVision: false }],
+    defaultModels: [{ id: "moonshot-v1-128k", label: "Moonshot V1 128K", supportsVision: false, contextLength: 128000 }],
   },
   {
     type: "siliconflow", name: "SiliconFlow", category: "china",
     defaultBaseUrl: "https://api.siliconflow.cn/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://cloud.siliconflow.cn/account/ak",
-    defaultModels: [{ id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3", supportsVision: false }],
+    defaultModels: [{ id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3", supportsVision: false, contextLength: 65535 }],
   },
   {
     type: "baichuan", name: "百川智能", category: "china",
     defaultBaseUrl: "https://api.baichuan-ai.com/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://platform.baichuan-ai.com/console/apikey",
-    defaultModels: [{ id: "Baichuan4", label: "Baichuan 4", supportsVision: false }],
+    defaultModels: [{ id: "Baichuan4", label: "Baichuan 4", supportsVision: false, contextLength: 32768 }],
   },
   {
     type: "ollama", name: "Ollama", category: "local",
     defaultBaseUrl: "http://localhost:11434/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://ollama.com/download",
-    defaultModels: [{ id: "qwen2.5-coder:7b", label: "Qwen 2.5 Coder 7B", supportsVision: false }],
+    defaultModels: [{ id: "qwen2.5-coder:7b", label: "Qwen 2.5 Coder 7B", supportsVision: false, contextLength: 32768 }],
   },
   {
     type: "lmstudio", name: "LM Studio", category: "local",
     defaultBaseUrl: "http://localhost:1234/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://lmstudio.ai/",
-    defaultModels: [{ id: "local-model", label: "Local Model", supportsVision: false }],
+    defaultModels: [{ id: "local-model", label: "Local Model", supportsVision: false, contextLength: 65535 }],
   },
   {
     type: "custom", name: "自定义", category: "other",
@@ -644,6 +645,7 @@ interface AppState {
   browserPanelTitle: string | null;
   browserPanelStatus: "idle" | "running" | "success" | "failed";
   autoApprove: boolean;
+  sidebarTab: SidebarTab;
 
   selectedRobotId: string | null;
   robotCreateMode: boolean;
@@ -673,6 +675,7 @@ interface AppState {
   addCustomProvider: (provider: ProviderConfig) => void;
   removeCustomProvider: (providerId: string) => void;
   addProviderModel: (providerId: string, model: ProviderModel) => void;
+  updateProviderModel: (providerId: string, modelId: string, updates: Partial<ProviderModel>) => void;
   removeProviderModel: (providerId: string, modelId: string) => void;
   getActiveProvider: () => ProviderConfig | null;
 
@@ -720,6 +723,7 @@ interface AppState {
   toggleRightPanel: () => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
   setAutoApprove: (v: boolean) => void;
+  setSidebarTab: (tab: SidebarTab) => void;
   setSelectedRobotId: (id: string | null) => void;
   setRobotCreateMode: (v: boolean) => void;
   setBrowserPanelState: (state: Partial<{
@@ -763,6 +767,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentGoal: null,
   showSettings: false,
   autoApprove: false,
+  sidebarTab: "chats",
   selectedRobotId: null,
   robotCreateMode: false,
   rightPanelVisible: false,
@@ -800,11 +805,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     const entry = models.find((m) => m.id === id);
     const modelName = entry?.model ?? id;
     set({ activeModelId: id, currentModel: modelName });
-    // 同步写入 config.toml，确保后端立即使用新模型
     if (modelName) {
-      standaloneConfigWrite([
+      const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
         { keyPath: "model", value: modelName, mergeStrategy: "replace" },
-      ]).catch((err) => console.error("Failed to sync model to config:", err));
+      ];
+      // 查找该模型在供应商中的 contextLength 并同步到 model_context_window
+      const state = get();
+      let contextLength: number | undefined;
+      for (const p of state.providers) {
+        const pm = p.models.find((m) => m.id === modelName);
+        if (pm?.contextLength) {
+          contextLength = pm.contextLength;
+          break;
+        }
+      }
+      if (contextLength) {
+        edits.push({ keyPath: "model_context_window", value: contextLength, mergeStrategy: "replace" });
+      }
+      standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync model to config:", err));
     }
   },
   getActiveModel: () => {
@@ -920,7 +938,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   activateProvider: (providerId: string) => {
     saveActiveProviderId(providerId);
     set({ activeProviderId: providerId });
-    // 同步写入 config.toml，使用 provider.type 作为 model_provider key
     const provider = get().providers.find((p) => p.id === providerId);
     if (provider) {
       const providerKey = provider.type || "custom";
@@ -929,13 +946,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (provider.wireApi) providerOverride.wire_api = provider.wireApi;
       if (provider.apiKey) providerOverride.experimental_bearer_token = provider.apiKey;
       providerOverride.requires_openai_auth = provider.requiresOpenAIAuth;
-      const defaultModel = provider.models[0]?.id ?? "";
-      standaloneConfigWrite([
+      const defaultModel = provider.models[0];
+      const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
         { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
-        { keyPath: "model", value: defaultModel, mergeStrategy: "replace" },
+        { keyPath: "model", value: defaultModel?.id ?? "", mergeStrategy: "replace" },
         { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
         { keyPath: "max_output_tokens", value: provider.maxOutputTokens ?? 131072, mergeStrategy: "replace" },
-      ]).catch((err) => console.error("Failed to sync provider config:", err));
+      ];
+      if (defaultModel?.contextLength) {
+        edits.push({ keyPath: "model_context_window", value: defaultModel.contextLength, mergeStrategy: "replace" });
+      }
+      standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync provider config:", err));
     }
   },
 
@@ -974,6 +995,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   addProviderModel: (providerId: string, model: ProviderModel) => {
     const providers = get().providers.map((p) =>
       p.id === providerId ? { ...p, models: [...p.models, model] } : p,
+    );
+    saveProviders(providers);
+    set({ providers });
+  },
+
+  updateProviderModel: (providerId: string, modelId: string, updates: Partial<ProviderModel>) => {
+    const providers = get().providers.map((p) =>
+      p.id === providerId
+        ? { ...p, models: p.models.map((m) => m.id === modelId ? { ...m, ...updates } : m) }
+        : p,
     );
     saveProviders(providers);
     set({ providers });
@@ -1153,6 +1184,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     void appStateSet(AUTO_APPROVE_KEY, String(v));
     set({ autoApprove: v });
   },
+  setSidebarTab: (tab) => {
+    void appStateSet("sidebar-tab", tab);
+    set({ sidebarTab: tab });
+  },
   setSelectedRobotId: (id) => {
     set({ selectedRobotId: id, robotCreateMode: false });
     if (id) {
@@ -1301,6 +1336,7 @@ export async function initStoreFromDb(): Promise<void> {
   let configuredModels: ModelEntry[] = [];
   let activeModelId: string | null = null;
   let autoApprove = false;
+  let sidebarTab: SidebarTab = "chats";
   let currentProjectId: string | null = null;
   let workspaceCwd: string | null = null;
 
@@ -1320,6 +1356,10 @@ export async function initStoreFromDb(): Promise<void> {
         type: p.type ?? p.id ?? "custom",
         createdAt: p.createdAt ?? Date.now(),
         maxOutputTokens: p.maxOutputTokens ?? 131072,
+        models: (p.models ?? []).map((m) => ({
+          ...m,
+          contextLength: m.contextLength ?? 65535,
+        })),
       }));
     }
   } catch { /* ignore */ }
@@ -1332,6 +1372,7 @@ export async function initStoreFromDb(): Promise<void> {
 
   activeModelId = all[ACTIVE_MODEL_KEY] ?? null;
   autoApprove = all[AUTO_APPROVE_KEY] === "true";
+  if (all["sidebar-tab"] === "projects") sidebarTab = "projects";
 
   try {
     if (all[ACTIVE_PROJECT_KEY]) {
@@ -1354,6 +1395,7 @@ export async function initStoreFromDb(): Promise<void> {
     configuredModels,
     activeModelId,
     autoApprove,
+    sidebarTab,
     currentProjectId,
     workspaceCwd,
   });
