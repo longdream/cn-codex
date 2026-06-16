@@ -4,6 +4,7 @@ pub mod browser_automation;
 pub mod commands;
 pub mod compaction;
 pub mod config_system;
+pub mod conversation_logger;
 pub mod document_parser;
 pub mod error;
 pub mod hook_runtime;
