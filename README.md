@@ -11,6 +11,14 @@
 </p>
 
 <p align="center">
+  <a href="README.md">中文</a> |
+  <a href="README.en.md">English</a> |
+  <a href="README.ja.md">日本語</a> |
+  <a href="README.fr.md">Français</a> |
+  <a href="README.de.md">Deutsch</a>
+</p>
+
+<p align="center">
   <a href="http://47.113.221.244:8081/">官方网站</a> •
   <a href="http://47.113.221.244:8081/usage.html">使用指南</a> •
   <a href="https://github.com/longdream/cn-codex">GitHub</a>
