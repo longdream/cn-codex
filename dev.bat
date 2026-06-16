@@ -8,7 +8,7 @@ echo   CN-Codex - Dev Mode
 echo ============================================
 echo.
 
-cd /d D:\rustwork\cn-codex
+cd /d "%~dp0"
 
 if not exist "logs" mkdir logs
 

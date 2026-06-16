@@ -330,5 +330,8 @@
   "fileTree.emptyDir": "Empty directory",
   "fileTree.refresh": "Refresh file tree",
   "fileTree.openInExplorer": "Open in Explorer",
-  "fileTree.addToChat": "Add to Chat"
+  "fileTree.addToChat": "Add to Chat",
+  "fileTree.preview": "Preview",
+  "fileTree.code": "Code",
+  "fileTree.previewTruncated": "File is large, showing only the first 512 KB."
 }

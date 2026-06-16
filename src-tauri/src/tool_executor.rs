@@ -1285,7 +1285,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "robot_save",
-                    "description": "Create or update a Robot configuration. A Robot is a specialized AI role that binds a set of skills and a workflow. Only available in robot-create mode.",
+                    "description": "Create or update a Robot configuration. A Robot is a specialized AI role that binds skills to each workflow node. Available in robot-create and robot-modify modes.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1320,11 +1320,55 @@ impl ToolExecutor {
                                     "workflow": {
                                         "type": "array",
                                         "items": { "type": "string" },
-                                        "description": "Ordered workflow steps describing how to use the skills."
+                                        "description": "Legacy workflow text steps for backward compatibility. Prefer workflowNodes."
+                                    },
+                                    "workflowNodes": {
+                                        "type": "array",
+                                        "description": "Structured workflow nodes with per-node skill assignment.",
+                                        "minItems": 1,
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "objective": {
+                                                    "type": "string",
+                                                    "description": "What this node must complete before moving to the next node."
+                                                },
+                                                "skills": {
+                                                    "type": "array",
+                                                    "items": { "type": "string" },
+                                                    "description": "Local skill IDs assigned to this node."
+                                                },
+                                                "pluginSkills": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "pluginId": { "type": "string" },
+                                                            "skillId": { "type": "string" }
+                                                        },
+                                                        "required": ["pluginId", "skillId"]
+                                                    },
+                                                    "description": "Plugin skill references assigned to this node."
+                                                }
+                                            },
+                                            "required": ["objective", "skills", "pluginSkills"],
+                                            "anyOf": [
+                                                {
+                                                    "properties": {
+                                                        "skills": { "minItems": 1 }
+                                                    }
+                                                },
+                                                {
+                                                    "properties": {
+                                                        "pluginSkills": { "minItems": 1 }
+                                                    }
+                                                }
+                                            ]
+                                        }
                                     },
                                     "systemPrompt": { "type": "string", "description": "Role definition and behavior rules for the robot." }
                                 },
-                                "required": ["name", "description", "skills", "workflow", "systemPrompt"]
+                                "required": ["name", "description", "workflowNodes", "systemPrompt"]
                             }
                         },
                         "required": ["id", "config"]
@@ -4776,6 +4820,26 @@ impl ToolExecutor {
             }
         };
 
+        // 强约束校验：workflow 必须可归一化为节点，且每个节点都要绑定至少一个 skill。
+        // 这里做服务端兜底，即使模型未严格遵循 schema，也能及时返回清晰错误。
+        let normalized_nodes = config.normalized_workflow_nodes();
+        if normalized_nodes.is_empty() {
+            let msg = "Invalid robot config: workflowNodes must contain at least one node".to_string();
+            self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
+            return Ok(msg);
+        }
+        if let Some((idx, _)) = normalized_nodes
+            .iter()
+            .enumerate()
+            .find(|(_, node)| node.skills.is_empty() && node.plugin_skills.is_empty())
+        {
+            let msg = format!(
+                "Invalid robot config: workflowNodes[{idx}] must assign at least one local or plugin skill"
+            );
+            self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
+            return Ok(msg);
+        }
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -4790,10 +4854,10 @@ impl ToolExecutor {
                 let output = serde_json::to_string_pretty(&serde_json::json!({
                     "status": "created",
                     "robotId": detail.id,
-                    "name": config.name,
+                    "name": detail.config.name,
                     "path": detail.path,
-                    "skillsCount": config.skills.len() + config.plugin_skills.len(),
-                    "workflowSteps": config.workflow.len(),
+                    "skillsCount": detail.config.all_local_skills().len() + detail.config.all_plugin_skills().len(),
+                    "workflowSteps": detail.config.normalized_workflow_nodes().len(),
                 }))
                 .unwrap_or_default();
 
@@ -4803,7 +4867,7 @@ impl ToolExecutor {
                         serde_json::json!({
                             "threadId": thread_id,
                             "robotId": detail.id,
-                            "name": config.name,
+                            "name": detail.config.name,
                         }),
                     )
                     .ok();

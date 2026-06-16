@@ -469,6 +469,7 @@ pub async fn read_directory(path: String) -> AppResult<Vec<FileEntry>> {
 }
 
 const MAX_ATTACH_SIZE: u64 = 2 * 1024 * 1024;
+const MAX_TEXT_PREVIEW_SIZE: u64 = 512 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -478,6 +479,17 @@ pub struct FileAttachResult {
     pub data_url: String,
     pub size: u64,
     pub source_path: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextFilePreviewResult {
+    pub name: String,
+    pub path: String,
+    pub mime_type: String,
+    pub content: String,
+    pub size: u64,
     pub truncated: bool,
 }
 
@@ -556,6 +568,73 @@ pub async fn read_file_for_attach(path: String) -> AppResult<FileAttachResult> {
         data_url,
         size: file_size,
         source_path: display_path,
+        truncated,
+    })
+}
+
+#[tauri::command]
+pub async fn read_text_file_preview(path: String) -> AppResult<TextFilePreviewResult> {
+    let display_path = normalize_windows_verbatim_prefix(&path);
+    let file_path = std::path::Path::new(&display_path);
+    if !file_path.is_file() {
+        return Err(AppError::Custom(format!(
+            "Path is not a file: {display_path}"
+        )));
+    }
+
+    let metadata = fs::metadata(file_path)
+        .map_err(|e| AppError::Custom(format!("Failed to read file metadata: {e}")))?;
+    let file_size = metadata.len();
+    let file_name = file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = file_path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+
+    let mime = match ext.as_str() {
+        "md" | "mdx" => "text/markdown",
+        "txt" | "log" => "text/plain",
+        "json" | "jsonc" => "application/json",
+        "xml" => "application/xml",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "ts" | "tsx" | "jsx" => "text/typescript",
+        "rs" => "text/x-rust",
+        "py" => "text/x-python",
+        "toml" => "application/toml",
+        "yaml" | "yml" => "text/yaml",
+        "csv" => "text/csv",
+        "sh" | "bash" | "zsh" => "text/x-shellscript",
+        "sql" => "text/x-sql",
+        "go" => "text/x-go",
+        "java" => "text/x-java",
+        "c" | "h" => "text/x-c",
+        "cpp" | "cc" | "cxx" | "hpp" => "text/x-c++",
+        _ => "text/plain",
+    };
+
+    let truncated = file_size > MAX_TEXT_PREVIEW_SIZE;
+    let read_size = if truncated {
+        MAX_TEXT_PREVIEW_SIZE as usize
+    } else {
+        file_size as usize
+    };
+
+    let bytes = fs::read(file_path)
+        .map_err(|e| AppError::Custom(format!("Failed to read file: {e}")))?;
+    let actual_bytes = &bytes[..read_size.min(bytes.len())];
+    let content = String::from_utf8_lossy(actual_bytes).to_string();
+
+    Ok(TextFilePreviewResult {
+        name: file_name,
+        path: display_path,
+        mime_type: mime.to_string(),
+        content,
+        size: file_size,
         truncated,
     })
 }

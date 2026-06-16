@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::error::{AppError, AppResult};
 use crate::robot_loader::{self, RobotDetail, RobotSummary};
@@ -20,9 +20,19 @@ pub async fn robot_read(
 
 #[tauri::command]
 pub async fn robot_delete(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     robot_id: String,
 ) -> AppResult<()> {
     robot_loader::delete_robot(&state.workspace_config_dir, &robot_id)
-        .map_err(AppError::Custom)
+        .map_err(AppError::Custom)?;
+    app_handle
+        .emit(
+            "robot-deleted",
+            serde_json::json!({
+                "robotId": robot_id,
+            }),
+        )
+        .ok();
+    Ok(())
 }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, hash_map::DefaultHasher};
+use std::collections::{BTreeMap, HashSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -46,8 +46,13 @@ use crate::hook_runtime::{
     first_blocking_hook_result, hook_feedback_for_model, latest_hook_updated_input,
 };
 use crate::plugin_loader;
+use crate::robot_orchestrator::{
+    NodeProgressResult, RobotOrchestrator, build_robot_node_completion_nudge,
+    should_enable_robot_orchestration, strip_robot_node_done_marker,
+};
 use crate::thread_store::{
-    FileChange, ThreadGoal, ThreadGoalStatus, ThreadMessage, ThreadStore, ToolCallInfo, TurnUsage,
+    FileChange, ThreadGoal, ThreadGoalStatus, ThreadMessage, ThreadRobotState, ThreadStore,
+    ToolCallInfo, TurnUsage,
 };
 use crate::tool_executor::ToolExecutor;
 use crate::usage::UsageRecorder;
@@ -328,6 +333,25 @@ impl AgentEngine {
             .await
             .set_mcp_servers(mcp_servers);
 
+        // 机器人外层编排入口（低耦合）：
+        // - 仅 mode=goal 且携带 robot_id 时启用；
+        // - 编排细节下沉到 robot_orchestrator，agent 仅处理“启用判断 + 结果接线”；
+        // - 非机器人路径保持原有 goal/chat 行为不变。
+        let robot_orchestrator = RobotOrchestrator::new(&self.cwd);
+        let robot_execution_enabled = should_enable_robot_orchestration(&turn_mode, robot_id);
+        let mut robot_progress: Option<ThreadRobotState> = None;
+        let existing_robot_state = self.thread_store.get_thread_robot_state(thread_id).await;
+
+        if robot_execution_enabled {
+            let rid = robot_id.unwrap_or_default();
+            let prepared_state = robot_orchestrator
+                .prepare_state(&self.thread_store, thread_id, rid, user_input)
+                .await?;
+            robot_progress = Some(prepared_state);
+        } else if existing_robot_state.is_some() {
+            let _ = self.thread_store.clear_thread_robot_state(thread_id).await;
+        }
+
         let max_iterations = 25;
         let mut stop_hooks_satisfied = false;
         let mut stop_hooks_ran_for_last_stop = false;
@@ -440,14 +464,20 @@ impl AgentEngine {
                 info!("Agent loop iteration {iteration} for turn {turn_id}");
 
                 let history = self.thread_store.get_thread_messages(thread_id).await;
+                let robot_overlay_prompt = if let Some(state) = robot_progress.as_ref() {
+                    Some(robot_orchestrator.build_overlay_prompt(state)?)
+                } else {
+                    None
+                };
                 let internal_messages = self.build_internal_messages(
                     config,
                     &history,
                     &effective_cwd,
                     &turn_mode,
+                    robot_id,
                     Some(user_message_id.as_str()),
                     &attachments,
-                    robot_id,
+                    robot_overlay_prompt.as_deref(),
                 );
                 let tools =
                     if turn_mode == "robot-create" || turn_mode == "robot-modify" {
@@ -501,7 +531,13 @@ impl AgentEngine {
                                 recorder.record(&provider_id, &model, thread_id, u);
                             }
                         }
-                        if text.is_empty() && iteration > 0 {
+                        let (cleaned_text, node_done_signal) = if robot_progress.is_some() {
+                            strip_robot_node_done_marker(text)
+                        } else {
+                            (text.clone(), false)
+                        };
+
+                        if cleaned_text.is_empty() && iteration > 0 {
                             info!("Empty message after tool execution, sending minimal signal");
                             emit_and_broadcast(
                                 app_handle,
@@ -510,10 +546,10 @@ impl AgentEngine {
                             );
                         }
 
-                        if !text.is_empty()
+                        if !cleaned_text.is_empty()
                             && iteration > 0
                             && intent_retries < MAX_INTENT_RETRIES
-                            && text_expresses_intent(text)
+                            && text_expresses_intent(&cleaned_text)
                         {
                             intent_retries += 1;
                             info!(
@@ -535,10 +571,10 @@ impl AgentEngine {
                             continue;
                         }
 
-                        let content = if text.is_empty() && iteration > 0 {
+                        let content = if cleaned_text.is_empty() && iteration > 0 {
                             String::new()
                         } else {
-                            text.clone()
+                            cleaned_text.clone()
                         };
                         if !content.is_empty() || iteration == 0 {
                             let msg = ThreadMessage {
@@ -605,6 +641,53 @@ impl AgentEngine {
                                 continue;
                             }
                         }
+
+                        if let Some(progress_snapshot) = robot_progress.clone() {
+                            match robot_orchestrator
+                                .apply_node_progress(
+                                    &self.thread_store,
+                                    thread_id,
+                                    progress_snapshot,
+                                    node_done_signal,
+                                )
+                                .await?
+                            {
+                                NodeProgressResult::ContinueCurrent { state, nudge } => {
+                                    robot_progress = Some(state);
+                                    let msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "system".to_string(),
+                                        content: nudge,
+                                        timestamp: now_secs(),
+                                        tool_call_id: None,
+                                        tool_name: None,
+                                        tool_calls: None,
+                                    };
+                                    self.thread_store.add_message(thread_id, msg).await?;
+                                    continue;
+                                }
+                                NodeProgressResult::Advanced { state, nudge } => {
+                                    robot_progress = Some(state);
+                                    let msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "system".to_string(),
+                                        content: nudge,
+                                        timestamp: now_secs(),
+                                        tool_call_id: None,
+                                        tool_name: None,
+                                        tool_calls: None,
+                                    };
+                                    self.thread_store.add_message(thread_id, msg).await?;
+                                    continue;
+                                }
+                                NodeProgressResult::Completed => {
+                                    robot_progress = None;
+                                    stop_hooks_satisfied = true;
+                                    break;
+                                }
+                            }
+                        }
+
                         stop_hooks_satisfied = true;
                         break;
                     }
@@ -901,85 +984,109 @@ impl AgentEngine {
         }
 
         if !stop_hooks_satisfied && !stop_hooks_ran_for_last_stop && !prompt_hook_blocked {
-            info!("Agent loop ended after tool calls without summary, requesting final summary");
-            let summary_nudge = ThreadMessage {
-                id: uuid::Uuid::new_v4().to_string(),
-                role: "system".to_string(),
-                content: "All tool executions have completed. You MUST now provide a brief \
-                          summary: what was done, any errors encountered, and suggested next steps. \
-                          Do NOT call any more tools."
-                    .to_string(),
-                timestamp: now_secs(),
-                tool_call_id: None,
-                tool_name: None,
-                tool_calls: None,
-            };
-            self.thread_store
-                .add_message(thread_id, summary_nudge)
-                .await?;
-
-            let history = self.thread_store.get_thread_messages(thread_id).await;
-            let internal_messages = self.build_internal_messages(
-                config,
-                &history,
-                &effective_cwd,
-                &turn_mode,
-                Some(user_message_id.as_str()),
-                &[],
-                robot_id,
-            );
-            let summary_result = self
-                .stream_completion(
-                    app_handle,
-                    thread_id,
-                    &base_url,
-                    &api_key,
-                    &model,
-                    &wire_api,
-                    internal_messages,
-                    None,
-                    config.max_output_tokens,
-                )
-                .await;
-            let summary_text = match summary_result {
-                Ok(CompletionResult::Message { text, usage }) => {
-                    if let Some(u) = usage {
-                        add_turn_usage(&mut turn_usage, &u);
-                        if let Some(ref recorder) = self.usage_recorder {
-                            recorder.record(&provider_id, &model, thread_id, &u);
-                        }
-                    }
-                    text
-                }
-                Ok(CompletionResult::ToolCalls {
-                    preceding_text,
-                    usage,
-                    ..
-                }) => {
-                    if let Some(u) = usage {
-                        add_turn_usage(&mut turn_usage, &u);
-                        if let Some(ref recorder) = self.usage_recorder {
-                            recorder.record(&provider_id, &model, thread_id, &u);
-                        }
-                    }
-                    preceding_text
-                }
-                Err(e) => {
-                    warn!("Final summary LLM call failed: {e}");
-                    String::new()
-                }
-            };
-            if !summary_text.is_empty() {
-                let msg = ThreadMessage {
+            if let Some(progress) = robot_progress.as_ref() {
+                // 机器人强约束模式下，如果节点未完成，不允许退化为“直接总结”。
+                // 这里显式写回提示，保留下次 turn 继续当前节点的状态。
+                let pending_msg = ThreadMessage {
                     id: uuid::Uuid::new_v4().to_string(),
-                    role: "assistant".to_string(),
-                    content: summary_text,
+                    role: "system".to_string(),
+                    content: build_robot_node_completion_nudge(
+                        progress.current_node_index,
+                        progress.runtime_nodes.len(),
+                    ),
                     timestamp: now_secs(),
                     tool_call_id: None,
                     tool_name: None,
                     tool_calls: None,
                 };
-                self.thread_store.add_message(thread_id, msg).await?;
+                self.thread_store.add_message(thread_id, pending_msg).await?;
+            } else {
+                info!("Agent loop ended after tool calls without summary, requesting final summary");
+                let summary_nudge = ThreadMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    role: "system".to_string(),
+                    content: "All tool executions have completed. You MUST now provide a brief \
+                              summary: what was done, any errors encountered, and suggested next steps. \
+                              Do NOT call any more tools."
+                        .to_string(),
+                    timestamp: now_secs(),
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: None,
+                };
+                self.thread_store
+                    .add_message(thread_id, summary_nudge)
+                    .await?;
+
+                let history = self.thread_store.get_thread_messages(thread_id).await;
+                let robot_overlay_prompt = if let Some(state) = robot_progress.as_ref() {
+                    Some(robot_orchestrator.build_overlay_prompt(state)?)
+                } else {
+                    None
+                };
+                let internal_messages = self.build_internal_messages(
+                    config,
+                    &history,
+                    &effective_cwd,
+                    &turn_mode,
+                    robot_id,
+                    Some(user_message_id.as_str()),
+                    &[],
+                    robot_overlay_prompt.as_deref(),
+                );
+                let summary_result = self
+                    .stream_completion(
+                        app_handle,
+                        thread_id,
+                        &base_url,
+                        &api_key,
+                        &model,
+                        &wire_api,
+                        internal_messages,
+                        None,
+                        config.max_output_tokens,
+                    )
+                    .await;
+                let summary_text = match summary_result {
+                    Ok(CompletionResult::Message { text, usage }) => {
+                        if let Some(u) = usage {
+                            add_turn_usage(&mut turn_usage, &u);
+                            if let Some(ref recorder) = self.usage_recorder {
+                                recorder.record(&provider_id, &model, thread_id, &u);
+                            }
+                        }
+                        text
+                    }
+                    Ok(CompletionResult::ToolCalls {
+                        preceding_text,
+                        usage,
+                        ..
+                    }) => {
+                        if let Some(u) = usage {
+                            add_turn_usage(&mut turn_usage, &u);
+                            if let Some(ref recorder) = self.usage_recorder {
+                                recorder.record(&provider_id, &model, thread_id, &u);
+                            }
+                        }
+                        preceding_text
+                    }
+                    Err(e) => {
+                        warn!("Final summary LLM call failed: {e}");
+                        String::new()
+                    }
+                };
+                if !summary_text.is_empty() {
+                    let msg = ThreadMessage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        role: "assistant".to_string(),
+                        content: summary_text,
+                        timestamp: now_secs(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    };
+                    self.thread_store.add_message(thread_id, msg).await?;
+                }
             }
         }
 
@@ -1166,13 +1273,6 @@ impl AgentEngine {
                 }
             }
             return self.build_robot_create_prompt(config, effective_cwd);
-        }
-
-        if let Some(rid) = robot_id {
-            if let Some(robot_prompt) = self.build_robot_execution_prompt(config, effective_cwd, rid)
-            {
-                return robot_prompt;
-            }
         }
 
         let cwd_str = effective_cwd.to_string_lossy();
@@ -1435,7 +1535,7 @@ impl AgentEngine {
 
         format!(
             "You are a Robot Configuration Expert. Your job is to create a specialized AI robot \
-             by analyzing available skills and composing them into an effective workflow.\n\
+             by analyzing available skills and composing them into an effective node-by-node workflow.\n\
              \n\
              Environment:\n\
              - Working directory: {cwd_str}\n\
@@ -1455,6 +1555,18 @@ impl AgentEngine {
                \"pluginSkills\": [\n\
                  {{ \"pluginId\": \"plugin-name\", \"skillId\": \"skill-name\" }}\n\
                ],\n\
+               \"workflowNodes\": [\n\
+                 {{\n\
+                   \"objective\": \"Complete one concrete stage objective\",\n\
+                   \"skills\": [\"local-skill-id-1\"],\n\
+                   \"pluginSkills\": [{{ \"pluginId\": \"plugin-name\", \"skillId\": \"skill-name\" }}]\n\
+                 }},\n\
+                 {{\n\
+                   \"objective\": \"Next stage objective\",\n\
+                   \"skills\": [\"local-skill-id-2\"],\n\
+                   \"pluginSkills\": []\n\
+                 }}\n\
+               ],\n\
                \"workflow\": [\n\
                  \"1. First step...\",\n\
                  \"2. Second step...\"\n\
@@ -1465,23 +1577,27 @@ impl AgentEngine {
              \n\
              - `skills`: Local skill IDs from codey/skills/ directory.\n\
              - `pluginSkills`: Plugin skill references (pluginId + skillId from the plugin skills list above).\n\
-             - `workflow`: Ordered steps describing how to use the skills together.\n\
+             - `workflowNodes`: REQUIRED. Structured workflow nodes; each node must bind at least one skill (local or plugin).\n\
+             - `workflow`: Legacy mirror text for compatibility; should describe the same node order as workflowNodes.\n\
              - `systemPrompt`: Role definition, behavior rules, and output format for the robot.\n\
              \n\
              ## Creation Guidelines\n\
              \n\
              1. Analyze the user's description to understand what they want the robot to do.\n\
              2. Select the most relevant 3-8 skills from the available list.\n\
-             3. Design a clear workflow that describes the skill invocation order and transition logic.\n\
-             4. Write a systemPrompt that defines the robot's identity, behavior rules, and output format.\n\
-             5. Choose a concise, descriptive `id` for the robot directory (lowercase, hyphenated).\n\
-             6. Call the `robot_save` tool with the id and config to create the robot.\n\
-             7. After creating, briefly explain what skills were selected and why.\n\
+             3. Design 3-8 workflow nodes, and assign skills for EACH node.\n\
+             4. Ensure every node has at least one skill in `skills` or `pluginSkills`.\n\
+             5. Keep `workflow` text aligned with `workflowNodes` order for compatibility.\n\
+             6. Write a systemPrompt that defines the robot's identity, behavior rules, and output format.\n\
+             7. Choose a concise, descriptive `id` for the robot directory (lowercase, hyphenated).\n\
+             8. Call the `robot_save` tool with the id and config to create the robot.\n\
+             9. After creating, briefly explain what skills were selected and why.\n\
              \n\
              You have access to the `robot_save` tool. Use it to save the robot configuration.\n\
              \n\
              IMPORTANT: Only select skills that actually exist in the available skills list above. \
              Do NOT invent skill IDs that are not listed.\n\
+             IMPORTANT: `workflowNodes` is mandatory and each node must include at least one assigned skill.\n\
              \n\
              CRITICAL: You ONLY have access to the `robot_save` tool. Do NOT try to read files, \
              list directories, run shell commands, or use any other tool. Your sole task is to \
@@ -1567,12 +1683,14 @@ impl AgentEngine {
              1. Read the user's modification request carefully.\n\
              2. Modify ONLY the parts the user mentions. Keep everything else unchanged.\n\
              3. If the user wants to add/remove skills, update the `skills` and `pluginSkills` arrays.\n\
-             4. If the user wants to change the workflow, update the `workflow` array.\n\
-             5. If the user wants to change behavior, update the `systemPrompt`.\n\
-             6. Use the SAME `id` (\"{robot_id}\") when calling `robot_save` to overwrite the config.\n\
-             7. After modifying, briefly explain what was changed.\n\
+             4. If the user wants to change workflow, update `workflowNodes` and keep `workflow` text aligned.\n\
+             5. Every workflow node MUST include at least one assigned skill in `skills` or `pluginSkills`.\n\
+             6. If the user wants to change behavior, update the `systemPrompt`.\n\
+             7. Use the SAME `id` (\"{robot_id}\") when calling `robot_save` to overwrite the config.\n\
+             8. After modifying, briefly explain what was changed.\n\
              \n\
              Only select skills that actually exist in the available skills list above.\n\
+             `workflowNodes` is mandatory in the saved config.\n\
              \n\
              CRITICAL: You ONLY have access to the `robot_save` tool. Do NOT try to read files, \
              list directories, run shell commands, or use any other tool. Analyze the user's \
@@ -1580,75 +1698,6 @@ impl AgentEngine {
         ))
     }
 
-    fn build_robot_execution_prompt(
-        &self,
-        config: &ConfigToml,
-        effective_cwd: &Path,
-        robot_id: &str,
-    ) -> Option<String> {
-        let workspace_config_dir = self.cwd.join("codey");
-        let detail = crate::robot_loader::read_robot(&workspace_config_dir, robot_id)?;
-        let skill_contents =
-            crate::robot_loader::collect_robot_skill_contents(&workspace_config_dir, &detail.config);
-
-        let cwd_str = effective_cwd.to_string_lossy();
-        let os_info = std::env::consts::OS;
-        let arch_info = std::env::consts::ARCH;
-
-        let mut skills_block = String::new();
-        for (label, content) in &skill_contents {
-            skills_block.push_str(&format!("\n--- Skill: {label} ---\n"));
-            let truncated = if content.len() > 8000 {
-                &content[..8000]
-            } else {
-                content.as_str()
-            };
-            skills_block.push_str(truncated);
-            skills_block.push('\n');
-        }
-
-        let mut workflow_block = String::new();
-        for step in &detail.config.workflow {
-            workflow_block.push_str(&format!("- {step}\n"));
-        }
-
-        let user_instructions = config
-            .instructions
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("\n\nAdditional instructions from user:\n{s}"))
-            .unwrap_or_default();
-
-        let web_tool_instructions = if config.web_search_enabled() {
-            "             - web_search: Search the web for current information.\n\
-             - web_fetch: Fetch a web page URL and return readable text.\n"
-        } else {
-            ""
-        };
-
-        Some(format!(
-            "{robot_prompt}\n\
-             \n\
-             Environment:\n\
-             - Working directory: {cwd_str}\n\
-             - OS: {os_info} ({arch_info})\n\
-             \n\
-             You have access to all standard tools (shell, read_file, write_file, etc.).\n\
-             {web_tool_instructions}\
-             \n\
-             ## Workflow\n\
-             {workflow_block}\n\
-             \n\
-             ## Loaded Skills\n\
-             {skills_block}\n\
-             \n\
-             Goal mode is active. Treat the latest user message as a concrete objective. \
-             Follow the workflow steps above and use the loaded skills to complete the task. \
-             Keep working through the available tools until the objective is genuinely handled. \
-             Give concise progress updates as you work, and finish with a short outcome summary.{user_instructions}",
-            robot_prompt = detail.config.system_prompt,
-        ))
-    }
 }
 
 fn render_plugin_apps_prompt_for_config_dir(config_dir: &Path) -> String {
@@ -1706,22 +1755,42 @@ impl AgentEngine {
         history: &[ThreadMessage],
         effective_cwd: &Path,
         mode: &str,
+        robot_id: Option<&str>,
         current_user_message_id: Option<&str>,
         attachments: &[UserAttachment],
-        robot_id: Option<&str>,
+        robot_overlay_prompt: Option<&str>,
     ) -> Vec<InternalMessage> {
         let mut messages = Vec::new();
+        let sanitized_history = sanitize_history_for_model(history);
 
-        // system prompt
+        // 主 system prompt：保持 chat/goal 原语义，不在这里嵌入机器人覆盖逻辑。
         messages.push(InternalMessage {
             role: "system".to_string(),
-            content: text_content(self.build_system_prompt(config, effective_cwd, mode, robot_id)),
+            content: text_content(self.build_system_prompt(
+                config,
+                effective_cwd,
+                mode,
+                robot_id,
+            )),
             tool_calls: None,
             tool_call_id: None,
             name: None,
         });
 
-        for msg in history {
+        // 机器人 overlay 作为“附加系统消息”注入，严格补充，不替换主目标模式提示词。
+        if let Some(overlay_prompt) = robot_overlay_prompt {
+            if !overlay_prompt.trim().is_empty() {
+                messages.push(InternalMessage {
+                    role: "system".to_string(),
+                    content: text_content(overlay_prompt.to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                });
+            }
+        }
+
+        for msg in &sanitized_history {
             let internal_tool_calls = msg.tool_calls.as_ref().map(|tcs| {
                 tcs.iter()
                     .map(|tc| InternalToolCall {
@@ -1925,15 +1994,17 @@ impl AgentEngine {
             }
         }
 
-        let valid_tool_calls: Vec<ToolCallRequest> = tool_calls
-            .into_iter()
-            .filter(|tc| !tc.name.is_empty())
-            .map(|tc| ToolCallRequest {
-                id: tc.id,
-                name: tc.name,
-                arguments: tc.arguments,
-            })
-            .collect();
+        let valid_tool_calls = normalize_tool_call_requests(
+            tool_calls
+                .into_iter()
+                .filter(|tc| !tc.name.is_empty())
+                .map(|tc| ToolCallRequest {
+                    id: tc.id,
+                    name: tc.name,
+                    arguments: tc.arguments,
+                })
+                .collect(),
+        );
 
         info!(
             "stream_completion done: wire_api={wire_api}, finish_reason={:?}, tool_calls={}, text_len={}, usage={:?}",
@@ -2026,25 +2097,30 @@ impl AgentEngine {
         });
 
         // 提取 tool calls
-        let tool_calls: Vec<ToolCallRequest> = message
-            .and_then(|m| m.get("tool_calls"))
-            .and_then(|tc| tc.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|tc| {
-                        let id = tc.get("id")?.as_str()?.to_string();
-                        let func = tc.get("function")?;
-                        let name = func.get("name")?.as_str()?.to_string();
-                        let arguments = func.get("arguments")?.as_str()?.to_string();
-                        Some(ToolCallRequest {
-                            id,
-                            name,
-                            arguments,
+        let tool_calls = normalize_tool_call_requests(
+            message
+                .and_then(|m| m.get("tool_calls"))
+                .and_then(|tc| tc.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|tc| {
+                            let func = tc.get("function")?;
+                            let name = func.get("name")?.as_str()?.to_string();
+                            let arguments = func.get("arguments")?.as_str()?.to_string();
+                            Some(ToolCallRequest {
+                                id: tc
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                name,
+                                arguments,
+                            })
                         })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
 
         // 发送文本增量事件
         if !text.is_empty() {
@@ -2098,6 +2174,10 @@ fn text_expresses_intent(text: &str) -> bool {
     intent_patterns.iter().any(|p| lower.contains(p))
 }
 
+/// 从模型回复中提取机器人节点完成标记，并返回清洗后的文本。
+/// 说明：
+/// - 标记仅用于流程控制，不应展示给用户；
+/// - 允许模型在任意位置输出标记，统一移除后再入库。
 /// LLM 调用完成后的结果
 enum CompletionResult {
     /// 纯文本回复
@@ -2220,6 +2300,101 @@ fn multimodal_user_content(text: &str, attachments: &[UserAttachment]) -> serde_
         parts.extend(image_parts);
         serde_json::Value::Array(parts)
     }
+}
+
+fn normalize_tool_call_requests(calls: Vec<ToolCallRequest>) -> Vec<ToolCallRequest> {
+    calls
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, call)| {
+            let name = call.name.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+
+            let id = if call.id.trim().is_empty() {
+                format!("call_{}_{}", sanitize_tool_name(&name), index)
+            } else {
+                call.id
+            };
+
+            Some(ToolCallRequest {
+                id,
+                name,
+                arguments: call.arguments,
+            })
+        })
+        .collect()
+}
+
+fn sanitize_tool_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "tool".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn sanitize_history_for_model(history: &[ThreadMessage]) -> Vec<ThreadMessage> {
+    let mut seen_tool_call_ids: HashSet<String> = HashSet::new();
+    let mut sanitized = Vec::with_capacity(history.len());
+
+    for msg in history {
+        let filtered_tool_calls = msg.tool_calls.as_ref().map(|tool_calls| {
+            tool_calls
+                .iter()
+                .filter(|call| !call.id.trim().is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+
+        if let Some(tool_calls) = &filtered_tool_calls {
+            for call in tool_calls {
+                seen_tool_call_ids.insert(call.id.clone());
+            }
+        }
+
+        if msg.role == "assistant"
+            && msg.content.trim().is_empty()
+            && filtered_tool_calls
+                .as_ref()
+                .is_some_and(|tool_calls| tool_calls.is_empty())
+        {
+            continue;
+        }
+
+        if msg.role == "tool" {
+            let Some(tool_call_id) = msg
+                .tool_call_id
+                .as_ref()
+                .map(|id| id.trim())
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+
+            if !seen_tool_call_ids.contains(tool_call_id) {
+                continue;
+            }
+        }
+
+        let mut sanitized_msg = msg.clone();
+        sanitized_msg.tool_calls = filtered_tool_calls.filter(|tool_calls| !tool_calls.is_empty());
+        sanitized.push(sanitized_msg);
+    }
+
+    sanitized
 }
 
 fn tool_call_hook_context(turn_id: &str, call: &ToolCallRequest) -> serde_json::Value {
@@ -2884,6 +3059,123 @@ mod tests {
     }
 
     #[test]
+    fn normalize_tool_call_requests_fills_missing_ids() {
+        let calls = normalize_tool_call_requests(vec![
+            ToolCallRequest {
+                id: String::new(),
+                name: "apply_patch".to_string(),
+                arguments: "*** Begin Patch\n*** End Patch".to_string(),
+            },
+            ToolCallRequest {
+                id: "call-real".to_string(),
+                name: "shell".to_string(),
+                arguments: "{}".to_string(),
+            },
+        ]);
+
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "call_apply_patch_0");
+        assert_eq!(calls[1].id, "call-real");
+    }
+
+    #[test]
+    fn sanitize_history_for_model_skips_orphan_tool_messages() {
+        let history = vec![
+            ThreadMessage {
+                id: "tool-only".to_string(),
+                role: "tool".to_string(),
+                content: "result".to_string(),
+                timestamp: 1,
+                tool_call_id: Some("call-missing".to_string()),
+                tool_name: Some("shell".to_string()),
+                tool_calls: None,
+            },
+            ThreadMessage {
+                id: "assistant-call".to_string(),
+                role: "assistant".to_string(),
+                content: String::new(),
+                timestamp: 2,
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: Some(vec![ToolCallInfo {
+                    id: "call-ok".to_string(),
+                    name: "shell".to_string(),
+                    arguments: "{}".to_string(),
+                }]),
+            },
+            ThreadMessage {
+                id: "tool-ok".to_string(),
+                role: "tool".to_string(),
+                content: "done".to_string(),
+                timestamp: 3,
+                tool_call_id: Some("call-ok".to_string()),
+                tool_name: Some("shell".to_string()),
+                tool_calls: None,
+            },
+        ];
+
+        let sanitized = sanitize_history_for_model(&history);
+        assert_eq!(sanitized.len(), 2);
+        assert_eq!(sanitized[0].id, "assistant-call");
+        assert_eq!(sanitized[1].id, "tool-ok");
+    }
+
+    #[test]
+    fn sanitize_history_for_model_removes_empty_tool_call_ids_from_assistant_and_tool() {
+        let history = vec![
+            ThreadMessage {
+                id: "assistant-bad".to_string(),
+                role: "assistant".to_string(),
+                content: String::new(),
+                timestamp: 1,
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: Some(vec![ToolCallInfo {
+                    id: String::new(),
+                    name: "list_directory".to_string(),
+                    arguments: "{}".to_string(),
+                }]),
+            },
+            ThreadMessage {
+                id: "tool-bad".to_string(),
+                role: "tool".to_string(),
+                content: "files".to_string(),
+                timestamp: 2,
+                tool_call_id: Some(String::new()),
+                tool_name: Some("list_directory".to_string()),
+                tool_calls: None,
+            },
+            ThreadMessage {
+                id: "assistant-ok".to_string(),
+                role: "assistant".to_string(),
+                content: String::new(),
+                timestamp: 3,
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: Some(vec![ToolCallInfo {
+                    id: "call-ok".to_string(),
+                    name: "list_directory".to_string(),
+                    arguments: "{}".to_string(),
+                }]),
+            },
+            ThreadMessage {
+                id: "tool-ok".to_string(),
+                role: "tool".to_string(),
+                content: "files".to_string(),
+                timestamp: 4,
+                tool_call_id: Some("call-ok".to_string()),
+                tool_name: Some("list_directory".to_string()),
+                tool_calls: None,
+            },
+        ];
+
+        let sanitized = sanitize_history_for_model(&history);
+        assert_eq!(sanitized.len(), 2);
+        assert_eq!(sanitized[0].id, "assistant-ok");
+        assert_eq!(sanitized[1].id, "tool-ok");
+    }
+
+    #[test]
     fn blocked_tool_call_output_surfaces_hook_reason_and_source() {
         let hook = HookRunResult {
             id: "run".to_string(),
@@ -3123,5 +3415,25 @@ mod tests {
                 action: "renamed".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn strip_robot_node_done_marker_removes_control_token() {
+        let (cleaned, done) = crate::robot_orchestrator::strip_robot_node_done_marker(
+            "Node completed. <workflow_node_done/> Moving to next stage.",
+        );
+        assert!(done);
+        assert_eq!(cleaned, "Node completed.  Moving to next stage.");
+    }
+
+    #[test]
+    fn robot_node_prompts_include_progress_and_done_marker() {
+        let nudge = crate::robot_orchestrator::build_robot_node_completion_nudge(1, 4);
+        assert!(nudge.contains("2/4"));
+        assert!(nudge.contains(crate::robot_orchestrator::ROBOT_NODE_DONE_SENTINEL));
+
+        let advance = crate::robot_orchestrator::build_robot_node_advance_prompt(2, 4);
+        assert!(advance.contains("3/4"));
+        assert!(advance.contains(crate::robot_orchestrator::ROBOT_NODE_DONE_SENTINEL));
     }
 }

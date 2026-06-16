@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="CN-Codex 使用指南 - 详细介绍如何使用 CN-Codex AI 编程助手">
+  <title>使用指南 - CN-Codex</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2322c55e'%3E%3Cpath d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z'/%3E%3C/svg%3E">
+</head>
+<body class="docs-page">
+  <!-- 导航栏 -->
+  <nav class="navbar">
+    <div class="container nav-content">
+      <a href="index.html" class="logo">
+        <svg class="logo-icon" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+        </svg>
+        <span class="logo-text">CN-Codex</span>
+      </a>
+      <div class="nav-links">
+        <a href="index.html#features">功能</a>
+        <a href="index.html#tools">工具</a>
+        <a href="index.html#plugins">插件</a>
+        <a href="usage.html" class="active">使用指南</a>
+        <a href="https://github.com/cn-codex/cn-codex" target="_blank" class="nav-github">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+          GitHub
+        </a>
+      </div>
+      <button class="mobile-menu-btn" aria-label="菜单">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
+          <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
+        </svg>
+      </button>
+    </div>
+  </nav>
+
+  <div class="docs-layout">
+    <!-- 侧边栏 -->
+    <aside class="docs-sidebar">
+      <nav class="docs-nav">
+        <div class="docs-nav-section">
+          <h4>快速开始</h4>
+          <ul>
+            <li><a href="#overview" class="active">概述</a></li>
+            <li><a href="#first-launch">首次启动</a></li>
+            <li><a href="#basic-usage">基本使用</a></li>
+          </ul>
+        </div>
+        <div class="docs-nav-section">
+          <h4>配置</h4>
+          <ul>
+            <li><a href="#config-file">配置文件</a></li>
+            <li><a href="#providers">供应商配置</a></li>
+            <li><a href="#approval-policy">审批策略</a></li>
+          </ul>
+        </div>
+        <div class="docs-nav-section">
+          <h4>功能</h4>
+          <ul>
+            <li><a href="#chat-mode">对话模式</a></li>
+            <li><a href="#goal-mode">Goal 模式</a></li>
+            <li><a href="#mobile">移动端</a></li>
+          </ul>
+        </div>
+        <div class="docs-nav-section">
+          <h4>工具</h4>
+          <ul>
+            <li><a href="#file-tools">文件工具</a></li>
+            <li><a href="#shell-tools">命令工具</a></li>
+            <li><a href="#browser-tools">浏览器工具</a></li>
+          </ul>
+        </div>
+        <div class="docs-nav-section">
+          <h4>高级</h4>
+          <ul>
+            <li><a href="#skills">技能系统</a></li>
+            <li><a href="#plugins">插件扩展</a></li>
+            <li><a href="#mcp">MCP 协议</a></li>
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- 主内容 -->
+    <main class="docs-content">
+      <article class="docs-article">
+        <header class="article-header">
+          <h1>使用指南</h1>
+          <p>了解如何使用 CN-Codex 提高 your 开发效率</p>
+        </header>
+
+        <section id="overview" class="docs-section">
+          <h2>概述</h2>
+          <p>CN-Codex 是一款强大的 AI 编程助手桌面应用，支持多种 LLM 供应商，内置丰富的工具能力，帮助你完成各种编程任务。</p>
+          
+          <div class="info-card">
+            <div class="info-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+              </svg>
+            </div>
+            <div>
+              <strong>开箱即用</strong>
+              <p>下载 CN-Codex 后，双击 <code>CN-Codex.exe</code> 即可启动，无需安装。首次启动需要配置 LLM 供应商的 API Key。</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="first-launch" class="docs-section">
+          <h2>首次启动</h2>
+          
+          <h3>1. 启动应用</h3>
+          <p>双击 <code>CN-Codex.exe</code> 启动应用。首次启动时，应用会在当前目录创建 <code>codey</code> 文件夹用于存储配置和会话数据。</p>
+          
+          <h3>2. 配置 API Key</h3>
+          <p>在开始使用前，需要配置至少一个 LLM 供应商的 API Key。打开设置面板，进入"供应商配置"部分：</p>
+          
+          <div class="code-block">
+            <div class="code-header">
+              <span>codey/config.toml</span>
+            </div>
+            <pre><code class="language-toml"># OpenAI 配置示例
+[providers.openai]
+name = "OpenAI"
+api_key = "sk-..."
+base_url = "https://api.openai.com/v1"
+
+# Anthropic 配置示例
+[providers.anthropic]
+name = "Anthropic"
+api_key = "sk-ant-..."
+base_url = "https://api.anthropic.com"
+
+# 默认模型
+model = "gpt-4o"</code></pre>
+          </div>
+
+          <h3>3. 目录结构</h3>
+          <p>CN-Codex 运行时会在可执行文件同目录创建以下结构：</p>
+          
+          <div class="code-block">
+            <pre><code>cn-codex/
+├── CN-Codex.exe          # 主程序
+├── codey/                # 运行时目录
+│   ├── config.toml       # 配置文件
+│   ├── sessions/         # 会话数据
+│   ├── skills/           # 技能定义
+│   ├── plugins/          # 插件目录
+│   ├── memories/         # 记忆存储
+│   └── usage.db          # 用量统计
+└── node/                 # Node.js 便携版（用于 Shell 工具）</code></pre>
+          </div>
+        </section>
+
+        <section id="basic-usage" class="docs-section">
+          <h2>基本使用</h2>
+          
+          <h3>对话界面</h3>
+          <p>CN-Codex 提供直观的聊天界面：</p>
+          <ul>
+            <li><strong>左侧边栏</strong>：会话列表，可搜索、归档、分叉</li>
+            <li><strong>中间区域</strong>：消息列表，支持 Markdown 渲染</li>
+            <li><strong>底部输入</strong>：输入框，支持多行文本</li>
+            <li><strong>右侧面板</strong>：工具调用详情、文件变更等</li>
+          </ul>
+
+          <h3>发送消息</h3>
+          <p>在输入框中输入问题或任务，按 <kbd>Enter</kbd> 发送���AI 会流式响应，实时显示内容。</p>
+          
+          <div class="tip-card">
+            <div class="tip-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7zm2.85 11.1l-.85.6V16h-4v-2.3l-.85-.6C7.8 12.16 7 10.63 7 9c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.63-.8 3.16-2.15 4.1z"/>
+              </svg>
+            </div>
+            <div>
+              <strong>提示</strong>
+              <p>按 <kbd>Shift + Enter</kbd> 可以换行而不发送消息。</p>
+            </div>
+          </div>
+
+          <h3>斜杠命令</h3>
+          <p>在输入框中使用斜杠命令快速执行操作：</p>
+          
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>命令</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>/help</code></td>
+                <td>显示帮助信息</td>
+              </tr>
+              <tr>
+                <td><code>/model</code></td>
+                <td>切换模型</td>
+              </tr>
+              <tr>
+                <td><code>/approval</code></td>
+                <td>更改审批模式</td>
+              </tr>
+              <tr>
+                <td><code>/clear</code></td>
+                <td>清除上下文</td>
+              </tr>
+              <tr>
+                <td><code>/compact</code></td>
+                <td>压缩历史</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="config-file" class="docs-section">
+          <h2>配置文件</h2>
+          <p>配置文件 <code>codey/config.toml</code> 包含所有设置选项：</p>
+          
+          <div class="code-block">
+            <div class="code-header">
+              <span>config.toml 完整示例</span>
+            </div>
+            <pre><code class="language-toml"># 基础配置
+model = "gpt-4o"
+model_context_window = 128000
+approval_policy = "suggest"
+
+# 上下文压缩阈值
+model_auto_compact_token_limit = 115000
+
+# OpenAI 供应商
+[providers.openai]
+name = "OpenAI"
+api_key = "sk-..."
+base_url = "https://api.openai.com/v1"
+
+# Anthropic 供应商
+[providers.anthropic]
+name = "Anthropic"
+api_key = "sk-ant-..."
+base_url = "https://api.anthropic.com"
+
+# 火山引擎
+[providers.volcengine]
+name = "火山引擎"
+api_key = "..."
+base_url = "https://ark.cn-beijing.volces.com/api/v3"
+
+# 智谱 AI
+[providers.zhipu]
+name = "智谱 AI"
+api_key = "..."
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+
+# 模型别名
+[models.cheap]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[models.smart]
+provider = "anthropic"
+model = "claude-3-5-sonnet-latest"</code></pre>
+          </div>
+        </section>
+
+        <section id="providers" class="docs-section">
+          <h2>供应商配置</h2>
+          
+          <h3>支持的供应商</h3>
+          <p>CN-Codex 支持多种 LLM 供应商，使用 OpenAI 兼容的 API 格式：</p>
+          
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>供应商</th>
+                <th>API 格式</th>
+                <th>base_url</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>OpenAI</td>
+                <td>Chat Completions / Responses</td>
+                <td>https://api.openai.com/v1</td>
+              </tr>
+              <tr>
+                <td>Anthropic</td>
+                <td>Claude API</td>
+                <td>https://api.anthropic.com</td>
+              </tr>
+              <tr>
+                <td>火山引擎</td>
+                <td>Chat Completions</td>
+                <td>https://ark.cn-beijing.volces.com/api/v3</td>
+              </tr>
+              <tr>
+                <td>智谱 AI</td>
+                <td>Chat Completions</td>
+                <td>https://open.bigmodel.cn/api/paas/v4</td>
+              </tr>
+              <tr>
+                <td>百度</td>
+                <td>Chat Completions</td>
+                <td>https://aip.baidubce.com/rpc/2.0/ai_custom/v1</td>
+              </tr>
+              <tr>
+                <td>Google</td>
+                <td>Gemini API</td>
+                <td>https://generativelanguage.googleapis.com</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>自定义供应商</h3>
+          <p>任何兼容 OpenAI API 格式的服务都可以配置：</p>
+          
+          <div class="code-block">
+            <pre><code class="language-toml">[providers.custom]
+name = "自定义服务"
+api_key = "your-api-key"
+base_url = "https://your-api-endpoint/v1"</code></pre>
+          </div>
+        </section>
+
+        <section id="approval-policy" class="docs-section">
+          <h2>审批策略</h2>
+          <p>CN-Codex 在执行敏感操作前会请求用户审批，确保安全可控。</p>
+          
+          <h3>策略类型</h3>
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>策略</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>suggest</code></td>
+                <td>建议审批，大多数操作需要确认（推荐）</td>
+              </tr>
+              <tr>
+                <td><code>auto-edit</code></td>
+                <td>自动批准文件编辑操作</td>
+              </tr>
+              <tr>
+                <td><code>auto-run</code></td>
+                <td>自动批准命令执行</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="warning-card">
+            <div class="warning-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+              </svg>
+            </div>
+            <div>
+              <strong>注意</strong>
+              <p><code>auto-run</code> 策略会自动执行所有命令，请仅在可信环境中使用。</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="chat-mode" class="docs-section">
+          <h2>对话模式</h2>
+          <p>CN-Codex 提供两种对话模式：</p>
+          
+          <h3>Chat 模式</h3>
+          <p>默认模式，适合一般对话和问答。AI 会根据需要调用工具，但不会自主执行多步骤任务。</p>
+          
+          <h3>Goal 模式</h3>
+          <p>设置目标后，AI 会自主规划并执行多步骤任务：</p>
+          <ol>
+            <li>分析目标，制定计划</li>
+            <li>逐步执行，调用工具</li>
+            <li>遇到问题自动调整</li>
+            <li>完成目标后汇报结果</li>
+          </ol>
+
+          <div class="code-block">
+            <div class="code-header">
+              <span>Goal 模式示例</span>
+            </div>
+            <pre><code>用户：创建一个 React 计数器组件，包含增减按钮和重置功能
+
+AI：
+1. 创建 Counter.tsx 文件
+2. 实现 useState 状态管理
+3. 添加增减和重置按钮
+4. 编写样式
+5. 完成！
+
+已创建文件：src/components/Counter.tsx</code></pre>
+          </div>
+        </section>
+
+        <section id="goal-mode" class="docs-section">
+          <h2>Goal 模式详解</h2>
+          
+          <h3>设置目标</h3>
+          <p>在输入框中描述你想要完成的任务，AI 会自动分析并制定执行计划。</p>
+          
+          <h3>执行过程</h3>
+          <p>Goal 模式下，AI 会：</p>
+          <ul>
+            <li>调用 <code>update_plan</code> 更新任务计划</li>
+            <li>使用 <code>shell</code> 执行命令</li>
+            <li>使用 <code>read_file</code> 和 <code>write_file</code> 操作文件</li>
+            <li>使用 <code>code_review</code> 审查变更</li>
+            <li>使用 <code>spawn_agent</code> 启动子代理并行处理</li>
+          </ul>
+
+          <h3>监控进度</h3>
+          <p>右侧面板显示当前任务进度、工具调用状态和文件变更列表。</p>
+          
+          <h3>中断与恢复</h3>
+          <p>随时可以点击"停止"按钮中断当前任务。中断后会话状态会保存，可以继续对话。</p>
+        </section>
+
+        <section id="mobile" class="docs-section">
+          <h2>移动端使用</h2>
+          <p>CN-Codex 支持通过手机浏览器访问。</p>
+          
+          <h3>启动移动服务器</h3>
+          <ol>
+            <li>在应用中点击"移动服务器"按钮</li>
+            <li>查看显示的二维码和连接 URL</li>
+            <li>手机扫描二维码或在浏览器输入地址</li>
+          </ol>
+
+          <h3>技术原理</h3>
+          <ul>
+            <li>内置 Web 服务器（Axum 框架）</li>
+            <li>WebSocket 实时通信</li>
+            <li>局域网设备发现</li>
+          </ul>
+
+          <div class="info-card">
+            <div class="info-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+              </svg>
+            </div>
+            <div>
+              <strong>安全提示</strong>
+              <p>移动服务器仅在局域网内可用，请勿在公共网络中开放。建议设置访问密码。</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="file-tools" class="docs-section">
+          <h2>文件工具</h2>
+          
+          <h3>read_file</h3>
+          <p>读取文件内容：</p>
+          <div class="code-block">
+            <pre><code>用户：读取 package.json 的内容
+
+AI：使用 read_file 工具读取文件...</code></pre>
+          </div>
+
+          <h3>write_file</h3>
+          <p>创建或覆盖文件：</p>
+          <div class="code-block">
+            <pre><code>用户：创建一个 README.md 文件
+
+AI：使用 write_file 创建文件...</code></pre>
+          </div>
+
+          <h3>list_directory</h3>
+          <p>列出目录内容：</p>
+          <div class="code-block">
+            <pre><code>用户：查看当前目录结构
+
+AI：使用 list_directory 列出文件...</code></pre>
+          </div>
+
+          <h3>apply_patch</h3>
+          <p>应用多文件补丁，支持添加、更新、删除文件：</p>
+          <div class="code-block">
+            <pre><code>用户：重构这个组件到单独的文件
+
+AI：使用 apply_patch 应用变更...</code></pre>
+          </div>
+        </section>
+
+        <section id="shell-tools" class="docs-section">
+          <h2>命令工具</h2>
+          
+          <h3>shell</h3>
+          <p>执行短时 Shell 命令：</p>
+          <div class="code-block">
+            <pre><code>用户：运行 npm test
+
+AI：使用 shell 执行命令...
+结果：测试通过，15 个测试用例全部成功</code></pre>
+          </div>
+
+          <h3>exec_command</h3>
+          <p>启动持久会话，适合交互式命令：</p>
+          <div class="code-block">
+            <pre><code>用户：启动开发服务器
+
+AI：使用 exec_command 启动持久会话...
+会话 ID：session_1
+状态：运行中</code></pre>
+          </div>
+
+          <h3>write_stdin</h3>
+          <p>向持久会话发送输入：</p>
+          <div class="code-block">
+            <pre><code>用户：输入用户名 admin
+
+AI：使用 write_stdin 发送输入...</code></pre>
+          </div>
+        </section>
+
+        <section id="browser-tools" class="docs-section">
+          <h2>浏览器工具</h2>
+          
+          <h3>browser_run</h3>
+          <p>运行浏览器自动化会话：</p>
+          <div class="code-block">
+            <pre><code>用户：打开百度搜索 CN-Codex
+
+AI：使用 browser_run 执行：
+1. goto https://www.baidu.com
+2. fill 输入框 "CN-Codex"
+3. click 搜索按钮
+4. screenshot 截图</code></pre>
+          </div>
+
+          <h3>支持的操作</h3>
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>操作</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>goto</code></td>
+                <td>导航到 URL</td>
+              </tr>
+              <tr>
+                <td><code>click</code></td>
+                <td>点击元素</td>
+              </tr>
+              <tr>
+                <td><code>fill</code></td>
+                <td>填写表单</td>
+              </tr>
+              <tr>
+                <td><code>screenshot</code></td>
+                <td>截取屏幕</td>
+              </tr>
+              <tr>
+                <td><code>eval</code></td>
+                <td>执行 JavaScript</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="skills" class="docs-section">
+          <h2>技能系统</h2>
+          <p>技能是可复用的指令包，帮助 AI 更好地完成特定任务。</p>
+          
+          <h3>内置技能</h3>
+          <p>CN-Codex 附带多个实用技能：</p>
+          
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>技能</th>
+                <th>用途</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>test-driven-development</code></td>
+                <td>测试驱动开发流程</td>
+              </tr>
+              <tr>
+                <td><code>systematic-debugging</code></td>
+                <td>系统化调试方法</td>
+              </tr>
+              <tr>
+                <td><code>code-review</code></td>
+                <td>代码审查流程</td>
+              </tr>
+              <tr>
+                <td><code>writing-plans</code></td>
+                <td>编写实现计划</td>
+              </tr>
+              <tr>
+                <td><code>verification-before-completion</code></td>
+                <td>完成前验证</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>技能位置</h3>
+          <p>技能定义在 <code>codey/skills/</code> 目录，每个技能包含一个 <code>SKILL.md</code> 文件。</p>
+        </section>
+
+        <section id="plugins" class="docs-section">
+          <h2>插件扩展</h2>
+          <p>插件提供额外的功能模块和工具集。</p>
+          
+          <h3>内置插件</h3>
+          <div class="plugin-list">
+            <div class="plugin-item">
+              <h4>browser</h4>
+              <p>浏览器自动化与网页测试</p>
+            </div>
+            <div class="plugin-item">
+              <h4>computer-use</h4>
+              <p>Windows 应用控制</p>
+            </div>
+            <div class="plugin-item">
+              <h4>documents</h4>
+              <p>Word 文档创建与编辑</p>
+            </div>
+            <div class="plugin-item">
+              <h4>presentations</h4>
+              <p>PowerPoint 演示文稿生成</p>
+            </div>
+            <div class="plugin-item">
+              <h4>spreadsheets</h4>
+              <p>Excel 电子表格处理</p>
+            </div>
+            <div class="plugin-item">
+              <h4>sites</h4>
+              <p>网站托管与部署</p>
+            </div>
+            <div class="plugin-item">
+              <h4>superpowers</h4>
+              <p>高级技能集合</p>
+            </div>
+          </div>
+
+          <h3>插件目录</h3>
+          <p>插件位于 <code>codey/plugins/</code> 目录，每个插件包含：</p>
+          <ul>
+            <li><code>plugin.json</code> - 插件元数据</li>
+            <li><code>skills/</code> - 插件技能</li>
+            <li><code>tools/</code> - 插件工具</li>
+          </ul>
+        </section>
+
+        <section id="mcp" class="docs-section">
+          <h2>MCP 协议</h2>
+          <p>CN-Codex 支持模型上下文协议（MCP），可以连接外部 MCP 服务器扩展能力。</p>
+          
+          <h3>配置 MCP 服务器</h3>
+          <div class="code-block">
+            <pre><code class="language-toml"># codey/config.toml
+[mcp.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+
+[mcp.postgres]
+command = "uvx"
+args = ["mcp-server-postgres", "postgresql://localhost/mydb"]</code></pre>
+          </div>
+
+          <h3>MCP 工具</h3>
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>工具</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>mcp_list_servers</code></td>
+                <td>列出 MCP 服务器</td>
+              </tr>
+              <tr>
+                <td><code>mcp_list_tools</code></td>
+                <td>列出 MCP 工具</td>
+              </tr>
+              <tr>
+                <td><code>mcp_call_tool</code></td>
+                <td>调用 MCP 工具</td>
+              </tr>
+              <tr>
+                <td><code>mcp_list_resources</code></td>
+                <td>列出 MCP 资源</td>
+              </tr>
+              <tr>
+                <td><code>mcp_read_resource</code></td>
+                <td>读取 MCP 资源</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="docs-section">
+          <h2>常见问题</h2>
+          
+          <div class="faq-item">
+            <h3>Q: 如何切换语言？</h3>
+            <p>在设置面板中可以选择中文或英文界面。</p>
+          </div>
+          
+          <div class="faq-item">
+            <h3>Q: 会话数据存储在哪里？</h3>
+            <p>会话数据存储在 <code>codey/sessions/</code> 目录，以 JSONL 格式保存。</p>
+          </div>
+          
+          <div class="faq-item">
+            <h3>Q: 如何查看 Token 用量？</h3>
+            <p>用量数据存储在 <code>codey/usage.db</code> SQLite 数据库中，可在设置面板查看统计。</p>
+          </div>
+          
+          <div class="faq-item">
+            <h3>Q: 支持哪些操作系统？</h3>
+            <p>目前仅支持 Windows 10 及以上版本。macOS 和 Linux 版本计划中。</p>
+          </div>
+          
+          <div class="faq-item">
+            <h3>Q: 如何更新？</h3>
+            <p>从 GitHub Release 下载最新版本，替换可执行文件即可。会话数据会自动兼容。</p>
+          </div>
+        </section>
+
+        <section class="docs-section">
+          <h2>获取帮助</h2>
+          <div class="help-links">
+            <a href="https://github.com/cn-codex/cn-codex" target="_blank" class="help-link">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
+                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+              </svg>
+              <span>GitHub 仓库</span>
+            </a>
+            <a href="https://github.com/cn-codex/cn-codex/issues" target="_blank" class="help-link">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
+                <path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"/>
+              </svg>
+              <span>问题反馈</span>
+            </a>
+            <a href="https://github.com/cn-codex/cn-codex/discussions" target="_blank" class="help-link">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
+                <path d="M21 6h-2v9H6v2c0 .55.45 1 1 1h11l4 4V7c0-.55-.45-1-1-1zm-4 6V3c0-.55-.45-1-1-1H3c-.55 0-1 .45-1 1v14l4-4h10c.55 0 1-.45 1-1z"/>
+              </svg>
+              <span>讨论区</span>
+            </a>
+          </div>
+        </section>
+      </article>
+    </main>
+  </div>
+
+  <!-- 页脚 -->
+  <footer class="footer">
+    <div class="container footer-bottom">
+      <p>&copy; 2024 CN-Codex. MIT License.</p>
+    </div>
+  </footer>
+
+  <script src="assets/script.js"></script>
+</body>
+</html>

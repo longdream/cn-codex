@@ -3,6 +3,12 @@ export interface PluginSkillRef {
   skillId: string;
 }
 
+export interface WorkflowNode {
+  objective: string;
+  skills: string[];
+  pluginSkills: PluginSkillRef[];
+}
+
 export interface RobotConfig {
   name: string;
   description: string;
@@ -10,6 +16,7 @@ export interface RobotConfig {
   skills: string[];
   pluginSkills: PluginSkillRef[];
   workflow: string[];
+  workflowNodes: WorkflowNode[];
   systemPrompt: string;
   createdAt: number;
   updatedAt: number;

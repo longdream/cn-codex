@@ -1,7 +1,7 @@
-[周一 2026/06/15 22:24:42.51] Starting dev mode...
-[周一 2026/06/15 22:24:42.56] WARN: codex.exe not in PATH
-[周一 2026/06/15 22:24:42.57] Checking Vite port 1420
-[周一 2026/06/15 22:24:42.61] Port 1420 is free
-[周一 2026/06/15 22:24:42.61] Checking embedded Node.js
-[周一 2026/06/15 22:24:42.61] Embedded Node.js already present
-[周一 2026/06/15 22:24:42.62] Running pnpm tauri dev
+[周二 2026/06/16 16:41:57.30] Starting dev mode...
+[周二 2026/06/16 16:41:57.86] WARN: codex.exe not in PATH
+[周二 2026/06/16 16:41:57.87] Checking Vite port 1420
+[周二 2026/06/16 16:41:58.94] Port 1420 is free
+[周二 2026/06/16 16:41:58.95] Checking embedded Node.js
+[周二 2026/06/16 16:41:58.96] Embedded Node.js already present
+[周二 2026/06/16 16:41:58.97] Running pnpm tauri dev

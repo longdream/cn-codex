@@ -3,9 +3,12 @@ import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { robotList, robotRead, robotDelete } from "../../api/robot";
 import type { RobotSummary, RobotDetail } from "../../types/robot";
+import { useAppStore } from "../../stores/appStore";
 
 export function RobotsPanel() {
   const intl = useIntl();
+  const selectedRobotId = useAppStore((state) => state.selectedRobotId);
+  const setSelectedRobotId = useAppStore((state) => state.setSelectedRobotId);
   const [robots, setRobots] = useState<RobotSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -56,11 +59,17 @@ export function RobotsPanel() {
     setActionError(null);
     try {
       await robotDelete(robot.id);
+      // 删除当前选中机器人时，立即清空选择，避免聊天输入区保留失效 robotId。
+      if (selectedRobotId === robot.id) {
+        setSelectedRobotId(null);
+      }
       if (expandedId === robot.id) {
         setExpandedId(null);
         setDetail(null);
       }
       await load();
+      // 通知聊天输入区刷新机器人列表，确保删除后下拉菜单实时同步。
+      window.dispatchEvent(new CustomEvent("robot-list-changed"));
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
@@ -193,7 +202,53 @@ export function RobotsPanel() {
                             </div>
                           )}
 
-                          {detail.workflow.length > 0 && (
+                          {detail.workflowNodes.length > 0 ? (
+                            <div>
+                              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
+                                {intl.formatMessage({ id: "settings.robots.workflow" })}
+                              </p>
+                              <div className="space-y-2">
+                                {detail.workflowNodes.map((node, i) => (
+                                  <div
+                                    key={`${i}-${node.objective}`}
+                                    className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-main)]/60 px-3 py-2"
+                                  >
+                                    <p className="text-xs font-medium text-[var(--text-strong)]">
+                                      {i + 1}. {node.objective}
+                                    </p>
+                                    {(node.skills.length > 0 || node.pluginSkills.length > 0) && (
+                                      <div className="mt-1.5 space-y-1">
+                                        {node.skills.length > 0 && (
+                                          <div className="flex flex-wrap gap-1.5">
+                                            {node.skills.map((skillId) => (
+                                              <span
+                                                key={`${i}-local-${skillId}`}
+                                                className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] text-[var(--accent-strong)]"
+                                              >
+                                                {skillId}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
+                                        {node.pluginSkills.length > 0 && (
+                                          <div className="flex flex-wrap gap-1.5">
+                                            {node.pluginSkills.map((pluginSkill) => (
+                                              <span
+                                                key={`${i}-plugin-${pluginSkill.pluginId}-${pluginSkill.skillId}`}
+                                                className="rounded-full bg-[var(--surface-soft)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]"
+                                              >
+                                                {pluginSkill.pluginId}/{pluginSkill.skillId}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : detail.workflow.length > 0 && (
                             <div>
                               <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
                                 {intl.formatMessage({ id: "settings.robots.workflow" })}

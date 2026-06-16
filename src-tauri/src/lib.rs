@@ -11,6 +11,7 @@ pub mod mobile_server;
 pub mod relay_client;
 pub mod plugin_loader;
 pub mod robot_loader;
+pub mod robot_orchestrator;
 pub mod protocol;
 pub mod standalone;
 pub mod state;
@@ -180,6 +181,7 @@ pub fn run() {
             commands::get_user_home_dir,
             commands::read_directory,
             commands::read_file_for_attach,
+            commands::read_text_file_preview,
             // Mobile server
             commands::start_mobile_server,
             commands::stop_mobile_server,

@@ -90,3 +90,16 @@ export interface FileAttachResult {
 export async function readFileForAttach(path: string): Promise<FileAttachResult> {
   return invoke<FileAttachResult>("read_file_for_attach", { path });
 }
+
+export interface TextFilePreviewResult {
+  name: string;
+  path: string;
+  mimeType: string;
+  content: string;
+  size: number;
+  truncated: boolean;
+}
+
+export async function readTextFilePreview(path: string): Promise<TextFilePreviewResult> {
+  return invoke<TextFilePreviewResult>("read_text_file_preview", { path });
+}

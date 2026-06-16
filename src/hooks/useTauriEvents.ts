@@ -593,6 +593,14 @@ export function useTauriEvents() {
           store.setSelectedRobotId(e.payload.robotId);
           store.setRobotCreateMode(false);
         }),
+
+        listen<{ robotId: string }>("robot-deleted", (e) => {
+          window.dispatchEvent(new CustomEvent("robot-list-changed"));
+          const store = useAppStore.getState();
+          if (store.selectedRobotId === e.payload.robotId) {
+            store.setSelectedRobotId(null);
+          }
+        }),
       ];
 
       const fns = await Promise.all(listeners);

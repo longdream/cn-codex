@@ -62,6 +62,21 @@ pub struct ThreadGoal {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadRobotState {
+    /// 当前线程绑定的机器人 ID，用于在多机器人切换时识别状态归属。
+    pub robot_id: String,
+    /// 当前正在执行的 workflow 节点下标（从 0 开始）。
+    pub current_node_index: usize,
+    /// 本轮机器人编排对应的用户目标快照，用于跨 turn 稳定复用同一运行计划。
+    #[serde(default)]
+    pub root_objective: String,
+    /// 固定顺序实例化后的节点目标队列（每个元素都作为真实 goal objective 使用）。
+    #[serde(default)]
+    pub runtime_nodes: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadMessage {
     pub id: String,
@@ -105,6 +120,8 @@ pub struct StoredThread {
     pub model: Option<String>,
     #[serde(default)]
     pub goal: Option<ThreadGoal>,
+    #[serde(default)]
+    pub robot_state: Option<ThreadRobotState>,
     pub turns: Vec<StoredTurn>,
 }
 
@@ -168,6 +185,13 @@ enum RolloutLine {
         goal: ThreadGoal,
     },
     ThreadGoalClear {
+        updated_at: i64,
+    },
+    ThreadRobotStateSet {
+        robot_state: ThreadRobotState,
+        updated_at: i64,
+    },
+    ThreadRobotStateClear {
         updated_at: i64,
     },
 }
@@ -295,6 +319,7 @@ impl ThreadStore {
                         updated_at: created_at,
                         model,
                         goal: None,
+                        robot_state: None,
                         turns: Vec::new(),
                     });
                 }
@@ -362,6 +387,21 @@ impl ThreadStore {
                         t.goal = None;
                     }
                 }
+                RolloutLine::ThreadRobotStateSet {
+                    robot_state,
+                    updated_at,
+                } => {
+                    if let Some(ref mut t) = thread {
+                        t.updated_at = updated_at;
+                        t.robot_state = Some(robot_state);
+                    }
+                }
+                RolloutLine::ThreadRobotStateClear { updated_at } => {
+                    if let Some(ref mut t) = thread {
+                        t.updated_at = updated_at;
+                        t.robot_state = None;
+                    }
+                }
             }
         }
 
@@ -397,6 +437,18 @@ impl ThreadStore {
             .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
         writeln!(file, "{json}")
             .map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+
+        // 在重写文件时同步持久化机器人流程状态，保证崩溃恢复后仍能继续当前节点。
+        if let Some(robot_state) = &thread.robot_state {
+            let line = RolloutLine::ThreadRobotStateSet {
+                robot_state: robot_state.clone(),
+                updated_at: thread.updated_at,
+            };
+            let json = serde_json::to_string(&line)
+                .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
+            writeln!(file, "{json}")
+                .map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+        }
 
         for turn in &thread.turns {
             let ts = RolloutLine::TurnStart {
@@ -450,6 +502,7 @@ impl ThreadStore {
             updated_at: now,
             model,
             goal: None,
+            robot_state: None,
             turns: Vec::new(),
         };
 
@@ -698,6 +751,67 @@ impl ThreadStore {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(thread_id) {
             thread.goal = None;
+            // 目标被清除时同步重置机器人流程状态，避免下一次 goal 恢复时跳到旧节点。
+            if thread.robot_state.is_some() {
+                self.append_line(thread_id, &RolloutLine::ThreadRobotStateClear { updated_at: now })?;
+                thread.robot_state = None;
+            }
+            thread.updated_at = now;
+        }
+        Ok(())
+    }
+
+    pub async fn get_thread_robot_state(&self, thread_id: &str) -> Option<ThreadRobotState> {
+        self.ensure_loaded().await;
+        self.threads
+            .read()
+            .await
+            .get(thread_id)
+            .and_then(|thread| thread.robot_state.clone())
+    }
+
+    pub async fn set_thread_robot_state(
+        &self,
+        thread_id: &str,
+        robot_state: ThreadRobotState,
+    ) -> AppResult<ThreadRobotState> {
+        self.ensure_loaded().await;
+        if !self.threads.read().await.contains_key(thread_id) {
+            return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
+        }
+
+        let now = now_secs();
+        self.append_line(
+            thread_id,
+            &RolloutLine::ThreadRobotStateSet {
+                robot_state: robot_state.clone(),
+                updated_at: now,
+            },
+        )?;
+
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.robot_state = Some(robot_state.clone());
+            thread.updated_at = now;
+        }
+        Ok(robot_state)
+    }
+
+    pub async fn clear_thread_robot_state(&self, thread_id: &str) -> AppResult<()> {
+        self.ensure_loaded().await;
+        if !self.threads.read().await.contains_key(thread_id) {
+            return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
+        }
+
+        let now = now_secs();
+        self.append_line(
+            thread_id,
+            &RolloutLine::ThreadRobotStateClear { updated_at: now },
+        )?;
+
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.robot_state = None;
             thread.updated_at = now;
         }
         Ok(())
@@ -1045,6 +1159,89 @@ mod tests {
         assert_eq!(reloaded.status, ThreadGoalStatus::Paused);
         assert_eq!(reloaded.tokens_used, 120);
         assert_eq!(reloaded.token_budget, Some(500));
+
+        let _ = std::fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn thread_robot_state_persists_and_clears_with_goal_clear() {
+        let workspace_dir =
+            std::env::temp_dir().join(format!("cn-codex-robot-state-{}", uuid::Uuid::new_v4()));
+        let store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let thread_id = runtime.block_on(async {
+            let thread = store.create_thread(None).await.unwrap();
+            store
+                .set_thread_goal(
+                    &thread.id,
+                    "finish robot workflow".to_string(),
+                    ThreadGoalStatus::Active,
+                    None,
+                )
+                .await
+                .unwrap();
+            store
+                .set_thread_robot_state(
+                    &thread.id,
+                    ThreadRobotState {
+                        robot_id: "fullstack-bot".to_string(),
+                        current_node_index: 2,
+                        root_objective: "finish robot workflow".to_string(),
+                        runtime_nodes: vec![
+                            "阶段 1：采集信息".to_string(),
+                            "阶段 2：执行变更".to_string(),
+                            "阶段 3：验证并总结".to_string(),
+                        ],
+                    },
+                )
+                .await
+                .unwrap();
+            let loaded = store.get_thread(&thread.id).await.unwrap();
+            assert_eq!(
+                loaded.robot_state,
+                Some(ThreadRobotState {
+                    robot_id: "fullstack-bot".to_string(),
+                    current_node_index: 2,
+                    root_objective: "finish robot workflow".to_string(),
+                    runtime_nodes: vec![
+                        "阶段 1：采集信息".to_string(),
+                        "阶段 2：执行变更".to_string(),
+                        "阶段 3：验证并总结".to_string(),
+                    ],
+                })
+            );
+            thread.id
+        });
+        drop(runtime);
+
+        let reloaded_store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let reloaded = runtime
+            .block_on(async { reloaded_store.get_thread(&thread_id).await })
+            .unwrap();
+        assert_eq!(
+            reloaded.robot_state,
+            Some(ThreadRobotState {
+                robot_id: "fullstack-bot".to_string(),
+                current_node_index: 2,
+                root_objective: "finish robot workflow".to_string(),
+                runtime_nodes: vec![
+                    "阶段 1：采集信息".to_string(),
+                    "阶段 2：执行变更".to_string(),
+                    "阶段 3：验证并总结".to_string(),
+                ],
+            })
+        );
+
+        runtime
+            .block_on(async { reloaded_store.clear_thread_goal(&thread_id).await })
+            .unwrap();
+        let cleared = runtime
+            .block_on(async { reloaded_store.get_thread(&thread_id).await })
+            .unwrap();
+        assert!(cleared.goal.is_none());
+        assert!(cleared.robot_state.is_none());
+        drop(runtime);
 
         let _ = std::fs::remove_dir_all(workspace_dir);
     }

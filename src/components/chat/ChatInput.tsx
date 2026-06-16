@@ -72,6 +72,20 @@ interface ChatInputProps {
   isGeneralMode?: boolean;
 }
 
+/**
+ * 校验当前选择的机器人是否仍存在于机器人列表中。
+ * 删除机器人后用于快速回收失效 selection，避免继续提交不存在的 robotId。
+ */
+export function resolveSelectedRobotId(
+  robots: Array<Pick<RobotSummary, "id">>,
+  selectedRobotId: string | null,
+): string | null {
+  if (!selectedRobotId) {
+    return null;
+  }
+  return robots.some((robot) => robot.id === selectedRobotId) ? selectedRobotId : null;
+}
+
 export function ChatInput({
   onSend,
   onInterrupt,
@@ -142,6 +156,18 @@ export function ChatInput({
     () => robots.find((r) => r.id === selectedRobotId)?.name ?? null,
     [robots, selectedRobotId],
   );
+
+  useEffect(() => {
+    if (!selectedRobotId) {
+      return;
+    }
+    const validSelectedRobotId = resolveSelectedRobotId(robots, selectedRobotId);
+    if (!validSelectedRobotId) {
+      // 当机器人被设置页删除后，主动清空选择与修改态，防止继续提交无效 robotId。
+      setSelectedRobotId(null);
+      setRobotModifyMode(false);
+    }
+  }, [robots, selectedRobotId, setSelectedRobotId]);
 
   const setMode = useCallback((nextMode: ChatMode) => {
     useAppStore.getState().setChatMode(nextMode);

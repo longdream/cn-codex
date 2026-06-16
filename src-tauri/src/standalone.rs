@@ -250,6 +250,9 @@ pub async fn standalone_chat(
     let override_cwd = cwd.map(std::path::PathBuf::from);
     let is_goal_mode = mode.as_deref() == Some("goal");
     let mode = mode.as_deref();
+    // 接口层防护：仅在 goal 模式下向 agent 传递 robot_id，
+    // 避免普通 chat 路径受到机器人编排逻辑影响。
+    let robot_id_for_turn = resolve_robot_id_for_run_turn(mode, robot_id.as_deref());
     *state.current_thread_id.write().await = Some(thread_id.clone());
 
     let result = state
@@ -263,7 +266,7 @@ pub async fn standalone_chat(
             override_cwd.as_deref(),
             mode,
             goal_budget_tokens,
-            robot_id.as_deref(),
+            robot_id_for_turn,
         )
         .await;
 
@@ -280,6 +283,14 @@ pub async fn standalone_chat(
 
     result?;
     Ok(serde_json::json!({ "status": "ok" }))
+}
+
+fn resolve_robot_id_for_run_turn<'a>(mode: Option<&str>, robot_id: Option<&'a str>) -> Option<&'a str> {
+    if mode == Some("goal") {
+        robot_id
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -318,4 +329,22 @@ fn parse_goal_status(value: Option<&str>) -> AppResult<Option<ThreadGoalStatus>>
     };
 
     Ok(Some(status))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_robot_id_for_run_turn;
+
+    #[test]
+    fn resolve_robot_id_for_run_turn_only_enables_in_goal_mode() {
+        assert_eq!(
+            resolve_robot_id_for_run_turn(Some("chat"), Some("robot-a")),
+            None
+        );
+        assert_eq!(resolve_robot_id_for_run_turn(Some("goal"), None), None);
+        assert_eq!(
+            resolve_robot_id_for_run_turn(Some("goal"), Some("robot-a")),
+            Some("robot-a")
+        );
+    }
 }
