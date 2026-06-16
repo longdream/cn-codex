@@ -1,0 +1,311 @@
+import { IconDownload, IconFolderOpen, IconTrash } from "@tabler/icons-react";
+import { useCallback, useEffect, useState } from "react";
+import { useIntl } from "react-intl";
+import { standaloneConfigRead, standaloneConfigWrite } from "../../api";
+import { revealInExplorer } from "../../api/window";
+import { useAppStore } from "../../stores/appStore";
+
+interface McpServerInfo {
+  name: string;
+  command?: string;
+  args?: string[];
+}
+
+interface WorkspacePathCard {
+  key: string;
+  label: string;
+  displayPath: string | null;
+  openPath: string | null;
+}
+
+function normalizeWindowsVerbatimPath(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("\\\\?\\UNC\\")) {
+    return `\\\\${trimmed.slice("\\\\?\\UNC\\".length)}`;
+  }
+  if (trimmed.startsWith("\\\\?\\")) {
+    return trimmed.slice("\\\\?\\".length);
+  }
+  return trimmed;
+}
+
+function joinWindowsPath(base: string | null, segment: string): string | null {
+  if (!base) return null;
+  return `${base.replace(/[\\/]+$/, "")}\\${segment.replace(/^[\\/]+/, "")}`;
+}
+
+export function IntegrationPanel() {
+  const intl = useIntl();
+  const configDir = useAppStore((state) => state.configDir);
+  const configPath = useAppStore((state) => state.configPath);
+  const workspaceCwd = useAppStore((state) => state.workspaceCwd);
+  const [servers, setServers] = useState<McpServerInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [mcpJsonOpen, setMcpJsonOpen] = useState(false);
+  const [mcpJsonText, setMcpJsonText] = useState("");
+  const [mcpJsonError, setMcpJsonError] = useState<string | null>(null);
+  const [mcpSaving, setMcpSaving] = useState(false);
+
+  const displayConfigDir = normalizeWindowsVerbatimPath(configDir);
+  const displayConfigPath = normalizeWindowsVerbatimPath(configPath);
+  const displayWorkspaceCwd = normalizeWindowsVerbatimPath(workspaceCwd);
+  const displaySkillsDir = joinWindowsPath(displayConfigDir, "skills");
+  const displayPluginsDir = joinWindowsPath(displayConfigDir, "plugins");
+
+  const workspacePathCards: WorkspacePathCard[] = [
+    {
+      key: "config-path",
+      label: intl.formatMessage({ id: "settings.integration.configPath" }),
+      displayPath: displayConfigPath,
+      openPath: displayConfigDir ?? displayConfigPath,
+    },
+    {
+      key: "skills-dir",
+      label: intl.formatMessage({ id: "settings.integration.skillsDir" }),
+      displayPath: displaySkillsDir,
+      openPath: displaySkillsDir,
+    },
+    {
+      key: "plugins-dir",
+      label: intl.formatMessage({ id: "settings.integration.pluginsDir" }),
+      displayPath: displayPluginsDir,
+      openPath: displayPluginsDir,
+    },
+    {
+      key: "config-dir",
+      label: intl.formatMessage({ id: "settings.integration.configDir" }),
+      displayPath: displayConfigDir,
+      openPath: displayConfigDir,
+    },
+    {
+      key: "workspace-cwd",
+      label: intl.formatMessage({ id: "settings.integration.cwd" }),
+      displayPath: displayWorkspaceCwd,
+      openPath: displayWorkspaceCwd,
+    },
+  ];
+
+  const load = useCallback(async () => {
+    try {
+      const resp = await standaloneConfigRead();
+      const cfg = (resp?.config ?? {}) as Record<string, unknown>;
+      const mcpServers = (cfg.mcp_servers ?? cfg.mcpServers ?? {}) as Record<
+        string,
+        Record<string, unknown>
+      >;
+      const parsed: McpServerInfo[] = Object.entries(mcpServers).map(([name, val]) => ({
+        name,
+        command: (val.command as string) ?? "",
+        args: (val.args as string[]) ?? [],
+      }));
+      setServers(parsed);
+    } catch {
+      setServers([]);
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleMcpJsonImport = async () => {
+    setMcpJsonError(null);
+    const text = mcpJsonText.trim();
+    if (!text) return;
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      setMcpJsonError(intl.formatMessage({ id: "settings.integration.mcpJsonInvalid" }));
+      return;
+    }
+
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      setMcpJsonError(intl.formatMessage({ id: "settings.integration.mcpJsonInvalid" }));
+      return;
+    }
+
+    setMcpSaving(true);
+    try {
+      const edits = Object.entries(parsed).map(([name, value]) => ({
+        keyPath: `mcp_servers.${name}`,
+        value,
+      }));
+      await standaloneConfigWrite(edits);
+      setMcpJsonText("");
+      setMcpJsonOpen(false);
+      await load();
+    } catch (err) {
+      setMcpJsonError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMcpSaving(false);
+    }
+  };
+
+  const handleMcpDelete = async (name: string) => {
+    const confirmed = window.confirm(
+      intl.formatMessage(
+        { id: "settings.integration.mcpDeleteConfirm" },
+        { name },
+      ),
+    );
+    if (!confirmed) return;
+    try {
+      await standaloneConfigWrite([
+        { keyPath: `mcp_servers.${name}`, value: null },
+      ]);
+      await load();
+    } catch (err) {
+      console.error("Failed to delete MCP server:", err);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="text-[13px] text-[var(--text-muted)]">
+        {intl.formatMessage({ id: "common.loading" })}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <section className="settings-card space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-[13px] font-semibold text-[var(--text-strong)]">
+            {intl.formatMessage({ id: "settings.integration.workspaceConfig" })}
+          </h3>
+          <p className="text-[13px] text-[var(--text-muted)]">
+            {intl.formatMessage({ id: "settings.integration.workspaceHint" })}
+          </p>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          {workspacePathCards.map((card) => (
+            <div
+              key={card.key}
+              className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/78 px-4 py-3"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs uppercase tracking-[0.16em] text-[var(--text-faint)]">
+                  {card.label}
+                </p>
+                <button
+                  type="button"
+                  className="icon-button h-7 w-7"
+                  disabled={!card.openPath}
+                  onClick={() => {
+                    if (!card.openPath) return;
+                    void revealInExplorer(card.openPath);
+                  }}
+                  title={intl.formatMessage({ id: "contextMenu.openInExplorer" })}
+                  aria-label={intl.formatMessage({ id: "contextMenu.openInExplorer" })}
+                >
+                  <IconFolderOpen size={14} stroke={1.8} />
+                </button>
+              </div>
+              <p className="mt-2 break-all font-mono text-xs text-[var(--text-base)]">
+                {card.displayPath ?? "-"}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="settings-card space-y-4">
+        <div className="flex items-end justify-between gap-4">
+          <div className="space-y-1">
+            <h3 className="text-[13px] font-semibold text-[var(--text-strong)]">
+              {intl.formatMessage({ id: "settings.integration.mcpServers" })}
+            </h3>
+            <p className="text-[13px] text-[var(--text-muted)]">
+              {intl.formatMessage({ id: "settings.integration.mcpHint" })}
+            </p>
+          </div>
+          <button
+            onClick={() => { setMcpJsonOpen(!mcpJsonOpen); setMcpJsonError(null); }}
+            className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] px-3 py-1.5 text-xs text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+          >
+            <IconDownload size={13} stroke={1.8} />
+            {intl.formatMessage({ id: "settings.integration.mcpImport" })}
+          </button>
+        </div>
+
+        {mcpJsonOpen && (
+          <div className="rounded-2xl border border-[var(--accent-border)] bg-[var(--surface-contrast)]/82 px-4 py-4 space-y-3">
+            <p className="text-xs text-[var(--text-muted)]">
+              {intl.formatMessage({ id: "settings.integration.mcpJsonHint" })}
+            </p>
+            <textarea
+              value={mcpJsonText}
+              onChange={(e) => { setMcpJsonText(e.target.value); setMcpJsonError(null); }}
+              placeholder={'{\n  "server-name": {\n    "command": "npx",\n    "args": ["-y", "@modelcontextprotocol/server-xxx"]\n  }\n}'}
+              className="app-input w-full min-h-[120px] resize-y font-mono text-xs"
+              spellCheck={false}
+            />
+            {mcpJsonError && (
+              <p className="text-xs text-[var(--danger)]">{mcpJsonError}</p>
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleMcpJsonImport}
+                disabled={mcpSaving || !mcpJsonText.trim()}
+                className="rounded-[var(--radius-sm)] bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {intl.formatMessage({ id: "settings.integration.mcpImportBtn" })}
+              </button>
+              <button
+                onClick={() => { setMcpJsonOpen(false); setMcpJsonText(""); setMcpJsonError(null); }}
+                className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-3 py-1.5 text-xs text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)]"
+              >
+                {intl.formatMessage({ id: "common.cancel" })}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {servers.length === 0 && !mcpJsonOpen ? (
+          <div className="rounded-2xl border border-dashed border-[var(--border-strong)] bg-[var(--surface-contrast)]/56 px-4 py-5 text-center">
+            <p className="text-[13px] text-[var(--text-muted)]">
+              {intl.formatMessage({ id: "settings.integration.noMcp" })}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {servers.map((server) => (
+              <div
+                key={server.name}
+                className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/82 px-4 py-4"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[13px] font-semibold text-[var(--text-strong)]">
+                    {server.name}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[11px] text-[var(--accent-strong)]">
+                      MCP
+                    </span>
+                    <button
+                      onClick={() => handleMcpDelete(server.name)}
+                      className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                      title={intl.formatMessage({ id: "common.delete" })}
+                    >
+                      <IconTrash size={13} stroke={1.8} />
+                    </button>
+                  </div>
+                </div>
+                <p className="mt-2 break-all font-mono text-xs text-[var(--text-muted)]">
+                  {server.command ? `${server.command} ${server.args?.join(" ") ?? ""}`.trim() : "-"}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

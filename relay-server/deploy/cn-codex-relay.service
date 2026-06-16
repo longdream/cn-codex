@@ -1,0 +1,15 @@
+[Unit]
+Description=CN-Codex Relay Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/cn-codex-relay
+ExecStart=/opt/cn-codex-relay/cn-codex-relay --port 8080 --static-dir /opt/cn-codex-relay/mobile-dist
+Restart=always
+RestartSec=3
+Environment=RUST_LOG=cn_codex_relay=info
+
+[Install]
+WantedBy=multi-user.target

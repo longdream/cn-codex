@@ -1,0 +1,69 @@
+[package]
+name = "cn-codex"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+name = "cn_codex_lib"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "cn-codex"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "unstable", "devtools"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-process = "2"
+tauri-plugin-notification = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
+
+futures-util = "0.3.32"
+tokio-tungstenite = "0.24"
+uuid = { version = "1.23.2", features = ["v4"] }
+reqwest = { version = "0.13.4", features = ["json", "stream"] }
+async-trait = "0.1"
+rusqlite = { version = "0.34", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+chardetng = "1.0.0"
+encoding_rs = "0.8.35"
+
+# 终端 PTY
+portable-pty = "0.8"
+
+# 文档解析
+pdf-extract = "0.7"
+calamine = "0.26"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.37"
+
+# 移动端 Web 服务器
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+qrcode = "0.14"
+local-ip-address = "0.6"
+
+[profile.dev]
+opt-level = 0
+codegen-units = 16
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
