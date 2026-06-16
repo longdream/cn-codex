@@ -21,7 +21,8 @@
 <p align="center">
   <a href="http://47.113.221.244:8081/">Site officiel</a> •
   <a href="http://47.113.221.244:8081/usage.html">Guide d'utilisation</a> •
-  <a href="https://github.com/longdream/cn-codex">GitHub</a>
+  <a href="https://github.com/longdream/cn-codex">GitHub</a> •
+  <a href="https://github.com/longdream/cn-codex/releases/download/0.01/CN-Codex-0.01.zip">Télécharger</a>
 </p>
 
 ---
