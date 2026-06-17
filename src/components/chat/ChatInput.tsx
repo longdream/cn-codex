@@ -1,5 +1,6 @@
 import {
   IconArrowUp,
+  IconBrain,
   IconChevronDown,
   IconCpu,
   IconFile,
@@ -23,6 +24,7 @@ import {
   type SlashCommand,
 } from "./SlashCommandPanel";
 import type { AttachedFile } from "../../types/provider";
+import { invoke } from "@tauri-apps/api/core";
 import { readFileForAttach } from "../../api/window";
 import { robotList } from "../../api/robot";
 import type { RobotSummary } from "../../types/robot";
@@ -568,6 +570,18 @@ export function ChatInput({
     useAppStore.getState().removeAttachedFile(index);
   }, []);
 
+  const [smartBrainAdded, setSmartBrainAdded] = useState<Set<number>>(new Set());
+
+  const handleAddToSmartBrain = useCallback(async (file: AttachedFile, index: number) => {
+    if (!file.sourcePath || smartBrainAdded.has(index)) return;
+    try {
+      await invoke("smartbrain_upload_knowledge", { filePath: file.sourcePath });
+      setSmartBrainAdded((prev) => new Set(prev).add(index));
+    } catch (err) {
+      console.error("Add to SmartBrain failed:", err);
+    }
+  }, [smartBrainAdded]);
+
   // --- 拖拽支持 ---
   const [isDragging, setIsDragging] = useState(false);
   const dragCounter = useRef(0);
@@ -943,6 +957,21 @@ export function ChatInput({
                   <p className="truncate text-[11px] text-[var(--chat-prose)]">{file.name}</p>
                   <p className="text-[11px] text-[var(--chat-faint)]">{formatSize(file.size)}</p>
                 </div>
+                {file.sourcePath && !file.type.startsWith("image/") && (
+                  <button
+                    type="button"
+                    onClick={() => handleAddToSmartBrain(file, idx)}
+                    disabled={smartBrainAdded.has(idx)}
+                    className={`absolute -left-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full shadow transition-opacity group-hover:opacity-100 ${
+                      smartBrainAdded.has(idx)
+                        ? "bg-[var(--accent)] text-white opacity-100"
+                        : "bg-[var(--chat-card-solid)] text-[var(--chat-faint)] opacity-0 hover:text-[var(--accent)]"
+                    }`}
+                    title={intl.formatMessage({ id: smartBrainAdded.has(idx) ? "chat.addedToSmartBrain" : "chat.addToSmartBrain" })}
+                  >
+                    <IconBrain size={10} stroke={2} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleRemoveFile(idx)}

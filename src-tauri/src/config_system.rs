@@ -57,6 +57,74 @@ impl ModelProviderInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SmartBrainConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    // Experience sub-settings
+    #[serde(default = "default_true")]
+    pub auto_extract: bool,
+    #[serde(default = "default_true")]
+    pub auto_consolidate: bool,
+    #[serde(default = "default_true")]
+    pub inject_summary: bool,
+    #[serde(default = "default_max_raw_experiences")]
+    pub max_raw_experiences: usize,
+    #[serde(default = "default_max_consolidation_entries")]
+    pub max_consolidation_entries: usize,
+    #[serde(default = "default_max_unused_days")]
+    pub max_unused_days: i64,
+    #[serde(default = "default_max_rollouts_per_startup")]
+    pub max_rollouts_per_startup: usize,
+    #[serde(default = "default_min_session_messages")]
+    pub min_session_messages: usize,
+    #[serde(default = "default_summary_max_tokens")]
+    pub summary_max_tokens: usize,
+    // Knowledge sub-settings
+    #[serde(default = "default_true")]
+    pub knowledge_enabled: bool,
+    #[serde(default = "default_max_knowledge_docs")]
+    pub max_knowledge_docs: usize,
+    #[serde(default = "default_max_chunk_tokens")]
+    pub max_chunk_tokens: usize,
+    #[serde(default = "default_true")]
+    pub auto_organize: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_max_raw_experiences() -> usize {
+    100
+}
+fn default_max_consolidation_entries() -> usize {
+    50
+}
+fn default_max_unused_days() -> i64 {
+    30
+}
+fn default_max_rollouts_per_startup() -> usize {
+    5
+}
+fn default_min_session_messages() -> usize {
+    3
+}
+fn default_summary_max_tokens() -> usize {
+    2000
+}
+fn default_max_knowledge_docs() -> usize {
+    200
+}
+fn default_max_chunk_tokens() -> usize {
+    500
+}
+
+impl SmartBrainConfig {
+    pub fn is_active(&self) -> bool {
+        self.enabled
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigToml {
     #[serde(default)]
     pub model: Option<String>,
@@ -86,6 +154,8 @@ pub struct ConfigToml {
     pub hooks: HashMap<String, toml::Value>,
     #[serde(default)]
     pub relay_server_url: Option<String>,
+    #[serde(default, alias = "experience")]
+    pub smartbrain: Option<SmartBrainConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +394,11 @@ impl ConfigToml {
             "relay_server_url" => {
                 self.relay_server_url = value.as_str().and_then(normalize_relay_server_url);
             }
+            "smartbrain.enabled" => {
+                let enabled = value.as_bool().unwrap_or(false);
+                let sb = self.smartbrain.get_or_insert_with(SmartBrainConfig::default);
+                sb.enabled = enabled;
+            }
             other if other.starts_with("model_providers.") => {
                 let provider_key = &other["model_providers.".len()..];
                 if let Ok(info) = serde_json::from_value::<ModelProviderInfo>(value.clone()) {
@@ -362,6 +437,10 @@ impl ConfigToml {
             .filter(|s| !s.is_empty())
             .unwrap_or("")
             .to_string()
+    }
+
+    pub fn smartbrain_config(&self) -> SmartBrainConfig {
+        self.smartbrain.clone().unwrap_or_default()
     }
 
     pub fn web_search_enabled(&self) -> bool {

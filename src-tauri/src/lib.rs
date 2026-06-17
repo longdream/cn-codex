@@ -7,6 +7,8 @@ pub mod config_system;
 pub mod conversation_logger;
 pub mod document_parser;
 pub mod error;
+pub mod experience;
+pub mod smartbrain;
 pub mod file_review;
 pub mod git_service;
 pub mod hook_runtime;
@@ -22,11 +24,9 @@ pub mod terminal;
 pub mod thread_store;
 pub mod tool_executor;
 pub mod usage;
-pub mod wps_protocol;
-pub mod wps_server;
 
 use state::AppState;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -70,7 +70,67 @@ pub fn run() {
                 );
             });
 
-            // 兜底保护：若前端未及时发送“显示主窗口”请求，8 秒后强制显示一次，
+            // 启动后台 SmartBrain 流水线：经验提取/合并 + 知识扫描 + BM25 索引。
+            {
+                let sb_state = app.state::<AppState>();
+                let workspace_config_dir = sb_state.workspace_config_dir.clone();
+                let config_manager = sb_state.config_manager.clone();
+                let thread_store = sb_state.thread_store.clone();
+                tauri::async_runtime::spawn(async move {
+                    thread_store.preload_threads().await;
+
+                    let config = match config_manager.read() {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
+                    let sb_config = config.smartbrain_config();
+                    if !sb_config.is_active() {
+                        return;
+                    }
+
+                    let experiences_dir = smartbrain::experiences_dir(&workspace_config_dir);
+                    let knowledge_dir = smartbrain::knowledge_dir(&workspace_config_dir);
+                    let bm25_path = smartbrain::bm25_index_path(&workspace_config_dir);
+                    let _ = std::fs::create_dir_all(experiences_dir.join("raw"));
+                    let _ = std::fs::create_dir_all(knowledge_dir.join("sources"));
+                    let _ = std::fs::create_dir_all(knowledge_dir.join("docs"));
+
+                    let http = reqwest::Client::builder()
+                        .connect_timeout(Duration::from_secs(30))
+                        .read_timeout(Duration::from_secs(300))
+                        .build()
+                        .unwrap_or_default();
+
+                    smartbrain::extractor::run_extraction(
+                        &http,
+                        &config,
+                        &thread_store,
+                        &experiences_dir,
+                    )
+                    .await;
+
+                    smartbrain::consolidator::run_consolidation(
+                        &http,
+                        &config,
+                        &experiences_dir,
+                    )
+                    .await;
+
+                    smartbrain::knowledge::scan_and_ingest_new(
+                        &http,
+                        &config,
+                        &knowledge_dir,
+                        &bm25_path,
+                    )
+                    .await;
+
+                    smartbrain::search::rebuild_index(&workspace_config_dir, &bm25_path);
+
+                    info!("[startup][rust] smartbrain pipeline completed");
+                });
+            }
+
+            // 兜底保护：若前端未及时发送"显示主窗口"请求，8 秒后强制显示一次，
             // 避免极端异常导致窗口永久隐藏（可恢复性优先于完美无闪屏）。
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -91,37 +151,6 @@ pub fn run() {
                             );
                         }
                     }
-                }
-            });
-
-            // Spawn WPS event forwarding task.
-            let wps_server = app.state::<AppState>().wps_server.clone();
-            let wps_app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let mut rx = match wps_server.take_event_receiver().await {
-                    Some(rx) => rx,
-                    None => return,
-                };
-                while let Some(event) = rx.recv().await {
-                    let (event_name, payload) = match event {
-                        wps_server::WpsEvent::Connected { conn_id, addin_name } => (
-                            "wps-connected",
-                            serde_json::json!({ "connId": conn_id, "addinName": addin_name }),
-                        ),
-                        wps_server::WpsEvent::Disconnected { conn_id } => (
-                            "wps-disconnected",
-                            serde_json::json!({ "connId": conn_id }),
-                        ),
-                        wps_server::WpsEvent::DocumentChanged { conn_id, document } => (
-                            "wps-document-changed",
-                            serde_json::json!({ "connId": conn_id, "document": document }),
-                        ),
-                        wps_server::WpsEvent::Notification { conn_id, method, params } => (
-                            "wps-notification",
-                            serde_json::json!({ "connId": conn_id, "method": method, "params": params }),
-                        ),
-                    };
-                    let _ = wps_app_handle.emit(event_name, payload);
                 }
             });
 
@@ -258,11 +287,17 @@ pub fn run() {
             commands::get_mobile_server_status,
             commands::get_mobile_server_url,
             commands::get_qrcode_svg,
+            // SmartBrain
+            smartbrain::commands::smartbrain_list_experiences,
+            smartbrain::commands::smartbrain_read_experience,
+            smartbrain::commands::smartbrain_delete_experience,
+            smartbrain::commands::smartbrain_list_knowledge,
+            smartbrain::commands::smartbrain_read_knowledge,
+            smartbrain::commands::smartbrain_delete_knowledge,
+            smartbrain::commands::smartbrain_upload_knowledge,
+            smartbrain::commands::smartbrain_search,
+            smartbrain::commands::smartbrain_rebuild_index,
             // WPS server
-            commands::wps_start_server,
-            commands::wps_stop_server,
-            commands::wps_status,
-            commands::wps_execute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CN-Codex");

@@ -1344,6 +1344,46 @@ impl AgentEngine {
             completed_payload["goal"] = serde_json::json!(goal_after);
         }
         emit_and_broadcast(app_handle, "turn-completed", completed_payload);
+
+        // Fire-and-forget SmartBrain experience extraction for this session.
+        {
+            let http = self.http.clone();
+            let config_clone = config.clone();
+            let thread_store = self.thread_store.clone();
+            let workspace_config_dir = self.cwd.join("codey");
+            let thread_id_owned = thread_id.to_string();
+            tokio::spawn(async move {
+                let sb_config = config_clone.smartbrain_config();
+                if !sb_config.is_active() || !sb_config.auto_extract {
+                    return;
+                }
+                let experiences_dir = crate::smartbrain::experiences_dir(&workspace_config_dir);
+                let _ = std::fs::create_dir_all(experiences_dir.join("raw"));
+
+                let index = crate::smartbrain::index::ExperienceIndex::load(&experiences_dir);
+                if index.has_entry(&thread_id_owned)
+                    && !index.is_stale(
+                        &thread_id_owned,
+                        thread_store
+                            .get_thread(&thread_id_owned)
+                            .await
+                            .map(|t| t.updated_at)
+                            .unwrap_or(0),
+                    )
+                {
+                    return;
+                }
+
+                crate::smartbrain::extractor::run_extraction(
+                    &http,
+                    &config_clone,
+                    &thread_store,
+                    &experiences_dir,
+                )
+                .await;
+            });
+        }
+
         Ok(())
     }
 
@@ -1394,6 +1434,41 @@ impl AgentEngine {
         } else {
             ""
         };
+        let smartbrain_instructions = if config.smartbrain_config().inject_summary {
+            let workspace_config_dir = self.cwd.join("codey");
+            let mut parts = Vec::new();
+
+            if let Some(summary) = crate::smartbrain::load_summary(&workspace_config_dir) {
+                parts.push(format!(
+                    "You have accumulated experience from previous sessions. Here is a summary:\n\n\
+                     {summary}\n\n\
+                     For detailed experience notes, use `memory_read` to read `experiences/experience_handbook.md`."
+                ));
+            }
+
+            if let Some(hierarchy) = crate::smartbrain::load_hierarchy(&workspace_config_dir) {
+                let hier_text = hierarchy.summary_text();
+                if !hier_text.is_empty() {
+                    parts.push(format!(
+                        "You also have access to a knowledge base with these categories:\n{hier_text}\n\n\
+                         Use `smartbrain_search` to find relevant knowledge, then `memory_read` to read full content."
+                    ));
+                }
+            }
+
+            if parts.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\n\n## SmartBrain (智脑)\n\n{}\n\n\
+                     When you apply knowledge from SmartBrain, note which experience or knowledge helped.",
+                    parts.join("\n\n")
+                )
+            }
+        } else {
+            String::new()
+        };
+
         let is_project_mode = effective_cwd != self.cwd;
         let file_creation_policy = if is_project_mode {
             "FILE CREATION POLICY: You are working inside a project directory. \
@@ -1482,7 +1557,7 @@ impl AgentEngine {
              \n\
              WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
              use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \
-             directories. Alternatively, set the 'workdir' parameter in the shell tool call.{skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}"
+             directories. Alternatively, set the 'workdir' parameter in the shell tool call.{skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{smartbrain_instructions}"
         )
     }
 

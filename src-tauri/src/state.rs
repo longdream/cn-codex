@@ -15,7 +15,6 @@ use crate::standalone::StandaloneState;
 use crate::thread_store::ThreadStore;
 use crate::tool_executor::ToolExecutor;
 use crate::usage::{PricingTable, UsageDb, UsageRecorder};
-use crate::wps_server::WpsServer;
 
 const WORKSPACE_CONFIG_DIR: &str = "codey";
 
@@ -69,8 +68,6 @@ pub struct AppState {
     pub usage_db: Arc<UsageDb>,
     /// 价格表
     pub pricing_table: Arc<std::sync::RwLock<PricingTable>>,
-    /// WPS WebSocket 服务
-    pub wps_server: Arc<WpsServer>,
     /// apply_patch 待审阅会话缓存（写盘前确认）。
     ///
     /// 说明：
@@ -145,6 +142,9 @@ fn prepare_workspace_config_dir(project_root: &Path) -> PathBuf {
     let _ = std::fs::create_dir_all(workspace_dir.join("skills"));
     let _ = std::fs::create_dir_all(workspace_dir.join("plugins"));
     let _ = std::fs::create_dir_all(workspace_dir.join("memories"));
+    let _ = std::fs::create_dir_all(workspace_dir.join("memories").join("experiences").join("raw"));
+    let _ = std::fs::create_dir_all(workspace_dir.join("memories").join("knowledge").join("sources"));
+    let _ = std::fs::create_dir_all(workspace_dir.join("memories").join("knowledge").join("docs"));
     let _ = std::fs::create_dir_all(workspace_dir.join("robots"));
     workspace_dir
 }
@@ -225,7 +225,6 @@ impl AppState {
             phase_started_at.elapsed().as_millis()
         );
 
-        let wps_server = Arc::new(WpsServer::new());
 
         info!(
             "[startup][rust] AppState::new total {} ms",
@@ -247,7 +246,6 @@ impl AppState {
             agent_engine,
             usage_db,
             pricing_table,
-            wps_server,
             file_review_sessions: Arc::new(RwLock::new(HashMap::new())),
             document_detail_active_path: Arc::new(RwLock::new(None)),
             runsummary_diff_payload: Arc::new(RwLock::new(None)),

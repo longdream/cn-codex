@@ -7,4 +7,3 @@ export * from "./plugin";
 export * from "./skill";
 export * from "./standalone";
 export * from "./window";
-export * from "./wps";

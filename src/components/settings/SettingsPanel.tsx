@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settingsStore";
-import type { WpsServerStatus } from "../../api/wps";
 import { ProviderPanel } from "./ProviderPanel";
 import { IntegrationPanel } from "./IntegrationPanel";
 import { PluginsPanel } from "./PluginsPanel";
@@ -11,12 +10,13 @@ import { SkillsPanel } from "./SkillsPanel";
 import { HooksPanel } from "./HooksPanel";
 import { RobotsPanel } from "./RobotsPanel";
 import { UsageDashboard } from "./UsageDashboard";
+import { SmartBrainPanel } from "./SmartBrainPanel";
 
 interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "hooks";
+type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "hooks" | "smartbrain";
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const intl = useIntl();
@@ -31,11 +31,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [relayServerUrl, setRelayServerUrl] = useState("");
   const [relaySaving, setRelaySaving] = useState(false);
 
-  // WPS Server state
-  const [wpsStatus, setWpsStatus] = useState<WpsServerStatus | null>(null);
-  const [wpsLoading, setWpsLoading] = useState(false);
-  const [wpsPort, setWpsPort] = useState("23300");
-
   // relay 地址规范化（去空白与末尾 `/`），避免配置被保存成 `http://host:8080/`
   // 后续在拼接 `/m/...` 时出现 `//m/...`。
   const normalizeRelayServerUrl = useCallback((value: string): string => {
@@ -49,47 +44,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         invoke<string>("get_mobile_server_url").then(setWebServerUrl).catch(() => {});
       }
     }).catch(() => {});
-    // 加载 relay 服务器配置
     invoke<{ config?: { relay_server_url?: string } }>("standalone_config_read").then((result) => {
       if (result?.config?.relay_server_url) {
         setRelayServerUrl(normalizeRelayServerUrl(result.config.relay_server_url));
       }
     }).catch(() => {});
   }, [normalizeRelayServerUrl]);
-
-  // WPS server polling
-  const refreshWpsStatus = useCallback(async () => {
-    try {
-      const status = await invoke<WpsServerStatus>("wps_status");
-      setWpsStatus(status);
-    } catch {
-      setWpsStatus(null);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshWpsStatus();
-    const timer = setInterval(() => void refreshWpsStatus(), 5000);
-    return () => clearInterval(timer);
-  }, [refreshWpsStatus]);
-
-  const handleWpsToggle = useCallback(async () => {
-    if (wpsLoading) return;
-    setWpsLoading(true);
-    try {
-      if (!wpsStatus?.running) {
-        const port = parseInt(wpsPort, 10) || 23300;
-        await invoke<number>("wps_start_server", { port });
-      } else {
-        await invoke("wps_stop_server");
-      }
-      await refreshWpsStatus();
-    } catch (err) {
-      console.error("WPS server toggle failed:", err);
-    } finally {
-      setWpsLoading(false);
-    }
-  }, [wpsStatus?.running, wpsLoading, wpsPort, refreshWpsStatus]);
 
   const handleWebServerToggle = useCallback(async () => {
     if (webServerLoading) return;
@@ -151,6 +111,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       id: "hooks",
       label: intl.formatMessage({ id: "settings.hooks" }),
       detail: intl.formatMessage({ id: "settings.hooks.description" }),
+    },
+    {
+      id: "smartbrain",
+      label: intl.formatMessage({ id: "settings.smartbrain" }),
+      detail: intl.formatMessage({ id: "settings.smartbrain.description" }),
     },
   ];
 
@@ -311,96 +276,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
                 <section className="settings-card space-y-3">
                   <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
-                    WPS Office 连接
-                  </h4>
-                  <p className="text-xs text-[var(--text-faint)]">
-                    启用 WebSocket 服务后，WPS 中的 cn-codex 加载项可以连接到本应用，AI 助手即可直接操作 Word 文档
-                  </p>
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={handleWpsToggle}
-                      disabled={wpsLoading}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
-                        wpsStatus?.running ? "bg-[var(--accent)]" : "bg-[var(--border-subtle)]"
-                      } ${wpsLoading ? "opacity-50" : ""}`}
-                    >
-                      <span
-                        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
-                          wpsStatus?.running ? "translate-x-[18px]" : "translate-x-[3px]"
-                        }`}
-                      />
-                    </button>
-                    <span className="text-xs text-[var(--text-muted)]">
-                      {wpsLoading ? "正在操作..." : wpsStatus?.running ? "已开启" : "已关闭"}
-                    </span>
-                  </div>
-
-                  {!wpsStatus?.running && (
-                    <div className="flex items-center gap-2">
-                      <label className="w-8 shrink-0 whitespace-nowrap text-xs text-[var(--text-muted)]">
-                        端口
-                      </label>
-                      <div className="w-[140px] shrink-0">
-                        <input
-                          type="text"
-                          value={wpsPort}
-                          onChange={(e) => setWpsPort(e.target.value)}
-                          className="app-input"
-                          placeholder="23300"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {wpsStatus?.running && (
-                    <div className="space-y-2">
-                      <p className="font-mono text-[11px] text-[var(--text-muted)]">
-                        ws://127.0.0.1:{wpsStatus.port}/wps
-                      </p>
-
-                      {wpsStatus.connections.length === 0 ? (
-                        <div className="rounded-lg border border-dashed border-[var(--border-strong)] bg-[var(--surface-contrast)]/56 px-3 py-2">
-                          <p className="text-xs text-[var(--text-faint)]">
-                            等待 WPS 加载项连接...
-                          </p>
-                          <p className="mt-1 text-[11px] text-[var(--text-faint)]">
-                            请打开 WPS 文字并加载 cn-codex 加载项
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          {wpsStatus.connections.map((conn, idx) => (
-                            <div
-                              key={idx}
-                              className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/82 px-3 py-2"
-                            >
-                              <div className="flex items-center gap-2">
-                                <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
-                                <span className="text-xs font-medium text-[var(--text-strong)]">
-                                  {conn.addinName || "WPS Add-in"}
-                                </span>
-                                {conn.addinVersion && (
-                                  <span className="text-[11px] text-[var(--text-faint)]">
-                                    v{conn.addinVersion}
-                                  </span>
-                                )}
-                              </div>
-                              {conn.activeDocument && (
-                                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
-                                  当前文档: {conn.activeDocument.name}
-                                </p>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </section>
-
-                <section className="settings-card space-y-3">
-                  <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
                     {intl.formatMessage({ id: "settings.about" })}
                   </h4>
                   <div className="space-y-1">
@@ -431,6 +306,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "skills" && <SkillsPanel />}
             {tab === "robots" && <RobotsPanel />}
             {tab === "hooks" && <HooksPanel />}
+            {tab === "smartbrain" && <SmartBrainPanel />}
           </div>
         </section>
       </div>

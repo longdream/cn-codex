@@ -2239,28 +2239,6 @@ impl ToolExecutor {
             }),
         ];
 
-        tools.push(serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": "wps_execute_command",
-                "description": "Send a command to WPS Office through the connected WPS add-in. Use this to manipulate Word documents: open/save/close documents, insert/replace/delete text, set formatting (font, paragraph, style), work with bookmarks, tables, comments, revisions, headers/footers, images, and fill templates. The WPS add-in must be connected first (check with wps_status).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "method": {
-                            "type": "string",
-                            "description": "The command method name, e.g. 'document.open', 'text.insert', 'format.setFont', 'table.insert', 'comment.add', 'header.set', 'image.insert', 'template.fill'."
-                        },
-                        "params": {
-                            "type": "object",
-                            "description": "Command parameters. Varies by method. Examples: {\"path\": \"C:\\\\doc.docx\"} for document.open, {\"text\": \"Hello\", \"position\": \"cursor\"} for text.insert."
-                        }
-                    },
-                    "required": ["method"]
-                }
-            }
-        }));
-
         if web_search_enabled {
             tools.push(serde_json::json!({
                 "type": "function",
@@ -2586,10 +2564,6 @@ impl ToolExecutor {
             }
             "web_fetch" => {
                 self.exec_web_fetch(arguments, call_id, app_handle, thread_id)
-                    .await
-            }
-            "wps_execute_command" => {
-                self.exec_wps_command(arguments, call_id, app_handle, thread_id)
                     .await
             }
             other => Ok(format!("Unknown tool: {other}")),
@@ -5237,6 +5211,9 @@ impl ToolExecutor {
         };
         let output = truncate_output(&output_body, 16_000);
         self.emit_tool_end(app_handle, thread_id, call_id, "memory_read", 0, &output);
+
+        self.track_experience_usage(&args.path);
+
         Ok(output)
     }
 
@@ -7018,135 +6995,37 @@ impl ToolExecutor {
         Ok(output)
     }
 
-    async fn exec_wps_command(
-        &self,
-        arguments: &str,
-        call_id: &str,
-        app_handle: &AppHandle,
-        thread_id: &str,
-    ) -> AppResult<String> {
-        let payload: serde_json::Value = match serde_json::from_str(arguments) {
-            Ok(v) => v,
-            Err(e) => {
-                let msg = format!("Invalid JSON arguments: {e}");
-                self.emit_tool_start(app_handle, thread_id, call_id, "wps_execute_command", &msg);
-                self.emit_tool_end(
-                    app_handle,
-                    thread_id,
-                    call_id,
-                    "wps_execute_command",
-                    -1,
-                    &msg,
-                );
-                return Ok(msg);
-            }
-        };
-
-        let method = payload.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        let params = payload.get("params").cloned();
-
-        self.emit_tool_start(
-            app_handle,
-            thread_id,
-            call_id,
-            "wps_execute_command",
-            method,
-        );
-
-        let state = app_handle.try_state::<crate::state::AppState>();
-        let wps_server = match state {
-            Some(s) => s.wps_server.clone(),
-            None => {
-                let msg = "WPS server not available".to_string();
-                self.emit_tool_end(
-                    app_handle,
-                    thread_id,
-                    call_id,
-                    "wps_execute_command",
-                    -1,
-                    &msg,
-                );
-                return Ok(msg);
-            }
-        };
-
-        if !wps_server.is_running() {
-            let msg = "WPS server is not running. Start it first via settings or wps_start_server."
-                .to_string();
-            self.emit_tool_end(
-                app_handle,
-                thread_id,
-                call_id,
-                "wps_execute_command",
-                -1,
-                &msg,
-            );
-            return Ok(msg);
-        }
-
-        if !wps_server.has_connections().await {
-            let msg = "No WPS add-in is connected. Please open WPS Office with the cn-codex add-in loaded.".to_string();
-            self.emit_tool_end(
-                app_handle,
-                thread_id,
-                call_id,
-                "wps_execute_command",
-                -1,
-                &msg,
-            );
-            return Ok(msg);
-        }
-
-        match wps_server.send_command(method, params).await {
-            Ok(response) => {
-                if let Some(err) = &response.error {
-                    let msg = format!("WPS command '{}' failed: {}", method, err.message);
-                    self.emit_tool_end(
-                        app_handle,
-                        thread_id,
-                        call_id,
-                        "wps_execute_command",
-                        -1,
-                        &msg,
-                    );
-                    Ok(msg)
-                } else {
-                    let result_json = serde_json::to_string_pretty(
-                        &response.result.unwrap_or(serde_json::Value::Null),
-                    )
-                    .unwrap_or_else(|_| "null".to_string());
-                    self.emit_tool_end(
-                        app_handle,
-                        thread_id,
-                        call_id,
-                        "wps_execute_command",
-                        0,
-                        &result_json,
-                    );
-                    Ok(result_json)
-                }
-            }
-            Err(e) => {
-                let msg = format!("WPS command '{}' error: {e}", method);
-                self.emit_tool_end(
-                    app_handle,
-                    thread_id,
-                    call_id,
-                    "wps_execute_command",
-                    -1,
-                    &msg,
-                );
-                Ok(msg)
-            }
-        }
-    }
-
     fn memories_dir(&self) -> PathBuf {
         self.workspace_config_dir.join("memories")
     }
 
     fn resolve_memory_path(&self, path: &str) -> Result<PathBuf, String> {
         resolve_memory_path(&self.memories_dir(), path)
+    }
+
+    /// Track experience usage when the model reads files under `experiences/`.
+    ///
+    /// Track usage of SmartBrain content (experience or knowledge) when
+    /// the model reads it via memory_read.
+    fn track_experience_usage(&self, memory_path: &str) {
+        let normalized = memory_path.replace('\\', "/");
+
+        if normalized.starts_with("experiences/") {
+            let experiences_dir = crate::smartbrain::experiences_dir(&self.workspace_config_dir);
+            let mut index = crate::smartbrain::index::ExperienceIndex::load(&experiences_dir);
+
+            if let Some(rest) = normalized.strip_prefix("experiences/raw/") {
+                if let Some(thread_id) = rest.strip_suffix(".md") {
+                    index.record_usage(thread_id);
+                    let _ = index.save(&experiences_dir);
+                }
+            } else if normalized == "experiences/experience_handbook.md"
+                || normalized == "experiences/experience_summary.md"
+            {
+                index.record_usage_all();
+                let _ = index.save(&experiences_dir);
+            }
+        }
     }
 }
 
