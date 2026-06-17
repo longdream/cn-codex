@@ -206,6 +206,11 @@ impl AgentEngine {
         let git_status_before = git_status_snapshot(&effective_cwd).await;
         let mut changed_files: Vec<FileChange> = Vec::new();
         let mut turn_usage = TurnUsage::default();
+        // 统计“本轮成功模型调用次数”：
+        // - 每次 stream_completion 返回 Ok（无论是 Message 还是 ToolCalls）计 1 次；
+        // - 失败重试不计入；
+        // - 最终写入 turn usage 的 call_count 字段供前端展示。
+        let mut llm_call_count: u32 = 0;
         let goal_budget_tokens = if turn_mode == "goal" {
             goal_budget_tokens.filter(|value| *value > 0)
         } else {
@@ -248,7 +253,10 @@ impl AgentEngine {
                 .get_thread(thread_id)
                 .await
                 .and_then(|t| t.goal);
-            if existing_goal.as_ref().is_some_and(|g| g.status != ThreadGoalStatus::Active) {
+            if existing_goal
+                .as_ref()
+                .is_some_and(|g| g.status != ThreadGoalStatus::Active)
+            {
                 // Resume existing paused/blocked goal instead of creating a new one
                 self.thread_store
                     .set_thread_goal_status(thread_id, ThreadGoalStatus::Active)
@@ -271,7 +279,10 @@ impl AgentEngine {
 
         let user_message_id = uuid::Uuid::new_v4().to_string();
         // 将文档附件提取的文本直接嵌入到消息 content 中进行持久化
-        let persisted_content = if attachments.iter().any(|a| !a.mime_type.starts_with("image/")) {
+        let persisted_content = if attachments
+            .iter()
+            .any(|a| !a.mime_type.starts_with("image/"))
+        {
             let mut content = user_input.to_string();
             for attachment in &attachments {
                 if !attachment.mime_type.starts_with("image/") {
@@ -442,65 +453,63 @@ impl AgentEngine {
         let mut mid_turn_compacted = false;
 
         'goal_loop: loop {
-
-        if !prompt_hook_blocked {
-            // Goal continuation 时检查是否需要 compaction（首次 compaction 已在 start_turn 之前完成）
-            if goal_continuation_count > 0 {
-                let pre_turn_tokens = self.thread_store.get_thread_total_tokens(thread_id).await;
-                if crate::compaction::should_compact(pre_turn_tokens, config) {
-                    info!("Goal continuation compaction triggered: {pre_turn_tokens} tokens");
-                    let _ = crate::compaction::run_compaction(
-                        &self.http,
-                        app_handle,
-                        config,
-                        &self.thread_store,
-                        thread_id,
-                        &base_url,
-                        &api_key,
-                        &model,
-                        &wire_api,
-                        Some(&self.cancel_flag),
-                    )
-                    .await;
-                    if self.is_cancelled() {
-                        break;
+            if !prompt_hook_blocked {
+                // Goal continuation 时检查是否需要 compaction（首次 compaction 已在 start_turn 之前完成）
+                if goal_continuation_count > 0 {
+                    let pre_turn_tokens =
+                        self.thread_store.get_thread_total_tokens(thread_id).await;
+                    if crate::compaction::should_compact(pre_turn_tokens, config) {
+                        info!("Goal continuation compaction triggered: {pre_turn_tokens} tokens");
+                        let _ = crate::compaction::run_compaction(
+                            &self.http,
+                            app_handle,
+                            config,
+                            &self.thread_store,
+                            thread_id,
+                            &base_url,
+                            &api_key,
+                            &model,
+                            &wire_api,
+                            Some(&self.cancel_flag),
+                        )
+                        .await;
+                        if self.is_cancelled() {
+                            break;
+                        }
                     }
                 }
-            }
 
-            for iteration in 0..max_iterations {
-                if self.is_cancelled() {
-                    info!("Turn {turn_id} cancelled by user at iteration {iteration}");
-                    break;
-                }
-                info!("Agent loop iteration {iteration} for turn {turn_id}");
+                for iteration in 0..max_iterations {
+                    if self.is_cancelled() {
+                        info!("Turn {turn_id} cancelled by user at iteration {iteration}");
+                        break;
+                    }
+                    info!("Agent loop iteration {iteration} for turn {turn_id}");
 
-                let history = self.thread_store.get_thread_messages(thread_id).await;
-                let robot_overlay_prompt = if let Some(state) = robot_progress.as_ref() {
-                    Some(robot_orchestrator.build_overlay_prompt(state)?)
-                } else {
-                    None
-                };
-                let internal_messages = self.build_internal_messages(
-                    config,
-                    &history,
-                    &effective_cwd,
-                    &turn_mode,
-                    robot_id,
-                    Some(user_message_id.as_str()),
-                    &attachments,
-                    robot_overlay_prompt.as_deref(),
-                );
-                let tools =
-                    if turn_mode == "robot-create" || turn_mode == "robot-modify" {
+                    let history = self.thread_store.get_thread_messages(thread_id).await;
+                    let robot_overlay_prompt = if let Some(state) = robot_progress.as_ref() {
+                        Some(robot_orchestrator.build_overlay_prompt(state)?)
+                    } else {
+                        None
+                    };
+                    let internal_messages = self.build_internal_messages(
+                        config,
+                        &history,
+                        &effective_cwd,
+                        &turn_mode,
+                        robot_id,
+                        Some(user_message_id.as_str()),
+                        &attachments,
+                        robot_overlay_prompt.as_deref(),
+                    );
+                    let tools = if turn_mode == "robot-create" || turn_mode == "robot-modify" {
                         self.tool_executor
                             .write()
                             .await
                             .tool_specs(false)
                             .into_iter()
                             .filter(|spec| {
-                                spec.pointer("/function/name")
-                                    .and_then(|v| v.as_str())
+                                spec.pointer("/function/name").and_then(|v| v.as_str())
                                     == Some("robot_save")
                             })
                             .collect()
@@ -512,331 +521,443 @@ impl AgentEngine {
                             .await
                     };
 
-                let result = self
-                    .stream_completion(
-                        app_handle,
-                        thread_id,
-                        &base_url,
-                        &api_key,
-                        &model,
-                        &wire_api,
-                        internal_messages,
-                        if tools.is_empty() { None } else { Some(tools) },
-                        config.max_output_tokens,
-                        iteration as u32,
-                    )
-                    .await;
+                    let result = self
+                        .stream_completion(
+                            app_handle,
+                            thread_id,
+                            &base_url,
+                            &api_key,
+                            &model,
+                            &wire_api,
+                            internal_messages,
+                            if tools.is_empty() { None } else { Some(tools) },
+                            config.max_output_tokens,
+                            iteration as u32,
+                        )
+                        .await;
 
-                match result {
-                    Ok(CompletionResult::Message {
-                        ref text,
-                        ref usage,
-                    }) => {
-                        info!(
-                            "Iteration {iteration}: Message ({} chars), usage={:?}",
-                            text.len(),
-                            usage
-                        );
-                        if let Some(u) = usage {
-                            add_turn_usage(&mut turn_usage, u);
-                            last_prompt_tokens = u.prompt_tokens;
-                            if let Some(ref recorder) = self.usage_recorder {
-                                recorder.record(&provider_id, &model, thread_id, u);
-                            }
-                        }
-                        let (cleaned_text, node_done_signal) = if robot_progress.is_some() {
-                            strip_robot_node_done_marker(text)
-                        } else {
-                            (text.clone(), false)
-                        };
-
-                        if cleaned_text.is_empty() && iteration > 0 {
-                            info!("Empty message after tool execution, sending minimal signal");
-                            emit_and_broadcast(
-                                app_handle,
-                                "agent-message-delta",
-                                serde_json::json!({ "threadId": thread_id, "delta": "(completed)" }),
-                            );
-                        }
-
-                        if !cleaned_text.is_empty()
-                            && iteration > 0
-                            && intent_retries < MAX_INTENT_RETRIES
-                            && text_expresses_intent(&cleaned_text)
-                        {
-                            intent_retries += 1;
+                    match result {
+                        Ok(CompletionResult::Message {
+                            ref text,
+                            ref usage,
+                        }) => {
+                            llm_call_count = llm_call_count.saturating_add(1);
                             info!(
-                                "Intent detected in text without tool calls, retry {intent_retries}/{MAX_INTENT_RETRIES}"
+                                "Iteration {iteration}: Message ({} chars), usage={:?}",
+                                text.len(),
+                                usage
                             );
-                            let nudge_msg = ThreadMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                role: "system".to_string(),
-                                content: "You expressed intent to perform an action but did not \
-                                          call any tools. Please call the appropriate tool(s) now \
-                                          instead of describing what you plan to do."
-                                    .to_string(),
-                                timestamp: now_secs(),
-                                tool_call_id: None,
-                                tool_name: None,
-                                tool_calls: None,
+                            if let Some(u) = usage {
+                                add_turn_usage(&mut turn_usage, u);
+                                last_prompt_tokens = u.prompt_tokens;
+                                if let Some(ref recorder) = self.usage_recorder {
+                                    recorder.record(&provider_id, &model, thread_id, u);
+                                }
+                            }
+                            let (cleaned_text, node_done_signal) = if robot_progress.is_some() {
+                                strip_robot_node_done_marker(text)
+                            } else {
+                                (text.clone(), false)
                             };
-                            self.thread_store.add_message(thread_id, nudge_msg).await?;
-                            continue;
-                        }
 
-                        let content = if cleaned_text.is_empty() && iteration > 0 {
-                            String::new()
-                        } else {
-                            cleaned_text.clone()
-                        };
-                        if !content.is_empty() || iteration == 0 {
-                            let msg = ThreadMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                role: "assistant".to_string(),
-                                content: content.clone(),
-                                timestamp: now_secs(),
-                                tool_call_id: None,
-                                tool_name: None,
-                                tool_calls: None,
-                            };
-                            self.thread_store.add_message(thread_id, msg).await?;
-                        }
-                        let git_status_now = git_status_snapshot(&effective_cwd).await;
-                        merge_git_changes(&mut changed_files, &git_status_before, &git_status_now);
-                        let budget_limited_now = if turn_mode == "goal" {
-                            let current_goal = self
-                                .thread_store
-                                .get_thread(thread_id)
-                                .await
-                                .and_then(|thread| thread.goal);
-                            goal_budget_limited_after(current_goal.as_ref(), &turn_usage)
-                        } else {
-                            false
-                        };
-                        let stop_hook_results = hook_runtime
-                            .run_event(
-                                app_handle,
-                                thread_id,
-                                HOOK_AGENT_END,
-                                &effective_cwd,
-                                stop_hook_context(
-                                    &turn_id,
-                                    &turn_mode,
-                                    &effective_cwd,
-                                    turn_timer.elapsed().as_millis().min(u128::from(u64::MAX))
-                                        as u64,
-                                    &changed_files,
-                                    &turn_usage,
-                                    goal_budget_tokens,
-                                    budget_limited_now,
-                                    &model,
-                                    stop_hook_continuations > 0,
-                                    content.as_str(),
-                                ),
-                            )
-                            .await;
-                        stop_hooks_ran_for_last_stop = true;
-                        if first_blocking_hook_result(&stop_hook_results).is_some() {
-                            if let Some(continuation) =
-                                stop_hook_continuation_message(&stop_hook_results)
+                            if cleaned_text.is_empty() && iteration > 0 {
+                                info!("Empty message after tool execution, sending minimal signal");
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "agent-message-delta",
+                                    serde_json::json!({ "threadId": thread_id, "delta": "(completed)" }),
+                                );
+                            }
+
+                            if !cleaned_text.is_empty()
+                                && iteration > 0
+                                && intent_retries < MAX_INTENT_RETRIES
+                                && text_expresses_intent(&cleaned_text)
                             {
-                                stop_hook_continuations = stop_hook_continuations.saturating_add(1);
-                                let msg = ThreadMessage {
+                                intent_retries += 1;
+                                info!(
+                                    "Intent detected in text without tool calls, retry {intent_retries}/{MAX_INTENT_RETRIES}"
+                                );
+                                let nudge_msg = ThreadMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     role: "system".to_string(),
-                                    content: continuation,
+                                    content:
+                                        "You expressed intent to perform an action but did not \
+                                          call any tools. Please call the appropriate tool(s) now \
+                                          instead of describing what you plan to do."
+                                            .to_string(),
+                                    timestamp: now_secs(),
+                                    tool_call_id: None,
+                                    tool_name: None,
+                                    tool_calls: None,
+                                };
+                                self.thread_store.add_message(thread_id, nudge_msg).await?;
+                                continue;
+                            }
+
+                            let content = if cleaned_text.is_empty() && iteration > 0 {
+                                String::new()
+                            } else {
+                                cleaned_text.clone()
+                            };
+                            if !content.is_empty() || iteration == 0 {
+                                let msg = ThreadMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role: "assistant".to_string(),
+                                    content: content.clone(),
                                     timestamp: now_secs(),
                                     tool_call_id: None,
                                     tool_name: None,
                                     tool_calls: None,
                                 };
                                 self.thread_store.add_message(thread_id, msg).await?;
-                                continue;
                             }
-                        }
-
-                        if let Some(progress_snapshot) = robot_progress.clone() {
-                            match robot_orchestrator
-                                .apply_node_progress(
-                                    &self.thread_store,
-                                    thread_id,
-                                    progress_snapshot,
-                                    node_done_signal,
-                                )
-                                .await?
-                            {
-                                NodeProgressResult::ContinueCurrent { state, nudge } => {
-                                    robot_progress = Some(state);
-                                    let msg = ThreadMessage {
-                                        id: uuid::Uuid::new_v4().to_string(),
-                                        role: "system".to_string(),
-                                        content: nudge,
-                                        timestamp: now_secs(),
-                                        tool_call_id: None,
-                                        tool_name: None,
-                                        tool_calls: None,
-                                    };
-                                    self.thread_store.add_message(thread_id, msg).await?;
-                                    continue;
-                                }
-                                NodeProgressResult::Advanced { state, nudge } => {
-                                    robot_progress = Some(state);
-                                    let msg = ThreadMessage {
-                                        id: uuid::Uuid::new_v4().to_string(),
-                                        role: "system".to_string(),
-                                        content: nudge,
-                                        timestamp: now_secs(),
-                                        tool_call_id: None,
-                                        tool_name: None,
-                                        tool_calls: None,
-                                    };
-                                    self.thread_store.add_message(thread_id, msg).await?;
-                                    continue;
-                                }
-                                NodeProgressResult::Completed => {
-                                    robot_progress = None;
-                                    stop_hooks_satisfied = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        stop_hooks_satisfied = true;
-                        break;
-                    }
-                    Ok(CompletionResult::ToolCalls {
-                        calls,
-                        preceding_text,
-                        usage,
-                    }) => {
-                        info!(
-                            "Iteration {iteration}: ToolCalls ({}): {:?}, preceding_text={} chars, usage={:?}",
-                            calls.len(),
-                            calls.iter().map(|c| &c.name).collect::<Vec<_>>(),
-                            preceding_text.len(),
-                            usage
-                        );
-                        if let Some(ref u) = usage {
-                            add_turn_usage(&mut turn_usage, u);
-                            last_prompt_tokens = u.prompt_tokens;
-                            if let Some(ref recorder) = self.usage_recorder {
-                                recorder.record(&provider_id, &model, thread_id, u);
-                            }
-                        }
-
-                        if !preceding_text.is_empty() {
-                            let text_msg = ThreadMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                role: "assistant".to_string(),
-                                content: preceding_text,
-                                timestamp: now_secs(),
-                                tool_call_id: None,
-                                tool_name: None,
-                                tool_calls: None,
+                            let git_status_now = git_status_snapshot(&effective_cwd).await;
+                            merge_git_changes(
+                                &mut changed_files,
+                                &git_status_before,
+                                &git_status_now,
+                            );
+                            let budget_limited_now = if turn_mode == "goal" {
+                                let current_goal = self
+                                    .thread_store
+                                    .get_thread(thread_id)
+                                    .await
+                                    .and_then(|thread| thread.goal);
+                                goal_budget_limited_after(current_goal.as_ref(), &turn_usage)
+                            } else {
+                                false
                             };
-                            self.thread_store.add_message(thread_id, text_msg).await?;
-                        }
-
-                        let tc_infos: Vec<ToolCallInfo> = calls
-                            .iter()
-                            .map(|c| ToolCallInfo {
-                                id: c.id.clone(),
-                                name: c.name.clone(),
-                                arguments: c.arguments.clone(),
-                            })
-                            .collect();
-                        let assistant_tc_msg = ThreadMessage {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            role: "assistant".to_string(),
-                            content: String::new(),
-                            timestamp: now_secs(),
-                            tool_call_id: None,
-                            tool_name: None,
-                            tool_calls: Some(tc_infos),
-                        };
-                        self.thread_store
-                            .add_message(thread_id, assistant_tc_msg)
-                            .await?;
-
-                        let calls_json: Vec<serde_json::Value> = calls
-                            .iter()
-                            .map(|c| {
-                                serde_json::json!({
-                                    "id": c.id,
-                                    "name": c.name,
-                                    "arguments": c.arguments,
-                                })
-                            })
-                            .collect();
-                        emit_and_broadcast(
-                            app_handle,
-                            "tool-calls-start",
-                            serde_json::json!({
-                                "threadId": thread_id,
-                                "calls": calls_json,
-                            }),
-                        );
-
-                        let mut results_json: Vec<serde_json::Value> = Vec::new();
-
-                        for mut call in calls {
-                            info!("Tool call: {} args={}", call.name, call.arguments);
-                            // 若用户已点击停止，则跳过工具执行，并主动补发结束状态，
-                            // 防止前端工具卡片一直停留在 running。
-                            if self.is_cancelled() {
-                                let interrupted_call_id = call.id.clone();
-                                let interrupted_tool_name = call.name.clone();
-                                let interrupted_output =
-                                    "Tool execution skipped: interrupted by user.".to_string();
-                                emit_and_broadcast(
-                                    app_handle,
-                                    "tool-exec-end",
-                                    serde_json::json!({
-                                        "threadId": thread_id,
-                                        "callId": interrupted_call_id,
-                                        "tool": interrupted_tool_name,
-                                        "exitCode": -1,
-                                        "output": interrupted_output.clone(),
-                                    }),
-                                );
-                                results_json.push(serde_json::json!({
-                                    "id": call.id.clone(),
-                                    "tool": call.name.clone(),
-                                    "success": false,
-                                    "interrupted": true,
-                                }));
-                                let tool_msg = ThreadMessage {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    role: "tool".to_string(),
-                                    content: interrupted_output,
-                                    timestamp: now_secs(),
-                                    tool_call_id: Some(call.id.clone()),
-                                    tool_name: Some(call.name.clone()),
-                                    tool_calls: None,
-                                };
-                                self.thread_store.add_message(thread_id, tool_msg).await?;
-                                continue;
-                            }
-                            let pre_tool_hook_results = hook_runtime
+                            let stop_hook_results = hook_runtime
                                 .run_event(
                                     app_handle,
                                     thread_id,
-                                    HOOK_COMMAND_EXEC,
+                                    HOOK_AGENT_END,
                                     &effective_cwd,
-                                    tool_call_hook_context(&turn_id, &call),
+                                    stop_hook_context(
+                                        &turn_id,
+                                        &turn_mode,
+                                        &effective_cwd,
+                                        turn_timer.elapsed().as_millis().min(u128::from(u64::MAX))
+                                            as u64,
+                                        &changed_files,
+                                        &turn_usage,
+                                        goal_budget_tokens,
+                                        budget_limited_now,
+                                        &model,
+                                        stop_hook_continuations > 0,
+                                        content.as_str(),
+                                    ),
                                 )
                                 .await;
+                            stop_hooks_ran_for_last_stop = true;
+                            if first_blocking_hook_result(&stop_hook_results).is_some() {
+                                if let Some(continuation) =
+                                    stop_hook_continuation_message(&stop_hook_results)
+                                {
+                                    stop_hook_continuations =
+                                        stop_hook_continuations.saturating_add(1);
+                                    let msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "system".to_string(),
+                                        content: continuation,
+                                        timestamp: now_secs(),
+                                        tool_call_id: None,
+                                        tool_name: None,
+                                        tool_calls: None,
+                                    };
+                                    self.thread_store.add_message(thread_id, msg).await?;
+                                    continue;
+                                }
+                            }
 
-                            if let Some(blocking_hook) =
-                                first_blocking_hook_result(&pre_tool_hook_results)
-                            {
-                                let result_content =
-                                    blocked_tool_call_output(&call.name, blocking_hook);
+                            if let Some(progress_snapshot) = robot_progress.clone() {
+                                match robot_orchestrator
+                                    .apply_node_progress(
+                                        &self.thread_store,
+                                        thread_id,
+                                        progress_snapshot,
+                                        node_done_signal,
+                                    )
+                                    .await?
+                                {
+                                    NodeProgressResult::ContinueCurrent { state, nudge } => {
+                                        robot_progress = Some(state);
+                                        let msg = ThreadMessage {
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            role: "system".to_string(),
+                                            content: nudge,
+                                            timestamp: now_secs(),
+                                            tool_call_id: None,
+                                            tool_name: None,
+                                            tool_calls: None,
+                                        };
+                                        self.thread_store.add_message(thread_id, msg).await?;
+                                        continue;
+                                    }
+                                    NodeProgressResult::Advanced { state, nudge } => {
+                                        robot_progress = Some(state);
+                                        let msg = ThreadMessage {
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            role: "system".to_string(),
+                                            content: nudge,
+                                            timestamp: now_secs(),
+                                            tool_call_id: None,
+                                            tool_name: None,
+                                            tool_calls: None,
+                                        };
+                                        self.thread_store.add_message(thread_id, msg).await?;
+                                        continue;
+                                    }
+                                    NodeProgressResult::Completed => {
+                                        robot_progress = None;
+                                        stop_hooks_satisfied = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            stop_hooks_satisfied = true;
+                            break;
+                        }
+                        Ok(CompletionResult::ToolCalls {
+                            calls,
+                            preceding_text,
+                            usage,
+                        }) => {
+                            llm_call_count = llm_call_count.saturating_add(1);
+                            info!(
+                                "Iteration {iteration}: ToolCalls ({}): {:?}, preceding_text={} chars, usage={:?}",
+                                calls.len(),
+                                calls.iter().map(|c| &c.name).collect::<Vec<_>>(),
+                                preceding_text.len(),
+                                usage
+                            );
+                            if let Some(ref u) = usage {
+                                add_turn_usage(&mut turn_usage, u);
+                                last_prompt_tokens = u.prompt_tokens;
+                                if let Some(ref recorder) = self.usage_recorder {
+                                    recorder.record(&provider_id, &model, thread_id, u);
+                                }
+                            }
+
+                            if !preceding_text.is_empty() {
+                                let text_msg = ThreadMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role: "assistant".to_string(),
+                                    content: preceding_text,
+                                    timestamp: now_secs(),
+                                    tool_call_id: None,
+                                    tool_name: None,
+                                    tool_calls: None,
+                                };
+                                self.thread_store.add_message(thread_id, text_msg).await?;
+                            }
+
+                            let tc_infos: Vec<ToolCallInfo> = calls
+                                .iter()
+                                .map(|c| ToolCallInfo {
+                                    id: c.id.clone(),
+                                    name: c.name.clone(),
+                                    arguments: c.arguments.clone(),
+                                })
+                                .collect();
+                            let assistant_tc_msg = ThreadMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                role: "assistant".to_string(),
+                                content: String::new(),
+                                timestamp: now_secs(),
+                                tool_call_id: None,
+                                tool_name: None,
+                                tool_calls: Some(tc_infos),
+                            };
+                            self.thread_store
+                                .add_message(thread_id, assistant_tc_msg)
+                                .await?;
+
+                            let calls_json: Vec<serde_json::Value> = calls
+                                .iter()
+                                .map(|c| {
+                                    serde_json::json!({
+                                        "id": c.id,
+                                        "name": c.name,
+                                        "arguments": c.arguments,
+                                    })
+                                })
+                                .collect();
+                            emit_and_broadcast(
+                                app_handle,
+                                "tool-calls-start",
+                                serde_json::json!({
+                                    "threadId": thread_id,
+                                    "calls": calls_json,
+                                }),
+                            );
+
+                            let mut results_json: Vec<serde_json::Value> = Vec::new();
+
+                            for mut call in calls {
+                                info!("Tool call: {} args={}", call.name, call.arguments);
+                                // 若用户已点击停止，则跳过工具执行，并主动补发结束状态，
+                                // 防止前端工具卡片一直停留在 running。
+                                if self.is_cancelled() {
+                                    let interrupted_call_id = call.id.clone();
+                                    let interrupted_tool_name = call.name.clone();
+                                    let interrupted_output =
+                                        "Tool execution skipped: interrupted by user.".to_string();
+                                    emit_and_broadcast(
+                                        app_handle,
+                                        "tool-exec-end",
+                                        serde_json::json!({
+                                            "threadId": thread_id,
+                                            "callId": interrupted_call_id,
+                                            "tool": interrupted_tool_name,
+                                            "exitCode": -1,
+                                            "output": interrupted_output.clone(),
+                                        }),
+                                    );
+                                    results_json.push(serde_json::json!({
+                                        "id": call.id.clone(),
+                                        "tool": call.name.clone(),
+                                        "success": false,
+                                        "interrupted": true,
+                                    }));
+                                    let tool_msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "tool".to_string(),
+                                        content: interrupted_output,
+                                        timestamp: now_secs(),
+                                        tool_call_id: Some(call.id.clone()),
+                                        tool_name: Some(call.name.clone()),
+                                        tool_calls: None,
+                                    };
+                                    self.thread_store.add_message(thread_id, tool_msg).await?;
+                                    continue;
+                                }
+                                let pre_tool_hook_results = hook_runtime
+                                    .run_event(
+                                        app_handle,
+                                        thread_id,
+                                        HOOK_COMMAND_EXEC,
+                                        &effective_cwd,
+                                        tool_call_hook_context(&turn_id, &call),
+                                    )
+                                    .await;
+
+                                if let Some(blocking_hook) =
+                                    first_blocking_hook_result(&pre_tool_hook_results)
+                                {
+                                    let result_content =
+                                        blocked_tool_call_output(&call.name, blocking_hook);
+                                    results_json.push(serde_json::json!({
+                                        "id": call.id,
+                                        "tool": call.name,
+                                        "success": false,
+                                        "blockedByHook": true,
+                                    }));
+
+                                    let tool_msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "tool".to_string(),
+                                        content: result_content,
+                                        timestamp: now_secs(),
+                                        tool_call_id: Some(call.id.clone()),
+                                        tool_name: Some(call.name.clone()),
+                                        tool_calls: None,
+                                    };
+                                    self.thread_store.add_message(thread_id, tool_msg).await?;
+                                    continue;
+                                }
+
+                                if let Some(updated_input) =
+                                    latest_hook_updated_input(&pre_tool_hook_results)
+                                {
+                                    call.arguments = serde_json::to_string(&updated_input)
+                                        .unwrap_or_else(|_| call.arguments.clone());
+                                }
+
+                                let requested_file_changes = file_changes_from_tool_call(&call);
+                                let tool_result = self
+                                    .tool_executor
+                                    .read()
+                                    .await
+                                    .execute(
+                                        &call.name,
+                                        &call.arguments,
+                                        &call.id,
+                                        app_handle,
+                                        thread_id,
+                                    )
+                                    .await;
+
+                                let (mut result_content, success) = match tool_result {
+                                    Ok(output) => (output, true),
+                                    Err(e) => (format!("Tool execution error: {e}"), false),
+                                };
+                                let mut has_subagent_stop_feedback = false;
+                                if success && call.name == "close_agent" {
+                                    let subagent_stop_hook_results = hook_runtime
+                                        .run_event(
+                                            app_handle,
+                                            thread_id,
+                                            HOOK_SUBAGENT_STOP,
+                                            &effective_cwd,
+                                            subagent_stop_hook_context(
+                                                &turn_id,
+                                                &turn_mode,
+                                                &effective_cwd,
+                                                &model,
+                                                &call,
+                                                &result_content,
+                                            ),
+                                        )
+                                        .await;
+                                    let subagent_stop_feedback =
+                                        hook_feedback_for_model(&subagent_stop_hook_results);
+                                    has_subagent_stop_feedback = !subagent_stop_feedback.is_empty();
+                                    if !subagent_stop_feedback.is_empty() {
+                                        result_content = append_subagent_stop_hook_feedback(
+                                            result_content,
+                                            subagent_stop_feedback,
+                                        );
+                                    }
+                                }
+                                let post_tool_hook_results = hook_runtime
+                                    .run_event(
+                                        app_handle,
+                                        thread_id,
+                                        HOOK_POST_TOOL_USE,
+                                        &effective_cwd,
+                                        tool_result_hook_context(
+                                            &turn_id,
+                                            &call,
+                                            &result_content,
+                                            success,
+                                        ),
+                                    )
+                                    .await;
+                                let post_hook_feedback =
+                                    hook_feedback_for_model(&post_tool_hook_results);
+                                let has_post_hook_feedback = !post_hook_feedback.is_empty();
+                                if !post_hook_feedback.is_empty() {
+                                    result_content = append_post_tool_hook_feedback(
+                                        result_content,
+                                        post_hook_feedback,
+                                    );
+                                }
+
+                                if success {
+                                    for change in requested_file_changes {
+                                        push_file_change(&mut changed_files, change);
+                                    }
+                                }
+
                                 results_json.push(serde_json::json!({
                                     "id": call.id,
                                     "tool": call.name,
-                                    "success": false,
-                                    "blockedByHook": true,
+                                    "success": success,
+                                        "postHookFeedback": has_post_hook_feedback,
+                                        "subagentStopHookFeedback": has_subagent_stop_feedback,
                                 }));
 
                                 let tool_msg = ThreadMessage {
@@ -849,181 +970,83 @@ impl AgentEngine {
                                     tool_calls: None,
                                 };
                                 self.thread_store.add_message(thread_id, tool_msg).await?;
-                                continue;
                             }
 
-                            if let Some(updated_input) =
-                                latest_hook_updated_input(&pre_tool_hook_results)
-                            {
-                                call.arguments = serde_json::to_string(&updated_input)
-                                    .unwrap_or_else(|_| call.arguments.clone());
-                            }
-
-                            let requested_file_changes = file_changes_from_tool_call(&call);
-                            let tool_result = self
-                                .tool_executor
-                                .read()
-                                .await
-                                .execute(
-                                    &call.name,
-                                    &call.arguments,
-                                    &call.id,
-                                    app_handle,
-                                    thread_id,
-                                )
-                                .await;
-
-                            let (mut result_content, success) = match tool_result {
-                                Ok(output) => (output, true),
-                                Err(e) => (format!("Tool execution error: {e}"), false),
-                            };
-                            let mut has_subagent_stop_feedback = false;
-                            if success && call.name == "close_agent" {
-                                let subagent_stop_hook_results = hook_runtime
-                                    .run_event(
-                                        app_handle,
-                                        thread_id,
-                                        HOOK_SUBAGENT_STOP,
-                                        &effective_cwd,
-                                        subagent_stop_hook_context(
-                                            &turn_id,
-                                            &turn_mode,
-                                            &effective_cwd,
-                                            &model,
-                                            &call,
-                                            &result_content,
-                                        ),
-                                    )
-                                    .await;
-                                let subagent_stop_feedback =
-                                    hook_feedback_for_model(&subagent_stop_hook_results);
-                                has_subagent_stop_feedback = !subagent_stop_feedback.is_empty();
-                                if !subagent_stop_feedback.is_empty() {
-                                    result_content = append_subagent_stop_hook_feedback(
-                                        result_content,
-                                        subagent_stop_feedback,
-                                    );
-                                }
-                            }
-                            let post_tool_hook_results = hook_runtime
-                                .run_event(
-                                    app_handle,
-                                    thread_id,
-                                    HOOK_POST_TOOL_USE,
-                                    &effective_cwd,
-                                    tool_result_hook_context(
-                                        &turn_id,
-                                        &call,
-                                        &result_content,
-                                        success,
-                                    ),
-                                )
-                                .await;
-                            let post_hook_feedback =
-                                hook_feedback_for_model(&post_tool_hook_results);
-                            let has_post_hook_feedback = !post_hook_feedback.is_empty();
-                            if !post_hook_feedback.is_empty() {
-                                result_content = append_post_tool_hook_feedback(
-                                    result_content,
-                                    post_hook_feedback,
-                                );
-                            }
-
-                            if success {
-                                for change in requested_file_changes {
-                                    push_file_change(&mut changed_files, change);
-                                }
-                            }
-
-                            results_json.push(serde_json::json!({
-                                "id": call.id,
-                                "tool": call.name,
-                                "success": success,
-                                    "postHookFeedback": has_post_hook_feedback,
-                                    "subagentStopHookFeedback": has_subagent_stop_feedback,
-                            }));
-
-                            let tool_msg = ThreadMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                role: "tool".to_string(),
-                                content: result_content,
-                                timestamp: now_secs(),
-                                tool_call_id: Some(call.id.clone()),
-                                tool_name: Some(call.name.clone()),
-                                tool_calls: None,
-                            };
-                            self.thread_store.add_message(thread_id, tool_msg).await?;
-                        }
-
-                        emit_and_broadcast(
-                            app_handle,
-                            "tool-calls-end",
-                            serde_json::json!({
-                                "threadId": thread_id,
-                                "results": results_json,
-                            }),
-                        );
-                        stop_hooks_ran_for_last_stop = false;
-
-                        if !mid_turn_compacted
-                            && crate::compaction::should_compact(last_prompt_tokens, config)
-                        {
-                            info!("Mid-turn compaction triggered: {last_prompt_tokens} prompt tokens (single API call)");
-                            let compaction_start = Instant::now();
-                            let _ = crate::compaction::run_compaction(
-                                &self.http,
+                            emit_and_broadcast(
                                 app_handle,
-                                config,
-                                &self.thread_store,
-                                thread_id,
-                                &base_url,
-                                &api_key,
-                                &model,
-                                &wire_api,
-                                Some(&self.cancel_flag),
-                            )
-                            .await;
-                            info!(
-                                "Mid-turn compaction completed in {:.1}s",
-                                compaction_start.elapsed().as_secs_f64()
+                                "tool-calls-end",
+                                serde_json::json!({
+                                    "threadId": thread_id,
+                                    "results": results_json,
+                                }),
                             );
-                            last_prompt_tokens = 0;
-                            mid_turn_compacted = true;
+                            stop_hooks_ran_for_last_stop = false;
+
+                            if !mid_turn_compacted
+                                && crate::compaction::should_compact(last_prompt_tokens, config)
+                            {
+                                info!(
+                                    "Mid-turn compaction triggered: {last_prompt_tokens} prompt tokens (single API call)"
+                                );
+                                let compaction_start = Instant::now();
+                                let _ = crate::compaction::run_compaction(
+                                    &self.http,
+                                    app_handle,
+                                    config,
+                                    &self.thread_store,
+                                    thread_id,
+                                    &base_url,
+                                    &api_key,
+                                    &model,
+                                    &wire_api,
+                                    Some(&self.cancel_flag),
+                                )
+                                .await;
+                                info!(
+                                    "Mid-turn compaction completed in {:.1}s",
+                                    compaction_start.elapsed().as_secs_f64()
+                                );
+                                last_prompt_tokens = 0;
+                                mid_turn_compacted = true;
+                            }
                         }
-                    }
-                    Err(e) => {
-                        error!("Iteration {iteration}: LLM request failed: {e}");
-                        emit_and_broadcast(
-                            app_handle,
-                            "server-error",
-                            serde_json::json!({ "threadId": thread_id, "message": e.to_string() }),
-                        );
-                        break;
+                        Err(e) => {
+                            error!("Iteration {iteration}: LLM request failed: {e}");
+                            emit_and_broadcast(
+                                app_handle,
+                                "server-error",
+                                serde_json::json!({ "threadId": thread_id, "message": e.to_string() }),
+                            );
+                            break;
+                        }
                     }
                 }
             }
-        }
 
-        if !stop_hooks_satisfied && !stop_hooks_ran_for_last_stop && !prompt_hook_blocked {
-            if let Some(progress) = robot_progress.as_ref() {
-                // 机器人强约束模式下，如果节点未完成，不允许退化为“直接总结”。
-                // 这里显式写回提示，保留下次 turn 继续当前节点的状态。
-                let pending_msg = ThreadMessage {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    role: "system".to_string(),
-                    content: build_robot_node_completion_nudge(
-                        progress.current_node_index,
-                        progress.runtime_nodes.len(),
-                    ),
-                    timestamp: now_secs(),
-                    tool_call_id: None,
-                    tool_name: None,
-                    tool_calls: None,
-                };
-                self.thread_store.add_message(thread_id, pending_msg).await?;
-            } else {
-                info!("Agent loop ended after tool calls without summary, requesting final summary");
-                let summary_nudge = ThreadMessage {
+            if !stop_hooks_satisfied && !stop_hooks_ran_for_last_stop && !prompt_hook_blocked {
+                if let Some(progress) = robot_progress.as_ref() {
+                    // 机器人强约束模式下，如果节点未完成，不允许退化为“直接总结”。
+                    // 这里显式写回提示，保留下次 turn 继续当前节点的状态。
+                    let pending_msg = ThreadMessage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        role: "system".to_string(),
+                        content: build_robot_node_completion_nudge(
+                            progress.current_node_index,
+                            progress.runtime_nodes.len(),
+                        ),
+                        timestamp: now_secs(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                    };
+                    self.thread_store
+                        .add_message(thread_id, pending_msg)
+                        .await?;
+                } else {
+                    info!(
+                        "Agent loop ended after tool calls without summary, requesting final summary"
+                    );
+                    let summary_nudge = ThreadMessage {
                     id: uuid::Uuid::new_v4().to_string(),
                     role: "system".to_string(),
                     content: "All tool executions have completed. You MUST now provide a brief \
@@ -1035,127 +1058,128 @@ impl AgentEngine {
                     tool_name: None,
                     tool_calls: None,
                 };
-                self.thread_store
-                    .add_message(thread_id, summary_nudge)
-                    .await?;
+                    self.thread_store
+                        .add_message(thread_id, summary_nudge)
+                        .await?;
 
-                let history = self.thread_store.get_thread_messages(thread_id).await;
-                let robot_overlay_prompt = if let Some(state) = robot_progress.as_ref() {
-                    Some(robot_orchestrator.build_overlay_prompt(state)?)
-                } else {
-                    None
-                };
-                let internal_messages = self.build_internal_messages(
-                    config,
-                    &history,
-                    &effective_cwd,
-                    &turn_mode,
-                    robot_id,
-                    Some(user_message_id.as_str()),
-                    &[],
-                    robot_overlay_prompt.as_deref(),
-                );
-                let summary_result = self
-                    .stream_completion(
-                        app_handle,
-                        thread_id,
-                        &base_url,
-                        &api_key,
-                        &model,
-                        &wire_api,
-                        internal_messages,
-                        None,
-                        config.max_output_tokens,
-                        u32::MAX,
-                    )
-                    .await;
-                let summary_text = match summary_result {
-                    Ok(CompletionResult::Message { text, usage }) => {
-                        if let Some(u) = usage {
-                            add_turn_usage(&mut turn_usage, &u);
-                            if let Some(ref recorder) = self.usage_recorder {
-                                recorder.record(&provider_id, &model, thread_id, &u);
-                            }
-                        }
-                        text
-                    }
-                    Ok(CompletionResult::ToolCalls {
-                        preceding_text,
-                        usage,
-                        ..
-                    }) => {
-                        if let Some(u) = usage {
-                            add_turn_usage(&mut turn_usage, &u);
-                            if let Some(ref recorder) = self.usage_recorder {
-                                recorder.record(&provider_id, &model, thread_id, &u);
-                            }
-                        }
-                        preceding_text
-                    }
-                    Err(e) => {
-                        warn!("Final summary LLM call failed: {e}");
-                        String::new()
-                    }
-                };
-                if !summary_text.is_empty() {
-                    let msg = ThreadMessage {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        role: "assistant".to_string(),
-                        content: summary_text,
-                        timestamp: now_secs(),
-                        tool_call_id: None,
-                        tool_name: None,
-                        tool_calls: None,
+                    let history = self.thread_store.get_thread_messages(thread_id).await;
+                    let robot_overlay_prompt = if let Some(state) = robot_progress.as_ref() {
+                        Some(robot_orchestrator.build_overlay_prompt(state)?)
+                    } else {
+                        None
                     };
-                    self.thread_store.add_message(thread_id, msg).await?;
+                    let internal_messages = self.build_internal_messages(
+                        config,
+                        &history,
+                        &effective_cwd,
+                        &turn_mode,
+                        robot_id,
+                        Some(user_message_id.as_str()),
+                        &[],
+                        robot_overlay_prompt.as_deref(),
+                    );
+                    let summary_result = self
+                        .stream_completion(
+                            app_handle,
+                            thread_id,
+                            &base_url,
+                            &api_key,
+                            &model,
+                            &wire_api,
+                            internal_messages,
+                            None,
+                            config.max_output_tokens,
+                            u32::MAX,
+                        )
+                        .await;
+                    let summary_text = match summary_result {
+                        Ok(CompletionResult::Message { text, usage }) => {
+                            llm_call_count = llm_call_count.saturating_add(1);
+                            if let Some(u) = usage {
+                                add_turn_usage(&mut turn_usage, &u);
+                                if let Some(ref recorder) = self.usage_recorder {
+                                    recorder.record(&provider_id, &model, thread_id, &u);
+                                }
+                            }
+                            text
+                        }
+                        Ok(CompletionResult::ToolCalls {
+                            preceding_text,
+                            usage,
+                            ..
+                        }) => {
+                            llm_call_count = llm_call_count.saturating_add(1);
+                            if let Some(u) = usage {
+                                add_turn_usage(&mut turn_usage, &u);
+                                if let Some(ref recorder) = self.usage_recorder {
+                                    recorder.record(&provider_id, &model, thread_id, &u);
+                                }
+                            }
+                            preceding_text
+                        }
+                        Err(e) => {
+                            warn!("Final summary LLM call failed: {e}");
+                            String::new()
+                        }
+                    };
+                    if !summary_text.is_empty() {
+                        let msg = ThreadMessage {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            role: "assistant".to_string(),
+                            content: summary_text,
+                            timestamp: now_secs(),
+                            tool_call_id: None,
+                            tool_name: None,
+                            tool_calls: None,
+                        };
+                        self.thread_store.add_message(thread_id, msg).await?;
+                    }
                 }
             }
-        }
 
-        // Goal continuation: if goal is still Active, inject continuation prompt
-        // and restart the agent loop instead of ending the turn.
-        if turn_mode != "goal" || self.is_cancelled() || prompt_hook_blocked {
-            break 'goal_loop;
-        }
-        let continuation_goal = self
-            .thread_store
-            .get_thread(thread_id)
-            .await
-            .and_then(|t| t.goal);
-        let should_continue = continuation_goal
-            .as_ref()
-            .is_some_and(|g| g.status == ThreadGoalStatus::Active);
-        if !should_continue || goal_continuation_count >= max_goal_continuations {
-            break 'goal_loop;
-        }
-        goal_continuation_count += 1;
-        info!(
-            "Goal continuation {goal_continuation_count}/{max_goal_continuations} for turn {turn_id}"
-        );
-        let continuation_msg = ThreadMessage {
-            id: uuid::Uuid::new_v4().to_string(),
-            role: "system".to_string(),
-            content: build_goal_continuation_prompt(continuation_goal.as_ref().unwrap()),
-            timestamp: now_secs(),
-            tool_call_id: None,
-            tool_name: None,
-            tool_calls: None,
-        };
-        self.thread_store
-            .add_message(thread_id, continuation_msg)
-            .await?;
-        emit_and_broadcast(
-            app_handle,
-            "goal-continuation",
-            serde_json::json!({
-                "threadId": thread_id,
-                "continuation": goal_continuation_count,
-            }),
-        );
-        stop_hooks_satisfied = false;
-        stop_hooks_ran_for_last_stop = false;
-        intent_retries = 0;
-
+            // Goal continuation: if goal is still Active, inject continuation prompt
+            // and restart the agent loop instead of ending the turn.
+            if turn_mode != "goal" || self.is_cancelled() || prompt_hook_blocked {
+                break 'goal_loop;
+            }
+            let continuation_goal = self
+                .thread_store
+                .get_thread(thread_id)
+                .await
+                .and_then(|t| t.goal);
+            let should_continue = continuation_goal
+                .as_ref()
+                .is_some_and(|g| g.status == ThreadGoalStatus::Active);
+            if !should_continue || goal_continuation_count >= max_goal_continuations {
+                break 'goal_loop;
+            }
+            goal_continuation_count += 1;
+            info!(
+                "Goal continuation {goal_continuation_count}/{max_goal_continuations} for turn {turn_id}"
+            );
+            let continuation_msg = ThreadMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: "system".to_string(),
+                content: build_goal_continuation_prompt(continuation_goal.as_ref().unwrap()),
+                timestamp: now_secs(),
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: None,
+            };
+            self.thread_store
+                .add_message(thread_id, continuation_msg)
+                .await?;
+            emit_and_broadcast(
+                app_handle,
+                "goal-continuation",
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "continuation": goal_continuation_count,
+                }),
+            );
+            stop_hooks_satisfied = false;
+            stop_hooks_ran_for_last_stop = false;
+            intent_retries = 0;
         } // end 'goal_loop
 
         info!("Turn {turn_id} completed for thread {thread_id}");
@@ -1239,6 +1263,7 @@ impl AgentEngine {
                 goal_after = Some(paused);
             }
         }
+        turn_usage.call_count = llm_call_count;
         turn_usage.last_single_prompt_tokens = last_prompt_tokens;
         let completed_at = self
             .thread_store
@@ -1288,9 +1313,7 @@ impl AgentEngine {
 
         if mode == "robot-modify" {
             if let Some(rid) = robot_id {
-                if let Some(prompt) =
-                    self.build_robot_modify_prompt(config, effective_cwd, rid)
-                {
+                if let Some(prompt) = self.build_robot_modify_prompt(config, effective_cwd, rid) {
                     return prompt;
                 }
             }
@@ -1529,8 +1552,7 @@ impl AgentEngine {
                 }
                 "plugin" => {
                     let plugin_id = skill.plugin_id.as_deref().unwrap_or("unknown");
-                    plugin_section
-                        .push_str(&format!("- {plugin_id} > {}{desc}\n", skill.id));
+                    plugin_section.push_str(&format!("- {plugin_id} > {}{desc}\n", skill.id));
                 }
                 _ => {}
             }
@@ -1637,8 +1659,7 @@ impl AgentEngine {
         let workspace_config_dir = self.cwd.join("codey");
         let detail = crate::robot_loader::read_robot(&workspace_config_dir, robot_id)?;
 
-        let current_config_json =
-            serde_json::to_string_pretty(&detail.config).unwrap_or_default();
+        let current_config_json = serde_json::to_string_pretty(&detail.config).unwrap_or_default();
 
         let cwd_str = effective_cwd.to_string_lossy();
         let os_info = std::env::consts::OS;
@@ -1662,8 +1683,7 @@ impl AgentEngine {
                 }
                 "plugin" => {
                     let plugin_id = skill.plugin_id.as_deref().unwrap_or("unknown");
-                    plugin_section
-                        .push_str(&format!("- {plugin_id} > {}{desc}\n", skill.id));
+                    plugin_section.push_str(&format!("- {plugin_id} > {}{desc}\n", skill.id));
                 }
                 _ => {}
             }
@@ -1719,7 +1739,6 @@ impl AgentEngine {
              request, modify the configuration above, and call `robot_save`.{user_instructions}"
         ))
     }
-
 }
 
 fn render_plugin_apps_prompt_for_config_dir(config_dir: &Path) -> String {
@@ -1788,12 +1807,7 @@ impl AgentEngine {
         // 主 system prompt：保持 chat/goal 原语义，不在这里嵌入机器人覆盖逻辑。
         messages.push(InternalMessage {
             role: "system".to_string(),
-            content: text_content(self.build_system_prompt(
-                config,
-                effective_cwd,
-                mode,
-                robot_id,
-            )),
+            content: text_content(self.build_system_prompt(config, effective_cwd, mode, robot_id)),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -1833,10 +1847,13 @@ impl AgentEngine {
                 None
             } else if msg.role == "user"
                 && current_user_message_id == Some(msg.id.as_str())
-                && attachments.iter().any(|a| a.mime_type.starts_with("image/"))
+                && attachments
+                    .iter()
+                    .any(|a| a.mime_type.starts_with("image/"))
             {
                 // 只有图片附件需要 multimodal 格式；文档文本已在 content 中持久化
-                let image_attachments: Vec<_> = attachments.iter()
+                let image_attachments: Vec<_> = attachments
+                    .iter()
                     .filter(|a| a.mime_type.starts_with("image/"))
                     .cloned()
                     .collect();
@@ -1961,8 +1978,11 @@ impl AgentEngine {
                         elapsed.as_secs_f64()
                     );
                     if !full_text.is_empty() || !tool_calls.is_empty() {
-                        warn!("Partial content available ({} chars text, {} tool calls), using as result",
-                            full_text.len(), tool_calls.len());
+                        warn!(
+                            "Partial content available ({} chars text, {} tool calls), using as result",
+                            full_text.len(),
+                            tool_calls.len()
+                        );
                         if finish_reason.is_none() {
                             finish_reason = Some("stream_error".to_string());
                         }
@@ -2086,29 +2106,47 @@ impl AgentEngine {
         }
 
         // 当 API 不返回 usage 时，基于文本长度估算 token 数
-        let usage_info = if usage_info.is_none() && (!full_text.is_empty() || !valid_tool_calls.is_empty()) {
+        let usage_info = if usage_info.is_none()
+            && (!full_text.is_empty() || !valid_tool_calls.is_empty())
+        {
             let completion_tokens = estimate_tokens(&full_text)
-                + valid_tool_calls.iter().map(|tc| estimate_tokens(&tc.arguments)).sum::<u64>();
-            let prompt_tokens = messages.iter().map(|m| {
-                let content_len = m.content.as_ref().map(|c| c.to_string().len() as u64).unwrap_or(0);
-                estimate_tokens_from_char_count(content_len)
-            }).sum::<u64>();
+                + valid_tool_calls
+                    .iter()
+                    .map(|tc| estimate_tokens(&tc.arguments))
+                    .sum::<u64>();
+            let prompt_tokens = messages
+                .iter()
+                .map(|m| {
+                    let content_len = m
+                        .content
+                        .as_ref()
+                        .map(|c| c.to_string().len() as u64)
+                        .unwrap_or(0);
+                    estimate_tokens_from_char_count(content_len)
+                })
+                .sum::<u64>();
             let total_tokens = prompt_tokens + completion_tokens;
-            info!("No usage from provider, estimated: prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}");
-            Some(UsageInfo { prompt_tokens, completion_tokens, total_tokens })
+            info!(
+                "No usage from provider, estimated: prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}"
+            );
+            Some(UsageInfo {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            })
         } else {
             usage_info
         };
 
         if let Some(ref logger) = self.conversation_logger {
             let duration_ms = request_start.elapsed().as_millis() as u64;
-            let log_usage = usage_info.as_ref().map(|u| {
-                crate::conversation_logger::LogUsage {
+            let log_usage = usage_info
+                .as_ref()
+                .map(|u| crate::conversation_logger::LogUsage {
                     prompt_tokens: u.prompt_tokens,
                     completion_tokens: u.completion_tokens,
                     total_tokens: u.total_tokens,
-                }
-            });
+                });
             let tc_tuples: Vec<(String, String, String)> = valid_tool_calls
                 .iter()
                 .map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone()))
@@ -2307,7 +2345,11 @@ fn add_turn_usage(total: &mut TurnUsage, usage: &UsageInfo) {
 }
 
 fn nonzero_turn_usage(usage: &TurnUsage) -> Option<TurnUsage> {
-    if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
+    if usage.prompt_tokens == 0
+        && usage.completion_tokens == 0
+        && usage.total_tokens == 0
+        && usage.call_count == 0
+    {
         None
     } else {
         Some(usage.clone())
@@ -2731,6 +2773,9 @@ fn file_changes_from_tool_call(call: &ToolCallRequest) -> Vec<FileChange> {
             .into_iter()
             .collect(),
         "apply_patch" => apply_patch_changes_from_args(&call.arguments),
+        // shell 类工具在非 git 工作区或跨目录写盘时，git 快照可能拿不到变更；
+        // 这里补一层“命令参数级”识别，尽量恢复 RunSummary changedFiles 的可见性。
+        "shell" | "shell_command" | "exec_command" => shell_changes_from_args(&call.arguments),
         _ => Vec::new(),
     }
 }
@@ -2783,6 +2828,214 @@ fn apply_patch_changes_from_args(arguments: &str) -> Vec<FileChange> {
     }
 
     changes
+}
+
+fn shell_changes_from_args(arguments: &str) -> Vec<FileChange> {
+    let Some(command) = shell_command_from_args(arguments) else {
+        return Vec::new();
+    };
+    let tokens = shell_command_tokens(&command);
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let mut changes = Vec::new();
+    for (idx, token) in tokens.iter().enumerate() {
+        let lowered = token.to_ascii_lowercase();
+        match lowered.as_str() {
+            // 明确写盘命令：默认按 modified 上报。
+            "set-content" | "add-content" | "out-file" => {
+                if let Some(path) = shell_flag_value(
+                    &tokens,
+                    idx,
+                    &["-path", "-literalpath", "-filepath"],
+                ) {
+                    push_shell_change(&mut changes, &path, "modified");
+                }
+            }
+            // 删除命令：标记 deleted。
+            "remove-item" | "del" | "erase" | "rm" => {
+                if let Some(path) = shell_flag_value(&tokens, idx, &["-path", "-literalpath"]) {
+                    push_shell_change(&mut changes, &path, "deleted");
+                }
+            }
+            // 移动命令：目标路径视为 renamed。
+            "move-item" | "mv" | "move" => {
+                if let Some(path) =
+                    shell_flag_value(&tokens, idx, &["-destination", "-dest", "-path"])
+                {
+                    push_shell_change(&mut changes, &path, "renamed");
+                }
+            }
+            // 复制命令：目标路径按 modified 处理（新建/覆盖都可归并为可见变更）。
+            "copy-item" | "copy" | "cp" => {
+                if let Some(path) =
+                    shell_flag_value(&tokens, idx, &["-destination", "-dest", "-path"])
+                {
+                    push_shell_change(&mut changes, &path, "modified");
+                }
+            }
+            // 处理显式重定向：`>` / `>>` / `1>` / `1>>` / `2>` / `2>>`。
+            ">" | ">>" | "1>" | "1>>" | "2>" | "2>>" => {
+                if let Some(path) = shell_path_candidate(tokens.get(idx + 1).map(String::as_str)) {
+                    push_shell_change(&mut changes, &path, "modified");
+                }
+            }
+            _ => {
+                // 处理无空格写法：例如 `>D:\a.txt` 或 `1>>out.log`。
+                if let Some(path) = shell_redirection_target(token) {
+                    push_shell_change(&mut changes, &path, "modified");
+                }
+            }
+        }
+    }
+
+    changes
+}
+
+fn shell_command_from_args(arguments: &str) -> Option<String> {
+    let trimmed = arguments.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed.starts_with('{') {
+        return Some(trimmed.to_string());
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if let Some(command) = parsed.get("command") {
+        if let Some(value) = command.as_str() {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        if let Some(array) = command.as_array() {
+            let merged = array
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !merged.trim().is_empty() {
+                return Some(merged);
+            }
+        }
+    }
+
+    parsed
+        .get("cmd")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn shell_command_tokens(command: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+
+    for ch in command.chars() {
+        match quote {
+            Some(marker) => {
+                if ch == marker {
+                    quote = None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            None => {
+                if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                    continue;
+                }
+                if ch.is_whitespace() {
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                    continue;
+                }
+                current.push(ch);
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn shell_flag_value(tokens: &[String], start_idx: usize, flags: &[&str]) -> Option<String> {
+    let mut idx = start_idx + 1;
+    while idx < tokens.len() {
+        let lowered = tokens[idx].to_ascii_lowercase();
+        if lowered == "|" || lowered == ";" {
+            break;
+        }
+
+        if flags.iter().any(|flag| *flag == lowered.as_str()) {
+            return shell_path_candidate(tokens.get(idx + 1).map(String::as_str));
+        }
+
+        if let Some((flag, value)) = tokens[idx].split_once('=') {
+            let lowered_flag = flag.to_ascii_lowercase();
+            if flags.iter().any(|item| *item == lowered_flag.as_str()) {
+                return shell_path_candidate(Some(value));
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn shell_redirection_target(token: &str) -> Option<String> {
+    const PREFIXES: [&str; 6] = ["1>>", "1>", "2>>", "2>", ">>", ">"];
+    for prefix in PREFIXES {
+        if let Some(rest) = token.strip_prefix(prefix) {
+            return shell_path_candidate(Some(rest));
+        }
+    }
+    None
+}
+
+fn shell_path_candidate(raw: Option<&str>) -> Option<String> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // 过滤变量/参数位占位，避免把 `$path`、`-Force` 这类值当成文件。
+    if raw.starts_with('$') || raw.starts_with('-') {
+        return None;
+    }
+
+    let trimmed = raw
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+        .trim_end_matches(|c: char| matches!(c, ';' | ',' | ')' | '('))
+        .trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.replace('\\', "/"))
+}
+
+fn push_shell_change(changes: &mut Vec<FileChange>, path: &str, action: &str) {
+    if path.trim().is_empty() {
+        return;
+    }
+
+    if let Some(existing) = changes
+        .iter_mut()
+        .find(|item| paths_match(&item.path, path))
+    {
+        existing.action = action.to_string();
+        return;
+    }
+
+    changes.push(FileChange {
+        path: path.to_string(),
+        action: action.to_string(),
+    });
 }
 
 fn patch_body_from_tool_args(arguments: &str) -> Option<String> {
@@ -2852,7 +3105,10 @@ fn push_file_change(changes: &mut Vec<FileChange>, change: FileChange) {
         return;
     }
 
-    if let Some(existing) = changes.iter_mut().find(|item| paths_match(&item.path, &change.path)) {
+    if let Some(existing) = changes
+        .iter_mut()
+        .find(|item| paths_match(&item.path, &change.path))
+    {
         existing.action = change.action;
         return;
     }
@@ -3099,6 +3355,46 @@ mod tests {
     }
 
     #[test]
+    fn file_changes_from_shell_tool_call_detects_set_content_write() {
+        let call = ToolCallRequest {
+            id: "call-shell-write".to_string(),
+            name: "shell".to_string(),
+            arguments: serde_json::json!({
+                "command": "Set-Content -Path 'D:\\cncodetest\\index.html' -Value '<title>BBB</title>'"
+            })
+            .to_string(),
+        };
+
+        assert_eq!(
+            file_changes_from_tool_call(&call),
+            vec![FileChange {
+                path: "D:/cncodetest/index.html".to_string(),
+                action: "modified".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn file_changes_from_shell_tool_call_detects_redirection_target() {
+        let call = ToolCallRequest {
+            id: "call-shell-redirect".to_string(),
+            name: "shell".to_string(),
+            arguments: serde_json::json!({
+                "command": "echo hello > D:\\cncodetest\\output.txt"
+            })
+            .to_string(),
+        };
+
+        assert_eq!(
+            file_changes_from_tool_call(&call),
+            vec![FileChange {
+                path: "D:/cncodetest/output.txt".to_string(),
+                action: "modified".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn multimodal_user_content_keeps_images_as_data_urls() {
         let content = multimodal_user_content(
             "What is in this image?",
@@ -3140,6 +3436,18 @@ mod tests {
         assert!(turn_budget_limited(Some(999), &usage));
         assert!(!turn_budget_limited(Some(1_001), &usage));
         assert!(!turn_budget_limited(None, &usage));
+    }
+
+    #[test]
+    fn nonzero_turn_usage_keeps_call_count_when_tokens_are_zero() {
+        let usage = TurnUsage {
+            call_count: 2,
+            ..Default::default()
+        };
+        let normalized =
+            nonzero_turn_usage(&usage).expect("call_count should keep usage non-empty");
+        assert_eq!(normalized.call_count, 2);
+        assert_eq!(normalized.total_tokens, 0);
     }
 
     #[test]

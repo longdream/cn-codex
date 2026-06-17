@@ -24,6 +24,15 @@ export default defineConfig(async () => ({
     include: ["src/**/*.test.{ts,tsx}"],
   },
   clearScreen: false,
+  build: {
+    // 多页面构建：主窗使用 index.html，独立文档详情窗使用 detail.html。
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        detail: path.resolve(__dirname, "detail.html"),
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

@@ -16,8 +16,14 @@ pub const ROBOT_NODE_DONE_SENTINEL: &str = "<workflow_node_done/>";
 /// - Completed: 全部节点完成，机器人运行态已清理。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeProgressResult {
-    ContinueCurrent { state: ThreadRobotState, nudge: String },
-    Advanced { state: ThreadRobotState, nudge: String },
+    ContinueCurrent {
+        state: ThreadRobotState,
+        nudge: String,
+    },
+    Advanced {
+        state: ThreadRobotState,
+        nudge: String,
+    },
     Completed,
 }
 
@@ -248,8 +254,10 @@ impl RobotOrchestrator {
         }
 
         if !node_done_signal {
-            let nudge =
-                build_robot_node_completion_nudge(state.current_node_index, state.runtime_nodes.len());
+            let nudge = build_robot_node_completion_nudge(
+                state.current_node_index,
+                state.runtime_nodes.len(),
+            );
             return Ok(NodeProgressResult::ContinueCurrent { state, nudge });
         }
 
@@ -273,7 +281,8 @@ impl RobotOrchestrator {
         self.bind_goal_to_current_node(thread_store, thread_id, &state)
             .await?;
 
-        let nudge = build_robot_node_advance_prompt(state.current_node_index, state.runtime_nodes.len());
+        let nudge =
+            build_robot_node_advance_prompt(state.current_node_index, state.runtime_nodes.len());
         Ok(NodeProgressResult::Advanced { state, nudge })
     }
 
@@ -289,7 +298,9 @@ impl RobotOrchestrator {
             .runtime_nodes
             .get(state.current_node_index)
             .cloned()
-            .ok_or_else(|| AppError::Custom("Current robot node objective is missing".to_string()))?;
+            .ok_or_else(|| {
+                AppError::Custom("Current robot node objective is missing".to_string())
+            })?;
 
         let has_goal = thread_store
             .get_thread(thread_id)

@@ -22,6 +22,7 @@ import {
   IconTerminal2,
 } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileReviewApply, fileReviewCancel, fileReviewUpdate } from "../../api/fileReview";
 import { revealInExplorer } from "../../api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
@@ -223,7 +224,7 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
         <span className="font-mono text-[0.95em]">{formatDuration(summary.durationMs)}</span>
         {usage && (
           <span className="font-mono text-[0.95em]">
-            {formatTokenCount(usage.totalTokens)} tokens
+            {formatTokenCount(usage.callCount ?? 0)} calls / {formatTokenCount(usage.totalTokens)} tokens
           </span>
         )}
         {goalBudgetTokens && (
@@ -268,7 +269,10 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
               <button
                 type="button"
                 className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--accent)]"
-                onClick={(e) => { e.stopPropagation(); void revealInExplorer(toAbsolutePath(file.path, workspaceCwd)); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void revealInExplorer(toAbsolutePath(file.path, workspaceCwd));
+                }}
                 title={intl.formatMessage({ id: "chat.runSummary.revealFile" })}
               >
                 <IconExternalLink size={15} stroke={1.8} />
@@ -281,7 +285,6 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
           </div>
         )}
       </div>
-
     </section>
   );
 }
@@ -990,6 +993,7 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
               {patch.slice(0, 800)}{patch.length > 800 ? "..." : ""}
             </pre>
           )}
+          <PatchReviewPanel toolId={item.id} />
         </div>
       )}
       {item.name === "list_directory" && path && (
@@ -1495,6 +1499,205 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
             {item.output}
           </pre>
         </div>
+      )}
+    </div>
+  );
+}
+
+function PatchReviewPanel({ toolId }: { toolId: string }) {
+  const review = useAppStore((state) => state.pendingFileReviews[toolId]);
+  const setSelectedPath = useAppStore((state) => state.setPendingFileReviewSelectedPath);
+  const setFileKeep = useAppStore((state) => state.setPendingFileReviewFileKeep);
+  const setKeepAll = useAppStore((state) => state.setPendingFileReviewKeepAll);
+  const setEditedContent = useAppStore((state) => state.setPendingFileReviewEditedContent);
+  const setReviewStatus = useAppStore((state) => state.setPendingFileReviewStatus);
+  const removeReview = useAppStore((state) => state.removePendingFileReview);
+  const [requestError, setRequestError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setRequestError(review?.error ?? null);
+  }, [review?.error]);
+
+  if (!review) {
+    return null;
+  }
+
+  const selectedPath = review.selectedPath ?? review.files[0]?.path ?? null;
+  const selectedFile = selectedPath
+    ? review.files.find((file) => file.path === selectedPath) ?? review.files[0]
+    : review.files[0];
+  const keepCount = review.files.filter((file) => file.keep).length;
+  const applying = review.status === "applying";
+
+  const handleApply = useCallback(async () => {
+    if (!review) {
+      return;
+    }
+    if (review.files.filter((file) => file.keep).length === 0) {
+      setRequestError("请至少选择一个 Keep 文件。");
+      return;
+    }
+    setRequestError(null);
+    setReviewStatus(toolId, "applying");
+    try {
+      // 先把本地编辑过的内容回写到后端审阅缓存，再执行最终应用。
+      // 这样可以保证 apply 阶段只负责“写盘决策”，不会丢失前端编辑结果。
+      for (const file of review.files) {
+        if (file.action === "deleted") {
+          continue;
+        }
+        const candidate = file.candidateContent ?? "";
+        const edited = file.editedContent ?? candidate;
+        if (edited !== candidate) {
+          await fileReviewUpdate(
+            review.threadId,
+            review.callId,
+            file.path,
+            undefined,
+            edited,
+          );
+        }
+      }
+      await fileReviewApply(
+        review.threadId,
+        review.callId,
+        review.keepAll,
+        review.files.filter((file) => file.keep).map((file) => file.path),
+      );
+      removeReview(toolId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setReviewStatus(toolId, "failed", message);
+      setRequestError(message);
+    }
+  }, [review, removeReview, setReviewStatus, toolId]);
+
+  const handleCancel = useCallback(async () => {
+    if (!review || applying) {
+      return;
+    }
+    setRequestError(null);
+    try {
+      await fileReviewCancel(review.threadId, review.callId);
+      removeReview(toolId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setReviewStatus(toolId, "failed", message);
+      setRequestError(message);
+    }
+  }, [applying, review, removeReview, setReviewStatus, toolId]);
+
+  const selectedAfterContent = selectedFile?.editedContent ?? selectedFile?.candidateContent ?? "";
+  const selectedBeforeContent = selectedFile?.baseContent ?? "";
+
+  return (
+    <div className="patch-review-panel mt-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] text-[var(--chat-muted)]">
+          变更待审阅（写盘前） · {keepCount}/{review.files.length} Keep
+        </div>
+        <label className="flex items-center gap-1.5 text-[11px] text-[var(--chat-muted)]">
+          <input
+            type="checkbox"
+            checked={review.keepAll}
+            disabled={applying || review.files.length === 0}
+            onChange={(e) => setKeepAll(toolId, e.target.checked)}
+          />
+          Keep All
+        </label>
+      </div>
+
+      <div className="mt-2 grid gap-2 md:grid-cols-[220px_minmax(0,1fr)]">
+        <div className="patch-review-file-list thin-scrollbar max-h-[240px] overflow-auto rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-paper)] p-1.5">
+          {review.files.map((file) => (
+            <button
+              key={`${file.path}:${file.moveTo ?? ""}`}
+              type="button"
+              className={`patch-review-file-item w-full text-left ${
+                selectedPath === file.path ? "is-selected" : ""
+              }`}
+              onClick={() => setSelectedPath(toolId, file.path)}
+            >
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={file.keep}
+                  disabled={applying}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    setFileKeep(toolId, file.path, e.target.checked);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <span className="rounded-[var(--radius-sm)] bg-[var(--chat-chip)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--chat-muted)]">
+                  {patchActionLabel(file.action)}
+                </span>
+              </div>
+              <div className="mt-1 truncate font-mono text-[11px] text-[var(--chat-prose)]" title={file.path}>
+                {file.moveTo ? `${file.path} -> ${file.moveTo}` : file.path}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          {selectedFile ? (
+            <div className="grid gap-2 md:grid-cols-2">
+              <div>
+                <div className="mb-1 text-[11px] text-[var(--chat-muted)]">Before</div>
+                <pre className="chat-tool-output thin-scrollbar max-h-[220px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]">
+                  {selectedFile.action === "created" ? "(new file)" : selectedBeforeContent || "(empty)"}
+                </pre>
+              </div>
+              <div>
+                <div className="mb-1 text-[11px] text-[var(--chat-muted)]">After</div>
+                {selectedFile.action === "deleted" ? (
+                  <pre className="chat-tool-output thin-scrollbar max-h-[220px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]">
+                    (will be deleted)
+                  </pre>
+                ) : (
+                  <textarea
+                    className="patch-review-editor thin-scrollbar h-[220px] w-full rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-paper)] px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]"
+                    value={selectedAfterContent}
+                    disabled={applying}
+                    onChange={(e) =>
+                      setEditedContent(toolId, selectedFile.path, e.target.value)
+                    }
+                  />
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="chat-tool-output px-2.5 py-2 text-[11px] text-[var(--chat-muted)]">
+              暂无可审阅文件。
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-2 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          className="secondary-button rounded-[var(--radius-sm)] px-2.5 py-1.5 text-[11px]"
+          disabled={applying}
+          onClick={() => void handleCancel()}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="primary-button rounded-[var(--radius-sm)] px-2.5 py-1.5 text-[11px]"
+          disabled={applying || keepCount === 0}
+          onClick={() => void handleApply()}
+        >
+          {applying ? "Applying..." : "Apply"}
+        </button>
+      </div>
+
+      {requestError && (
+        <p className="mt-2 rounded-[var(--radius-sm)] bg-[var(--danger-soft)] px-2.5 py-1.5 text-[11px] text-[var(--danger)]">
+          {requestError}
+        </p>
       )}
     </div>
   );

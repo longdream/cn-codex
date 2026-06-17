@@ -1,0 +1,582 @@
+import {
+  IconArrowBackUp,
+  IconCheck,
+  IconDeviceFloppy,
+  IconFileCode,
+  IconMessagePlus,
+  IconX,
+} from "@tabler/icons-react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
+import {
+  documentDetailInsertSnippet,
+  readTextFilePreview,
+  windowCloseDocumentDetail,
+  windowGetDocumentDetailPath,
+  windowMinimize,
+  writeTextFilePreview,
+  type TextFilePreviewResult,
+} from "../../api/window";
+import { formatCodeSnippet } from "../../utils/formatCodeSnippet";
+
+interface SelectionMeta {
+  text: string;
+  startLine: number;
+  endLine: number;
+  lineCount: number;
+}
+
+interface FloatingPosition {
+  left: number;
+  top: number;
+}
+
+type NoticeKind = "success" | "error" | "info";
+
+function lineOfOffset(source: string, offset: number): number {
+  let line = 1;
+  for (let i = 0; i < offset && i < source.length; i += 1) {
+    if (source[i] === "\n") {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+function fileLanguage(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  switch (ext) {
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "js":
+    case "jsx":
+    case "mjs":
+    case "cjs":
+      return "javascript";
+    case "css":
+    case "scss":
+    case "less":
+      return "css";
+    case "html":
+    case "htm":
+      return "html";
+    case "json":
+    case "jsonc":
+      return "json";
+    case "md":
+    case "mdx":
+      return "markdown";
+    case "rs":
+      return "rust";
+    case "py":
+      return "python";
+    case "go":
+      return "go";
+    case "toml":
+      return "toml";
+    case "yaml":
+    case "yml":
+      return "yaml";
+    case "sh":
+    case "bash":
+    case "zsh":
+      return "bash";
+    default:
+      return ext || "text";
+  }
+}
+
+function resolveSelectionMeta(source: string, start: number, end: number): SelectionMeta | null {
+  if (end <= start) {
+    return null;
+  }
+  const safeStart = Math.max(0, Math.min(start, source.length));
+  const safeEnd = Math.max(safeStart, Math.min(end, source.length));
+  const selectedText = source.slice(safeStart, safeEnd);
+  if (!selectedText.trim()) {
+    return null;
+  }
+  const startLine = lineOfOffset(source, safeStart);
+  // 结束行按“最后一个选中文本字符”定位，避免选区末尾是换行时多算一行。
+  const endLine = lineOfOffset(source, Math.max(safeStart, safeEnd - 1));
+  return {
+    text: selectedText,
+    startLine,
+    endLine,
+    lineCount: endLine - startLine + 1,
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function measureTextareaCaretPosition(
+  textarea: HTMLTextAreaElement,
+  position: number,
+): FloatingPosition | null {
+  const style = window.getComputedStyle(textarea);
+  const mirror = document.createElement("div");
+  // 复制关键样式构建“镜像排版容器”，用于计算文本光标像素位置。
+  const mirroredProps = [
+    "boxSizing",
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "fontStyle",
+    "letterSpacing",
+    "lineHeight",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "borderTopWidth",
+    "borderRightWidth",
+    "borderBottomWidth",
+    "borderLeftWidth",
+    "textTransform",
+    "textIndent",
+    "textDecoration",
+    "tabSize",
+    "whiteSpace",
+    "wordBreak",
+    "overflowWrap",
+  ] as const;
+  mirroredProps.forEach((prop) => {
+    mirror.style[prop] = style[prop];
+  });
+  mirror.style.position = "fixed";
+  mirror.style.visibility = "hidden";
+  mirror.style.left = "-99999px";
+  mirror.style.top = "0";
+  mirror.style.width = `${textarea.clientWidth}px`;
+  const noWrap = textarea.wrap === "off";
+  mirror.style.whiteSpace = noWrap ? "pre" : "pre-wrap";
+  mirror.style.wordBreak = noWrap ? "normal" : "break-word";
+  mirror.style.overflow = "hidden";
+
+  const contentBeforeCaret = textarea.value.slice(0, position);
+  const contentAfterCaret = textarea.value.slice(position);
+  mirror.textContent = contentBeforeCaret;
+  const marker = document.createElement("span");
+  marker.textContent = contentAfterCaret[0] ?? " ";
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+
+  const markerRect = marker.getBoundingClientRect();
+  const mirrorRect = mirror.getBoundingClientRect();
+  const textareaRect = textarea.getBoundingClientRect();
+  const caretLeft =
+    textareaRect.left + (markerRect.left - mirrorRect.left) - textarea.scrollLeft;
+  const caretTop = textareaRect.top + (markerRect.top - mirrorRect.top) - textarea.scrollTop;
+
+  document.body.removeChild(mirror);
+  return { left: caretLeft, top: caretTop };
+}
+
+function runWindowAction(action: () => Promise<void>, label: string): void {
+  const onError = (err: unknown) => {
+    console.error(`Document detail window ${label} failed:`, err);
+  };
+  try {
+    void action().catch(onError);
+  } catch (err) {
+    onError(err);
+  }
+}
+
+export function DocumentDetailWindow() {
+  const [activePath, setActivePath] = useState<string | null>(null);
+  const [preview, setPreview] = useState<TextFilePreviewResult | null>(null);
+  const [draftContent, setDraftContent] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectionMeta, setSelectionMeta] = useState<SelectionMeta | null>(null);
+  const [floatingPos, setFloatingPos] = useState<FloatingPosition | null>(null);
+  const [notice, setNotice] = useState<{ kind: NoticeKind; text: string } | null>(null);
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const highlightContentRef = useRef<HTMLDivElement>(null);
+  const isDirty = useMemo(
+    () => Boolean(preview && draftContent !== preview.content),
+    [preview, draftContent],
+  );
+  const languageLabel = useMemo(
+    () => (preview ? fileLanguage(preview.name) : "text"),
+    [preview],
+  );
+  const highlightedCodeMarkdown = useMemo(() => {
+    if (!preview) {
+      return "";
+    }
+    return `\`\`\`${languageLabel}\n${draftContent}\n\`\`\``;
+  }, [preview, draftContent, languageLabel]);
+
+  const syncHighlightScroll = useCallback(() => {
+    const textarea = textareaRef.current;
+    const highlightContent = highlightContentRef.current;
+    if (!textarea || !highlightContent) {
+      return;
+    }
+    // 将高亮层按 textarea 当前滚动量做反向位移，
+    // 这样只保留一个可编辑区，同时维持“语法样式跟随编辑”。
+    highlightContent.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
+  }, []);
+
+  const syncSelection = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setSelectionMeta(null);
+      setFloatingPos(null);
+      return;
+    }
+
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? 0;
+    const meta = resolveSelectionMeta(draftContent, start, end);
+    setSelectionMeta(meta);
+    if (!meta) {
+      setFloatingPos(null);
+      return;
+    }
+
+    const caretPos = measureTextareaCaretPosition(textarea, end);
+    if (!caretPos) {
+      setFloatingPos(null);
+      return;
+    }
+    // 按“选区右下角附近”放置浮动按钮，并做边界收敛，避免被窗口裁切。
+    setFloatingPos({
+      left: clamp(caretPos.left + 10, 12, window.innerWidth - 170),
+      top: clamp(caretPos.top + 24, 12, window.innerHeight - 48),
+    });
+  }, [draftContent]);
+
+  const loadPreview = useCallback(async (path: string) => {
+    setLoading(true);
+    setLoadError(null);
+    setNotice(null);
+    try {
+      const result = await readTextFilePreview(path);
+      setPreview(result);
+      setDraftContent(result.content);
+      setSelectionMeta(null);
+      setFloatingPos(null);
+    } catch (err) {
+      setPreview(null);
+      setDraftContent("");
+      setSelectionMeta(null);
+      setFloatingPos(null);
+      setLoadError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (!preview) return;
+    if (preview.truncated) {
+      setNotice({
+        kind: "error",
+        text: "当前文件超过预览上限，禁止直接覆盖保存，请改用外部编辑器处理。",
+      });
+      return;
+    }
+
+    setSaving(true);
+    setNotice(null);
+    try {
+      const saved = await writeTextFilePreview(preview.path, draftContent);
+      setPreview((prev) =>
+        prev
+          ? {
+              ...prev,
+              content: draftContent,
+              size: saved.size,
+              truncated: false,
+            }
+          : prev,
+      );
+      setNotice({ kind: "success", text: `已保存到原文件（${saved.size} bytes）` });
+    } catch (err) {
+      setNotice({ kind: "error", text: `保存失败：${String(err)}` });
+    } finally {
+      setSaving(false);
+    }
+  }, [preview, draftContent]);
+
+  const handleInsertSelection = useCallback(async () => {
+    if (!preview || !selectionMeta) return;
+    const snippet = formatCodeSnippet({
+      path: preview.path,
+      startLine: selectionMeta.startLine,
+      endLine: selectionMeta.endLine,
+      language: fileLanguage(preview.name),
+      content: selectionMeta.text,
+    });
+    try {
+      await documentDetailInsertSnippet(snippet.text);
+      setNotice({
+        kind: "success",
+        text: snippet.truncated
+          ? `已插入 ${selectionMeta.lineCount} 行（内容过长已截断）`
+          : `已插入 ${selectionMeta.lineCount} 行到主对话输入框`,
+      });
+    } catch (err) {
+      setNotice({ kind: "error", text: `插入失败：${String(err)}` });
+    }
+  }, [preview, selectionMeta]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void windowGetDocumentDetailPath().then((path) => {
+      if (cancelled) return;
+      setActivePath(path ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activePath) {
+      setPreview(null);
+      setDraftContent("");
+      setSelectionMeta(null);
+      setFloatingPos(null);
+      return;
+    }
+    void loadPreview(activePath);
+  }, [activePath, loadPreview]);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    void listen<{ path?: string }>(`document-detail-open`, (event) => {
+      const nextPath = event.payload?.path?.trim();
+      if (!nextPath) return;
+      setActivePath(nextPath);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) {
+        void unlisten();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectionMeta) {
+      return;
+    }
+    const handleWindowResize = () => {
+      syncSelection();
+    };
+    window.addEventListener("resize", handleWindowResize);
+    const textarea = textareaRef.current;
+    const handleTextareaScroll = () => {
+      syncSelection();
+      syncHighlightScroll();
+    };
+    textarea?.addEventListener("scroll", handleTextareaScroll);
+    return () => {
+      window.removeEventListener("resize", handleWindowResize);
+      textarea?.removeEventListener("scroll", handleTextareaScroll);
+    };
+  }, [selectionMeta, syncHighlightScroll, syncSelection]);
+
+  useEffect(() => {
+    // 切换文件后重置滚动位移，避免新文件沿用旧文件滚动位置导致“样式错位”。
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.scrollTop = 0;
+    textarea.scrollLeft = 0;
+    syncHighlightScroll();
+  }, [preview?.path, syncHighlightScroll]);
+
+  const canSave = Boolean(preview) && !saving && !loading && isDirty && !preview?.truncated;
+
+  return (
+    <div className="flex h-dvh w-screen flex-col bg-[var(--surface-panel)] text-[var(--text-base)]">
+      <div className="flex h-9 items-center border-b border-[var(--border-subtle)] bg-[var(--surface-sidebar)]">
+        <div
+          data-tauri-drag-region
+          className="flex min-w-0 flex-1 items-center gap-2 px-3"
+        >
+          <IconFileCode size={14} stroke={1.8} className="text-[var(--accent)]" />
+          <span className="truncate text-[12px] text-[var(--text-strong)]">
+            {preview?.name ?? "文档详情"}
+          </span>
+          {isDirty && (
+            <span className="rounded-full border border-[var(--warning)]/40 bg-[var(--warning)]/12 px-2 py-0.5 text-[10px] text-[var(--warning)]">
+              未保存
+            </span>
+          )}
+        </div>
+        <div className="flex h-full items-center">
+          <button
+            type="button"
+            disabled={!canSave}
+            onClick={() => void handleSave()}
+            className="flex h-full items-center gap-1 px-3 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-45"
+            title={preview?.truncated ? "文件超过预览上限，已禁用保存" : "保存回原文件"}
+          >
+            <IconDeviceFloppy size={13} stroke={1.8} />
+            保存
+          </button>
+          <button
+            type="button"
+            onClick={() => runWindowAction(windowMinimize, "minimize")}
+            className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)]"
+            title="最小化"
+          >
+            <svg width="10" height="1" viewBox="0 0 10 1" fill="currentColor">
+              <rect width="10" height="1" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              runWindowAction(windowCloseDocumentDetail, "close document detail")
+            }
+            className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[#e81123] hover:text-white"
+            title="关闭"
+          >
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 10 10"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.2"
+            >
+              <line x1="0" y1="0" x2="10" y2="10" />
+              <line x1="10" y1="0" x2="0" y2="10" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div className="border-b border-[var(--border-subtle)] bg-[var(--surface-main)] px-3 py-2">
+        <div className="truncate font-mono text-[11px] text-[var(--text-faint)]">
+          {preview?.path ?? activePath ?? "请在主窗文件树中打开一个文件"}
+        </div>
+      </div>
+
+      {notice && (
+        <div
+          className={`mx-3 mt-3 flex items-center gap-2 rounded-[var(--radius-sm)] border px-2 py-1.5 text-[11px] ${
+            notice.kind === "success"
+              ? "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+              : notice.kind === "error"
+                ? "border-[var(--danger)]/35 bg-[var(--danger-soft)] text-[var(--danger)]"
+                : "border-[var(--border-subtle)] bg-[var(--surface-soft)] text-[var(--text-muted)]"
+          }`}
+        >
+          {notice.kind === "success" ? (
+            <IconCheck size={13} stroke={1.8} />
+          ) : notice.kind === "error" ? (
+            <IconX size={13} stroke={1.8} />
+          ) : (
+            <IconArrowBackUp size={13} stroke={1.8} />
+          )}
+          <span className="truncate">{notice.text}</span>
+        </div>
+      )}
+
+      <div className="relative min-h-0 flex-1 p-3">
+        {loading ? (
+          <div className="flex h-full items-center justify-center text-sm text-[var(--text-faint)]">
+            正在加载文件内容...
+          </div>
+        ) : loadError ? (
+          <div className="thin-scrollbar h-full overflow-auto rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] p-3 text-sm text-[var(--danger)]">
+            {loadError}
+          </div>
+        ) : preview ? (
+          <>
+            {preview.truncated && (
+              <div className="mb-2 rounded-[var(--radius-sm)] border border-[var(--warning)]/35 bg-[var(--warning)]/12 px-3 py-2 text-[11px] text-[var(--warning)]">
+                文件超过 512KB，仅加载前半部分；为避免误覆盖，当前窗口禁用保存。
+              </div>
+            )}
+            <div className="detail-code-shell">
+              <div className="flex items-center justify-between border-b border-[var(--chat-line)] px-3 py-1.5">
+                <span className="text-[11px] text-[var(--chat-faint)]">代码预览（可编辑）</span>
+                <span className="font-mono text-[11px] text-[var(--chat-faint)]">
+                  {languageLabel}
+                </span>
+              </div>
+              <div className="detail-code-editor-layer">
+                <div className="detail-code-highlight-layer">
+                  <div ref={highlightContentRef} className="detail-code-highlight-content">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      rehypePlugins={[rehypeHighlight]}
+                      components={{
+                        pre(props) {
+                          return (
+                            <pre className="m-0 overflow-visible bg-transparent p-0">
+                              {props.children}
+                            </pre>
+                          );
+                        },
+                        code(props) {
+                          const { className, children } = props;
+                          return (
+                            <code className={`hljs ${className ?? ""}`.trim()}>
+                              {children}
+                            </code>
+                          );
+                        },
+                      }}
+                    >
+                      {highlightedCodeMarkdown}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+                <textarea
+                  ref={textareaRef}
+                  value={draftContent}
+                  onChange={(event) => {
+                    setDraftContent(event.target.value);
+                  }}
+                  onMouseUp={syncSelection}
+                  onKeyUp={syncSelection}
+                  onSelect={syncSelection}
+                  onScroll={syncHighlightScroll}
+                  spellCheck={false}
+                  wrap="off"
+                  className="detail-code-textarea thin-scrollbar"
+                />
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="flex h-full items-center justify-center text-sm text-[var(--text-faint)]">
+            等待打开文件...
+          </div>
+        )}
+      </div>
+
+      {selectionMeta && floatingPos && (
+        <button
+          type="button"
+          onClick={() => void handleInsertSelection()}
+          className="fixed z-[999] inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-2 py-1 text-[11px] text-[var(--accent-strong)] shadow-[var(--shadow-soft)] transition-colors hover:bg-[var(--surface-elevated)]"
+          style={{ left: `${floatingPos.left}px`, top: `${floatingPos.top}px` }}
+        >
+          <IconMessagePlus size={13} stroke={1.8} />
+          插入对话
+        </button>
+      )}
+    </div>
+  );
+}

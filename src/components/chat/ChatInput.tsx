@@ -109,9 +109,11 @@ export function ChatInput({
   const initialized = useAppStore((s) => s.initialized);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const attachedFiles = useAppStore((s) => s.attachedFiles);
+  const pendingComposerInsert = useAppStore((s) => s.pendingComposerInsert);
   const currentGoal = useAppStore((s) => s.currentGoal);
   const autoApprove = useAppStore((s) => s.autoApprove);
   const setAutoApprove = useAppStore((s) => s.setAutoApprove);
+  const consumeComposerInsert = useAppStore((s) => s.consumeComposerInsert);
   const selectedRobotId = useAppStore((s) => s.selectedRobotId);
   const robotCreateMode = useAppStore((s) => s.robotCreateMode);
   const setSelectedRobotId = useAppStore((s) => s.setSelectedRobotId);
@@ -168,6 +170,26 @@ export function ChatInput({
       setRobotModifyMode(false);
     }
   }, [robots, selectedRobotId, setSelectedRobotId]);
+
+  useEffect(() => {
+    if (!pendingComposerInsert) {
+      return;
+    }
+    // 预览面板把代码片段投递到 store 后，这里统一并入输入框并恢复焦点。
+    const payload = consumeComposerInsert();
+    if (!payload) {
+      return;
+    }
+    setText((prev) => (prev.trim().length > 0 ? `${prev}\n\n${payload}` : payload));
+    setShowSlash(false);
+    requestAnimationFrame(() => {
+      const element = textareaRef.current;
+      if (!element) return;
+      element.focus();
+      element.style.height = "auto";
+      element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+    });
+  }, [consumeComposerInsert, pendingComposerInsert]);
 
   const setMode = useCallback((nextMode: ChatMode) => {
     useAppStore.getState().setChatMode(nextMode);

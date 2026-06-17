@@ -1,7 +1,10 @@
 use std::time::Instant;
 use tracing::info;
 
-use crate::adapter::{self, types::{InternalMessage, text_content, StreamEvent}};
+use crate::adapter::{
+    self,
+    types::{InternalMessage, StreamEvent, text_content},
+};
 use crate::config_system::ConfigToml;
 use crate::error::{AppError, AppResult};
 use crate::thread_store::{ThreadMessage, ThreadStore};
@@ -41,7 +44,9 @@ pub fn compact_threshold(config: &ConfigToml) -> u64 {
             return limit as u64;
         }
     }
-    let context_window = config.model_context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW);
+    let context_window = config
+        .model_context_window
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
     ((context_window * COMPACT_THRESHOLD_PERCENT) / 100) as u64
 }
 
@@ -69,10 +74,7 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
-pub fn build_compacted_history(
-    user_messages: &[String],
-    summary_text: &str,
-) -> Vec<ThreadMessage> {
+pub fn build_compacted_history(user_messages: &[String], summary_text: &str) -> Vec<ThreadMessage> {
     let mut selected: Vec<String> = Vec::new();
     let mut remaining = COMPACT_USER_MESSAGE_MAX_TOKENS;
 
@@ -154,7 +156,9 @@ pub async fn run_compaction(
 
     messages.push(InternalMessage {
         role: "system".to_string(),
-        content: text_content("You are a helpful assistant. Summarize the conversation history.".to_string()),
+        content: text_content(
+            "You are a helpful assistant. Summarize the conversation history.".to_string(),
+        ),
         tool_calls: None,
         tool_call_id: None,
         name: None,
@@ -186,9 +190,10 @@ pub async fn run_compaction(
     let headers = adapter.build_headers(api_key);
     let body = adapter.build_body(model, &messages, None, config.max_output_tokens);
 
-    let input_chars: usize = messages.iter().map(|m| {
-        m.content.as_ref().map(|c| c.to_string().len()).unwrap_or(0)
-    }).sum();
+    let input_chars: usize = messages
+        .iter()
+        .map(|m| m.content.as_ref().map(|c| c.to_string().len()).unwrap_or(0))
+        .sum();
     let estimated_input_tokens = input_chars / 3;
     info!(
         "Compaction LLM request: url={url}, model={model}, history_msgs={}, estimated_input_tokens={estimated_input_tokens}",
@@ -216,9 +221,7 @@ pub async fn run_compaction(
 
     use futures_util::StreamExt;
     let mut buffer = String::new();
-    let cancelled = |flag: Option<&Arc<AtomicBool>>| {
-        flag.is_some_and(|f| f.load(Ordering::SeqCst))
-    };
+    let cancelled = |flag: Option<&Arc<AtomicBool>>| flag.is_some_and(|f| f.load(Ordering::SeqCst));
 
     while let Some(chunk) = stream.next().await {
         if cancelled(cancel_flag) {
@@ -268,7 +271,9 @@ pub async fn run_compaction(
         "threadId": thread_id,
         "summaryLength": summary_text.len(),
     });
-    app_handle.emit("context-compacted", compacted_payload.clone()).ok();
+    app_handle
+        .emit("context-compacted", compacted_payload.clone())
+        .ok();
     crate::mobile_server::broadcast("context-compacted", compacted_payload);
 
     info!("Context compaction applied for thread {thread_id}");

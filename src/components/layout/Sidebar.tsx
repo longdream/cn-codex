@@ -44,6 +44,7 @@ export function Sidebar() {
   const createThread = useAppStore((s) => s.createThread);
   const loadThread = useAppStore((s) => s.loadThread);
   const sidebarTab = useAppStore((s) => s.sidebarTab);
+  const sidebarWidth = useAppStore((s) => s.sidebarWidth);
   const setSidebarTab = useAppStore((s) => s.setSidebarTab);
   const [creating, setCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -130,7 +131,10 @@ export function Sidebar() {
   }, [projectThreads, generalThreads, searchQuery]);
 
   return (
-    <aside className="thin-scrollbar flex h-full w-[16rem] flex-shrink-0 flex-col overflow-hidden bg-[var(--surface-sidebar)]">
+    <aside
+      className="thin-scrollbar flex h-full flex-shrink-0 flex-col overflow-hidden bg-[var(--surface-sidebar)]"
+      style={{ width: `${sidebarWidth}px` }}
+    >
       {/* Header */}
       <div className="flex flex-col gap-1.5 px-3 pt-3 pb-1">
         <div className="flex items-center justify-between">

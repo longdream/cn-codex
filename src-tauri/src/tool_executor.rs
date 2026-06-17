@@ -31,6 +31,7 @@ impl CommandNoConsole for Command {
 use crate::commands::plugin as plugin_commands;
 use crate::config_system::McpServerConfig;
 use crate::error::AppResult;
+use crate::git_service::{GitCommandOutput, GitService};
 use crate::plugin_loader;
 use crate::protocol::RequestId;
 use crate::state::{AppState, ApprovalAction};
@@ -325,13 +326,6 @@ struct CodeReviewSummary {
     additions: u64,
     deletions: u64,
     findings: Vec<ReviewFinding>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GitCommandOutput {
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1411,7 +1405,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "apply_patch",
-                    "description": "Apply a multi-file patch in Codex apply_patch format. Prefer sending the raw/freeform patch body when the provider supports it; this function wrapper also accepts JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
+                    "description": "Queue a multi-file patch for pre-apply review in Codex apply_patch format. Prefer sending the raw/freeform patch body when the provider supports it; this function wrapper also accepts JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -3299,20 +3293,44 @@ impl ToolExecutor {
             }
         }
 
-        let result = match apply_patch_to_workspace(&self.cwd, &patch) {
-            Ok(report) => {
-                let msg = format_apply_patch_report(&report);
-                self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", 0, &msg);
-                msg
-            }
+        // 新流程：apply_patch 先落入“待审阅会话”，不立即写盘。
+        // 用户在聊天区 Keep / Keep All 后，再通过 file_review_apply 执行真正写盘。
+        let review = match crate::file_review::build_pending_patch_review(
+            &self.cwd, thread_id, call_id, &patch,
+        ) {
+            Ok(review) => review,
             Err(msg) => {
                 let msg = format!("Error applying patch: {msg}");
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
-                msg
+                return Ok(msg);
             }
         };
+        let review_file_count = review.files.len();
+        {
+            let state = app_handle.state::<AppState>();
+            let mut sessions = state.file_review_sessions.write().await;
+            sessions.insert(
+                crate::file_review::pending_review_key(thread_id, call_id),
+                review,
+            );
+        }
+        let ready_payload = serde_json::json!({
+            "threadId": thread_id,
+            "callId": call_id,
+            "itemId": call_id,
+            "fileCount": review_file_count,
+        });
+        app_handle
+            .emit("file-review-ready", ready_payload.clone())
+            .ok();
+        crate::mobile_server::broadcast("file-review-ready", ready_payload);
 
-        Ok(result)
+        let msg = format!(
+            "Patch parsed successfully. {} file(s) queued for review. Use Keep / Keep All to apply changes.",
+            review_file_count
+        );
+        self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", 0, &msg);
+        Ok(msg)
     }
 
     async fn exec_list_dir(
@@ -4837,20 +4855,22 @@ impl ToolExecutor {
             return Ok(msg);
         };
 
-        let mut config: crate::robot_loader::RobotConfig = match serde_json::from_value(config_value) {
-            Ok(c) => c,
-            Err(e) => {
-                let msg = format!("Invalid robot config: {e}");
-                self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
-                return Ok(msg);
-            }
-        };
+        let mut config: crate::robot_loader::RobotConfig =
+            match serde_json::from_value(config_value) {
+                Ok(c) => c,
+                Err(e) => {
+                    let msg = format!("Invalid robot config: {e}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
+                    return Ok(msg);
+                }
+            };
 
         // 强约束校验：workflow 必须可归一化为节点，且每个节点都要绑定至少一个 skill。
         // 这里做服务端兜底，即使模型未严格遵循 schema，也能及时返回清晰错误。
         let normalized_nodes = config.normalized_workflow_nodes();
         if normalized_nodes.is_empty() {
-            let msg = "Invalid robot config: workflowNodes must contain at least one node".to_string();
+            let msg =
+                "Invalid robot config: workflowNodes must contain at least one node".to_string();
             self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
             return Ok(msg);
         }
@@ -5039,56 +5059,13 @@ impl ToolExecutor {
         args: &[String],
         max_output_bytes: usize,
     ) -> Result<GitCommandOutput, String> {
-        let mut cmd = Command::new("git");
-        cmd.args(args)
-            .current_dir(&self.cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        cmd.no_console();
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn git: {e}"))?;
-
-        let child_stdout = child.stdout.take();
-        let child_stderr = child.stderr.take();
-        let stdout_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut out) = child_stdout {
-                tokio::io::AsyncReadExt::read_to_end(&mut out, &mut buf)
-                    .await
-                    .ok();
-            }
-            buf
-        });
-        let stderr_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut err) = child_stderr {
-                tokio::io::AsyncReadExt::read_to_end(&mut err, &mut buf)
-                    .await
-                    .ok();
-            }
-            buf
-        });
-
-        match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait()).await {
-            Ok(Ok(status)) => {
-                let stdout_bytes = stdout_handle.await.unwrap_or_default();
-                let stderr_bytes = stderr_handle.await.unwrap_or_default();
-                Ok(GitCommandOutput {
-                    exit_code: status.code().unwrap_or(-1),
-                    stdout: truncate_bytes_to_string(&stdout_bytes, max_output_bytes),
-                    stderr: truncate_bytes_to_string(&stderr_bytes, max_output_bytes / 2),
-                })
-            }
-            Ok(Err(e)) => Err(format!("Failed to wait for git: {e}")),
-            Err(_) => {
-                child.kill().await.ok();
-                stdout_handle.abort();
-                stderr_handle.abort();
-                Err("git command timed out after 30 seconds".to_string())
-            }
-        }
+        // 统一复用 git_service 的执行与截断逻辑，避免工具层与右侧 Git 面板重复实现。
+        let service = GitService::new(self.cwd.clone());
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        service
+            .run_allow_failure(&refs, max_output_bytes)
+            .await
+            .map_err(|err| err.to_string())
     }
 
     async fn exec_memory_list(
@@ -7053,18 +7030,28 @@ impl ToolExecutor {
             Err(e) => {
                 let msg = format!("Invalid JSON arguments: {e}");
                 self.emit_tool_start(app_handle, thread_id, call_id, "wps_execute_command", &msg);
-                self.emit_tool_end(app_handle, thread_id, call_id, "wps_execute_command", -1, &msg);
+                self.emit_tool_end(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "wps_execute_command",
+                    -1,
+                    &msg,
+                );
                 return Ok(msg);
             }
         };
 
-        let method = payload
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let method = payload.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let params = payload.get("params").cloned();
 
-        self.emit_tool_start(app_handle, thread_id, call_id, "wps_execute_command", method);
+        self.emit_tool_start(
+            app_handle,
+            thread_id,
+            call_id,
+            "wps_execute_command",
+            method,
+        );
 
         let state = app_handle.try_state::<crate::state::AppState>();
         let wps_server = match state {
@@ -7084,14 +7071,29 @@ impl ToolExecutor {
         };
 
         if !wps_server.is_running() {
-            let msg = "WPS server is not running. Start it first via settings or wps_start_server.".to_string();
-            self.emit_tool_end(app_handle, thread_id, call_id, "wps_execute_command", -1, &msg);
+            let msg = "WPS server is not running. Start it first via settings or wps_start_server."
+                .to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "wps_execute_command",
+                -1,
+                &msg,
+            );
             return Ok(msg);
         }
 
         if !wps_server.has_connections().await {
             let msg = "No WPS add-in is connected. Please open WPS Office with the cn-codex add-in loaded.".to_string();
-            self.emit_tool_end(app_handle, thread_id, call_id, "wps_execute_command", -1, &msg);
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "wps_execute_command",
+                -1,
+                &msg,
+            );
             return Ok(msg);
         }
 
@@ -7149,11 +7151,13 @@ impl ToolExecutor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 struct ApplyPatchReport {
     changes: Vec<ApplyPatchReportChange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 struct ApplyPatchReportChange {
     path: String,
     action: &'static str,
@@ -7254,6 +7258,7 @@ fn apply_patch_progress_changes(actions: &[ParsedPatchAction]) -> Vec<ApplyPatch
         .collect()
 }
 
+#[allow(dead_code)]
 fn apply_patch_to_workspace(root: &Path, patch: &str) -> Result<ApplyPatchReport, String> {
     let actions = parse_patch_actions(patch)?;
     if actions.is_empty() {
@@ -7487,6 +7492,7 @@ fn is_patch_section_boundary(line: &str) -> bool {
         || line.starts_with("*** Delete File: ")
 }
 
+#[allow(dead_code)]
 fn apply_update_hunks(
     lines: &mut Vec<String>,
     hunks: &[PatchHunk],
@@ -7515,6 +7521,7 @@ fn apply_update_hunks(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn find_subsequence(lines: &[String], needle: &[String], start: usize) -> Option<usize> {
     if needle.is_empty() {
         return Some(start.min(lines.len()));
@@ -7532,6 +7539,7 @@ fn find_subsequence(lines: &[String], needle: &[String], start: usize) -> Option
     })
 }
 
+#[allow(dead_code)]
 fn resolve_patch_path(root: &Path, input: &str) -> Result<PathBuf, String> {
     let trimmed = input.trim().replace('\\', "/");
     if trimmed.is_empty() {
@@ -7573,6 +7581,7 @@ fn normalize_patch_display_path(input: &str) -> String {
         .join("/")
 }
 
+#[allow(dead_code)]
 fn detect_eol(content: &str) -> &'static str {
     if content.contains("\r\n") {
         "\r\n"
@@ -7581,6 +7590,7 @@ fn detect_eol(content: &str) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn split_file_lines(content: &str) -> (Vec<String>, bool) {
     let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
     let final_newline = normalized.ends_with('\n');
@@ -7600,6 +7610,7 @@ fn split_file_lines(content: &str) -> (Vec<String>, bool) {
     }
 }
 
+#[allow(dead_code)]
 fn join_file_lines(lines: &[String], eol: &str, final_newline: bool) -> String {
     let mut content = lines.join(eol);
     if final_newline {
@@ -7608,6 +7619,7 @@ fn join_file_lines(lines: &[String], eol: &str, final_newline: bool) -> String {
     content
 }
 
+#[allow(dead_code)]
 fn format_apply_patch_report(report: &ApplyPatchReport) -> String {
     let mut output = "Success. Applied patch.".to_string();
     for change in &report.changes {
@@ -10043,18 +10055,6 @@ fn code_review_git_args(mode: &str, base_ref: Option<&str>, paths: &[String]) ->
     args.push("--".to_string());
     args.extend(paths.iter().cloned());
     args
-}
-
-fn truncate_bytes_to_string(bytes: &[u8], max_bytes: usize) -> String {
-    if bytes.len() <= max_bytes {
-        return decode_command_output_bytes(bytes);
-    }
-    let mut output = decode_command_output_bytes(&bytes[..max_bytes]);
-    output.push_str(&format!(
-        "\n\n... [truncated {} bytes] ...",
-        bytes.len().saturating_sub(max_bytes)
-    ));
-    output
 }
 
 fn combine_stdout_stderr(stdout: &str, stderr: &str) -> String {

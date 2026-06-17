@@ -1,8 +1,6 @@
 import {
-  IconCode,
   IconChevronDown,
   IconChevronRight,
-  IconEye,
   IconFile,
   IconFileCode,
   IconFileText,
@@ -16,14 +14,16 @@ import {
   IconMarkdown,
   IconMessagePlus,
   IconPhoto,
-  IconX,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { readDirectory, readFileForAttach, readTextFilePreview, type FileEntry, type TextFilePreviewResult } from "../../api/window";
-import { revealInExplorer } from "../../api/window";
+import {
+  readDirectory,
+  readFileForAttach,
+  revealInExplorer,
+  type FileEntry,
+  windowOpenDocumentDetail,
+} from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
 import { ContextMenu, type ContextMenuEntry } from "../common/ContextMenu";
 
@@ -89,57 +89,6 @@ interface FileTreeProps {
   refreshKey?: number;
 }
 
-type PreviewMode = "preview" | "code";
-
-function fileLanguage(name: string): string {
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  switch (ext) {
-    case "ts":
-    case "tsx":
-      return "typescript";
-    case "js":
-    case "jsx":
-    case "mjs":
-    case "cjs":
-      return "javascript";
-    case "css":
-    case "scss":
-    case "less":
-      return "css";
-    case "html":
-    case "htm":
-      return "html";
-    case "json":
-    case "jsonc":
-      return "json";
-    case "md":
-    case "mdx":
-      return "markdown";
-    case "rs":
-      return "rust";
-    case "py":
-      return "python";
-    case "go":
-      return "go";
-    case "toml":
-      return "toml";
-    case "yaml":
-    case "yml":
-      return "yaml";
-    case "sh":
-    case "bash":
-    case "zsh":
-      return "bash";
-    default:
-      return ext || "text";
-  }
-}
-
-function isMarkdownFile(name: string, mimeType: string): boolean {
-  const lower = name.toLowerCase();
-  return mimeType === "text/markdown" || lower.endsWith(".md") || lower.endsWith(".mdx");
-}
-
 export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   const intl = useIntl();
   const [nodes, setNodes] = useState<TreeNode[]>([]);
@@ -150,11 +99,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     y: number;
     node: TreeNode;
   } | null>(null);
-  const [preview, setPreview] = useState<TextFilePreviewResult | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [previewMode, setPreviewMode] = useState<PreviewMode>("code");
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [detailOpenError, setDetailOpenError] = useState<string | null>(null);
 
   const loadChildren = useCallback(async (path: string): Promise<TreeNode[]> => {
     const entries = await readDirectory(path);
@@ -171,9 +116,13 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
       setNodes([]);
       return;
     }
+
     let cancelled = false;
     setLoading(true);
     setError(null);
+    // 切换项目目录时清空“打开详情窗失败”提示，避免旧错误误导用户。
+    setDetailOpenError(null);
+
     loadChildren(rootPath)
       .then((children) => {
         if (!cancelled) {
@@ -187,6 +136,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
           setLoading(false);
         }
       });
+
     return () => {
       cancelled = true;
     };
@@ -236,7 +186,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
             return update(prev);
           });
         } catch {
-          // silently ignore load errors for subdirectories
+          // 子目录读失败仅影响该节点，不阻断整个文件树。
         }
       } else {
         setNodes((prev) => updateNodes(prev));
@@ -297,56 +247,16 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     e.dataTransfer.effectAllowed = "copy";
   }, []);
 
-  const handlePreviewFile = useCallback(async (node: TreeNode) => {
+  const handleOpenFile = useCallback(async (node: TreeNode) => {
     if (node.isDir) return;
-    setPreviewLoading(true);
-    setPreviewError(null);
+    setDetailOpenError(null);
     try {
-      const result = await readTextFilePreview(node.path);
-      setPreview(result);
-      setPreviewMode(isMarkdownFile(result.name, result.mimeType) ? "preview" : "code");
+      // 文档详情窗由后端做“单实例复用”，这里仅传文件路径作为打开入口。
+      await windowOpenDocumentDetail(node.path);
     } catch (err) {
-      setPreview(null);
-      setPreviewError(String(err));
-    } finally {
-      setPreviewLoading(false);
+      setDetailOpenError(String(err));
     }
   }, []);
-
-  const markdownPreview = useMemo(() => {
-    if (!preview || !isMarkdownFile(preview.name, preview.mimeType)) return null;
-    return (
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          code(props) {
-            const { children, className } = props;
-            return (
-              <code className={`chat-inline-code ${className ?? ""}`.trim()}>
-                {children}
-              </code>
-            );
-          },
-          pre(props) {
-            return (
-              <pre className="thin-scrollbar overflow-x-auto rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-paper)] p-3 text-[12px]">
-                {props.children}
-              </pre>
-            );
-          },
-          table(props) {
-            return (
-              <div className="thin-scrollbar overflow-x-auto">
-                <table className="chat-md-table">{props.children}</table>
-              </div>
-            );
-          },
-        }}
-      >
-        {preview.content}
-      </ReactMarkdown>
-    );
-  }, [preview]);
 
   if (!rootPath) {
     return (
@@ -373,7 +283,12 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   }
 
   return (
-    <div ref={containerRef} className="flex-1 overflow-y-auto overflow-x-hidden">
+    <div className="relative flex-1 overflow-y-auto overflow-x-hidden">
+      {detailOpenError && (
+        <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
+          打开文档详情窗失败：{detailOpenError}
+        </div>
+      )}
       {nodes.length === 0 ? (
         <div className="p-4 text-center text-xs text-[var(--text-faint)]">
           {intl.formatMessage({ id: "fileTree.emptyDir" })}
@@ -386,7 +301,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
               node={node}
               depth={0}
               onToggle={toggleExpand}
-              onOpenFile={handlePreviewFile}
+              onOpenFile={handleOpenFile}
               onContextMenu={handleContextMenu}
               onDragStart={handleDragStart}
             />
@@ -399,97 +314,6 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
           items={contextMenuItems}
           onClose={() => setContextMenu(null)}
         />
-      )}
-      {(preview || previewLoading || previewError) && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/45 p-4">
-          <div className="flex h-full max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border-strong)] bg-[var(--surface-panel)] shadow-[var(--shadow-strong)]">
-            <div className="flex items-center gap-3 border-b border-[var(--border-subtle)] px-4 py-3">
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-semibold text-[var(--text-strong)]">
-                  {preview?.name ?? intl.formatMessage({ id: "common.loading" })}
-                </div>
-                <div className="truncate font-mono text-[11px] text-[var(--text-faint)]">
-                  {preview?.path ?? ""}
-                </div>
-              </div>
-              {preview && isMarkdownFile(preview.name, preview.mimeType) && (
-                <div className="flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-1">
-                  <button
-                    type="button"
-                    onClick={() => setPreviewMode("preview")}
-                    className={`flex items-center gap-1 rounded-[var(--radius-sm)] px-2 py-1 text-xs ${
-                      previewMode === "preview"
-                        ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-                        : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-                    }`}
-                  >
-                    <IconEye size={13} stroke={1.8} />
-                    {intl.formatMessage({ id: "fileTree.preview" })}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPreviewMode("code")}
-                    className={`flex items-center gap-1 rounded-[var(--radius-sm)] px-2 py-1 text-xs ${
-                      previewMode === "code"
-                        ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-                        : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-                    }`}
-                  >
-                    <IconCode size={13} stroke={1.8} />
-                    {intl.formatMessage({ id: "fileTree.code" })}
-                  </button>
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setPreview(null);
-                  setPreviewError(null);
-                  setPreviewLoading(false);
-                }}
-                className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-                title={intl.formatMessage({ id: "common.close" })}
-              >
-                <IconX size={16} stroke={1.8} />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-hidden">
-              {previewLoading ? (
-                <div className="flex h-full items-center justify-center p-6 text-sm text-[var(--text-faint)]">
-                  {intl.formatMessage({ id: "common.loading" })}
-                </div>
-              ) : previewError ? (
-                <div className="thin-scrollbar h-full overflow-auto p-6 text-sm text-[var(--danger)]">
-                  {previewError}
-                </div>
-              ) : preview ? (
-                <div className="thin-scrollbar h-full overflow-auto p-5">
-                  {preview.truncated && (
-                      <div className="mb-4 rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 py-2 text-xs text-[var(--text-muted)]">
-                      {intl.formatMessage({ id: "fileTree.previewTruncated" })}
-                    </div>
-                  )}
-                  {previewMode === "preview" && markdownPreview ? (
-                    <article className="chat-prose max-w-none">
-                      {markdownPreview}
-                    </article>
-                  ) : (
-                    <div className="chat-code-block overflow-hidden">
-                      <div className="flex items-center justify-between border-b border-[var(--chat-line)] px-3 py-1.5">
-                        <span className="text-[11px] text-[var(--chat-faint)]">
-                          {fileLanguage(preview.name)}
-                        </span>
-                      </div>
-                      <pre className="thin-scrollbar max-h-[70vh] overflow-auto px-3 py-3 text-[13px] leading-relaxed">
-                        <code className="text-[var(--chat-prose)]">{preview.content}</code>
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );
@@ -504,7 +328,14 @@ interface FileTreeNodeProps {
   onDragStart: (e: DragEvent, node: TreeNode) => void;
 }
 
-function FileTreeNode({ node, depth, onToggle, onOpenFile, onContextMenu, onDragStart }: FileTreeNodeProps) {
+function FileTreeNode({
+  node,
+  depth,
+  onToggle,
+  onOpenFile,
+  onContextMenu,
+  onDragStart,
+}: FileTreeNodeProps) {
   const paddingLeft = 8 + depth * 16;
 
   return (

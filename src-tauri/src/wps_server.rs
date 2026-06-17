@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::Router;
+use axum::extract::State as AxumState;
 use axum::extract::WebSocketUpgrade;
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::State as AxumState;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
@@ -106,11 +106,8 @@ impl WpsServer {
             .with_state(inner.clone());
 
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        let bind_result = tokio::time::timeout(
-            Duration::from_secs(3),
-            tokio::net::TcpListener::bind(addr),
-        )
-        .await;
+        let bind_result =
+            tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpListener::bind(addr)).await;
 
         let listener = match bind_result {
             Ok(Ok(l)) => l,
@@ -118,10 +115,7 @@ impl WpsServer {
             Err(_) => return Err(format!("Timeout binding port {port}")),
         };
 
-        let actual_port = listener
-            .local_addr()
-            .map(|a| a.port())
-            .unwrap_or(port);
+        let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
 
         info!("WPS WebSocket server listening on 127.0.0.1:{actual_port}");
 
@@ -190,8 +184,7 @@ impl WpsServer {
             params,
         };
 
-        let json =
-            serde_json::to_string(&request).map_err(|e| format!("Serialize error: {e}"))?;
+        let json = serde_json::to_string(&request).map_err(|e| format!("Serialize error: {e}"))?;
 
         let (tx, rx) = oneshot::channel();
         conn.pending
@@ -307,10 +300,13 @@ async fn handle_connection(socket: WebSocket, inner: Arc<ServerInner>) {
         handshake.addin_name
     );
 
-    let _ = inner.event_tx.send(WpsEvent::Connected {
-        conn_id: conn_id.clone(),
-        addin_name: handshake.addin_name.clone(),
-    }).await;
+    let _ = inner
+        .event_tx
+        .send(WpsEvent::Connected {
+            conn_id: conn_id.clone(),
+            addin_name: handshake.addin_name.clone(),
+        })
+        .await;
 
     // Send acknowledgement to add-in.
     let ack = serde_json::json!({
@@ -357,11 +353,9 @@ async fn handle_connection(socket: WebSocket, inner: Arc<ServerInner>) {
             }
 
             // Otherwise treat as notification.
-            if let Ok(notif) = serde_json::from_str::<crate::wps_protocol::WpsNotification>(&text)
-            {
+            if let Ok(notif) = serde_json::from_str::<crate::wps_protocol::WpsNotification>(&text) {
                 // Handle document change events specially.
-                if notif.method == "event.documentChanged"
-                    || notif.method == "event.documentOpened"
+                if notif.method == "event.documentChanged" || notif.method == "event.documentOpened"
                 {
                     let doc_info = notif
                         .params

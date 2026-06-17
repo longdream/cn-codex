@@ -39,11 +39,7 @@ enum RelayToPc {
 }
 
 /// 启动 relay client，连接远程中转服务器
-pub fn start_relay_client(
-    relay_url: String,
-    room_id: String,
-    mobile_state: SharedMobileState,
-) {
+pub fn start_relay_client(relay_url: String, room_id: String, mobile_state: SharedMobileState) {
     tokio::spawn(async move {
         relay_loop(relay_url, room_id, mobile_state).await;
     });
@@ -84,7 +80,9 @@ async fn relay_loop(relay_url: String, room_id: String, mobile_state: SharedMobi
 }
 
 async fn handle_relay_connection(
-    ws_stream: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws_stream: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     mobile_state: SharedMobileState,
 ) {
     let (ws_sender, mut ws_receiver) = ws_stream.split();
@@ -125,13 +123,15 @@ async fn handle_relay_connection(
             if let Message::Text(text) = msg {
                 if let Ok(relay_msg) = serde_json::from_str::<RelayToPc>(&text) {
                     match relay_msg {
-                        RelayToPc::HttpRequest { id, method, path, body } => {
-                            let response = handle_local_request(
-                                &recv_mobile_state,
-                                &method,
-                                &path,
-                                body,
-                            ).await;
+                        RelayToPc::HttpRequest {
+                            id,
+                            method,
+                            path,
+                            body,
+                        } => {
+                            let response =
+                                handle_local_request(&recv_mobile_state, &method, &path, body)
+                                    .await;
                             let reply = PcToRelay::HttpResponse {
                                 id,
                                 status: response.0,
@@ -193,7 +193,8 @@ async fn handle_local_request(
             (200, serde_json::json!(result))
         }
         ("GET", p) if p.starts_with("api/threads/") && p.ends_with("/messages") => {
-            let thread_id = p.strip_prefix("api/threads/")
+            let thread_id = p
+                .strip_prefix("api/threads/")
                 .and_then(|s| s.strip_suffix("/messages"))
                 .unwrap_or("");
             let messages = state.thread_store.get_thread_messages(thread_id).await;
@@ -221,17 +222,21 @@ async fn handle_local_request(
         ("GET", p) if p.starts_with("api/threads/") => {
             let thread_id = p.strip_prefix("api/threads/").unwrap_or("");
             match state.thread_store.get_thread(thread_id).await {
-                Some(thread) => (200, serde_json::json!({
-                    "id": thread.id,
-                    "name": thread.name,
-                    "createdAt": thread.created_at,
-                    "goal": thread.goal,
-                })),
+                Some(thread) => (
+                    200,
+                    serde_json::json!({
+                        "id": thread.id,
+                        "name": thread.name,
+                        "createdAt": thread.created_at,
+                        "goal": thread.goal,
+                    }),
+                ),
                 None => (404, serde_json::json!({ "error": "not found" })),
             }
         }
         ("POST", p) if p.starts_with("api/threads/") && p.ends_with("/chat") => {
-            let thread_id = p.strip_prefix("api/threads/")
+            let thread_id = p
+                .strip_prefix("api/threads/")
                 .and_then(|s| s.strip_suffix("/chat"))
                 .unwrap_or("")
                 .to_string();

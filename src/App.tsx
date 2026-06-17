@@ -16,13 +16,23 @@ import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import enUS from "./i18n/en-US/common.json";
 import zhCN from "./i18n/zh-CN/common.json";
-import { useAppStore, initStoreFromDb } from "./stores/appStore";
+import {
+  useAppStore,
+  initStoreFromDb,
+  SIDEBAR_WIDTH_MIN,
+  SIDEBAR_WIDTH_MAX,
+  RIGHT_PANEL_WIDTH_MIN,
+  RIGHT_PANEL_WIDTH_MAX,
+} from "./stores/appStore";
 import { useSettingsStore, initSettingsFromDb } from "./stores/settingsStore";
 
 const messages: Record<string, Record<string, string>> = {
   "zh-CN": zhCN,
   "en-US": enUS,
 };
+
+// 聊天主区域最小可用宽度：拖拽时始终保留该空间，避免输入区/消息区被压坏。
+const MAIN_PANEL_MIN_WIDTH = 560;
 
 function extractErrorMessage(err: unknown): string {
   if (typeof err === "string") return err;
@@ -196,6 +206,161 @@ function App() {
   const showSettings = useAppStore((s) => s.showSettings);
   const setShowSettings = useAppStore((s) => s.setShowSettings);
   const rightPanelVisible = useAppStore((s) => s.rightPanelVisible);
+  const sidebarWidth = useAppStore((s) => s.sidebarWidth);
+  const rightPanelWidth = useAppStore((s) => s.rightPanelWidth);
+  const setSidebarWidth = useAppStore((s) => s.setSidebarWidth);
+  const setRightPanelWidth = useAppStore((s) => s.setRightPanelWidth);
+  const resizeStateRef = useRef<{
+    kind: "left" | "right";
+    pointerId: number;
+    startX: number;
+    startSidebarWidth: number;
+    startRightPanelWidth: number;
+    rightPanelVisibleAtStart: boolean;
+  } | null>(null);
+
+  const clamp = useCallback((value: number, min: number, max: number): number => {
+    return Math.min(max, Math.max(min, value));
+  }, []);
+
+  const clearResizeState = useCallback(() => {
+    document.body.classList.remove("app-resizing");
+    resizeStateRef.current = null;
+  }, []);
+
+  const applyResizeFromPointer = useCallback(
+    (clientX: number) => {
+      const state = resizeStateRef.current;
+      if (!state) {
+        return;
+      }
+
+      const viewportWidth = window.innerWidth;
+      if (state.kind === "left") {
+        // 左侧拖拽：基于起点偏移调整左栏宽度，并按“中间最小宽度”动态收敛上限。
+        const nextWidth = state.startSidebarWidth + (clientX - state.startX);
+        const maxByLayout =
+          viewportWidth -
+          (state.rightPanelVisibleAtStart ? state.startRightPanelWidth : 0) -
+          MAIN_PANEL_MIN_WIDTH;
+        const dynamicMax = Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, maxByLayout));
+        setSidebarWidth(clamp(nextWidth, SIDEBAR_WIDTH_MIN, dynamicMax));
+        return;
+      }
+
+      // 右侧拖拽：用“起始右栏宽度 - 鼠标位移”得到目标值，保证主区宽度不被侵占。
+      const nextWidth = state.startRightPanelWidth - (clientX - state.startX);
+      const maxByLayout = viewportWidth - state.startSidebarWidth - MAIN_PANEL_MIN_WIDTH;
+      const dynamicMax = Math.max(
+        RIGHT_PANEL_WIDTH_MIN,
+        Math.min(RIGHT_PANEL_WIDTH_MAX, maxByLayout),
+      );
+      setRightPanelWidth(clamp(nextWidth, RIGHT_PANEL_WIDTH_MIN, dynamicMax));
+    },
+    [clamp, setRightPanelWidth, setSidebarWidth],
+  );
+
+  const startResize = useCallback(
+    (kind: "left" | "right") => (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      resizeStateRef.current = {
+        kind,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startSidebarWidth: sidebarWidth,
+        startRightPanelWidth: rightPanelWidth,
+        rightPanelVisibleAtStart: rightPanelVisible,
+      };
+      document.body.classList.add("app-resizing");
+    },
+    [rightPanelVisible, rightPanelWidth, sidebarWidth],
+  );
+
+  const handleResizerPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const state = resizeStateRef.current;
+      if (!state || state.pointerId !== event.pointerId) {
+        return;
+      }
+      applyResizeFromPointer(event.clientX);
+    },
+    [applyResizeFromPointer],
+  );
+
+  const handleResizerPointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const state = resizeStateRef.current;
+      if (!state || state.pointerId !== event.pointerId) {
+        return;
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      clearResizeState();
+    },
+    [clearResizeState],
+  );
+
+  const handleResizerPointerCancel = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const state = resizeStateRef.current;
+      if (!state || state.pointerId !== event.pointerId) {
+        return;
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      clearResizeState();
+    },
+    [clearResizeState],
+  );
+
+  useEffect(() => {
+    // 当窗口尺寸变化时重新校验左右宽度，避免历史持久化值在小窗口下挤占中间区域。
+    const enforceLayoutBounds = () => {
+      const viewportWidth = window.innerWidth;
+      const rightWidth = rightPanelVisible ? rightPanelWidth : 0;
+      const maxSidebarByLayout = viewportWidth - rightWidth - MAIN_PANEL_MIN_WIDTH;
+      const sidebarMax = Math.max(
+        SIDEBAR_WIDTH_MIN,
+        Math.min(SIDEBAR_WIDTH_MAX, maxSidebarByLayout),
+      );
+      if (sidebarWidth > sidebarMax) {
+        setSidebarWidth(sidebarMax);
+      }
+
+      if (!rightPanelVisible) {
+        return;
+      }
+
+      const maxRightByLayout = viewportWidth - sidebarWidth - MAIN_PANEL_MIN_WIDTH;
+      const rightMax = Math.max(
+        RIGHT_PANEL_WIDTH_MIN,
+        Math.min(RIGHT_PANEL_WIDTH_MAX, maxRightByLayout),
+      );
+      if (rightPanelWidth > rightMax) {
+        setRightPanelWidth(rightMax);
+      }
+    };
+
+    enforceLayoutBounds();
+    window.addEventListener("resize", enforceLayoutBounds);
+    return () => {
+      window.removeEventListener("resize", enforceLayoutBounds);
+      clearResizeState();
+    };
+  }, [
+    clearResizeState,
+    rightPanelVisible,
+    rightPanelWidth,
+    setRightPanelWidth,
+    setSidebarWidth,
+    sidebarWidth,
+  ]);
 
   return (
     <ErrorBoundary>
@@ -208,10 +373,34 @@ function App() {
           <TitleBar />
           <div className="app-workbench">
             <Sidebar />
+            <div
+              role="separator"
+              aria-label="Resize sidebar"
+              aria-orientation="vertical"
+              className="app-resizer app-resizer-left"
+              onPointerDown={startResize("left")}
+              onPointerMove={handleResizerPointerMove}
+              onPointerUp={handleResizerPointerUp}
+              onPointerCancel={handleResizerPointerCancel}
+            />
             <div className="app-main">
               <ChatPage />
             </div>
-            {rightPanelVisible && <RightPanel />}
+            {rightPanelVisible && (
+              <>
+                <div
+                  role="separator"
+                  aria-label="Resize right panel"
+                  aria-orientation="vertical"
+                  className="app-resizer app-resizer-right"
+                  onPointerDown={startResize("right")}
+                  onPointerMove={handleResizerPointerMove}
+                  onPointerUp={handleResizerPointerUp}
+                  onPointerCancel={handleResizerPointerCancel}
+                />
+                <RightPanel />
+              </>
+            )}
           </div>
         </div>
         {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}

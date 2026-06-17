@@ -329,8 +329,7 @@ pub fn delete_robot(workspace_config_dir: &Path, robot_id: &str) -> Result<(), S
     if !robot_dir.exists() {
         return Err(format!("Robot not found: {robot_id}"));
     }
-    std::fs::remove_dir_all(&robot_dir)
-        .map_err(|e| format!("Failed to delete robot: {e}"))
+    std::fs::remove_dir_all(&robot_dir).map_err(|e| format!("Failed to delete robot: {e}"))
 }
 
 pub fn list_all_available_skills(workspace_config_dir: &Path) -> Vec<AvailableSkillEntry> {
@@ -562,7 +561,10 @@ mod tests {
         ];
 
         config.ensure_workflow_compatibility();
-        assert_eq!(config.workflow, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(
+            config.workflow,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
         assert_eq!(config.workflow_nodes.len(), 2);
         assert_eq!(config.workflow_nodes[0].objective, "alpha");
         assert_eq!(config.workflow_nodes[1].objective, "beta");

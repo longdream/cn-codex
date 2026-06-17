@@ -1,10 +1,12 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { fileReviewGet } from "../api/fileReview";
 import {
   createRunSummaryMessage,
   useAppStore,
   type ChatMode,
   type FileChange,
+  type PendingFileReview,
   type PatchProgressChange,
   type RunSummary,
   type ThreadGoal,
@@ -62,7 +64,8 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const promptTokens = Number(usage.promptTokens ?? 0);
   const completionTokens = Number(usage.completionTokens ?? 0);
   const totalTokens = Number(usage.totalTokens ?? promptTokens + completionTokens);
-  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0) {
+  const callCount = Number(usage.callCount ?? 0);
+  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0 && callCount <= 0) {
     return undefined;
   }
 
@@ -70,6 +73,7 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     promptTokens: Math.max(0, promptTokens),
     completionTokens: Math.max(0, completionTokens),
     totalTokens: Math.max(0, totalTokens),
+    ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
   };
 }
 
@@ -279,6 +283,42 @@ function normalizePatchProgressChanges(payload: {
   }
 
   return [];
+}
+
+function normalizePendingFileReview(
+  review: Awaited<ReturnType<typeof fileReviewGet>>,
+): PendingFileReview {
+  const files: PendingFileReview["files"] = [];
+  if (Array.isArray(review.files)) {
+    for (const file of review.files) {
+      const path = typeof file.path === "string" ? file.path.trim() : "";
+      if (!path) {
+        continue;
+      }
+      files.push({
+        path,
+        action: typeof file.action === "string" ? file.action : "modified",
+        moveTo: typeof file.moveTo === "string" ? file.moveTo : undefined,
+        baseContent: typeof file.baseContent === "string" ? file.baseContent : undefined,
+        candidateContent:
+          typeof file.candidateContent === "string" ? file.candidateContent : undefined,
+        editedContent: typeof file.editedContent === "string" ? file.editedContent : undefined,
+        keep: file.keep !== false,
+      });
+    }
+  }
+
+  return {
+    threadId: review.threadId,
+    callId: review.callId,
+    rawPatch: typeof review.rawPatch === "string" ? review.rawPatch : "",
+    createdAtMs: Number(review.createdAtMs ?? Date.now()),
+    updatedAtMs: Number(review.updatedAtMs ?? Date.now()),
+    files,
+    selectedPath: files[0]?.path ?? null,
+    keepAll: files.length > 0 && files.every((file) => file.keep),
+    status: "pending",
+  };
 }
 
 function parseBrowserRunOutput(output?: string): {
@@ -513,6 +553,80 @@ export function useTauriEvents() {
           if (changes.length) {
             useAppStore.getState().updateToolCallPatchProgress(toolId, changes);
           }
+        }),
+
+        listen<{
+          threadId?: string;
+          callId?: string;
+          itemId?: string;
+        }>("file-review-ready", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
+          const threadId = e.payload.threadId;
+          const callId = e.payload.callId ?? e.payload.itemId;
+          if (!threadId || !callId) {
+            return;
+          }
+          // 后端只广播“审阅就绪”的轻量事件，完整内容在此按需拉取，
+          // 避免大文件内容直接随事件广播导致前端卡顿。
+          void fileReviewGet(threadId, callId)
+            .then((review) => {
+              const latestStore = useAppStore.getState();
+              if (threadId && latestStore.currentThreadId && threadId !== latestStore.currentThreadId) {
+                return;
+              }
+              latestStore.upsertPendingFileReview(normalizePendingFileReview(review));
+            })
+            .catch((err) => {
+              console.error("[event] file-review-ready: fetch review failed", err);
+            });
+        }),
+
+        listen<{
+          threadId?: string;
+          callId?: string;
+          status?: string;
+          message?: string;
+        }>("file-review-updated", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
+          const callId = e.payload.callId;
+          if (!callId) {
+            return;
+          }
+          // 统一处理后端状态机事件：updated/applied/cancelled/failed。
+          // 这样即使用户在别的入口触发 apply/cancel，本地 UI 也能实时收敛。
+          switch (e.payload.status) {
+            case "updated":
+              store.setPendingFileReviewStatus(callId, "pending");
+              break;
+            case "applied":
+            case "cancelled":
+              store.removePendingFileReview(callId);
+              break;
+            case "failed":
+              store.setPendingFileReviewStatus(
+                callId,
+                "failed",
+                e.payload.message ?? "Review apply failed.",
+              );
+              break;
+            default:
+              break;
+          }
+        }),
+
+        listen<{ snippet?: string }>("document-detail-insert-snippet", (e) => {
+          const snippet = e.payload.snippet;
+          if (!snippet || !snippet.trim()) {
+            return;
+          }
+          // 详情窗只负责产生片段，真正写入输入框仍复用主窗既有 queue/consume 链路。
+          useAppStore.getState().queueComposerInsert(snippet);
         }),
 
         listen<{ threadId: string; results: Array<{ id: string; tool: string; success: boolean; interrupted?: boolean }> }>(

@@ -1,4 +1,4 @@
-import { IconX } from "@tabler/icons-react";
+import { IconExternalLink, IconX } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
@@ -338,14 +338,18 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
                   {!wpsStatus?.running && (
                     <div className="flex items-center gap-2">
-                      <label className="text-xs text-[var(--text-muted)]">端口</label>
-                      <input
-                        type="text"
-                        value={wpsPort}
-                        onChange={(e) => setWpsPort(e.target.value)}
-                        className="app-input w-24"
-                        placeholder="23300"
-                      />
+                      <label className="w-8 shrink-0 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                        端口
+                      </label>
+                      <div className="w-[140px] shrink-0">
+                        <input
+                          type="text"
+                          value={wpsPort}
+                          onChange={(e) => setWpsPort(e.target.value)}
+                          className="app-input"
+                          placeholder="23300"
+                        />
+                      </div>
                     </div>
                   )}
 
@@ -393,6 +397,29 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       )}
                     </div>
                   )}
+                </section>
+
+                <section className="settings-card space-y-3">
+                  <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                    {intl.formatMessage({ id: "settings.about" })}
+                  </h4>
+                  <div className="space-y-1">
+                    <p className="text-xs text-[var(--text-muted)]">
+                      {intl.formatMessage({ id: "settings.about.personalLabel" })}
+                    </p>
+                    <p className="text-[13px] text-[var(--text-strong)]">
+                      {intl.formatMessage({ id: "settings.about.personalIntro" })}
+                    </p>
+                  </div>
+                  <a
+                    href="https://github.com/longdream/cn-codex"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] text-[var(--accent-strong)] hover:underline"
+                  >
+                    <IconExternalLink size={11} stroke={2} />
+                    https://github.com/longdream/cn-codex
+                  </a>
                 </section>
               </div>
             )}

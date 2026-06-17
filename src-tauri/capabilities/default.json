@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "CN-Codex default capabilities",
-  "windows": ["main"],
+  "windows": ["main", "document-detail"],
   "permissions": [
     "core:default",
     "core:event:default",

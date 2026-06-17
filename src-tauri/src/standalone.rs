@@ -285,12 +285,11 @@ pub async fn standalone_chat(
     Ok(serde_json::json!({ "status": "ok" }))
 }
 
-fn resolve_robot_id_for_run_turn<'a>(mode: Option<&str>, robot_id: Option<&'a str>) -> Option<&'a str> {
-    if mode == Some("goal") {
-        robot_id
-    } else {
-        None
-    }
+fn resolve_robot_id_for_run_turn<'a>(
+    mode: Option<&str>,
+    robot_id: Option<&'a str>,
+) -> Option<&'a str> {
+    if mode == Some("goal") { robot_id } else { None }
 }
 
 #[tauri::command]

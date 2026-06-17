@@ -382,7 +382,9 @@ impl UsageDb {
             .prepare("SELECT key, value FROM app_state")
             .map_err(|e| AppError::Custom(format!("Prepare failed: {e}")))?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
         let mut results = Vec::new();
         for row in rows {

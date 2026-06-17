@@ -37,6 +37,30 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  callCount?: number;
+}
+
+export interface PendingFileReviewFile {
+  path: string;
+  action: string;
+  moveTo?: string;
+  baseContent?: string;
+  candidateContent?: string;
+  editedContent?: string;
+  keep: boolean;
+}
+
+export interface PendingFileReview {
+  threadId: string;
+  callId: string;
+  rawPatch: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  files: PendingFileReviewFile[];
+  selectedPath: string | null;
+  keepAll: boolean;
+  status: "pending" | "applying" | "applied" | "cancelled" | "failed";
+  error?: string;
 }
 
 export interface RunSummary {
@@ -95,8 +119,18 @@ export interface ModelEntry {
   supportsVision: boolean;
 }
 
-export type RightPanelTab = "browser" | "project" | "terminal";
+export type RightPanelTab = "browser" | "project" | "terminal" | "git";
 export type SidebarTab = "chats" | "projects";
+
+// 左侧栏宽度边界：保持目录可读，并避免过宽挤占聊天区。
+export const SIDEBAR_WIDTH_MIN = 220;
+export const SIDEBAR_WIDTH_MAX = 520;
+export const DEFAULT_SIDEBAR_WIDTH = 256;
+
+// 右侧栏宽度边界：支持 Git/终端面板信息展示，同时控制总体占比。
+export const RIGHT_PANEL_WIDTH_MIN = 320;
+export const RIGHT_PANEL_WIDTH_MAX = 760;
+export const DEFAULT_RIGHT_PANEL_WIDTH = 384;
 
 interface RawToolCallInfo {
   id: string;
@@ -322,7 +356,8 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const promptTokens = Number(usage.promptTokens ?? 0);
   const completionTokens = Number(usage.completionTokens ?? 0);
   const totalTokens = Number(usage.totalTokens ?? promptTokens + completionTokens);
-  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0) {
+  const callCount = Number(usage.callCount ?? 0);
+  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0 && callCount <= 0) {
     return undefined;
   }
 
@@ -330,6 +365,7 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     promptTokens: Math.max(0, promptTokens),
     completionTokens: Math.max(0, completionTokens),
     totalTokens: Math.max(0, totalTokens),
+    ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
   };
 }
 
@@ -339,6 +375,34 @@ function normalizeTokenBudget(value?: number | null): number | undefined {
     return undefined;
   }
   return Math.floor(budget);
+}
+
+function normalizePendingFileReviewFiles(files: PendingFileReviewFile[]): PendingFileReviewFile[] {
+  return files.map((file) => ({
+    path: file.path.trim(),
+    action: file.action || "modified",
+    moveTo: file.moveTo,
+    baseContent: file.baseContent,
+    candidateContent: file.candidateContent,
+    editedContent: file.editedContent,
+    keep: file.keep !== false,
+  })).filter((file) => file.path.length > 0);
+}
+
+function normalizePendingFileReview(review: PendingFileReview): PendingFileReview {
+  const files = normalizePendingFileReviewFiles(review.files);
+  const keepAll = files.length > 0 && files.every((file) => file.keep);
+  const selectedPath = review.selectedPath && files.some((file) => file.path === review.selectedPath)
+    ? review.selectedPath
+    : files[0]?.path ?? null;
+  return {
+    ...review,
+    files,
+    selectedPath,
+    keepAll,
+    status: review.status ?? "pending",
+    error: review.error,
+  };
 }
 
 function normalizeThreadGoal(goal?: ApiThreadGoal | null): ThreadGoal | null {
@@ -444,6 +508,8 @@ const ACTIVE_MODEL_KEY = "active-model";
 const PROVIDERS_KEY = "providers";
 const ACTIVE_PROVIDER_KEY = "active-provider";
 const AUTO_APPROVE_KEY = "auto-approve";
+const SIDEBAR_WIDTH_KEY = "sidebar-width";
+const RIGHT_PANEL_WIDTH_KEY = "right-panel-width";
 
 /**
  * 供应商预设模板列表
@@ -601,6 +667,21 @@ function saveActiveProject(id: string | null, cwd: string | null) {
   }
 }
 
+function clampPanelWidth(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function saveSidebarWidth(width: number) {
+  void appStateSet(SIDEBAR_WIDTH_KEY, String(clampPanelWidth(width, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)));
+}
+
+function saveRightPanelWidth(width: number) {
+  void appStateSet(
+    RIGHT_PANEL_WIDTH_KEY,
+    String(clampPanelWidth(width, RIGHT_PANEL_WIDTH_MIN, RIGHT_PANEL_WIDTH_MAX)),
+  );
+}
+
 function getLeafName(path: string): string {
   const parts = path.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || path;
@@ -626,6 +707,10 @@ interface AppState {
 
   /** 输入框附件列表 */
   attachedFiles: AttachedFile[];
+  /** 由外部面板注入到输入框的待插入文本（例如代码片段） */
+  pendingComposerInsert: string | null;
+  /** apply_patch 的“写盘前审阅”会话，按 callId 建索引。 */
+  pendingFileReviews: Record<string, PendingFileReview>;
 
   projects: Project[];
   currentProjectId: string | null;
@@ -641,6 +726,8 @@ interface AppState {
   showSettings: boolean;
   rightPanelVisible: boolean;
   rightPanelTab: RightPanelTab;
+  sidebarWidth: number;
+  rightPanelWidth: number;
   browserPanelUrl: string | null;
   browserPanelTitle: string | null;
   browserPanelStatus: "idle" | "running" | "success" | "failed";
@@ -684,6 +771,8 @@ interface AppState {
   addAttachedFile: (file: AttachedFile) => void;
   removeAttachedFile: (index: number) => void;
   clearAttachedFiles: () => void;
+  queueComposerInsert: (text: string) => void;
+  consumeComposerInsert: () => string | null;
 
   userHomeDir: string | null;
   setUserHomeDir: (dir: string) => void;
@@ -711,6 +800,17 @@ interface AppState {
   addMessage: (message: ChatMessage) => void;
   updateToolCallStatus: (toolId: string, status: "success" | "failed", output?: string) => void;
   updateToolCallPatchProgress: (toolId: string, changes: PatchProgressChange[]) => void;
+  upsertPendingFileReview: (review: PendingFileReview) => void;
+  removePendingFileReview: (callId: string) => void;
+  setPendingFileReviewSelectedPath: (callId: string, path: string) => void;
+  setPendingFileReviewFileKeep: (callId: string, path: string, keep: boolean) => void;
+  setPendingFileReviewKeepAll: (callId: string, keepAll: boolean) => void;
+  setPendingFileReviewEditedContent: (callId: string, path: string, content: string) => void;
+  setPendingFileReviewStatus: (
+    callId: string,
+    status: PendingFileReview["status"],
+    error?: string,
+  ) => void;
   markRunningToolCallsInterrupted: (reason?: string) => void;
   appendStreamingText: (delta: string) => void;
   clearStreamingText: () => void;
@@ -722,6 +822,8 @@ interface AppState {
   setRightPanelVisible: (v: boolean) => void;
   toggleRightPanel: () => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
+  setSidebarWidth: (width: number) => void;
+  setRightPanelWidth: (width: number) => void;
   setAutoApprove: (v: boolean) => void;
   setSidebarTab: (tab: SidebarTab) => void;
   setSelectedRobotId: (id: string | null) => void;
@@ -747,6 +849,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   providers: [],
   activeProviderId: null,
   attachedFiles: [],
+  pendingComposerInsert: null,
+  pendingFileReviews: {},
   workspaceCwd: null,
   configDir: null,
   configPath: null,
@@ -772,6 +876,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   robotCreateMode: false,
   rightPanelVisible: false,
   rightPanelTab: "browser",
+  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+  rightPanelWidth: DEFAULT_RIGHT_PANEL_WIDTH,
   browserPanelUrl: null,
   browserPanelTitle: null,
   browserPanelStatus: "idle",
@@ -781,7 +887,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   retryInit: null,
   setRetryInit: (fn) => set({ retryInit: fn }),
   setCurrentThread: (id) => {
-    set({ currentThreadId: id, messages: [], streamingText: "", streamingLabel: "", currentGoal: null, selectedRobotId: null, robotCreateMode: false });
+    set({
+      currentThreadId: id,
+      messages: [],
+      streamingText: "",
+      streamingLabel: "",
+      currentGoal: null,
+      selectedRobotId: null,
+      robotCreateMode: false,
+      pendingComposerInsert: null,
+      pendingFileReviews: {},
+    });
   },
   startNewThreadWithMessage: (threadId, message) => {
     set({
@@ -791,6 +907,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       streamingLabel: "",
       isStreaming: false,
       currentGoal: null,
+      pendingComposerInsert: null,
+      pendingFileReviews: {},
     });
   },
   setCurrentTurnId: (id) => set({ currentTurnId: id }),
@@ -1031,6 +1149,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   removeAttachedFile: (index) =>
     set((s) => ({ attachedFiles: s.attachedFiles.filter((_, i) => i !== index) })),
   clearAttachedFiles: () => set({ attachedFiles: [] }),
+  queueComposerInsert: (text) =>
+    set((state) => {
+      const payload = text.trim();
+      if (!payload) {
+        return {};
+      }
+      // 支持连续注入：若输入框尚未消费上一段内容，则按空行拼接，避免覆盖。
+      return {
+        pendingComposerInsert: state.pendingComposerInsert
+          ? `${state.pendingComposerInsert}\n\n${payload}`
+          : payload,
+      };
+    }),
+  consumeComposerInsert: () => {
+    const current = get().pendingComposerInsert;
+    if (current) {
+      set({ pendingComposerInsert: null });
+    }
+    return current;
+  },
 
   setThreads: (threads) => set({ threads }),
   addThread: (thread) => {
@@ -1091,7 +1229,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       threads,
       threadProjectMap: tpMap,
       ...(isCurrent
-        ? { currentThreadId: null, messages: [], streamingText: "", currentTurnId: null }
+        ? {
+          currentThreadId: null,
+          messages: [],
+          streamingText: "",
+          currentTurnId: null,
+          pendingFileReviews: {},
+        }
         : {}),
     });
     threadArchive(threadId).catch(() => {});
@@ -1137,6 +1281,120 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       return {};
+    }),
+  upsertPendingFileReview: (review) =>
+    set((state) => {
+      const normalized = normalizePendingFileReview(review);
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [normalized.callId]: normalized,
+        },
+      };
+    }),
+  removePendingFileReview: (callId) =>
+    set((state) => {
+      if (!state.pendingFileReviews[callId]) {
+        return {};
+      }
+      const next = { ...state.pendingFileReviews };
+      delete next[callId];
+      return { pendingFileReviews: next };
+    }),
+  setPendingFileReviewSelectedPath: (callId, path) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      if (!review.files.some((file) => file.path === path)) return {};
+      if (review.selectedPath === path) return {};
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: { ...review, selectedPath: path },
+        },
+      };
+    }),
+  setPendingFileReviewFileKeep: (callId, path, keep) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      let changed = false;
+      const files = review.files.map((file) => {
+        if (file.path !== path) {
+          return file;
+        }
+        if (file.keep === keep) {
+          return file;
+        }
+        changed = true;
+        return { ...file, keep };
+      });
+      if (!changed) {
+        return {};
+      }
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: {
+            ...review,
+            files,
+            keepAll: files.length > 0 && files.every((file) => file.keep),
+          },
+        },
+      };
+    }),
+  setPendingFileReviewKeepAll: (callId, keepAll) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      const files = review.files.map((file) => ({ ...file, keep: keepAll }));
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: { ...review, files, keepAll },
+        },
+      };
+    }),
+  setPendingFileReviewEditedContent: (callId, path, content) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      let changed = false;
+      const files = review.files.map((file) => {
+        if (file.path !== path || file.action === "deleted") {
+          return file;
+        }
+        if ((file.editedContent ?? file.candidateContent ?? "") === content) {
+          return file;
+        }
+        changed = true;
+        const editedContent = file.candidateContent === content ? undefined : content;
+        return {
+          ...file,
+          ...(editedContent !== undefined ? { editedContent } : { editedContent: undefined }),
+        };
+      });
+      if (!changed) {
+        return {};
+      }
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: { ...review, files, status: "pending", error: undefined },
+        },
+      };
+    }),
+  setPendingFileReviewStatus: (callId, status, error) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      if (review.status === status && review.error === error) return {};
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: { ...review, status, error },
+        },
+      };
     }),
   markRunningToolCallsInterrupted: (reason = "Tool interrupted by user.") =>
     set((s) => {
@@ -1200,6 +1458,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   setRightPanelVisible: (v) => set({ rightPanelVisible: v }),
   toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
   setRightPanelTab: (tab) => set({ rightPanelTab: tab, rightPanelVisible: true }),
+  setSidebarWidth: (width) => {
+    const clamped = clampPanelWidth(width, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
+    saveSidebarWidth(clamped);
+    set({ sidebarWidth: clamped });
+  },
+  setRightPanelWidth: (width) => {
+    const clamped = clampPanelWidth(width, RIGHT_PANEL_WIDTH_MIN, RIGHT_PANEL_WIDTH_MAX);
+    saveRightPanelWidth(clamped);
+    set({ rightPanelWidth: clamped });
+  },
   setBrowserPanelState: (state) =>
     set({
       ...(state.url !== undefined ? { browserPanelUrl: state.url } : {}),
@@ -1221,6 +1489,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           isStreaming: false,
           currentTurnId: null,
           currentGoal: null,
+          pendingFileReviews: {},
           ...(isGeneral ? { chatMode: "chat" as ChatMode } : {}),
         });
         const newThread: ThreadSummary = {
@@ -1290,6 +1559,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamingText: "",
         isStreaming: false,
         currentGoal: normalizeThreadGoal(rawThread?.goal),
+        pendingFileReviews: {},
       });
       if (rawThread?.id) {
         set((state) => {
@@ -1316,6 +1586,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamingText: "",
         isStreaming: false,
         currentGoal: null,
+        pendingFileReviews: {},
       });
     }
   },
@@ -1337,6 +1608,8 @@ export async function initStoreFromDb(): Promise<void> {
   let activeModelId: string | null = null;
   let autoApprove = false;
   let sidebarTab: SidebarTab = "chats";
+  let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+  let rightPanelWidth = DEFAULT_RIGHT_PANEL_WIDTH;
   let currentProjectId: string | null = null;
   let workspaceCwd: string | null = null;
 
@@ -1373,6 +1646,18 @@ export async function initStoreFromDb(): Promise<void> {
   activeModelId = all[ACTIVE_MODEL_KEY] ?? null;
   autoApprove = all[AUTO_APPROVE_KEY] === "true";
   if (all["sidebar-tab"] === "projects") sidebarTab = "projects";
+  if (all[SIDEBAR_WIDTH_KEY]) {
+    const parsed = Number(all[SIDEBAR_WIDTH_KEY]);
+    if (Number.isFinite(parsed)) {
+      sidebarWidth = clampPanelWidth(parsed, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
+    }
+  }
+  if (all[RIGHT_PANEL_WIDTH_KEY]) {
+    const parsed = Number(all[RIGHT_PANEL_WIDTH_KEY]);
+    if (Number.isFinite(parsed)) {
+      rightPanelWidth = clampPanelWidth(parsed, RIGHT_PANEL_WIDTH_MIN, RIGHT_PANEL_WIDTH_MAX);
+    }
+  }
 
   try {
     if (all[ACTIVE_PROJECT_KEY]) {
@@ -1396,6 +1681,8 @@ export async function initStoreFromDb(): Promise<void> {
     activeModelId,
     autoApprove,
     sidebarTab,
+    sidebarWidth,
+    rightPanelWidth,
     currentProjectId,
     workspaceCwd,
   });

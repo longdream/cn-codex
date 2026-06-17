@@ -1,0 +1,142 @@
+import { invoke } from "@tauri-apps/api/core";
+
+export interface GitStatusEntry {
+  path: string;
+  oldPath?: string | null;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+}
+
+export interface GitStatusResponse {
+  branch: string;
+  upstream?: string | null;
+  ahead: number;
+  behind: number;
+  isClean: boolean;
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  changes: GitStatusEntry[];
+}
+
+export interface GitDiffResponse {
+  text: string;
+  isEmpty: boolean;
+}
+
+export interface GitLogEntry {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  message: string;
+}
+
+export interface GitLogResponse {
+  entries: GitLogEntry[];
+}
+
+export interface GitBranchEntry {
+  name: string;
+  current: boolean;
+  upstream?: string | null;
+}
+
+export interface GitBranchListResponse {
+  current?: string | null;
+  branches: GitBranchEntry[];
+}
+
+export interface GitActionResponse {
+  ok: boolean;
+  message: string;
+  stdout: string;
+  stderr: string;
+}
+
+export async function gitStatus(cwd?: string): Promise<GitStatusResponse> {
+  return invoke("git_status", { cwd });
+}
+
+export async function gitDiff(
+  cwd?: string,
+  path?: string,
+  staged?: boolean,
+): Promise<GitDiffResponse> {
+  return invoke("git_diff", { cwd, path, staged });
+}
+
+export async function gitLog(cwd?: string, limit?: number): Promise<GitLogResponse> {
+  return invoke("git_log", { cwd, limit });
+}
+
+export async function gitBranchList(cwd?: string): Promise<GitBranchListResponse> {
+  return invoke("git_branch_list", { cwd });
+}
+
+export async function gitStage(paths: string[], cwd?: string): Promise<GitActionResponse> {
+  return invoke("git_stage", { cwd, paths });
+}
+
+export async function gitUnstage(paths: string[], cwd?: string): Promise<GitActionResponse> {
+  return invoke("git_unstage", { cwd, paths });
+}
+
+export async function gitCommit(message: string, cwd?: string): Promise<GitActionResponse> {
+  return invoke("git_commit", { cwd, message });
+}
+
+export async function gitCheckout(
+  branch: string,
+  create?: boolean,
+  cwd?: string,
+): Promise<GitActionResponse> {
+  return invoke("git_checkout", { cwd, branch, create });
+}
+
+export async function gitPull(
+  cwd?: string,
+  remote?: string,
+  branch?: string,
+  rebase?: boolean,
+): Promise<GitActionResponse> {
+  return invoke("git_pull", { cwd, remote, branch, rebase });
+}
+
+export async function gitPush(
+  cwd?: string,
+  remote?: string,
+  branch?: string,
+  setUpstream?: boolean,
+): Promise<GitActionResponse> {
+  return invoke("git_push", { cwd, remote, branch, setUpstream });
+}
+
+export async function gitReset(
+  mode: "soft" | "mixed" | "hard",
+  target: string,
+  confirmDangerous: boolean,
+  cwd?: string,
+): Promise<GitActionResponse> {
+  return invoke("git_reset", { cwd, mode, target, confirmDangerous });
+}
+
+export async function gitRevert(
+  commit: string,
+  confirmDangerous: boolean,
+  cwd?: string,
+  noEdit = true,
+): Promise<GitActionResponse> {
+  return invoke("git_revert", { cwd, commit, noEdit, confirmDangerous });
+}
+
+export async function gitCherryPick(
+  commit: string,
+  confirmDangerous: boolean,
+  cwd?: string,
+  noCommit = false,
+): Promise<GitActionResponse> {
+  return invoke("git_cherry_pick", { cwd, commit, noCommit, confirmDangerous });
+}

@@ -7,13 +7,15 @@ pub mod config_system;
 pub mod conversation_logger;
 pub mod document_parser;
 pub mod error;
+pub mod file_review;
+pub mod git_service;
 pub mod hook_runtime;
 pub mod mobile_server;
-pub mod relay_client;
 pub mod plugin_loader;
+pub mod protocol;
+pub mod relay_client;
 pub mod robot_loader;
 pub mod robot_orchestrator;
-pub mod protocol;
 pub mod standalone;
 pub mod state;
 pub mod terminal;
@@ -212,12 +214,36 @@ pub fn run() {
             commands::window_resize_browser,
             commands::window_navigate_browser,
             commands::window_close_browser,
+            commands::window_open_document_detail,
+            commands::window_close_document_detail,
+            commands::window_get_document_detail_path,
+            commands::document_detail_insert_snippet,
             commands::reveal_in_explorer,
             commands::window_toggle_devtools,
             commands::get_user_home_dir,
             commands::read_directory,
             commands::read_file_for_attach,
             commands::read_text_file_preview,
+            commands::write_text_file_preview,
+            // Git panel commands
+            commands::git_status,
+            commands::git_diff,
+            commands::git_log,
+            commands::git_branch_list,
+            commands::git_stage,
+            commands::git_unstage,
+            commands::git_commit,
+            commands::git_checkout,
+            commands::git_pull,
+            commands::git_push,
+            commands::git_reset,
+            commands::git_revert,
+            commands::git_cherry_pick,
+            // File review (pre-apply gate)
+            commands::file_review_get,
+            commands::file_review_update,
+            commands::file_review_apply,
+            commands::file_review_cancel,
             // Terminal
             terminal::terminal_create,
             terminal::terminal_write,

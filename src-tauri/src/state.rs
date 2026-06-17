@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -7,6 +8,7 @@ use tracing::info;
 
 use crate::agent::AgentEngine;
 use crate::config_system::ConfigManager;
+use crate::file_review::PendingPatchReview;
 use crate::protocol::{JSONRPCErrorError, RequestId};
 use crate::standalone::StandaloneState;
 use crate::thread_store::ThreadStore;
@@ -47,6 +49,19 @@ pub struct AppState {
     pub pricing_table: Arc<std::sync::RwLock<PricingTable>>,
     /// WPS WebSocket 服务
     pub wps_server: Arc<WpsServer>,
+    /// apply_patch 待审阅会话缓存（写盘前确认）。
+    ///
+    /// 说明：
+    /// - key 由 `threadId + callId` 组合，保证同线程多次 apply_patch 不互相覆盖；
+    /// - 由 tool_executor 写入，file_review 命令读取/更新/应用/取消。
+    pub file_review_sessions: Arc<RwLock<HashMap<String, PendingPatchReview>>>,
+    /// 当前文档详情窗激活的文件路径。
+    ///
+    /// 说明：
+    /// - 该状态由 `window_open_document_detail` 更新；
+    /// - 详情窗初始化时读取该值，避免“窗口刚创建时事件尚未监听”造成首屏空白；
+    /// - 关闭详情窗后清空，防止主窗后续误读旧路径。
+    pub document_detail_active_path: Arc<RwLock<Option<String>>>,
 }
 
 fn canonicalize_or_keep(path: PathBuf) -> PathBuf {
@@ -204,6 +219,8 @@ impl AppState {
             usage_db,
             pricing_table,
             wps_server,
+            file_review_sessions: Arc::new(RwLock::new(HashMap::new())),
+            document_detail_active_path: Arc::new(RwLock::new(None)),
         }
     }
 }
