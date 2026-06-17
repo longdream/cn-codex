@@ -11,7 +11,7 @@ use tauri::{
 };
 
 use crate::error::{AppError, AppResult};
-use crate::state::AppState;
+use crate::state::{AppState, RunSummaryDiffPayload};
 
 const BROWSER_WEBVIEW_LABEL: &str = "cn-browser";
 const BROWSER_DEBUG_PORT: u16 = 9242;
@@ -19,6 +19,8 @@ const BROWSER_ENDPOINT_FILE: &str = "visible-browser.json";
 const DOCUMENT_DETAIL_WINDOW_LABEL: &str = "document-detail";
 const DOCUMENT_DETAIL_OPEN_EVENT: &str = "document-detail-open";
 const DOCUMENT_DETAIL_INSERT_EVENT: &str = "document-detail-insert-snippet";
+const RUNSUMMARY_DIFF_WINDOW_LABEL: &str = "runsummary-diff";
+const RUNSUMMARY_DIFF_OPEN_EVENT: &str = "runsummary-diff-open";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +35,14 @@ pub struct BrowserWindowInfo {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentDetailWindowInfo {
+    pub label: String,
+    pub path: String,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSummaryDiffWindowInfo {
     pub label: String,
     pub path: String,
     pub created: bool,
@@ -241,6 +251,90 @@ pub async fn window_get_document_detail_path(
 }
 
 #[tauri::command]
+pub async fn window_open_runsummary_diff(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: RunSummaryDiffPayload,
+) -> AppResult<RunSummaryDiffWindowInfo> {
+    // 统一在命令入口完成路径与枚举值规范化，避免前端多入口造成不一致。
+    let normalized_payload = normalize_runsummary_diff_payload(payload);
+    {
+        // 先缓存 payload，确保新窗口首帧可通过 get command 拉到最新数据。
+        let mut guard = state.runsummary_diff_payload.write().await;
+        *guard = Some(normalized_payload.clone());
+    }
+
+    if let Some(window) = app.get_webview_window(RUNSUMMARY_DIFF_WINDOW_LABEL) {
+        if !window.is_visible().unwrap_or(true) {
+            window.show()?;
+        }
+        window.set_focus()?;
+        let _ = app.emit_to(
+            RUNSUMMARY_DIFF_WINDOW_LABEL,
+            RUNSUMMARY_DIFF_OPEN_EVENT,
+            normalized_payload.clone(),
+        );
+        return Ok(RunSummaryDiffWindowInfo {
+            label: RUNSUMMARY_DIFF_WINDOW_LABEL.to_string(),
+            path: normalized_payload.path,
+            created: false,
+        });
+    }
+
+    let diff_window = WebviewWindowBuilder::new(
+        &app,
+        RUNSUMMARY_DIFF_WINDOW_LABEL,
+        runsummary_diff_window_url()?,
+    )
+    .title("RunSummary Diff")
+    .inner_size(1060.0, 760.0)
+    .min_inner_size(760.0, 520.0)
+    .resizable(true)
+    .decorations(false)
+    .build()?;
+
+    diff_window.show()?;
+    diff_window.set_focus()?;
+
+    let active_payload = state.runsummary_diff_payload.clone();
+    diff_window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            let active_payload = active_payload.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut guard = active_payload.write().await;
+                *guard = None;
+            });
+        }
+    });
+
+    Ok(RunSummaryDiffWindowInfo {
+        label: RUNSUMMARY_DIFF_WINDOW_LABEL.to_string(),
+        path: normalized_payload.path,
+        created: true,
+    })
+}
+
+#[tauri::command]
+pub async fn window_close_runsummary_diff(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    if let Some(window) = app.get_webview_window(RUNSUMMARY_DIFF_WINDOW_LABEL) {
+        window.close()?;
+    }
+    let mut guard = state.runsummary_diff_payload.write().await;
+    *guard = None;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn window_get_runsummary_diff_payload(
+    state: State<'_, AppState>,
+) -> AppResult<Option<RunSummaryDiffPayload>> {
+    Ok(state.runsummary_diff_payload.read().await.clone())
+}
+
+#[tauri::command]
 pub fn document_detail_insert_snippet(app: AppHandle, snippet: String) -> AppResult<()> {
     let payload_text = snippet.trim();
     if payload_text.is_empty() {
@@ -418,6 +512,14 @@ fn normalize_windows_verbatim_prefix(raw: &str) -> String {
     }
 }
 
+fn normalize_runsummary_diff_payload(mut payload: RunSummaryDiffPayload) -> RunSummaryDiffPayload {
+    // 路径统一去除 Windows `\\?\` 前缀，前后端展示和写盘命令都使用同一形态。
+    payload.path = normalize_windows_verbatim_prefix(&payload.path);
+    payload.file_action = payload.file_action.trim().to_lowercase();
+    payload.diff_source = payload.diff_source.trim().to_lowercase();
+    payload
+}
+
 fn resolve_existing_file_path(path: &str) -> AppResult<(String, std::path::PathBuf)> {
     // 所有“文档详情窗相关读写”统一使用同一套路径标准化逻辑，
     // 避免 Windows `\\?\` 前缀在不同命令中的判定不一致。
@@ -452,6 +554,29 @@ fn document_detail_window_url() -> AppResult<WebviewUrl> {
     {
         // 生产构建使用打包后的 detail.html 入口，避免与主窗 UI 互相污染。
         Ok(WebviewUrl::App("detail.html".into()))
+    }
+}
+
+fn runsummary_diff_window_url() -> AppResult<WebviewUrl> {
+    #[cfg(debug_assertions)]
+    {
+        // 开发环境下独立 Diff 窗走独立入口，确保主窗与 Diff 窗构建隔离且支持热更新。
+        let dev_url =
+            std::env::var("TAURI_DEV_URL").unwrap_or_else(|_| "http://localhost:1420".to_string());
+        let base = dev_url.trim().trim_end_matches('/');
+        let final_url = format!("{base}/diff.html");
+        let parsed = Url::parse(&final_url).map_err(|e| {
+            AppError::Custom(format!(
+                "Invalid runsummary diff dev url '{final_url}': {e}"
+            ))
+        })?;
+        return Ok(WebviewUrl::External(parsed));
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        // 生产构建使用打包后的 diff.html，避免主窗内弹层造成交互耦合。
+        Ok(WebviewUrl::App("diff.html".into()))
     }
 }
 

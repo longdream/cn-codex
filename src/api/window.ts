@@ -14,6 +14,23 @@ export interface DocumentDetailWindowInfo {
   created: boolean;
 }
 
+export interface RunSummaryDiffPayload {
+  path: string;
+  beforeContent: string;
+  afterContent: string;
+  fileAction: string;
+  diffSource: "snapshot" | "patch" | "empty";
+  canPersist: boolean;
+  persistHint?: string;
+  emptyHint?: string;
+}
+
+export interface RunSummaryDiffWindowInfo {
+  label: string;
+  path: string;
+  created: boolean;
+}
+
 export async function windowStartDragging(): Promise<void> {
   await invoke("window_start_dragging");
 }
@@ -75,6 +92,20 @@ export async function windowCloseDocumentDetail(): Promise<void> {
 
 export async function windowGetDocumentDetailPath(): Promise<string | null> {
   return invoke<string | null>("window_get_document_detail_path");
+}
+
+export async function windowOpenRunSummaryDiff(
+  payload: RunSummaryDiffPayload,
+): Promise<RunSummaryDiffWindowInfo> {
+  return invoke<RunSummaryDiffWindowInfo>("window_open_runsummary_diff", { payload });
+}
+
+export async function windowCloseRunSummaryDiff(): Promise<void> {
+  await invoke("window_close_runsummary_diff");
+}
+
+export async function windowGetRunSummaryDiffPayload(): Promise<RunSummaryDiffPayload | null> {
+  return invoke<RunSummaryDiffPayload | null>("window_get_runsummary_diff_payload");
 }
 
 export async function documentDetailInsertSnippet(snippet: string): Promise<void> {

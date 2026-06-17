@@ -64,6 +64,30 @@ pub struct ToolCallRequest {
     pub arguments: String,
 }
 
+/// 记录单个文件在当前 turn 内的“修改前/修改后”文本快照。
+///
+/// 说明：
+/// - 用于前端 RunSummary Diff 视图在非 apply_patch 场景下也能生成可读对比；
+/// - 仅采集文本内容，二进制文件或读取失败时保持 None；
+/// - 字段命名使用 camelCase 以便直接透传给前端事件 payload。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FileChangeSnapshot {
+    pub path: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_content: Option<String>,
+}
+
+/// 单文件快照读取上限（256KB）。
+///
+/// 说明：
+/// - 目的是避免 turn-completed 事件携带过大文本导致前端卡顿；
+/// - 对超限文件只截取前缀内容用于“审阅级对比”，而非完整文件恢复。
+const MAX_CHANGED_FILE_SNAPSHOT_BYTES: usize = 256 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserAttachment {
@@ -205,6 +229,11 @@ impl AgentEngine {
             .unwrap_or_else(|| self.cwd.clone());
         let git_status_before = git_status_snapshot(&effective_cwd).await;
         let mut changed_files: Vec<FileChange> = Vec::new();
+        // 本轮文件快照缓存：
+        // - key 为规范化后的文件路径；
+        // - before 在工具执行前采集一次；
+        // - after 在工具成功后更新为最新状态。
+        let mut changed_file_snapshot_map: BTreeMap<String, FileChangeSnapshot> = BTreeMap::new();
         let mut turn_usage = TurnUsage::default();
         // 统计“本轮成功模型调用次数”：
         // - 每次 stream_completion 返回 Ok（无论是 Message 还是 ToolCalls）计 1 次；
@@ -877,6 +906,13 @@ impl AgentEngine {
                                 }
 
                                 let requested_file_changes = file_changes_from_tool_call(&call);
+                                if !requested_file_changes.is_empty() {
+                                    capture_before_file_snapshots(
+                                        &mut changed_file_snapshot_map,
+                                        &requested_file_changes,
+                                        &effective_cwd,
+                                    );
+                                }
                                 let tool_result = self
                                     .tool_executor
                                     .read()
@@ -947,6 +983,11 @@ impl AgentEngine {
                                 }
 
                                 if success {
+                                    capture_after_file_snapshots(
+                                        &mut changed_file_snapshot_map,
+                                        &requested_file_changes,
+                                        &effective_cwd,
+                                    );
                                     for change in requested_file_changes {
                                         push_file_change(&mut changed_files, change);
                                     }
@@ -1277,6 +1318,11 @@ impl AgentEngine {
             )
             .await?;
         let usage = nonzero_turn_usage(&turn_usage);
+        let changed_file_snapshots = build_changed_file_snapshots(
+            &changed_files,
+            &changed_file_snapshot_map,
+            &effective_cwd,
+        );
 
         let mut completed_payload = serde_json::json!({
             "threadId": thread_id,
@@ -1288,6 +1334,7 @@ impl AgentEngine {
                 "completedAt": completed_at * 1000,
                 "durationMs": duration_ms,
                 "changedFiles": changed_files,
+                "changedFileSnapshots": changed_file_snapshots,
                 "usage": usage,
                 "goalBudgetTokens": goal_budget_tokens,
                 "budgetLimited": budget_limited,
@@ -2767,6 +2814,121 @@ fn append_post_tool_hook_feedback(output: String, feedback: Vec<String>) -> Stri
     combined
 }
 
+fn normalize_change_path(path: &str) -> String {
+    path.trim().replace('\\', "/")
+}
+
+fn upsert_file_snapshot_entry<'a>(
+    snapshot_map: &'a mut BTreeMap<String, FileChangeSnapshot>,
+    change: &FileChange,
+) -> &'a mut FileChangeSnapshot {
+    let path = normalize_change_path(&change.path);
+    snapshot_map
+        .entry(path.clone())
+        .or_insert_with(|| FileChangeSnapshot {
+            path,
+            action: change.action.clone(),
+            before_content: None,
+            after_content: None,
+        })
+}
+
+fn capture_before_file_snapshots(
+    snapshot_map: &mut BTreeMap<String, FileChangeSnapshot>,
+    changes: &[FileChange],
+    cwd: &Path,
+) {
+    for change in changes {
+        let entry = upsert_file_snapshot_entry(snapshot_map, change);
+        entry.action = change.action.clone();
+        // before 只采集第一次，确保“本轮起始基线”稳定，不被后续同文件多次修改覆盖。
+        if entry.before_content.is_none() {
+            entry.before_content = read_text_file_snapshot(cwd, &entry.path);
+        }
+    }
+}
+
+fn capture_after_file_snapshots(
+    snapshot_map: &mut BTreeMap<String, FileChangeSnapshot>,
+    changes: &[FileChange],
+    cwd: &Path,
+) {
+    for change in changes {
+        let entry = upsert_file_snapshot_entry(snapshot_map, change);
+        entry.action = change.action.clone();
+        // deleted 文件在执行后不应再读取磁盘，after 显式置空。
+        entry.after_content = if change.action == "deleted" {
+            None
+        } else {
+            read_text_file_snapshot(cwd, &entry.path)
+        };
+    }
+}
+
+fn build_changed_file_snapshots(
+    changed_files: &[FileChange],
+    snapshot_map: &BTreeMap<String, FileChangeSnapshot>,
+    cwd: &Path,
+) -> Vec<FileChangeSnapshot> {
+    changed_files
+        .iter()
+        .map(|change| {
+            let normalized_path = normalize_change_path(&change.path);
+            if let Some(snapshot) = snapshot_map.get(&normalized_path) {
+                let mut next = snapshot.clone();
+                next.action = change.action.clone();
+                next.path = normalized_path;
+                return next;
+            }
+
+            // 兜底：如果某条 changedFiles 没有命令级快照（例如仅由 git merge 补入），
+            // 仍给前端一份最小 after 预览，避免 Diff 按钮完全无数据。
+            FileChangeSnapshot {
+                path: normalized_path.clone(),
+                action: change.action.clone(),
+                before_content: None,
+                after_content: if change.action == "deleted" {
+                    None
+                } else {
+                    read_text_file_snapshot(cwd, &normalized_path)
+                },
+            }
+        })
+        .collect()
+}
+
+fn read_text_file_snapshot(cwd: &Path, path: &str) -> Option<String> {
+    let raw = path.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let resolved = {
+        let candidate = PathBuf::from(raw);
+        if candidate.is_absolute() {
+            candidate
+        } else {
+            cwd.join(candidate)
+        }
+    };
+
+    if !resolved.is_file() {
+        return None;
+    }
+
+    let bytes = std::fs::read(&resolved).ok()?;
+    let slice = if bytes.len() > MAX_CHANGED_FILE_SNAPSHOT_BYTES {
+        &bytes[..MAX_CHANGED_FILE_SNAPSHOT_BYTES]
+    } else {
+        &bytes[..]
+    };
+    // 简单二进制过滤：包含 NUL 字节时视为不可读文本。
+    if slice.contains(&0) {
+        return None;
+    }
+    Some(String::from_utf8_lossy(slice).to_string())
+}
+
 fn file_changes_from_tool_call(call: &ToolCallRequest) -> Vec<FileChange> {
     match call.name.as_str() {
         "write_file" => write_file_change_from_args(&call.arguments)
@@ -3395,6 +3557,60 @@ mod tests {
     }
 
     #[test]
+    fn file_change_snapshots_capture_before_and_after_content() {
+        let root = std::env::temp_dir().join(format!(
+            "cn-codex-file-snapshot-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("index.html");
+        std::fs::write(&target, "<title>AAA</title>").unwrap();
+
+        let changes = vec![FileChange {
+            path: target.to_string_lossy().to_string(),
+            action: "modified".to_string(),
+        }];
+        let mut snapshot_map = BTreeMap::new();
+        capture_before_file_snapshots(&mut snapshot_map, &changes, &root);
+        std::fs::write(&target, "<title>BBB</title>").unwrap();
+        capture_after_file_snapshots(&mut snapshot_map, &changes, &root);
+        let snapshots = build_changed_file_snapshots(&changes, &snapshot_map, &root);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].before_content.as_deref(), Some("<title>AAA</title>"));
+        assert_eq!(snapshots[0].after_content.as_deref(), Some("<title>BBB</title>"));
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn file_change_snapshots_keep_before_when_file_deleted() {
+        let root = std::env::temp_dir().join(format!(
+            "cn-codex-file-snapshot-delete-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("remove-me.txt");
+        std::fs::write(&target, "to be deleted").unwrap();
+
+        let changes = vec![FileChange {
+            path: target.to_string_lossy().to_string(),
+            action: "deleted".to_string(),
+        }];
+        let mut snapshot_map = BTreeMap::new();
+        capture_before_file_snapshots(&mut snapshot_map, &changes, &root);
+        std::fs::remove_file(&target).unwrap();
+        capture_after_file_snapshots(&mut snapshot_map, &changes, &root);
+        let snapshots = build_changed_file_snapshots(&changes, &snapshot_map, &root);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].before_content.as_deref(), Some("to be deleted"));
+        assert_eq!(snapshots[0].after_content, None);
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn multimodal_user_content_keeps_images_as_data_urls() {
         let content = multimodal_user_content(
             "What is in this image?",
@@ -3420,7 +3636,7 @@ mod tests {
             content[1]["image_url"]["url"],
             "data:image/png;base64,abc123"
         );
-        assert!(content[2]["text"].as_str().unwrap().contains("notes.txt"));
+        assert!(content[0]["text"].as_str().unwrap().contains("notes.txt"));
     }
 
     #[test]

@@ -27,6 +27,13 @@ export interface FileChange {
   action: string;
 }
 
+export interface FileChangeSnapshot {
+  path: string;
+  action: string;
+  beforeContent?: string;
+  afterContent?: string;
+}
+
 export interface PatchProgressChange {
   path: string;
   action: string;
@@ -71,6 +78,7 @@ export interface RunSummary {
   completedAt?: number;
   durationMs?: number;
   changedFiles: FileChange[];
+  changedFileSnapshots?: FileChangeSnapshot[];
   usage?: TokenUsage;
   goalBudgetTokens?: number;
   budgetLimited?: boolean;
@@ -157,6 +165,7 @@ interface RawTurn {
   mode?: ChatMode | null;
   durationMs?: number | null;
   changedFiles?: FileChange[];
+  changedFileSnapshots?: FileChangeSnapshot[];
   usage?: TokenUsage | null;
   goalBudgetTokens?: number | null;
   budgetLimited?: boolean | null;
@@ -342,10 +351,32 @@ function normalizeRunSummary(turn: RawTurn): RunSummary | null {
     completedAt: turn.completedAt ? toMillis(turn.completedAt) : undefined,
     durationMs: turn.durationMs ?? undefined,
     changedFiles: turn.changedFiles ?? [],
+    changedFileSnapshots: normalizeFileChangeSnapshots(turn.changedFileSnapshots),
     usage: normalizeTokenUsage(turn.usage),
     goalBudgetTokens: normalizeTokenBudget(turn.goalBudgetTokens),
     budgetLimited: Boolean(turn.budgetLimited),
   };
+}
+
+function normalizeFileChangeSnapshots(
+  snapshots?: FileChangeSnapshot[] | null,
+): FileChangeSnapshot[] | undefined {
+  if (!Array.isArray(snapshots) || snapshots.length === 0) {
+    return undefined;
+  }
+
+  const normalized = snapshots
+    .map((snapshot) => ({
+      path: String(snapshot.path ?? "").trim(),
+      action: String(snapshot.action ?? "modified").trim() || "modified",
+      beforeContent:
+        typeof snapshot.beforeContent === "string" ? snapshot.beforeContent : undefined,
+      afterContent:
+        typeof snapshot.afterContent === "string" ? snapshot.afterContent : undefined,
+    }))
+    .filter((snapshot) => snapshot.path.length > 0);
+
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined {

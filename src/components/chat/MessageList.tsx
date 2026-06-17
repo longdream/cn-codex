@@ -23,7 +23,11 @@ import {
 } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { fileReviewApply, fileReviewCancel, fileReviewUpdate } from "../../api/fileReview";
-import { revealInExplorer } from "../../api/window";
+import {
+  revealInExplorer,
+  windowOpenRunSummaryDiff,
+  type RunSummaryDiffPayload,
+} from "../../api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -93,8 +97,13 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   return (
     <div className="chat-dialog-surface thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pb-7 pt-6 sm:px-8">
       <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-5">
-        {messages.map((message) => (
-          <MessageRow key={message.id} message={message} />
+        {messages.map((message, index) => (
+          <MessageRow
+            key={message.id}
+            message={message}
+            messageIndex={index}
+            sourceMessages={messages}
+          />
         ))}
 
         {isStreaming && streamingText && (
@@ -129,11 +138,25 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   );
 }
 
-function MessageRow({ message }: { message: ChatMessage }) {
+function MessageRow({
+  message,
+  messageIndex,
+  sourceMessages,
+}: {
+  message: ChatMessage;
+  messageIndex: number;
+  sourceMessages: ChatMessage[];
+}) {
   const intl = useIntl();
 
   if (message.runSummary) {
-    return <RunSummaryCard summary={message.runSummary} />;
+    return (
+      <RunSummaryCard
+        summary={message.runSummary}
+        messageIndex={messageIndex}
+        sourceMessages={sourceMessages}
+      />
+    );
   }
 
   if (message.toolCalls && message.toolCalls.length > 0) {
@@ -200,13 +223,99 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function RunSummaryCard({ summary }: { summary: RunSummary }) {
+function RunSummaryCard({
+  summary,
+  messageIndex,
+  sourceMessages,
+}: {
+  summary: RunSummary;
+  messageIndex: number;
+  sourceMessages: ChatMessage[];
+}) {
   const intl = useIntl();
   const changedFiles = summary.changedFiles ?? [];
   const usage = summary.usage;
   const goalBudgetTokens = summary.goalBudgetTokens;
   const globalCwd = useAppStore((s) => s.workspaceCwd);
   const workspaceCwd = summary.cwd ?? globalCwd;
+  const patchDiffEntries = useRef<RunSummaryPatchDiffEntry[]>([]);
+
+  useEffect(() => {
+    // 仅提取“当前 RunSummary 所属轮次”的 apply_patch 补丁，
+    // 避免将历史轮次的文件差异误展示到当前按钮点击结果。
+    patchDiffEntries.current = collectRunSummaryPatchDiffEntries(
+      sourceMessages,
+      messageIndex,
+    );
+  }, [messageIndex, sourceMessages]);
+
+  const openDiffForFile = useCallback((file: { path: string; action: string }) => {
+    const filePath = file.path;
+    const absolutePath = toAbsolutePath(filePath, workspaceCwd);
+    const openDiffWindow = (payload: RunSummaryDiffPayload) => {
+      void windowOpenRunSummaryDiff(payload).catch((err) => {
+        console.error("Open runsummary diff window failed:", err);
+      });
+    };
+    const snapshotMatch = findRunSummarySnapshotEntry(
+      filePath,
+      summary.changedFileSnapshots,
+    );
+    const hasBeforeSnapshot = snapshotMatch?.beforeContent !== undefined;
+    const hasAfterSnapshot = snapshotMatch?.afterContent !== undefined;
+    if (
+      snapshotMatch
+      && (
+        hasBeforeSnapshot
+        || hasAfterSnapshot
+      )
+    ) {
+      const normalizedAction = (file.action || snapshotMatch.action || "modified").toLowerCase();
+      const canPersist = normalizedAction === "modified" && hasBeforeSnapshot && hasAfterSnapshot;
+      openDiffWindow({
+        path: absolutePath,
+        beforeContent: snapshotMatch.beforeContent ?? "",
+        afterContent: snapshotMatch.afterContent ?? "",
+        fileAction: normalizedAction,
+        diffSource: "snapshot",
+        canPersist,
+        persistHint: canPersist
+          ? undefined
+          : normalizedAction !== "modified"
+            ? "当前仅 modified 文件支持 Keep/Restore。"
+            : "当前快照数据不完整，无法执行 Keep/Restore。",
+      });
+      return;
+    }
+
+    // 新增的独立 Diff 图标只做补丁详情预览，不影响原有“打开资源管理器”行为。
+    const match = findRunSummaryPatchDiffEntry(filePath, patchDiffEntries.current);
+    if (match) {
+      openDiffWindow({
+        path: absolutePath,
+        beforeContent: match.beforeContent,
+        afterContent: match.afterContent,
+        fileAction: (file.action || "modified").toLowerCase(),
+        diffSource: "patch",
+        canPersist: false,
+        persistHint: "当前为补丁文本回退视图，仅支持查看 Diff，不支持写盘。",
+      });
+      return;
+    }
+
+    // 某些文件改动可能来自 write_file / shell，无法映射到 apply_patch 文本；
+    // 这里给出明确提示，避免用户误以为按钮失效。
+    openDiffWindow({
+      path: absolutePath,
+      beforeContent: "",
+      afterContent: "",
+      fileAction: (file.action || "modified").toLowerCase(),
+      diffSource: "empty",
+      canPersist: false,
+      persistHint: "当前无可写盘的快照数据。",
+      emptyHint: "当前文件无可用的本轮快照与补丁文本，暂无法生成 Diff。",
+    });
+  }, [summary.changedFileSnapshots, workspaceCwd]);
 
   return (
     <section className="max-w-[1100px]">
@@ -266,17 +375,30 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
                   {file.path}
                 </div>
               </div>
-              <button
-                type="button"
-                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--accent)]"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void revealInExplorer(toAbsolutePath(file.path, workspaceCwd));
-                }}
-                title={intl.formatMessage({ id: "chat.runSummary.revealFile" })}
-              >
-                <IconExternalLink size={15} stroke={1.8} />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--accent)]"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openDiffForFile(file);
+                  }}
+                  title="查看补丁 Diff"
+                >
+                  <IconFileDiff size={15} stroke={1.8} />
+                </button>
+                <button
+                  type="button"
+                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--accent)]"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void revealInExplorer(toAbsolutePath(file.path, workspaceCwd));
+                  }}
+                  title={intl.formatMessage({ id: "chat.runSummary.revealFile" })}
+                >
+                  <IconExternalLink size={15} stroke={1.8} />
+                </button>
+              </div>
             </div>
           ))
         ) : (
@@ -285,6 +407,7 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
           </div>
         )}
       </div>
+
     </section>
   );
 }
@@ -292,6 +415,215 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
 
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+interface RunSummaryPatchDiffEntry {
+  // 一个补丁项可能同时命中旧路径/新路径（例如 rename）。
+  paths: string[];
+  // 作为 Diff 左侧输入的文本。
+  beforeContent: string;
+  // 作为 Diff 右侧输入的文本。
+  afterContent: string;
+}
+
+interface RunSummarySnapshotEntry {
+  path: string;
+  action: string;
+  beforeContent?: string;
+  afterContent?: string;
+}
+
+function findRunSummarySnapshotEntry(
+  filePath: string,
+  snapshots?: RunSummarySnapshotEntry[],
+): RunSummarySnapshotEntry | null {
+  if (!Array.isArray(snapshots) || snapshots.length === 0) {
+    return null;
+  }
+  // 反向查找保持“后写覆盖前写”，与补丁回退策略一致。
+  for (let i = snapshots.length - 1; i >= 0; i -= 1) {
+    const snapshot = snapshots[i];
+    if (patchPathMatches(filePath, snapshot.path)) {
+      return snapshot;
+    }
+  }
+  return null;
+}
+
+function collectRunSummaryPatchDiffEntries(
+  messages: ChatMessage[],
+  summaryIndex: number,
+): RunSummaryPatchDiffEntry[] {
+  // 以“上一条 RunSummary”作为轮次边界，只解析当前轮消息中的补丁。
+  let startIndex = 0;
+  for (let i = summaryIndex - 1; i >= 0; i -= 1) {
+    if (messages[i].runSummary) {
+      startIndex = i + 1;
+      break;
+    }
+  }
+
+  const entries: RunSummaryPatchDiffEntry[] = [];
+  for (let i = startIndex; i < summaryIndex; i += 1) {
+    const message = messages[i];
+    for (const call of message.toolCalls ?? []) {
+      if (call.name !== "apply_patch") {
+        continue;
+      }
+      const patchBody = patchTextFromToolCall(call);
+      if (!patchBody) {
+        continue;
+      }
+      entries.push(...parsePatchDiffEntries(patchBody));
+    }
+  }
+  return entries;
+}
+
+function patchTextFromToolCall(call: ToolCallItem): string | null {
+  const args = parseToolArgs(call);
+  // apply_patch 在不同适配器下可能是 raw body，也可能放在 patch/command 字段。
+  const patchCandidate =
+    typeof args.patch === "string"
+      ? args.patch
+      : typeof args.command === "string"
+        ? args.command
+        : call.arguments;
+
+  if (
+    typeof patchCandidate !== "string" ||
+    !patchCandidate.trim().startsWith("*** Begin Patch")
+  ) {
+    return null;
+  }
+  return patchCandidate;
+}
+
+function parsePatchDiffEntries(patch: string): RunSummaryPatchDiffEntry[] {
+  // 解析 apply_patch 文本得到每个文件的 before/after 内容块。
+  // 说明：这里是“补丁级还原”，用于 Diff 可视化，不做完整文件重建。
+  const lines = patch.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const result: RunSummaryPatchDiffEntry[] = [];
+  let idx = 0;
+
+  const isBoundary = (line: string): boolean => {
+    return (
+      line.startsWith("*** Add File: ") ||
+      line.startsWith("*** Update File: ") ||
+      line.startsWith("*** Delete File: ") ||
+      line.startsWith("*** End Patch")
+    );
+  };
+
+  while (idx < lines.length) {
+    const line = lines[idx];
+
+    if (line.startsWith("*** Add File: ")) {
+      const path = line.slice("*** Add File: ".length).trim();
+      idx += 1;
+      const afterLines: string[] = [];
+      while (idx < lines.length && !isBoundary(lines[idx])) {
+        const body = lines[idx];
+        if (body.startsWith("+")) {
+          afterLines.push(body.slice(1));
+        }
+        idx += 1;
+      }
+      result.push({
+        paths: [path],
+        beforeContent: "",
+        afterContent: afterLines.join("\n"),
+      });
+      continue;
+    }
+
+    if (line.startsWith("*** Delete File: ")) {
+      const path = line.slice("*** Delete File: ".length).trim();
+      idx += 1;
+      result.push({
+        paths: [path],
+        // 删除文件在补丁里通常不含完整正文，这里用占位确保弹窗有明确反馈。
+        beforeContent: "[deleted file]",
+        afterContent: "",
+      });
+      continue;
+    }
+
+    if (line.startsWith("*** Update File: ")) {
+      const path = line.slice("*** Update File: ".length).trim();
+      let moveTo: string | null = null;
+      const beforeLines: string[] = [];
+      const afterLines: string[] = [];
+      idx += 1;
+      while (idx < lines.length && !isBoundary(lines[idx])) {
+        const body = lines[idx];
+        if (body.startsWith("*** Move to: ")) {
+          moveTo = body.slice("*** Move to: ".length).trim();
+          idx += 1;
+          continue;
+        }
+        if (body.startsWith("@@")) {
+          idx += 1;
+          continue;
+        }
+        if (body.startsWith("-")) {
+          beforeLines.push(body.slice(1));
+        } else if (body.startsWith("+")) {
+          afterLines.push(body.slice(1));
+        } else if (body.startsWith(" ")) {
+          const context = body.slice(1);
+          beforeLines.push(context);
+          afterLines.push(context);
+        }
+        idx += 1;
+      }
+      result.push({
+        paths: moveTo ? [path, moveTo] : [path],
+        beforeContent: beforeLines.join("\n"),
+        afterContent: afterLines.join("\n"),
+      });
+      continue;
+    }
+
+    idx += 1;
+  }
+
+  return result;
+}
+
+function normalizePathForDiffMatch(path: string): string {
+  // 统一路径格式，兼容 Windows 与 Unix 分隔符差异。
+  return path
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .toLowerCase();
+}
+
+function patchPathMatches(targetPath: string, patchPath: string): boolean {
+  const target = normalizePathForDiffMatch(targetPath);
+  const candidate = normalizePathForDiffMatch(patchPath);
+  if (!target || !candidate) {
+    return false;
+  }
+  return (
+    target === candidate ||
+    target.endsWith(`/${candidate}`) ||
+    candidate.endsWith(`/${target}`)
+  );
+}
+
+function findRunSummaryPatchDiffEntry(
+  filePath: string,
+  entries: RunSummaryPatchDiffEntry[],
+): RunSummaryPatchDiffEntry | null {
+  // 反向查找可保证“同轮多次修改同文件”时优先展示最后一次补丁形态。
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    if (entries[i].paths.some((path) => patchPathMatches(filePath, path))) {
+      return entries[i];
+    }
+  }
+  return null;
 }
 
 function toAbsolutePath(filePath: string, cwd: string | null): string {

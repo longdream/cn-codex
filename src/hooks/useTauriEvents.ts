@@ -6,6 +6,7 @@ import {
   useAppStore,
   type ChatMode,
   type FileChange,
+  type FileChangeSnapshot,
   type PendingFileReview,
   type PatchProgressChange,
   type RunSummary,
@@ -26,6 +27,7 @@ interface TurnEventPayload {
     completedAt?: number;
     durationMs?: number;
     changedFiles?: FileChange[];
+    changedFileSnapshots?: FileChangeSnapshot[];
     usage?: TokenUsage | null;
     goalBudgetTokens?: number | null;
     budgetLimited?: boolean | null;
@@ -50,10 +52,32 @@ function runSummaryFromTurn(turn: TurnEventPayload["turn"]): RunSummary | null {
     completedAt: toTimestamp(turn.completedAt),
     durationMs: turn.durationMs,
     changedFiles: turn.changedFiles ?? [],
+    changedFileSnapshots: normalizeFileChangeSnapshots(turn.changedFileSnapshots),
     usage: normalizeTokenUsage(turn.usage),
     goalBudgetTokens: normalizeTokenBudget(turn.goalBudgetTokens),
     budgetLimited: Boolean(turn.budgetLimited),
   };
+}
+
+function normalizeFileChangeSnapshots(
+  snapshots?: FileChangeSnapshot[] | null,
+): FileChangeSnapshot[] | undefined {
+  if (!Array.isArray(snapshots) || snapshots.length === 0) {
+    return undefined;
+  }
+
+  const normalized = snapshots
+    .map((snapshot) => ({
+      path: String(snapshot.path ?? "").trim(),
+      action: String(snapshot.action ?? "modified").trim() || "modified",
+      beforeContent:
+        typeof snapshot.beforeContent === "string" ? snapshot.beforeContent : undefined,
+      afterContent:
+        typeof snapshot.afterContent === "string" ? snapshot.afterContent : undefined,
+    }))
+    .filter((snapshot) => snapshot.path.length > 0);
+
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined {

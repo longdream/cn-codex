@@ -17,11 +17,17 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
 import { useAppStore, type ChatMode, type ChatSendOptions } from "../../stores/appStore";
-import { SlashCommandPanel, getDefaultSlashCommands } from "./SlashCommandPanel";
+import {
+  SlashCommandPanel,
+  getDefaultSlashCommands,
+  type SlashCommand,
+} from "./SlashCommandPanel";
 import type { AttachedFile } from "../../types/provider";
 import { readFileForAttach } from "../../api/window";
 import { robotList } from "../../api/robot";
 import type { RobotSummary } from "../../types/robot";
+import { skillList } from "../../api/skill";
+import type { SkillSummary } from "../../types/skill";
 
 /** 支持的文档 MIME 类型和扩展名 */
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
@@ -101,6 +107,7 @@ export function ChatInput({
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showRobotMenu, setShowRobotMenu] = useState(false);
   const [robots, setRobots] = useState<RobotSummary[]>([]);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [robotModifyMode, setRobotModifyMode] = useState(false);
   const [visionWarning, setVisionWarning] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -154,6 +161,10 @@ export function ChatInput({
     return () => window.removeEventListener("robot-list-changed", handler);
   }, []);
 
+  useEffect(() => {
+    skillList().then(setSkills).catch(() => setSkills([]));
+  }, []);
+
   const selectedRobotName = useMemo(
     () => robots.find((r) => r.id === selectedRobotId)?.name ?? null,
     [robots, selectedRobotId],
@@ -196,26 +207,205 @@ export function ChatInput({
     textareaRef.current?.focus();
   }, []);
 
-  const slashCommands = useMemo(() => {
+  const appendSystemMessage = useCallback((content: string) => {
+    useAppStore.getState().addMessage({
+      id: crypto.randomUUID(),
+      role: "system",
+      content,
+      timestamp: Date.now(),
+    });
+  }, []);
+
+  const activateRobotModifyMode = useCallback(() => {
+    if (!selectedRobotId) {
+      appendSystemMessage(intl.formatMessage({ id: "chat.robot.modifyNeedSelection" }));
+      return false;
+    }
+    setRobotModifyMode(true);
+    useAppStore.getState().setChatMode("goal");
+    requestAnimationFrame(() => textareaRef.current?.focus());
+    return true;
+  }, [appendSystemMessage, intl, selectedRobotId]);
+
+  const slashSkillQuery = useMemo(() => parseSkillSelectionQuery(text), [text]);
+  const slashCommandQuery = useMemo(() => {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith("/")) {
+      return "";
+    }
+    return trimmed.slice(1).trim();
+  }, [text]);
+
+  const slashCommands = useMemo<SlashCommand[]>(() => {
     const defaults = getDefaultSlashCommands();
-    defaults.find((command) => command.name === "clear")!.action = () => {
-      useAppStore.getState().setMessages([]);
-      useAppStore.getState().clearStreamingText();
-    };
-    defaults.find((command) => command.name === "model")!.action = () => {
-      useAppStore.getState().setShowSettings(true);
-    };
-    if (selectedRobotId) {
-      defaults.push({
-        name: "modify",
-        description: intl.formatMessage({ id: "chat.slashModify" }),
-        action: () => {
-          setRobotModifyMode(true);
-        },
-      });
+    const clearCommand = defaults.find((command) => command.name === "clear");
+    if (clearCommand) {
+      clearCommand.action = () => {
+        useAppStore.getState().setMessages([]);
+        useAppStore.getState().clearStreamingText();
+      };
+    }
+    const modelCommand = defaults.find((command) => command.name === "model");
+    if (modelCommand) {
+      modelCommand.action = () => {
+        useAppStore.getState().setShowSettings(true);
+      };
+    }
+    const goalCommand = defaults.find((command) => command.name === "goal");
+    if (goalCommand) {
+      goalCommand.action = () => {
+        setMode("goal");
+      };
+    }
+    const skillCommand = defaults.find((command) => command.name === "skill");
+    if (skillCommand) {
+      skillCommand.description = intl.formatMessage({ id: "chat.slashSkill" });
+      skillCommand.action = () => {
+        const nextText = "/skill ";
+        setText(nextText);
+        setShowSlash(true);
+        requestAnimationFrame(() => {
+          const element = textareaRef.current;
+          if (!element) return;
+          element.focus();
+          element.setSelectionRange(nextText.length, nextText.length);
+          element.style.height = "auto";
+          element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+        });
+      };
+      skillCommand.closeOnSelect = false;
+    }
+    const modifyRobotCommand = defaults.find(
+      (command) => command.name === "modifyrobot",
+    );
+    if (modifyRobotCommand) {
+      modifyRobotCommand.description = intl.formatMessage({ id: "chat.slashModifyRobot" });
+      modifyRobotCommand.action = () => {
+        const activated = activateRobotModifyMode();
+        if (activated) {
+          setText("");
+        }
+      };
     }
     return defaults;
-  }, [selectedRobotId, intl]);
+  }, [activateRobotModifyMode, intl, setMode]);
+
+  const slashSkillCommands = useMemo<SlashCommand[]>(() => {
+    if (slashSkillQuery == null) {
+      return [];
+    }
+    const query = slashSkillQuery.toLowerCase();
+    return skills
+      .filter((skill) => {
+        if (!query) return true;
+        const tags = Array.isArray(skill.tags) ? skill.tags.join(" ") : "";
+        const haystack = `${skill.id} ${skill.name} ${skill.description} ${tags}`.toLowerCase();
+        return haystack.includes(query);
+      })
+      .map((skill) => {
+        const description = skill.description?.trim()
+          ? `${skill.name} · ${skill.description}`
+          : skill.name;
+        return {
+          name: `skill:${skill.id}`,
+          trigger: `skill ${skill.id}`,
+          description,
+          searchText: `${skill.id} ${skill.name} ${skill.description} ${(skill.tags ?? []).join(" ")}`,
+          action: () => {
+            const nextText = `/skill ${skill.id} `;
+            setText(nextText);
+            requestAnimationFrame(() => {
+              const element = textareaRef.current;
+              if (!element) return;
+              element.focus();
+              element.setSelectionRange(nextText.length, nextText.length);
+              element.style.height = "auto";
+              element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+            });
+          },
+        } satisfies SlashCommand;
+      });
+  }, [skills, slashSkillQuery]);
+
+  const slashPanelCommands = useMemo(() => {
+    if (slashSkillQuery != null) {
+      return slashSkillCommands;
+    }
+    return slashCommands;
+  }, [slashCommands, slashSkillCommands, slashSkillQuery]);
+
+  const slashPanelQuery = useMemo(() => {
+    if (slashSkillQuery != null) {
+      return slashSkillQuery;
+    }
+    return slashCommandQuery;
+  }, [slashCommandQuery, slashSkillQuery]);
+
+  const resetComposerAfterSubmit = useCallback(() => {
+    setText("");
+    setShowSlash(false);
+    useAppStore.getState().clearAttachedFiles();
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
+  }, []);
+
+  const handleSkillCommandSubmit = useCallback((trimmed: string, filesToSend: AttachedFile[]) => {
+    const skillCommand = parseSkillCommand(trimmed);
+    if (skillCommand) {
+      if (!skillCommand.objective) {
+        setShowSlash(true);
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return true;
+      }
+      const payload = buildSkillScopedPrompt(skillCommand.skillId, skillCommand.objective);
+      onSend(payload, mode, filesToSend);
+      resetComposerAfterSubmit();
+      return true;
+    }
+
+    if (/^\/skill(?:\s+[\s\S]*)?$/i.test(trimmed)) {
+      if (skills.length === 0) {
+        appendSystemMessage(intl.formatMessage({ id: "chat.skill.noneAvailable" }));
+        setShowSlash(false);
+      } else {
+        setShowSlash(true);
+      }
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return true;
+    }
+
+    return false;
+  }, [appendSystemMessage, intl, mode, onSend, resetComposerAfterSubmit, skills.length]);
+
+  const handleModifyRobotCommandSubmit = useCallback((trimmed: string, filesToSend: AttachedFile[]) => {
+    const modifyCommand = parseModifyRobotCommand(trimmed);
+    if (!modifyCommand) {
+      return false;
+    }
+
+    const activated = activateRobotModifyMode();
+    if (!activated) {
+      setShowSlash(false);
+      setText("");
+      return true;
+    }
+
+    if (!modifyCommand.objective) {
+      setShowSlash(false);
+      setText("");
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return true;
+    }
+
+    onSend(modifyCommand.objective, mode, filesToSend, {
+      robotModifyMode: true,
+      robotId: selectedRobotId!,
+    });
+    setRobotModifyMode(false);
+    resetComposerAfterSubmit();
+    return true;
+  }, [activateRobotModifyMode, mode, onSend, resetComposerAfterSubmit, selectedRobotId]);
 
   const handleSubmit = useCallback(() => {
     // 仅目标模式在 active 时禁止提交；聊天模式行为保持不变。
@@ -223,6 +413,13 @@ export function ChatInput({
     const trimmed = text.trim();
     if ((!trimmed && attachedFiles.length === 0) || disabled) return;
     const filesToSend = attachedFiles;
+
+    if (handleModifyRobotCommandSubmit(trimmed, filesToSend)) {
+      return;
+    }
+    if (handleSkillCommandSubmit(trimmed, filesToSend)) {
+      return;
+    }
 
     const goalCommand = parseGoalCommand(trimmed);
     if (goalCommand) {
@@ -270,13 +467,23 @@ export function ChatInput({
     } else {
       onSend(trimmed, mode, filesToSend);
     }
-    setText("");
-    setShowSlash(false);
-    useAppStore.getState().clearAttachedFiles();
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
-  }, [attachedFiles, currentGoal, disabled, goalRunning, isStreaming, mode, onGoalCommand, onSend, robotModifyMode, selectedRobotId, text]);
+    resetComposerAfterSubmit();
+  }, [
+    attachedFiles,
+    currentGoal,
+    disabled,
+    goalRunning,
+    handleModifyRobotCommandSubmit,
+    handleSkillCommandSubmit,
+    isStreaming,
+    mode,
+    onGoalCommand,
+    onSend,
+    resetComposerAfterSubmit,
+    robotModifyMode,
+    selectedRobotId,
+    text,
+  ]);
 
   const goalStatusLabel = useMemo(() => {
     if (!currentGoal) {
@@ -312,7 +519,7 @@ export function ChatInput({
   const handleChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = event.target.value;
     setText(value);
-    setShowSlash(value.startsWith("/") && !value.includes(" "));
+    setShowSlash(shouldShowSlashPanel(value));
   }, []);
 
   const handleInput = useCallback(() => {
@@ -503,21 +710,19 @@ export function ChatInput({
       )}
       {showSlash && (
         <SlashCommandPanel
-          query={text}
-          commands={slashCommands}
+          query={slashPanelQuery}
+          commands={slashPanelCommands}
           onSelect={(command) => {
             command.action();
-            if (command.name === "goal") {
-              setMode("goal");
-            } else if (command.name === "modify") {
-              // /modify 仅设状态，不发送消息；用户输入修改描述后 submit
-            } else if (command.name === "plan" || command.name === "help" || command.name === "compact") {
+            if (command.name === "plan" || command.name === "help" || command.name === "compact") {
               if (!goalRunning) {
                 onSend(`/${command.name}`, mode, []);
               }
+              setText("");
             }
-            setText("");
-            setShowSlash(false);
+            if (command.closeOnSelect !== false) {
+              setShowSlash(false);
+            }
           }}
           onClose={() => setShowSlash(false)}
         />
@@ -943,4 +1148,69 @@ function parseGoalTokenBudget(value: string): number | undefined {
       : 1;
   const tokens = Math.round(base * multiplier);
   return tokens > 0 ? tokens : undefined;
+}
+
+export interface ParsedSkillCommand {
+  skillId: string;
+  objective: string;
+}
+
+export function parseSkillCommand(value: string): ParsedSkillCommand | null {
+  const match = value.trim().match(/^\/skill(?:\s+(\S+))(?:\s+([\s\S]+))?$/i);
+  if (!match) {
+    return null;
+  }
+  return {
+    skillId: match[1].trim(),
+    objective: match[2]?.trim() ?? "",
+  };
+}
+
+export function parseSkillSelectionQuery(value: string): string | null {
+  const match = value.trim().match(/^\/skill(?:\s+([\s\S]*))?$/i);
+  if (!match) {
+    return null;
+  }
+  const body = match[1]?.trim() ?? "";
+  if (!body) {
+    return "";
+  }
+  if (/\s/.test(body)) {
+    return null;
+  }
+  return body;
+}
+
+export function buildSkillScopedPrompt(skillId: string, objective: string): string {
+  const normalizedSkillId = skillId.trim();
+  const normalizedObjective = objective.trim();
+  if (!normalizedObjective) {
+    return normalizedObjective;
+  }
+  return `请优先使用 skill "${normalizedSkillId}"，然后完成以下需求：\n${normalizedObjective}`;
+}
+
+export interface ParsedModifyRobotCommand {
+  objective: string;
+}
+
+export function parseModifyRobotCommand(value: string): ParsedModifyRobotCommand | null {
+  const match = value.trim().match(/^\/(?:modifyrobot|modify)(?:\s+([\s\S]+))?$/i);
+  if (!match) {
+    return null;
+  }
+  return {
+    objective: match[1]?.trim() ?? "",
+  };
+}
+
+export function shouldShowSlashPanel(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("/")) {
+    return false;
+  }
+  if (parseSkillSelectionQuery(trimmed) != null) {
+    return true;
+  }
+  return !trimmed.includes(" ");
 }

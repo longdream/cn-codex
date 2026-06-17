@@ -4,8 +4,8 @@ import { getDefaultSlashCommands } from "../components/chat/SlashCommandPanel";
 describe("getDefaultSlashCommands", () => {
   const commands = getDefaultSlashCommands();
 
-  it("returns 6 commands", () => {
-    expect(commands).toHaveLength(6);
+  it("returns 8 commands", () => {
+    expect(commands).toHaveLength(8);
   });
 
   it("each command has name, description, and action", () => {
@@ -19,13 +19,15 @@ describe("getDefaultSlashCommands", () => {
     }
   });
 
-  it("includes plan, goal, model, clear, compact, help", () => {
+  it("includes plan, goal, skill, model, clear, compact, help, modifyrobot", () => {
     const names = commands.map((c) => c.name);
     expect(names).toContain("plan");
     expect(names).toContain("goal");
+    expect(names).toContain("skill");
     expect(names).toContain("model");
     expect(names).toContain("clear");
     expect(names).toContain("compact");
     expect(names).toContain("help");
+    expect(names).toContain("modifyrobot");
   });
 });

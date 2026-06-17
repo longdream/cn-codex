@@ -1,10 +1,13 @@
 import { useMemo, useState } from "react";
 import { useIntl } from "react-intl";
 
-interface SlashCommand {
+export interface SlashCommand {
   name: string;
   description: string;
   action: () => void;
+  trigger?: string;
+  searchText?: string;
+  closeOnSelect?: boolean;
 }
 
 interface SlashCommandPanelProps {
@@ -24,15 +27,21 @@ export function SlashCommandPanel({
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const filtered = useMemo(() => {
-    const normalizedQuery = query.toLowerCase().replace("/", "");
+    const normalizedQuery = query.trim().toLowerCase();
     if (!normalizedQuery) {
       return commands;
     }
 
     return commands.filter(
-      (command) =>
-        command.name.toLowerCase().includes(normalizedQuery) ||
-        command.description.toLowerCase().includes(normalizedQuery),
+      (command) => {
+        const trigger = (command.trigger ?? command.name).toLowerCase();
+        const searchText = command.searchText?.toLowerCase() ?? "";
+        return (
+          trigger.includes(normalizedQuery) ||
+          command.description.toLowerCase().includes(normalizedQuery) ||
+          searchText.includes(normalizedQuery)
+        );
+      },
     );
   }, [commands, query]);
 
@@ -63,7 +72,9 @@ export function SlashCommandPanel({
               }`}
             >
               <div className="flex items-center gap-3">
-                <span className="font-mono text-xs text-[var(--chat-faint)]">/{command.name}</span>
+                <span className="font-mono text-xs text-[var(--chat-faint)]">
+                  /{command.trigger ?? command.name}
+                </span>
                 <span>{command.description}</span>
               </div>
             </button>
@@ -87,6 +98,12 @@ export function getDefaultSlashCommands(): SlashCommand[] {
       action: () => {},
     },
     {
+      name: "skill",
+      description: "Browse and pick a skill",
+      action: () => {},
+      closeOnSelect: false,
+    },
+    {
       name: "model",
       description: "Switch AI model",
       action: () => {},
@@ -104,6 +121,11 @@ export function getDefaultSlashCommands(): SlashCommand[] {
     {
       name: "help",
       description: "Show available commands",
+      action: () => {},
+    },
+    {
+      name: "modifyrobot",
+      description: "Modify selected robot",
       action: () => {},
     },
   ];
