@@ -89,7 +89,14 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const completionTokens = Number(usage.completionTokens ?? 0);
   const totalTokens = Number(usage.totalTokens ?? promptTokens + completionTokens);
   const callCount = Number(usage.callCount ?? 0);
-  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0 && callCount <= 0) {
+  const lastSinglePromptTokens = Number(usage.lastSinglePromptTokens ?? 0);
+  if (
+    promptTokens <= 0 &&
+    completionTokens <= 0 &&
+    totalTokens <= 0 &&
+    callCount <= 0 &&
+    lastSinglePromptTokens <= 0
+  ) {
     return undefined;
   }
 
@@ -98,6 +105,9 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     completionTokens: Math.max(0, completionTokens),
     totalTokens: Math.max(0, totalTokens),
     ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
+    ...(lastSinglePromptTokens > 0
+      ? { lastSinglePromptTokens: Math.max(0, Math.round(lastSinglePromptTokens)) }
+      : {}),
   };
 }
 
@@ -364,6 +374,31 @@ function parseBrowserRunOutput(output?: string): {
   } catch {
     return null;
   }
+}
+
+function optionIsRecommended(option: Record<string, unknown>): boolean {
+  if (option.recommended === true || option.isRecommended === true) {
+    return true;
+  }
+  const label = typeof option.label === "string" ? option.label : "";
+  const description = typeof option.description === "string" ? option.description : "";
+  const lowered = `${label} ${description}`.toLowerCase();
+  return lowered.includes("recommended") || label.includes("推荐") || description.includes("推荐");
+}
+
+function preferredQuestionOptionLabel(question: Record<string, unknown>): string {
+  const options = Array.isArray(question.options)
+    ? question.options.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    : [];
+  if (options.length === 0) {
+    return "";
+  }
+  const recommended = options.find(optionIsRecommended);
+  if (recommended && typeof recommended.label === "string" && recommended.label.trim()) {
+    return recommended.label;
+  }
+  const first = options.find((option) => typeof option.label === "string" && option.label.trim());
+  return typeof first?.label === "string" ? first.label : "";
 }
 
 export function useTauriEvents() {
@@ -720,7 +755,7 @@ export function useTauriEvents() {
             return;
           }
 
-          // 自动审批 + 用户输入：如果所有问题都有选项，自动选择推荐项（第一个选项）
+          // 自动审批 + 用户输入：优先选推荐项，未标记时回退到首项
           if (useAppStore.getState().autoApprove && isUserInput) {
             const questions = e.payload.params?.questions;
             if (
@@ -732,15 +767,26 @@ export function useTauriEvents() {
               )
             ) {
               const reqId = e.payload.requestId ?? e.payload.id ?? "";
+              const answerEntries: Array<[string, { answers: string[] }]> = [];
+              questions.forEach((q: Record<string, unknown>) => {
+                const questionId = typeof q.id === "string" ? q.id : "";
+                if (!questionId) {
+                  return;
+                }
+                const preferredLabel = preferredQuestionOptionLabel(q);
+                if (!preferredLabel) {
+                  return;
+                }
+                answerEntries.push([questionId, { answers: [preferredLabel] }]);
+              });
+              if (answerEntries.length !== questions.length) {
+                window.dispatchEvent(
+                  new CustomEvent("cn-codex:server-request", { detail: e.payload }),
+                );
+                return;
+              }
               const answers = Object.fromEntries(
-                questions.map((q: Record<string, unknown>) => [
-                  q.id,
-                  {
-                    answers: [
-                      (q.options as Array<Record<string, string>>)[0].label,
-                    ],
-                  },
-                ]),
+                answerEntries,
               );
               resolveApproval(reqId, { answers }).catch((err) =>
                 console.error("Auto-approve user input failed:", err),

@@ -160,7 +160,7 @@ for %%f in ("%RELEASE_DIR%\*.dll") do (
 )
 
 :: Copy codey/ resources (skills + plugins only)
-echo [6/8] Copying codey runtime resources...
+echo [6/8] Copying codey runtime resources (skills/plugins/robots)...
 
 set "CODEY_DEST=%PUBLISH_DIR%\codey"
 mkdir "%CODEY_DEST%"
@@ -184,6 +184,13 @@ if exist "%CODEY_SRC%\plugins" (
 )
 
 :: Create empty runtime directories
+if exist "%CODEY_SRC%\robots" (
+    xcopy "%CODEY_SRC%\robots" "%CODEY_DEST%\robots\" /E /I /Q /Y >nul
+    echo   - codey/robots/ copied
+) else (
+    mkdir "%CODEY_DEST%\robots"
+    echo   - codey/robots/ (empty, created)
+)
 mkdir "%CODEY_DEST%\sessions" 2>nul
 mkdir "%CODEY_DEST%\memories" 2>nul
 mkdir "%CODEY_DEST%\browser" 2>nul

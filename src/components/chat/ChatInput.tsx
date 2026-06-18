@@ -5,7 +5,6 @@ import {
   IconCpu,
   IconFile,
   IconFolder,
-  IconMessage2,
   IconPaperclip,
   IconPlugConnected,
   IconPlus,
@@ -17,7 +16,12 @@ import {
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
-import { useAppStore, type ChatMode, type ChatSendOptions } from "../../stores/appStore";
+import {
+  DEFAULT_MODEL_CONTEXT_LENGTH,
+  useAppStore,
+  type ChatMode,
+  type ChatSendOptions,
+} from "../../stores/appStore";
 import {
   SlashCommandPanel,
   getDefaultSlashCommands,
@@ -117,6 +121,7 @@ export function ChatInput({
 
   const initialized = useAppStore((s) => s.initialized);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
+  const messages = useAppStore((s) => s.messages);
   const attachedFiles = useAppStore((s) => s.attachedFiles);
   const pendingComposerInsert = useAppStore((s) => s.pendingComposerInsert);
   const currentGoal = useAppStore((s) => s.currentGoal);
@@ -153,6 +158,45 @@ export function ChatInput({
     ?? providerModels[0]?.label
     ?? activeProvider?.name
     ?? defaultProvider;
+
+  const modelContextWindow = useMemo(() => {
+    if (activeEntry) {
+      const matchedProvider = providers.find(
+        (provider) => provider.id === activeEntry.provider || provider.type === activeEntry.provider,
+      );
+      const matchedModel = matchedProvider?.models.find((model) => model.id === activeEntry.model);
+      if (matchedModel?.contextLength) {
+        return matchedModel.contextLength;
+      }
+    }
+
+    if (currentModel) {
+      for (const provider of providers) {
+        const matchedModel = provider.models.find((model) => model.id === currentModel);
+        if (matchedModel?.contextLength) {
+          return matchedModel.contextLength;
+        }
+      }
+    }
+
+    return providerModels[0]?.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH;
+  }, [activeEntry, currentModel, providerModels, providers]);
+
+  const contextUsedTokens = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const usage = messages[index].runSummary?.usage;
+      if (!usage) {
+        continue;
+      }
+      const used = usage.lastSinglePromptTokens && usage.lastSinglePromptTokens > 0
+        ? usage.lastSinglePromptTokens
+        : usage.promptTokens;
+      if (used > 0) {
+        return used;
+      }
+    }
+    return 0;
+  }, [messages]);
 
   useEffect(() => {
     robotList().then(setRobots).catch(() => setRobots([]));
@@ -823,7 +867,6 @@ export function ChatInput({
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           {isGeneralMode ? (
             <div className="inline-flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] px-3 py-1">
-              <IconMessage2 size={12} stroke={1.8} className="text-[var(--accent)]" />
               <span className="text-[11px] font-medium text-[var(--chat-prose)]">
                 {intl.formatMessage({ id: "chat.mode.chat" })}
               </span>
@@ -840,7 +883,6 @@ export function ChatInput({
                   : "text-[var(--chat-muted)] hover:text-[var(--chat-prose)]"
               }`}
             >
-              <IconMessage2 size={12} stroke={1.8} />
               {intl.formatMessage({ id: "chat.mode.chat" })}
             </button>
             <button
@@ -1080,6 +1122,9 @@ export function ChatInput({
             </button>
           </div>
           <div className="flex min-w-0 items-center gap-2">
+            {contextUsedTokens > 0 && modelContextWindow > 0 && (
+              <ContextUsageRing usedTokens={contextUsedTokens} windowTokens={modelContextWindow} />
+            )}
             {cwdLeaf && (
               <span className="flex min-w-0 items-center gap-1 truncate" title={workspaceCwd ?? undefined}>
                 <IconFolder size={12} stroke={1.8} className="flex-shrink-0" />
@@ -1091,6 +1136,62 @@ export function ChatInput({
         </div>
       </div>
     </div>
+  );
+}
+
+function ContextUsageRing({
+  usedTokens,
+  windowTokens,
+}: {
+  usedTokens: number;
+  windowTokens: number;
+}) {
+  const ratio = Math.max(0, Math.min(1, usedTokens / windowTokens));
+  const radius = 7;
+  const strokeWidth = 2;
+  const normalizedRadius = radius - strokeWidth / 2;
+  const circumference = 2 * Math.PI * normalizedRadius;
+  const dashOffset = circumference * (1 - ratio);
+  const formatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+  const percentage = ratio * 100;
+  const percentageText = percentage >= 99.95
+    ? "100%"
+    : `${percentage.toFixed(percentage < 10 ? 1 : 0)}%`;
+  const progressColor = ratio >= 0.9
+    ? "var(--danger)"
+    : ratio >= 0.75
+      ? "var(--warning)"
+      : "var(--accent)";
+
+  return (
+    <span
+      className="flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] px-2 py-0.5 text-[var(--chat-muted)]"
+      title={`上下文使用: ${formatter.format(usedTokens)} / ${formatter.format(windowTokens)} tokens`}
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+        <circle
+          cx="8"
+          cy="8"
+          r={normalizedRadius}
+          fill="none"
+          stroke="var(--chat-line)"
+          strokeWidth={strokeWidth}
+        />
+        <circle
+          cx="8"
+          cy="8"
+          r={normalizedRadius}
+          fill="none"
+          stroke={progressColor}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={`${circumference} ${circumference}`}
+          strokeDashoffset={dashOffset}
+          transform="rotate(-90 8 8)"
+        />
+      </svg>
+      <span className="font-mono tabular-nums">{percentageText}</span>
+    </span>
   );
 }
 

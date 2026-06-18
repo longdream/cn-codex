@@ -319,48 +319,56 @@ function App() {
     [clearResizeState],
   );
 
-  useEffect(() => {
+  const enforceLayoutBounds = useCallback(() => {
     // 当窗口尺寸变化时重新校验左右宽度，避免历史持久化值在小窗口下挤占中间区域。
-    const enforceLayoutBounds = () => {
-      const viewportWidth = window.innerWidth;
-      const rightWidth = rightPanelVisible ? rightPanelWidth : 0;
-      const maxSidebarByLayout = viewportWidth - rightWidth - MAIN_PANEL_MIN_WIDTH;
-      const sidebarMax = Math.max(
-        SIDEBAR_WIDTH_MIN,
-        Math.min(SIDEBAR_WIDTH_MAX, maxSidebarByLayout),
-      );
-      if (sidebarWidth > sidebarMax) {
-        setSidebarWidth(sidebarMax);
-      }
+    // 使用 store 最新状态，避免在拖拽过程中因宽度变化触发 effect 重建并中断拖拽。
+    const viewportWidth = window.innerWidth;
+    const {
+      sidebarWidth: currentSidebarWidth,
+      rightPanelWidth: currentRightPanelWidth,
+      rightPanelVisible: currentRightPanelVisible,
+    } = useAppStore.getState();
 
-      if (!rightPanelVisible) {
-        return;
-      }
+    const rightWidth = currentRightPanelVisible ? currentRightPanelWidth : 0;
+    const maxSidebarByLayout = viewportWidth - rightWidth - MAIN_PANEL_MIN_WIDTH;
+    const sidebarMax = Math.max(
+      SIDEBAR_WIDTH_MIN,
+      Math.min(SIDEBAR_WIDTH_MAX, maxSidebarByLayout),
+    );
+    if (currentSidebarWidth > sidebarMax) {
+      setSidebarWidth(sidebarMax);
+    }
 
-      const maxRightByLayout = viewportWidth - sidebarWidth - MAIN_PANEL_MIN_WIDTH;
-      const rightMax = Math.max(
-        RIGHT_PANEL_WIDTH_MIN,
-        Math.min(RIGHT_PANEL_WIDTH_MAX, maxRightByLayout),
-      );
-      if (rightPanelWidth > rightMax) {
-        setRightPanelWidth(rightMax);
-      }
-    };
+    if (!currentRightPanelVisible) {
+      return;
+    }
 
+    const maxRightByLayout = viewportWidth - currentSidebarWidth - MAIN_PANEL_MIN_WIDTH;
+    const rightMax = Math.max(
+      RIGHT_PANEL_WIDTH_MIN,
+      Math.min(RIGHT_PANEL_WIDTH_MAX, maxRightByLayout),
+    );
+    if (currentRightPanelWidth > rightMax) {
+      setRightPanelWidth(rightMax);
+    }
+  }, [setRightPanelWidth, setSidebarWidth]);
+
+  useEffect(() => {
     enforceLayoutBounds();
+  }, [enforceLayoutBounds, rightPanelVisible]);
+
+  useEffect(() => {
     window.addEventListener("resize", enforceLayoutBounds);
     return () => {
       window.removeEventListener("resize", enforceLayoutBounds);
+    };
+  }, [enforceLayoutBounds]);
+
+  useEffect(() => {
+    return () => {
       clearResizeState();
     };
-  }, [
-    clearResizeState,
-    rightPanelVisible,
-    rightPanelWidth,
-    setRightPanelWidth,
-    setSidebarWidth,
-    sidebarWidth,
-  ]);
+  }, [clearResizeState]);
 
   return (
     <ErrorBoundary>

@@ -1,5 +1,0 @@
-{"type":"thread_meta","thread_id":"e54d45b3-29ba-43ea-827d-442012618fb7","name":null,"created_at":1781702695,"model":"c-deepseek-v4-flash"}
-{"type":"turn_start","turn_id":"d3c3bafc-b680-41d1-a584-1f4f3c661180","started_at":1781702695,"mode":"chat","goal_budget_tokens":null}
-{"type":"message","id":"0241d116-72ca-4a31-877f-34f86b70b255","role":"user","content":"你好","timestamp":1781702695,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"message","id":"7e2f3190-2b28-41ad-9311-cd689d6e5b3b","role":"assistant","content":"你好！👋 我是 **Codey**，一个编程助手，可以帮你完成各种开发任务，比如：\n\n- **编写和修改代码**（前端、后端、脚本等）\n- **项目搭建与配置**\n- **调试与问题排查**\n- **代码审查**\n- **运行命令和自动化任务**\n- **浏览器测试与页面交互**\n\n我看到你当前的工作目录是 `D:\\cncodetest\\ecommerce`，看起来是一个电商相关的项目。有什么我可以帮你的吗？请随时告诉我你的需求！😊","timestamp":1781702702,"tool_call_id":null,"tool_name":null,"tool_calls":null}
-{"type":"turn_end","turn_id":"d3c3bafc-b680-41d1-a584-1f4f3c661180","completed_at":1781702702,"duration_ms":6747,"changed_files":[],"usage":{"promptTokens":12461,"completionTokens":133,"totalTokens":12594,"callCount":1,"lastSinglePromptTokens":12461},"budget_limited":false}

@@ -8,7 +8,7 @@ import {
 } from "@tabler/icons-react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import {
@@ -35,6 +35,71 @@ interface FloatingPosition {
 }
 
 type NoticeKind = "success" | "error" | "info";
+type MarkdownViewMode = "preview" | "source";
+
+const markdownPreviewComponents: Components = {
+  h1: ({ children }) => (
+    <h1 className="mt-5 mb-2 text-lg font-semibold text-[var(--chat-prose)]">{children}</h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="mt-4 mb-2 text-[16px] font-semibold text-[var(--chat-prose)]">{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="mt-3 mb-1.5 text-[15px] font-semibold text-[var(--chat-prose)]">{children}</h3>
+  ),
+  p: ({ children }) => <p className="whitespace-pre-wrap break-words">{children}</p>,
+  ul: ({ children }) => (
+    <ul className="my-3 ml-6 list-disc space-y-1.5 text-[var(--chat-prose)]">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="my-3 ml-6 list-decimal space-y-1.5 text-[var(--chat-prose)]">{children}</ol>
+  ),
+  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-[var(--accent)] underline decoration-[0.08em] underline-offset-2 hover:opacity-80"
+    >
+      {children}
+    </a>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="my-3 border-l-2 border-[var(--chat-line)] pl-3 text-[var(--chat-muted)]">
+      {children}
+    </blockquote>
+  ),
+  pre: ({ children }) => (
+    <pre className="thin-scrollbar my-3 overflow-auto rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--surface-main)] p-3 text-[12px] leading-6">
+      {children}
+    </pre>
+  ),
+  code: ({ className, children }) => {
+    const code = String(children ?? "").replace(/\n$/, "");
+    const isBlockCode = Boolean(className) || code.includes("\n");
+    if (isBlockCode) {
+      return <code className={`hljs ${className ?? ""}`.trim()}>{code}</code>;
+    }
+    return <code className="chat-inline-code">{code}</code>;
+  },
+  table: ({ children }) => (
+    <div className="thin-scrollbar my-3 overflow-x-auto">
+      <table className="chat-md-table">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-[var(--chat-card-solid)]">{children}</thead>,
+  tbody: ({ children }) => <tbody>{children}</tbody>,
+  tr: ({ children }) => <tr className="border-b border-[var(--chat-line)] last:border-b-0">{children}</tr>,
+  th: ({ children }) => (
+    <th className="border-r border-[var(--chat-line)] px-3 py-2 text-left font-semibold last:border-r-0">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border-r border-[var(--chat-line)] px-3 py-2 align-top last:border-r-0">{children}</td>
+  ),
+};
 
 function lineOfOffset(source: string, offset: number): number {
   let line = 1;
@@ -199,6 +264,7 @@ export function DocumentDetailWindow() {
   const [selectionMeta, setSelectionMeta] = useState<SelectionMeta | null>(null);
   const [floatingPos, setFloatingPos] = useState<FloatingPosition | null>(null);
   const [notice, setNotice] = useState<{ kind: NoticeKind; text: string } | null>(null);
+  const [markdownViewMode, setMarkdownViewMode] = useState<MarkdownViewMode>("preview");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightContentRef = useRef<HTMLDivElement>(null);
@@ -210,6 +276,8 @@ export function DocumentDetailWindow() {
     () => (preview ? fileLanguage(preview.name) : "text"),
     [preview],
   );
+  const isMarkdownFile = languageLabel === "markdown";
+  const showMarkdownPreview = isMarkdownFile && markdownViewMode === "preview";
   const highlightedCodeMarkdown = useMemo(() => {
     if (!preview) {
       return "";
@@ -353,6 +421,16 @@ export function DocumentDetailWindow() {
     }
     void loadPreview(activePath);
   }, [activePath, loadPreview]);
+
+  useEffect(() => {
+    setMarkdownViewMode(languageLabel === "markdown" ? "preview" : "source");
+  }, [preview?.path, languageLabel]);
+
+  useEffect(() => {
+    if (!showMarkdownPreview) return;
+    setSelectionMeta(null);
+    setFloatingPos(null);
+  }, [showMarkdownPreview]);
 
   useEffect(() => {
     let unlisten: UnlistenFn | null = null;
@@ -507,57 +585,119 @@ export function DocumentDetailWindow() {
                 文件超过 512KB，仅加载前半部分；为避免误覆盖，当前窗口禁用保存。
               </div>
             )}
-            <div className="detail-code-shell">
-              <div className="flex items-center justify-between border-b border-[var(--chat-line)] px-3 py-1.5">
-                <span className="text-[11px] text-[var(--chat-faint)]">代码预览（可编辑）</span>
-                <span className="font-mono text-[11px] text-[var(--chat-faint)]">
-                  {languageLabel}
-                </span>
-              </div>
-              <div className="detail-code-editor-layer">
-                <div className="detail-code-highlight-layer">
-                  <div ref={highlightContentRef} className="detail-code-highlight-content">
+            {showMarkdownPreview ? (
+              <div className="h-full min-h-0 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-paper)]">
+                <div className="flex items-center justify-between border-b border-[var(--chat-line)] px-3 py-1.5">
+                  <span className="text-[11px] text-[var(--chat-faint)]">Markdown 预览（渲染）</span>
+                  <div className="flex items-center gap-2">
+                    <div className="inline-flex items-center rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--surface-main)] p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setMarkdownViewMode("preview")}
+                        className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-prose)] bg-[var(--accent-soft)]"
+                      >
+                        预览
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMarkdownViewMode("source")}
+                        className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-faint)] transition-colors hover:text-[var(--chat-prose)]"
+                      >
+                        源码
+                      </button>
+                    </div>
+                    <span className="font-mono text-[11px] text-[var(--chat-faint)]">
+                      {languageLabel}
+                    </span>
+                  </div>
+                </div>
+                <div className="thin-scrollbar h-[calc(100%-31px)] overflow-auto px-4 py-3">
+                  <article className="chat-prose">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       rehypePlugins={[rehypeHighlight]}
-                      components={{
-                        pre(props) {
-                          return (
-                            <pre className="m-0 overflow-visible bg-transparent p-0">
-                              {props.children}
-                            </pre>
-                          );
-                        },
-                        code(props) {
-                          const { className, children } = props;
-                          return (
-                            <code className={`hljs ${className ?? ""}`.trim()}>
-                              {children}
-                            </code>
-                          );
-                        },
-                      }}
+                      components={markdownPreviewComponents}
                     >
-                      {highlightedCodeMarkdown}
+                      {draftContent}
                     </ReactMarkdown>
+                  </article>
+                </div>
+              </div>
+            ) : (
+              <div className="detail-code-shell">
+                <div className="flex items-center justify-between border-b border-[var(--chat-line)] px-3 py-1.5">
+                  <span className="text-[11px] text-[var(--chat-faint)]">
+                    {isMarkdownFile ? "Markdown 源码（可编辑）" : "代码预览（可编辑）"}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {isMarkdownFile && (
+                      <div className="inline-flex items-center rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--surface-main)] p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setMarkdownViewMode("preview")}
+                          className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-faint)] transition-colors hover:text-[var(--chat-prose)]"
+                        >
+                          预览
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMarkdownViewMode("source")}
+                          className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-prose)] bg-[var(--accent-soft)]"
+                        >
+                          源码
+                        </button>
+                      </div>
+                    )}
+                    <span className="font-mono text-[11px] text-[var(--chat-faint)]">
+                      {languageLabel}
+                    </span>
                   </div>
                 </div>
-                <textarea
-                  ref={textareaRef}
-                  value={draftContent}
-                  onChange={(event) => {
-                    setDraftContent(event.target.value);
-                  }}
-                  onMouseUp={syncSelection}
-                  onKeyUp={syncSelection}
-                  onSelect={syncSelection}
-                  onScroll={syncHighlightScroll}
-                  spellCheck={false}
-                  wrap="off"
-                  className="detail-code-textarea thin-scrollbar"
-                />
+                <div className="detail-code-editor-layer">
+                  <div className="detail-code-highlight-layer">
+                    <div ref={highlightContentRef} className="detail-code-highlight-content">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[rehypeHighlight]}
+                        components={{
+                          pre(props) {
+                            return (
+                              <pre className="m-0 overflow-visible bg-transparent p-0">
+                                {props.children}
+                              </pre>
+                            );
+                          },
+                          code(props) {
+                            const { className, children } = props;
+                            return (
+                              <code className={`hljs ${className ?? ""}`.trim()}>
+                                {children}
+                              </code>
+                            );
+                          },
+                        }}
+                      >
+                        {highlightedCodeMarkdown}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                  <textarea
+                    ref={textareaRef}
+                    value={draftContent}
+                    onChange={(event) => {
+                      setDraftContent(event.target.value);
+                    }}
+                    onMouseUp={syncSelection}
+                    onKeyUp={syncSelection}
+                    onSelect={syncSelection}
+                    onScroll={syncHighlightScroll}
+                    spellCheck={false}
+                    wrap="off"
+                    className="detail-code-textarea thin-scrollbar"
+                  />
+                </div>
               </div>
-            </div>
+            )}
           </>
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-[var(--text-faint)]">
@@ -566,7 +706,7 @@ export function DocumentDetailWindow() {
         )}
       </div>
 
-      {selectionMeta && floatingPos && (
+      {selectionMeta && floatingPos && !showMarkdownPreview && (
         <button
           type="button"
           onClick={() => void handleInsertSelection()}

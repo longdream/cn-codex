@@ -19,6 +19,7 @@ interface ApprovalRequest {
 interface UserInputQuestionOption {
   label: string;
   description: string;
+  recommended?: boolean;
 }
 
 interface UserInputQuestion {
@@ -81,7 +82,7 @@ export function ApprovalModal() {
       Object.fromEntries(
         userInputQuestions.map((question) => [
           question.id,
-          question.options?.[0]?.label ?? "",
+          preferredQuestionOptionLabel(question.options),
         ]),
       ),
     );
@@ -97,7 +98,11 @@ export function ApprovalModal() {
           answers: Object.fromEntries(
             userInputQuestions.map((question) => [
               question.id,
-              { answers: [answers[question.id] ?? question.options?.[0]?.label ?? ""] },
+              {
+                answers: [
+                  answers[question.id] ?? preferredQuestionOptionLabel(question.options),
+                ],
+              },
             ]),
           ),
         }
@@ -380,12 +385,30 @@ function userInputQuestionsFromParams(params: Record<string, unknown>): UserInpu
               const raw = option as Record<string, unknown>;
               const label = typeof raw.label === "string" ? raw.label : "";
               const description = typeof raw.description === "string" ? raw.description : "";
-              return label ? { label, description } : null;
+              const recommended = raw.recommended === true
+                || raw.isRecommended === true
+                || label.toLowerCase().includes("recommended")
+                || label.includes("推荐")
+                || description.toLowerCase().includes("recommended")
+                || description.includes("推荐");
+              return label ? { label, description, recommended } : null;
             })
             .filter((option): option is UserInputQuestionOption => option !== null)
+            .sort((left, right) => Number(Boolean(right.recommended)) - Number(Boolean(left.recommended)))
         : undefined;
 
       return { id, header, question: prompt, options };
     })
     .filter((question): question is UserInputQuestion => question !== null);
+}
+
+function preferredQuestionOptionLabel(options?: UserInputQuestionOption[]): string {
+  if (!options || options.length === 0) {
+    return "";
+  }
+  const recommended = options.find((option) => option.recommended && option.label.trim());
+  if (recommended) {
+    return recommended.label;
+  }
+  return options[0]?.label ?? "";
 }

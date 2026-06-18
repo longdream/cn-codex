@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { IconPlus, IconX } from "@tabler/icons-react";
+import { IconLoader2, IconPlus, IconX } from "@tabler/icons-react";
 import { useAppStore } from "../../stores/appStore";
 
 interface TerminalTab {
@@ -19,18 +19,52 @@ export function TerminalPanel() {
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<Map<string, (() => void)>>(new Map());
+  const creatingRef = useRef(false);
+  const bootstrappedRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
   const createTerminalTab = useCallback(async () => {
+    if (creatingRef.current) {
+      return;
+    }
+    creatingRef.current = true;
+    if (mountedRef.current) {
+      setCreating(true);
+    }
+
+    let createdSessionId: string | null = null;
+    let createdTerminal: Terminal | null = null;
+    let createdUnlisten: (() => void) | null = null;
+    let createdTabId: string | null = null;
+
+    const cleanupPendingSession = () => {
+      if (createdUnlisten) {
+        createdUnlisten();
+      }
+      if (createdTerminal) {
+        createdTerminal.dispose();
+      }
+      if (createdSessionId) {
+        invoke("terminal_close", { sessionId: createdSessionId }).catch(console.error);
+      }
+    };
+
     try {
       const sessionId = await invoke<string>("terminal_create", {
         cwd: workspaceCwd ?? undefined,
       });
+      createdSessionId = sessionId;
+      if (!mountedRef.current) {
+        cleanupPendingSession();
+        return;
+      }
 
-      const terminal = new Terminal({
+      createdTerminal = new Terminal({
         cursorBlink: true,
         fontSize: 13,
         fontFamily: "'Cascadia Code', 'Fira Code', Consolas, monospace",
@@ -44,26 +78,37 @@ export function TerminalPanel() {
       });
 
       const fitAddon = new FitAddon();
-      terminal.loadAddon(fitAddon);
+      createdTerminal.loadAddon(fitAddon);
 
-      terminal.onData((data) => {
+      createdTerminal.onData((data) => {
         invoke("terminal_write", { sessionId, data }).catch(console.error);
       });
 
-      const tabId = crypto.randomUUID();
-
-      const unlisten = await listen<{
+      createdUnlisten = await listen<{
         sessionId: string;
         data: string;
         closed?: boolean;
       }>("terminal-output", (e) => {
         if (e.payload.sessionId !== sessionId) return;
         if (e.payload.closed) {
-          terminal.write("\r\n[Process exited]\r\n");
+          createdTerminal?.write("\r\n[Process exited]\r\n");
           return;
         }
-        terminal.write(e.payload.data);
+        createdTerminal?.write(e.payload.data);
       });
+      if (!mountedRef.current) {
+        cleanupPendingSession();
+        return;
+      }
+      if (!createdTerminal || !createdUnlisten) {
+        cleanupPendingSession();
+        return;
+      }
+
+      const tabId = crypto.randomUUID();
+      createdTabId = tabId;
+      const terminal = createdTerminal;
+      const unlisten = createdUnlisten;
 
       cleanupRef.current.set(tabId, () => {
         unlisten();
@@ -71,20 +116,29 @@ export function TerminalPanel() {
         invoke("terminal_close", { sessionId }).catch(console.error);
       });
 
-      const newTab: TerminalTab = {
-        id: tabId,
-        sessionId,
-        label: `Terminal ${tabs.length + 1}`,
-        terminal,
-        fitAddon,
-      };
-
-      setTabs((prev) => [...prev, newTab]);
+      setTabs((prev) => [
+        ...prev,
+        {
+          id: tabId,
+          sessionId,
+          label: `Terminal ${prev.length + 1}`,
+          terminal,
+          fitAddon,
+        },
+      ]);
       setActiveTabId(tabId);
     } catch (err) {
       console.error("Failed to create terminal:", err);
+      if (!createdTabId) {
+        cleanupPendingSession();
+      }
+    } finally {
+      creatingRef.current = false;
+      if (mountedRef.current) {
+        setCreating(false);
+      }
     }
-  }, [workspaceCwd, tabs.length]);
+  }, [workspaceCwd]);
 
   const closeTab = useCallback(
     (tabId: string) => {
@@ -105,10 +159,21 @@ export function TerminalPanel() {
   );
 
   useEffect(() => {
-    if (tabs.length === 0) {
-      createTerminalTab();
-    }
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
+
+  useEffect(() => {
+    if (bootstrappedRef.current) {
+      return;
+    }
+    bootstrappedRef.current = true;
+    if (tabs.length === 0) {
+      void createTerminalTab();
+    }
+  }, [createTerminalTab, tabs.length]);
 
   useEffect(() => {
     if (!activeTab || !containerRef.current) return;
@@ -185,10 +250,15 @@ export function TerminalPanel() {
         <button
           type="button"
           onClick={() => void createTerminalTab()}
-          className="flex h-5 w-5 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+          disabled={creating}
+          className="flex h-5 w-5 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-45"
           title="New terminal"
         >
-          <IconPlus size={12} stroke={2} />
+          {creating ? (
+            <IconLoader2 size={12} stroke={2} className="animate-spin" />
+          ) : (
+            <IconPlus size={12} stroke={2} />
+          )}
         </button>
       </div>
 

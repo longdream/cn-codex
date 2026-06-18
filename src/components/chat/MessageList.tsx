@@ -147,8 +147,6 @@ function MessageRow({
   messageIndex: number;
   sourceMessages: ChatMessage[];
 }) {
-  const intl = useIntl();
-
   if (message.runSummary) {
     return (
       <RunSummaryCard
@@ -179,10 +177,6 @@ function MessageRow({
     return (
       <div className="flex justify-end py-1">
         <div className="chat-user-message group relative max-w-[min(88%,760px)] px-4 py-3 text-[13px] leading-relaxed">
-          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-[var(--chat-muted)]">
-            <IconMessage2 size={13} stroke={1.8} />
-            <span>{intl.formatMessage({ id: "chat.role.user" })}</span>
-          </div>
           <MessageContent content={message.content} />
           <CopyButton text={message.content} />
         </div>
@@ -342,12 +336,12 @@ function RunSummaryCard({
           </span>
         )}
         <IconChevronRight size={17} stroke={1.8} className="text-[var(--chat-faint)]" />
-        <span className="ml-auto hidden items-center gap-1.5 text-[13px] sm:flex">
-          {summary.mode === "goal" ? <IconTargetArrow size={14} stroke={1.8} /> : <IconMessage2 size={14} stroke={1.8} />}
-          {summary.mode === "goal"
-            ? intl.formatMessage({ id: "chat.mode.goal" })
-            : intl.formatMessage({ id: "chat.mode.chat" })}
-        </span>
+        {summary.mode === "goal" && (
+          <span className="ml-auto hidden items-center gap-1.5 text-[13px] sm:flex">
+            <IconTargetArrow size={14} stroke={1.8} />
+            {intl.formatMessage({ id: "chat.mode.goal" })}
+          </span>
+        )}
       </div>
 
       <div className="mt-5 grid gap-3">

@@ -191,7 +191,9 @@ textarea {
 
 .app-resizer {
   position: relative;
+  z-index: 5;
   width: 8px;
+  margin: 0 -4px;
   flex-shrink: 0;
   cursor: col-resize;
   touch-action: none;
@@ -203,8 +205,9 @@ textarea {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 3px;
+  left: 50%;
   width: 2px;
+  transform: translateX(-50%);
   border-radius: 2px;
   background: transparent;
   transition: background 120ms ease;
@@ -212,6 +215,10 @@ textarea {
 
 .app-resizer:hover::before,
 .app-resizer:focus-visible::before {
+  background: var(--accent-border);
+}
+
+body.app-resizing .app-resizer::before {
   background: var(--accent-border);
 }
 

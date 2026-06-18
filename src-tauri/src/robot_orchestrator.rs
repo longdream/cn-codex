@@ -353,8 +353,11 @@ pub fn build_robot_node_advance_prompt(next_node_index: usize, total_nodes: usiz
 pub fn build_robot_node_completion_nudge(current_node_index: usize, total_nodes: usize) -> String {
     format!(
         "Current workflow node {}/{} is not complete yet. \
-         Continue working on the CURRENT node only, use tools to produce concrete progress, \
-         and include `{}` only when this node is fully done.",
+         Continue working on the CURRENT node only and produce concrete artifacts \
+         (analysis notes, plans, file edits, test results). Do NOT keep repeating generic \
+         requirement questions. If critical information is missing, call `request_user_input` \
+         once with specific options, then wait for user response. Include `{}` only when this \
+         node is fully done.",
         current_node_index.saturating_add(1),
         total_nodes.max(1),
         ROBOT_NODE_DONE_SENTINEL

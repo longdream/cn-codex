@@ -81,6 +81,7 @@ export async function standaloneThreadRead(threadId: string): Promise<{
         completionTokens: number;
         totalTokens: number;
         callCount?: number;
+        lastSinglePromptTokens?: number;
       };
       goalBudgetTokens?: number;
       budgetLimited?: boolean;

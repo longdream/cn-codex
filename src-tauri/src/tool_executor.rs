@@ -1505,7 +1505,7 @@ impl ToolExecutor {
                                         },
                                         "options": {
                                             "type": "array",
-                                            "description": "Optional mutually exclusive choices. Put the recommended option first when there is one.",
+                                            "description": "Optional mutually exclusive choices. Put the recommended option first when there is one, and prefer adding '(Recommended)' to the recommended label.",
                                             "minItems": 0,
                                             "maxItems": 3,
                                             "items": {
@@ -3401,7 +3401,7 @@ impl ToolExecutor {
         app_handle: &AppHandle,
         thread_id: &str,
     ) -> AppResult<String> {
-        let args: RequestUserInputArgs = match serde_json::from_str(arguments) {
+        let mut args: RequestUserInputArgs = match serde_json::from_str(arguments) {
             Ok(args) => args,
             Err(e) => {
                 let msg = format!("Invalid request_user_input args: {e}");
@@ -3444,6 +3444,7 @@ impl ToolExecutor {
             );
             return Ok(msg);
         }
+        normalize_request_user_input_args(&mut args);
 
         let request_id = RequestId::String(call_id.to_string());
         app_handle
@@ -11179,6 +11180,29 @@ fn format_plan_update(explanation: Option<&str>, plan: &[PlanItemArg]) -> Result
 
 fn format_json_value(value: &serde_json::Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn option_is_recommended(option: &RequestUserInputQuestionOption) -> bool {
+    let label_lower = option.label.to_ascii_lowercase();
+    let desc_lower = option.description.to_ascii_lowercase();
+    label_lower.contains("recommended")
+        || desc_lower.contains("recommended")
+        || option.label.contains("推荐")
+        || option.description.contains("推荐")
+}
+
+fn normalize_request_user_input_args(args: &mut RequestUserInputArgs) {
+    for question in &mut args.questions {
+        if question.options.len() <= 1 {
+            continue;
+        }
+        if let Some(index) = question.options.iter().position(option_is_recommended) {
+            if index > 0 {
+                let option = question.options.remove(index);
+                question.options.insert(0, option);
+            }
+        }
+    }
 }
 
 fn validate_request_user_input_args(args: &RequestUserInputArgs) -> Result<(), String> {

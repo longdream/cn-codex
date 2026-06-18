@@ -1,0 +1,21 @@
+{"type":"thread_meta","thread_id":"9ff9762f-47d0-44b0-81f4-3174e6e358aa","name":null,"created_at":1781746710,"model":"c-deepseek-v4-flash"}
+{"type":"turn_start","turn_id":"aefe22ba-6af5-4452-a810-d1553318c0b7","started_at":1781746711,"mode":"chat","goal_budget_tokens":null}
+{"type":"message","id":"38120155-e591-46f4-ab21-a4eca1b50e48","role":"user","content":"你好","timestamp":1781746711,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"message","id":"babf5d9c-07db-47ca-b2c6-bc4d6aa68763","role":"assistant","content":"你好！我是 Codey，你的编程助手。有什么我可以帮你的吗？","timestamp":1781746716,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"turn_end","turn_id":"aefe22ba-6af5-4452-a810-d1553318c0b7","completed_at":1781746718,"duration_ms":8098,"changed_files":[],"usage":{"promptTokens":12480,"completionTokens":55,"totalTokens":12535,"callCount":1,"lastSinglePromptTokens":12480},"budget_limited":false}
+{"type":"turn_start","turn_id":"d7f59750-81a2-4eaf-8adc-93531551e213","started_at":1781746746,"mode":"chat","goal_budget_tokens":null}
+{"type":"message","id":"c73a9491-d0cb-43b6-ac0d-3ec920caae2e","role":"user","content":"你好","timestamp":1781746746,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"message","id":"568d0cc9-ca73-456e-9ebe-1517318f4c59","role":"assistant","content":"你好！请问有什么编程问题需要我帮忙的吗？比如写代码、调试、项目搭建、文件操作等等，都可以告诉我！😊","timestamp":1781746749,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"turn_end","turn_id":"d7f59750-81a2-4eaf-8adc-93531551e213","completed_at":1781746751,"duration_ms":6074,"changed_files":[],"usage":{"promptTokens":12502,"completionTokens":63,"totalTokens":12565,"callCount":1,"lastSinglePromptTokens":12502},"budget_limited":false}
+{"type":"turn_start","turn_id":"44eff313-70f5-40e8-b606-3cc54169701b","started_at":1781746755,"mode":"chat","goal_budget_tokens":null}
+{"type":"message","id":"24c84fca-be22-455f-8a89-039e6c4b67bf","role":"user","content":"你好","timestamp":1781746755,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"message","id":"e68143f1-2fed-40c1-8123-4d2e66190f61","role":"assistant","content":"你好呀！😊 有什么我可以帮你的吗？无论是写代码、调试、学习技术、还是搭建项目，尽管说！","timestamp":1781746758,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"turn_end","turn_id":"44eff313-70f5-40e8-b606-3cc54169701b","completed_at":1781746760,"duration_ms":5651,"changed_files":[],"usage":{"promptTokens":12537,"completionTokens":53,"totalTokens":12590,"callCount":1,"lastSinglePromptTokens":12537},"budget_limited":false}
+{"type":"turn_start","turn_id":"aeebcd16-94c9-4b5c-8c8a-70c30b8a5142","started_at":1781746774,"mode":"chat","goal_budget_tokens":null}
+{"type":"message","id":"efd027b7-99e1-4e11-a338-cc11a78f289b","role":"user","content":"你好","timestamp":1781746774,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"message","id":"73c03644-c7d9-4c6b-a8fa-5b6326476034","role":"system","content":"All tool executions have completed. You MUST now provide a brief summary: what was done, any errors encountered, and suggested next steps. Do NOT call any more tools.","timestamp":1781746775,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"turn_end","turn_id":"aeebcd16-94c9-4b5c-8c8a-70c30b8a5142","completed_at":1781746777,"duration_ms":3555,"changed_files":[],"usage":null,"budget_limited":false}
+{"type":"turn_start","turn_id":"c69f2e4f-8538-4b7a-b4e2-a3f855bf5c65","started_at":1781747244,"mode":"chat","goal_budget_tokens":null}
+{"type":"message","id":"839bfb46-eaba-451f-b11d-da9f373472ff","role":"user","content":"你好","timestamp":1781747244,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"message","id":"8df8540c-76a9-4962-9be3-e14816d69652","role":"assistant","content":"你好！你好！😊\n\n看来你打了好几次招呼～ 我已经准备好了！有什么具体的编程任务或问题需要我帮忙吗？比如：\n\n- 创建或修改项目文件\n- 写代码或调试\n- 运行命令\n- 学习某种技术\n- 或者任何其他问题\n\n尽管说，不要客气！🚀","timestamp":1781747250,"tool_call_id":null,"tool_name":null,"tool_calls":null}
+{"type":"turn_end","turn_id":"c69f2e4f-8538-4b7a-b4e2-a3f855bf5c65","completed_at":1781747252,"duration_ms":8669,"changed_files":[],"usage":{"promptTokens":12604,"completionTokens":113,"totalTokens":12717,"callCount":1,"lastSinglePromptTokens":12604},"budget_limited":false}

@@ -641,6 +641,38 @@ impl AgentEngine {
                                 };
                                 self.thread_store.add_message(thread_id, msg).await?;
                             }
+                            let waiting_for_user_requirements = robot_progress.is_some()
+                                && !node_done_signal
+                                && assistant_is_waiting_for_user(&cleaned_text);
+                            if waiting_for_user_requirements {
+                                info!(
+                                    "Robot workflow paused because assistant requested more requirements without node completion"
+                                );
+                                if let Err(err) = self
+                                    .thread_store
+                                    .set_thread_goal_status(thread_id, ThreadGoalStatus::Paused)
+                                    .await
+                                {
+                                    warn!(
+                                        "Failed to pause goal after requirement-request loop detection: {err}"
+                                    );
+                                }
+                                let pause_hint = ThreadMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role: "system".to_string(),
+                                    content:
+                                        "检测到当前机器人节点正在等待你补充需求。已自动暂停本轮 Goal，\
+                                         请补充关键信息后继续发送消息即可恢复。"
+                                            .to_string(),
+                                    timestamp: now_secs(),
+                                    tool_call_id: None,
+                                    tool_name: None,
+                                    tool_calls: None,
+                                };
+                                self.thread_store.add_message(thread_id, pause_hint).await?;
+                                stop_hooks_satisfied = true;
+                                break;
+                            }
                             let git_status_now = git_status_snapshot(&effective_cwd).await;
                             merge_git_changes(
                                 &mut changed_files,
@@ -1499,7 +1531,7 @@ impl AgentEngine {
              - apply_patch: Apply Codex-style patches to add, update, delete, or move files. Prefer raw/freeform patch text when available; function-call providers may pass the same body as patch or command.\n\
              - list_directory: List files and subdirectories in a directory.\n\
              - update_plan: Update a concise multi-step task plan; keep at most one step in_progress.\n\
-             - request_user_input: Ask the user one to three short structured questions and wait for their response when progress genuinely depends on user input.\n\
+             - request_user_input: Ask the user one to three short structured questions and wait for their response when progress genuinely depends on user input. When providing options, always put the recommended one first.\n\
              - request_permissions: Ask the user for additional filesystem or network permissions and wait for their response.\n\
              - view_image: Inspect and preview local image files, returning format, dimensions, size, and path.\n\
              - image_generate: Generate an image through an OpenAI Images API-compatible backend and save it as a local file when image generation is configured.\n\
@@ -2486,6 +2518,52 @@ fn estimate_tokens(text: &str) -> u64 {
 
 fn estimate_tokens_from_char_count(char_count: u64) -> u64 {
     (char_count / 3).max(1)
+}
+
+fn assistant_is_waiting_for_user(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    const ZH_PATTERNS: &[&str] = &[
+        "告诉我需求",
+        "请告诉我你的需求",
+        "请提供需求",
+        "补充需求",
+        "你希望我",
+        "还想加什么",
+        "你还需要什么",
+    ];
+    if ZH_PATTERNS.iter().any(|pattern| trimmed.contains(pattern)) {
+        return true;
+    }
+
+    let lowered = trimmed.to_lowercase();
+    const EN_PATTERNS: &[&str] = &[
+        "tell me your requirements",
+        "share your requirements",
+        "let me know your requirements",
+        "what would you like",
+        "please provide more details",
+        "please clarify",
+        "what changes do you want",
+    ];
+    if EN_PATTERNS
+        .iter()
+        .any(|pattern| lowered.contains(pattern))
+    {
+        return true;
+    }
+
+    let question_like = lowered.contains('?') || trimmed.contains('？');
+    question_like
+        && (
+            lowered.contains("requirements")
+                || lowered.contains("feature")
+                || lowered.contains("details")
+                || lowered.contains("clarify")
+        )
 }
 
 #[cfg(test)]

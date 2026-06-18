@@ -45,6 +45,7 @@ export interface TokenUsage {
   completionTokens: number;
   totalTokens: number;
   callCount?: number;
+  lastSinglePromptTokens?: number;
 }
 
 export interface PendingFileReviewFile {
@@ -139,6 +140,8 @@ export const DEFAULT_SIDEBAR_WIDTH = 256;
 export const RIGHT_PANEL_WIDTH_MIN = 320;
 export const RIGHT_PANEL_WIDTH_MAX = 760;
 export const DEFAULT_RIGHT_PANEL_WIDTH = 384;
+export const DEFAULT_MODEL_CONTEXT_LENGTH = 128000;
+export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 65535;
 
 interface RawToolCallInfo {
   id: string;
@@ -388,7 +391,14 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const completionTokens = Number(usage.completionTokens ?? 0);
   const totalTokens = Number(usage.totalTokens ?? promptTokens + completionTokens);
   const callCount = Number(usage.callCount ?? 0);
-  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0 && callCount <= 0) {
+  const lastSinglePromptTokens = Number(usage.lastSinglePromptTokens ?? 0);
+  if (
+    promptTokens <= 0 &&
+    completionTokens <= 0 &&
+    totalTokens <= 0 &&
+    callCount <= 0 &&
+    lastSinglePromptTokens <= 0
+  ) {
     return undefined;
   }
 
@@ -397,6 +407,9 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     completionTokens: Math.max(0, completionTokens),
     totalTokens: Math.max(0, totalTokens),
     ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
+    ...(lastSinglePromptTokens > 0
+      ? { lastSinglePromptTokens: Math.max(0, Math.round(lastSinglePromptTokens)) }
+      : {}),
   };
 }
 
@@ -542,6 +555,80 @@ const AUTO_APPROVE_KEY = "auto-approve";
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const RIGHT_PANEL_WIDTH_KEY = "right-panel-width";
 
+type PersistedProviderRecord = Omit<ProviderConfig, "models"> & {
+  models?: Array<Partial<ProviderModel>>;
+  maxOutputTokens?: unknown;
+};
+
+function normalizePositiveInt(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+function normalizeContextLength(value: unknown): number {
+  return normalizePositiveInt(value, DEFAULT_MODEL_CONTEXT_LENGTH);
+}
+
+function normalizeModelMaxOutputTokens(
+  value: unknown,
+  fallback = DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+): number {
+  return normalizePositiveInt(value, fallback);
+}
+
+function normalizeProviderModel(
+  model: Partial<ProviderModel>,
+  fallbackMaxOutputTokens = DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+): ProviderModel {
+  const id = typeof model.id === "string" ? model.id : "";
+  const label = typeof model.label === "string" && model.label.trim() ? model.label : id;
+  return {
+    id,
+    label,
+    supportsVision: Boolean(model.supportsVision),
+    contextLength: normalizeContextLength(model.contextLength),
+    maxOutputTokens: normalizeModelMaxOutputTokens(model.maxOutputTokens, fallbackMaxOutputTokens),
+  };
+}
+
+function resolveProviderModelByEntry(
+  providers: ProviderConfig[],
+  entry: ModelEntry | undefined,
+  modelName: string,
+): { provider: ProviderConfig | null; model: ProviderModel | null } {
+  if (entry) {
+    const matchedProvider = providers.find(
+      (provider) => provider.id === entry.provider || provider.type === entry.provider,
+    );
+    if (matchedProvider) {
+      const matchedModel = matchedProvider.models.find((model) => model.id === modelName);
+      if (matchedModel) {
+        return { provider: matchedProvider, model: matchedModel };
+      }
+    }
+  }
+
+  for (const provider of providers) {
+    const matchedModel = provider.models.find((model) => model.id === modelName);
+    if (matchedModel) {
+      return { provider, model: matchedModel };
+    }
+  }
+
+  return { provider: null, model: null };
+}
+
+function modelMaxOutputTokensOrDefault(model: ProviderModel | null | undefined): number {
+  return normalizeModelMaxOutputTokens(model?.maxOutputTokens);
+}
+
+function modelContextLengthOrDefault(model: ProviderModel | null | undefined): number {
+  return normalizeContextLength(model?.contextLength);
+}
+
 /**
  * 供应商预设模板列表
  * 仅作为"创建实例"的模板，不直接存储用户数据。
@@ -578,15 +665,15 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultBaseUrl: "https://api.deepseek.com/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://platform.deepseek.com/api_keys",
     defaultModels: [
-      { id: "deepseek-chat", label: "DeepSeek Chat", supportsVision: false, contextLength: 65535 },
-      { id: "deepseek-reasoner", label: "DeepSeek Reasoner", supportsVision: false, contextLength: 65535 },
+      { id: "deepseek-chat", label: "DeepSeek Chat", supportsVision: false, contextLength: 128000 },
+      { id: "deepseek-reasoner", label: "DeepSeek Reasoner", supportsVision: false, contextLength: 128000 },
     ],
   },
   {
     type: "volcengine", name: "火山引擎 Ark", category: "china",
     defaultBaseUrl: "https://ark.cn-beijing.volces.com/api/v3", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
-    defaultModels: [{ id: "deepseek-v4-pro-260425", label: "DeepSeek V4 Pro", supportsVision: false, contextLength: 65535 }],
+    defaultModels: [{ id: "deepseek-v4-pro-260425", label: "DeepSeek V4 Pro", supportsVision: false, contextLength: 128000 }],
   },
   {
     type: "qwen", name: "通义千问", category: "china",
@@ -610,7 +697,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     type: "siliconflow", name: "SiliconFlow", category: "china",
     defaultBaseUrl: "https://api.siliconflow.cn/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://cloud.siliconflow.cn/account/ak",
-    defaultModels: [{ id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3", supportsVision: false, contextLength: 65535 }],
+    defaultModels: [{ id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3", supportsVision: false, contextLength: 128000 }],
   },
   {
     type: "baichuan", name: "百川智能", category: "china",
@@ -628,7 +715,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     type: "lmstudio", name: "LM Studio", category: "local",
     defaultBaseUrl: "http://localhost:1234/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://lmstudio.ai/",
-    defaultModels: [{ id: "local-model", label: "Local Model", supportsVision: false, contextLength: 65535 }],
+    defaultModels: [{ id: "local-model", label: "Local Model", supportsVision: false, contextLength: 128000 }],
   },
   {
     type: "custom", name: "自定义", category: "other",
@@ -651,10 +738,11 @@ export function createProviderFromPreset(
     apiKey: overrides?.apiKey ?? "",
     wireApi: preset.defaultWireApi,
     requiresOpenAIAuth: preset.requiresOpenAIAuth,
-    models: [...preset.defaultModels],
+    models: preset.defaultModels.map((model) =>
+      normalizeProviderModel(model, DEFAULT_MODEL_MAX_OUTPUT_TOKENS),
+    ),
     isCustom: preset.type === "custom",
     createdAt: Date.now(),
-    maxOutputTokens: 131072,
   };
 }
 
@@ -950,27 +1038,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setActiveModelId: (id) => {
     saveActiveModelId(id);
-    const models = get().configuredModels;
+    const state = get();
+    const models = state.configuredModels;
     const entry = models.find((m) => m.id === id);
     const modelName = entry?.model ?? id;
     set({ activeModelId: id, currentModel: modelName });
     if (modelName) {
+      const { model } = resolveProviderModelByEntry(state.providers, entry, modelName);
       const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
         { keyPath: "model", value: modelName, mergeStrategy: "replace" },
+        {
+          keyPath: "model_context_window",
+          value: modelContextLengthOrDefault(model),
+          mergeStrategy: "replace",
+        },
       ];
-      // 查找该模型在供应商中的 contextLength 并同步到 model_context_window
-      const state = get();
-      let contextLength: number | undefined;
-      for (const p of state.providers) {
-        const pm = p.models.find((m) => m.id === modelName);
-        if (pm?.contextLength) {
-          contextLength = pm.contextLength;
-          break;
-        }
-      }
-      if (contextLength) {
-        edits.push({ keyPath: "model_context_window", value: contextLength, mergeStrategy: "replace" });
-      }
+      edits.push({
+        keyPath: "max_output_tokens",
+        value: modelMaxOutputTokensOrDefault(model),
+        mergeStrategy: "replace",
+      });
       standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync model to config:", err));
     }
   },
@@ -1087,7 +1174,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   activateProvider: (providerId: string) => {
     saveActiveProviderId(providerId);
     set({ activeProviderId: providerId });
-    const provider = get().providers.find((p) => p.id === providerId);
+    const state = get();
+    const provider = state.providers.find((p) => p.id === providerId);
     if (provider) {
       const providerKey = provider.type || "custom";
       const providerOverride: Record<string, unknown> = {};
@@ -1095,16 +1183,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (provider.wireApi) providerOverride.wire_api = provider.wireApi;
       if (provider.apiKey) providerOverride.experimental_bearer_token = provider.apiKey;
       providerOverride.requires_openai_auth = provider.requiresOpenAIAuth;
-      const defaultModel = provider.models[0];
+      const activeEntry = state.activeModelId
+        ? state.configuredModels.find((m) => m.id === state.activeModelId)
+        : null;
+      const preferredModelId = activeEntry
+        && (activeEntry.provider === provider.id || activeEntry.provider === provider.type)
+        ? activeEntry.model
+        : undefined;
+      const selectedModel = provider.models.find((model) => model.id === preferredModelId)
+        ?? provider.models[0];
       const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
         { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
-        { keyPath: "model", value: defaultModel?.id ?? "", mergeStrategy: "replace" },
+        { keyPath: "model", value: selectedModel?.id ?? "", mergeStrategy: "replace" },
         { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
-        { keyPath: "max_output_tokens", value: provider.maxOutputTokens ?? 131072, mergeStrategy: "replace" },
+        {
+          keyPath: "model_context_window",
+          value: modelContextLengthOrDefault(selectedModel),
+          mergeStrategy: "replace",
+        },
+        {
+          keyPath: "max_output_tokens",
+          value: modelMaxOutputTokensOrDefault(selectedModel),
+          mergeStrategy: "replace",
+        },
       ];
-      if (defaultModel?.contextLength) {
-        edits.push({ keyPath: "model_context_window", value: defaultModel.contextLength, mergeStrategy: "replace" });
-      }
       standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync provider config:", err));
     }
   },
@@ -1142,21 +1244,76 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   addProviderModel: (providerId: string, model: ProviderModel) => {
+    const normalizedModel = normalizeProviderModel(model);
     const providers = get().providers.map((p) =>
-      p.id === providerId ? { ...p, models: [...p.models, model] } : p,
+      p.id === providerId ? { ...p, models: [...p.models, normalizedModel] } : p,
     );
     saveProviders(providers);
     set({ providers });
   },
 
   updateProviderModel: (providerId: string, modelId: string, updates: Partial<ProviderModel>) => {
+    const normalizedUpdates: Partial<ProviderModel> = { ...updates };
+    if (normalizedUpdates.contextLength !== undefined) {
+      normalizedUpdates.contextLength = normalizeContextLength(normalizedUpdates.contextLength);
+    }
+    if (normalizedUpdates.maxOutputTokens !== undefined) {
+      normalizedUpdates.maxOutputTokens = normalizeModelMaxOutputTokens(normalizedUpdates.maxOutputTokens);
+    }
+
     const providers = get().providers.map((p) =>
       p.id === providerId
-        ? { ...p, models: p.models.map((m) => m.id === modelId ? { ...m, ...updates } : m) }
+        ? {
+            ...p,
+            models: p.models.map((m) =>
+              m.id === modelId ? normalizeProviderModel({ ...m, ...normalizedUpdates }) : m,
+            ),
+          }
         : p,
     );
     saveProviders(providers);
     set({ providers });
+
+    const state = get();
+    const activeProvider = providers.find((provider) => provider.id === providerId);
+    if (!activeProvider || state.activeProviderId !== providerId) {
+      return;
+    }
+    const activeEntry = state.activeModelId
+      ? state.configuredModels.find((entry) => entry.id === state.activeModelId)
+      : null;
+    const selectedProviderMatches = activeEntry
+      ? activeEntry.provider === providerId || activeEntry.provider === activeProvider.type
+      : true;
+    const isActiveModel = selectedProviderMatches
+      && (
+        activeEntry
+          ? activeEntry.model === modelId
+          : state.currentModel === modelId
+      );
+    if (!isActiveModel) {
+      return;
+    }
+
+    const activeModel = activeProvider.models.find((model) => model.id === modelId);
+    if (!activeModel) {
+      return;
+    }
+    const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
+      {
+        keyPath: "model_context_window",
+        value: modelContextLengthOrDefault(activeModel),
+        mergeStrategy: "replace",
+      },
+      {
+        keyPath: "max_output_tokens",
+        value: modelMaxOutputTokensOrDefault(activeModel),
+        mergeStrategy: "replace",
+      },
+    ];
+    standaloneConfigWrite(edits).catch((err) => {
+      console.error("Failed to sync active model config:", err);
+    });
   },
 
   removeProviderModel: (providerId: string, modelId: string) => {
@@ -1654,17 +1811,25 @@ export async function initStoreFromDb(): Promise<void> {
 
   try {
     if (all[PROVIDERS_KEY]) {
-      const parsed = JSON.parse(all[PROVIDERS_KEY]) as ProviderConfig[];
-      providers = parsed.map((p) => ({
-        ...p,
-        type: p.type ?? p.id ?? "custom",
-        createdAt: p.createdAt ?? Date.now(),
-        maxOutputTokens: p.maxOutputTokens ?? 131072,
-        models: (p.models ?? []).map((m) => ({
-          ...m,
-          contextLength: m.contextLength ?? 65535,
-        })),
-      }));
+      const parsed = JSON.parse(all[PROVIDERS_KEY]) as PersistedProviderRecord[];
+      providers = parsed.map((provider) => {
+        const fallbackModelMaxTokens = normalizeModelMaxOutputTokens(provider.maxOutputTokens);
+        return {
+          id: provider.id ?? crypto.randomUUID(),
+          type: provider.type ?? provider.id ?? "custom",
+          name: provider.name ?? provider.type ?? provider.id ?? "Custom",
+          category: provider.category ?? "other",
+          baseUrl: provider.baseUrl ?? "",
+          apiKey: provider.apiKey ?? "",
+          wireApi: provider.wireApi ?? "chat",
+          requiresOpenAIAuth: provider.requiresOpenAIAuth ?? false,
+          models: (provider.models ?? []).map((model) =>
+            normalizeProviderModel(model, fallbackModelMaxTokens),
+          ),
+          isCustom: provider.isCustom ?? provider.type === "custom",
+          createdAt: provider.createdAt ?? Date.now(),
+        };
+      });
     }
   } catch { /* ignore */ }
 

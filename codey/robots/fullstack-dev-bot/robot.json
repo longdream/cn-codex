@@ -72,7 +72,7 @@
     }
   ],
   "workflow": [
-    "1. 📋 需求理解与分析：与用户沟通需求，分析现有项目，产出需求分析文档",
+    "1. 📋 需求理解与分析：先分析现有项目并产出需求分析文档；仅在关键信息缺失时一次性提问",
     "2. 🎨 界面与架构设计：设计系统架构、UI界面、交互流程，产出设计文档",
     "3. 🔧 后端开发：按TDD模式开发API、数据模型、业务逻辑，运行后端测试验证",
     "4. 🖥️ 前端开发：按TDD模式开发组件、页面、状态管理，运行前端测试验证",
@@ -81,20 +81,20 @@
   ],
   "workflowNodes": [
     {
-      "objective": "1. 📋 需求理解与分析：与用户沟通需求，分析现有项目，产出需求分析文档",
+      "objective": "1. 📋 需求理解与分析：先分析现有项目并产出需求分析文档；仅在关键信息缺失时一次性提问",
       "skills": [
-        "brainstorming",
         "writing-plans",
+        "executing-plans",
         "verification-before-completion"
       ],
       "pluginSkills": [
         {
           "pluginId": "superpowers",
-          "skillId": "brainstorming"
+          "skillId": "writing-plans"
         },
         {
           "pluginId": "superpowers",
-          "skillId": "writing-plans"
+          "skillId": "executing-plans"
         },
         {
           "pluginId": "superpowers",
