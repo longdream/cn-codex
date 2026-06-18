@@ -40,6 +40,16 @@ const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.x
 const IMAGE_ACCEPT = "image/*";
 const ALL_ACCEPT = `${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`;
 
+interface ClipboardImageItemLike {
+  type: string;
+  getAsFile: () => File | null;
+}
+
+interface BrowserFileAttachmentInput {
+  file: File;
+  fallbackName?: string;
+}
+
 function guessTypeFromExt(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   const map: Record<string, string> = {
@@ -61,6 +71,56 @@ function guessTypeFromExt(name: string): string {
     toml: "application/toml",
   };
   return map[ext] ?? "application/octet-stream";
+}
+
+function imageExtensionFromMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase().trim();
+  switch (normalized) {
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/svg+xml":
+      return "svg";
+    case "image/vnd.microsoft.icon":
+    case "image/x-icon":
+      return "ico";
+    default:
+      break;
+  }
+  if (!normalized.startsWith("image/")) {
+    return "png";
+  }
+  const subtype = normalized.slice("image/".length).split(";")[0].replace(/[^a-z0-9]/gi, "");
+  return subtype || "png";
+}
+
+export function buildPastedImageName(mimeType: string, seed = Date.now(), sequence = 1): string {
+  const safeSequence = Number.isFinite(sequence) && sequence > 0 ? Math.floor(sequence) : 1;
+  return `pasted-image-${seed}-${safeSequence}.${imageExtensionFromMimeType(mimeType)}`;
+}
+
+export function extractClipboardImageFiles(
+  items: ArrayLike<ClipboardImageItemLike>,
+  seed = Date.now(),
+): BrowserFileAttachmentInput[] {
+  const imageFiles: BrowserFileAttachmentInput[] = [];
+  let imageCount = 0;
+  for (const item of Array.from(items)) {
+    if (!item.type?.toLowerCase().startsWith("image/")) {
+      continue;
+    }
+    const file = item.getAsFile();
+    if (!file) {
+      continue;
+    }
+    imageCount += 1;
+    const trimmedName = file.name.trim();
+    imageFiles.push({
+      file,
+      fallbackName: trimmedName ? undefined : buildPastedImageName(file.type || item.type, seed, imageCount),
+    });
+  }
+  return imageFiles;
 }
 
 export interface ChatSendExtendedOptions extends ChatSendOptions {
@@ -581,34 +641,50 @@ export function ChatInput({
     fileInputRef.current?.click();
   }, []);
 
+  const warnVisionUnsupportedIfNeeded = useCallback((mimeType: string) => {
+    if (!mimeType.startsWith("image/")) {
+      return;
+    }
+    if (activeEntry?.supportsVision) {
+      return;
+    }
+    const providerVision = providerModels.some((m) => m.supportsVision);
+    if (!providerVision) {
+      setVisionWarning(true);
+      setTimeout(() => setVisionWarning(false), 4000);
+    }
+  }, [activeEntry, providerModels]);
+
+  const addBrowserFileAttachment = useCallback((file: File, fallbackName?: string) => {
+    const resolvedName = file.name.trim() || fallbackName || `attachment-${Date.now()}`;
+    const resolvedType = file.type || guessTypeFromExt(resolvedName);
+    warnVisionUnsupportedIfNeeded(resolvedType);
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const attached: AttachedFile = {
+        name: resolvedName,
+        type: resolvedType,
+        dataUrl: reader.result as string,
+        size: file.size,
+      };
+      useAppStore.getState().addAttachedFile(attached);
+    };
+    reader.readAsDataURL(file);
+  }, [warnVisionUnsupportedIfNeeded]);
+
+  const addBrowserFileAttachments = useCallback((files: BrowserFileAttachmentInput[]) => {
+    for (const fileEntry of files) {
+      addBrowserFileAttachment(fileEntry.file, fileEntry.fallbackName);
+    }
+  }, [addBrowserFileAttachment]);
+
   const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
-
-    for (const file of Array.from(files)) {
-      // 图片类型检查视觉支持
-      if (file.type.startsWith("image/") && !activeEntry?.supportsVision) {
-        const providerVision = providerModels.some((m) => m.supportsVision);
-        if (!providerVision) {
-          setVisionWarning(true);
-          setTimeout(() => setVisionWarning(false), 4000);
-        }
-      }
-
-      const reader = new FileReader();
-      reader.onload = () => {
-        const attached: AttachedFile = {
-          name: file.name,
-          type: file.type,
-          dataUrl: reader.result as string,
-          size: file.size,
-        };
-        useAppStore.getState().addAttachedFile(attached);
-      };
-      reader.readAsDataURL(file);
-    }
+    addBrowserFileAttachments(Array.from(files).map((file) => ({ file })));
     event.target.value = "";
-  }, [activeEntry, providerModels]);
+  }, [addBrowserFileAttachments]);
 
   const handleRemoveFile = useCallback((index: number) => {
     useAppStore.getState().removeAttachedFile(index);
@@ -684,29 +760,21 @@ export function ChatInput({
 
     const files = e.dataTransfer.files;
     if (!files || files.length === 0) return;
+    addBrowserFileAttachments(Array.from(files).map((file) => ({ file })));
+  }, [addBrowserFileAttachments]);
 
-    for (const file of Array.from(files)) {
-      if (file.type.startsWith("image/") && !activeEntry?.supportsVision) {
-        const providerVision = providerModels.some((m) => m.supportsVision);
-        if (!providerVision) {
-          setVisionWarning(true);
-          setTimeout(() => setVisionWarning(false), 4000);
-        }
-      }
-
-      const reader = new FileReader();
-      reader.onload = () => {
-        const attached: AttachedFile = {
-          name: file.name,
-          type: file.type || guessTypeFromExt(file.name),
-          dataUrl: reader.result as string,
-          size: file.size,
-        };
-        useAppStore.getState().addAttachedFile(attached);
-      };
-      reader.readAsDataURL(file);
+  const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardItems = event.clipboardData?.items;
+    if (!clipboardItems || clipboardItems.length === 0) {
+      return;
     }
-  }, [activeEntry, providerModels]);
+    const imageFiles = extractClipboardImageFiles(clipboardItems);
+    if (imageFiles.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    addBrowserFileAttachments(imageFiles);
+  }, [addBrowserFileAttachments]);
 
   const handleModelSelect = useCallback((modelId: string) => {
     useAppStore.getState().setActiveModelId(modelId);
@@ -1052,6 +1120,7 @@ export function ChatInput({
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onInput={handleInput}
+            onPaste={handlePaste}
             placeholder={intl.formatMessage({ id: robotModifyMode ? "chat.robot.modifyPlaceholder" : robotCreateMode ? "chat.robot.placeholder" : "chat.placeholder" })}
             disabled={disabled}
             rows={2}
