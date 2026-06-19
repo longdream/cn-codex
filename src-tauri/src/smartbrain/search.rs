@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::bm25_index::{BM25Index, SearchResult, SourceType};
+use super::bm25_index::{BM25Index, SearchFilter, SearchResult, SourceType};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SmartBrainSearchResult {
@@ -11,10 +11,21 @@ pub struct SmartBrainSearchResult {
     pub file_path: String,
     pub title: String,
     pub score: f64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concept_type: Option<String>,
 }
 
-impl From<SearchResult> for SmartBrainSearchResult {
-    fn from(r: SearchResult) -> Self {
+impl SmartBrainSearchResult {
+    fn from_result(r: SearchResult, index: &BM25Index) -> Self {
+        let (tags, concept_type) = index
+            .documents
+            .iter()
+            .find(|d| d.doc_id == r.doc_id)
+            .map(|d| (d.tags.clone(), d.concept_type.clone()))
+            .unwrap_or_default();
+
         Self {
             doc_id: r.doc_id,
             source_type: match r.source_type {
@@ -24,6 +35,8 @@ impl From<SearchResult> for SmartBrainSearchResult {
             file_path: r.file_path,
             title: r.title,
             score: r.score,
+            tags,
+            concept_type,
         }
     }
 }
@@ -38,18 +51,31 @@ pub fn unified_search(
     index
         .search(query, top_k)
         .into_iter()
-        .map(SmartBrainSearchResult::from)
+        .map(|r| SmartBrainSearchResult::from_result(r, &index))
+        .collect()
+}
+
+/// Search with structured filter on OKF metadata.
+pub fn unified_search_with_filter(
+    bm25_index_path: &Path,
+    query: &str,
+    top_k: usize,
+    filter: SearchFilter,
+) -> Vec<SmartBrainSearchResult> {
+    let index = BM25Index::load(bm25_index_path);
+    index
+        .search_with_filter(query, top_k, &filter)
+        .into_iter()
+        .map(|r| SmartBrainSearchResult::from_result(r, &index))
         .collect()
 }
 
 /// Rebuild the BM25 index from all experience and knowledge files on disk.
-pub fn rebuild_index(
-    workspace_config_dir: &Path,
-    bm25_index_path: &Path,
-) {
-    use super::bm25_index::{build_document, SourceType};
+pub fn rebuild_index(workspace_config_dir: &Path, bm25_index_path: &Path) {
+    use super::bm25_index::SourceType;
     use super::index::ExperienceIndex;
     use super::knowledge::KnowledgeIndex;
+    use super::okf;
 
     let mut bm25 = BM25Index::default();
 
@@ -61,17 +87,20 @@ pub fn rebuild_index(
         let raw_path = raw_dir.join(format!("{}.md", entry.thread_id));
         if let Ok(content) = std::fs::read_to_string(&raw_path) {
             if !content.trim().is_empty() {
+                let body = okf::extract_body(&content);
                 let title = entry
                     .summary_slug
                     .clone()
                     .unwrap_or_else(|| entry.thread_id.clone());
-                let doc = build_document(
+                let doc = super::bm25_index::build_document_with_metadata(
                     format!("exp:{}", entry.thread_id),
                     SourceType::Experience,
                     format!("experiences/raw/{}.md", entry.thread_id),
                     title,
-                    &content,
+                    &body,
                     entry.extracted_at,
+                    entry.categories.clone(),
+                    Some("Experience".to_string()),
                 );
                 bm25.add_document(doc);
             }
@@ -86,13 +115,16 @@ pub fn rebuild_index(
         let doc_path = docs_dir.join(format!("{}.md", entry.doc_id));
         if let Ok(content) = std::fs::read_to_string(&doc_path) {
             if !content.trim().is_empty() {
-                let doc = build_document(
+                let body = okf::extract_body(&content);
+                let doc = super::bm25_index::build_document_with_metadata(
                     format!("know:{}", entry.doc_id),
                     SourceType::Knowledge,
                     format!("knowledge/docs/{}.md", entry.doc_id),
                     entry.title.clone(),
-                    &content,
+                    &body,
                     entry.added_at,
+                    entry.categories.clone(),
+                    Some("Knowledge".to_string()),
                 );
                 bm25.add_document(doc);
             }

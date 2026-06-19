@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useIntl, type IntlShape } from "react-intl";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fileReviewGet } from "../api/fileReview";
 import {
@@ -119,28 +120,31 @@ function normalizeTokenBudget(value?: number | null): number | undefined {
   return Math.floor(budget);
 }
 
-function toolActivityLabel(calls: Array<{ name: string; arguments: string }>): string {
-  if (calls.length === 0) return "正在执行...";
+function toolActivityLabel(
+  calls: Array<{ name: string; arguments: string }>,
+  intl: IntlShape,
+): string {
+  if (calls.length === 0) return intl.formatMessage({ id: "tool.executing" });
   const first = calls[0];
   const base = first.name;
   const labelMap: Record<string, string> = {
-    shell: "执行命令",
-    shell_command: "执行命令",
-    exec_command: "执行命令",
-    read_file: "读取文件",
-    write_file: "写入文件",
-    apply_patch: "修改文件",
-    list_directory: "浏览目录",
-    tool_search: "搜索",
-    code_review: "代码审查",
-    browser_run: "浏览网页",
-    image_generate: "生成图片",
-    view_image: "查看图片",
-    spawn_agent: "启动子任务",
-    update_plan: "更新计划",
+    shell: intl.formatMessage({ id: "tool.shell" }),
+    shell_command: intl.formatMessage({ id: "tool.shell" }),
+    exec_command: intl.formatMessage({ id: "tool.shell" }),
+    read_file: intl.formatMessage({ id: "tool.readFile" }),
+    write_file: intl.formatMessage({ id: "tool.writeFile" }),
+    apply_patch: intl.formatMessage({ id: "tool.applyPatch" }),
+    list_directory: intl.formatMessage({ id: "tool.listDirectory" }),
+    tool_search: intl.formatMessage({ id: "tool.search" }),
+    code_review: intl.formatMessage({ id: "tool.codeReview" }),
+    browser_run: intl.formatMessage({ id: "tool.browserRun" }),
+    image_generate: intl.formatMessage({ id: "tool.imageGenerate" }),
+    view_image: intl.formatMessage({ id: "tool.viewImage" }),
+    spawn_agent: intl.formatMessage({ id: "tool.spawnAgent" }),
+    update_plan: intl.formatMessage({ id: "tool.updatePlan" }),
   };
   const desc = base.startsWith("mcp__")
-    ? "调用 MCP 工具"
+    ? intl.formatMessage({ id: "tool.mcpCall" })
     : (labelMap[base] ?? base);
   const detail = toolDisplayLabel(first.name, first.arguments);
   const suffix = calls.length > 1 ? ` (+${calls.length - 1})` : "";
@@ -402,6 +406,8 @@ function preferredQuestionOptionLabel(question: Record<string, unknown>): string
 }
 
 export function useTauriEvents() {
+  const intl = useIntl();
+
   useEffect(() => {
     let cancelled = false;
     const unlisten: UnlistenFn[] = [];
@@ -415,11 +421,11 @@ export function useTauriEvents() {
           }
           const currentLen = store.streamingText.length;
           if (currentLen === 0) {
-            store.setStreamingLabel("正在生成响应...");
+            store.setStreamingLabel(intl.formatMessage({ id: "streaming.generating" }));
           } else if (currentLen > 200 && currentLen <= 220) {
-            store.setStreamingLabel("正在组织答案结构...");
+            store.setStreamingLabel(intl.formatMessage({ id: "streaming.structuring" }));
           } else if (currentLen > 800 && currentLen <= 820) {
-            store.setStreamingLabel("正在汇总信息...");
+            store.setStreamingLabel(intl.formatMessage({ id: "streaming.summarizing" }));
           }
           store.appendStreamingText(e.payload.delta);
         }),
@@ -434,7 +440,7 @@ export function useTauriEvents() {
             store.setCurrentTurnId(e.payload.turn?.id ?? null);
             store.setStreaming(true);
             store.clearStreamingText();
-            store.setStreamingLabel("正在处理请求...");
+            store.setStreamingLabel(intl.formatMessage({ id: "streaming.processing" }));
             if ("goal" in e.payload) {
               store.setCurrentGoal(e.payload.goal ?? null);
             }
@@ -545,7 +551,7 @@ export function useTauriEvents() {
             timestamp: Date.now(),
             toolCalls: items,
           });
-          store.setStreamingLabel(toolActivityLabel(e.payload.calls));
+          store.setStreamingLabel(toolActivityLabel(e.payload.calls, intl));
         }),
 
         listen<{ threadId: string; callId?: string; tool: string; exitCode?: number; output?: string }>(
@@ -832,5 +838,5 @@ export function useTauriEvents() {
       cancelled = true;
       unlisten.forEach((fn) => fn());
     };
-  }, []);
+  }, [intl]);
 }

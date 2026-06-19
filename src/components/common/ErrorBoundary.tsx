@@ -1,4 +1,25 @@
 import React from "react";
+import { useSettingsStore } from "../../stores/settingsStore";
+
+const errorStrings: Record<string, Record<string, string>> = {
+  "zh-CN": {
+    title: "应用程序错误",
+    description: "发生了意外错误，请重启应用程序。",
+    unknown: "未知错误",
+    tryAgain: "重试",
+  },
+  "en-US": {
+    title: "Application Error",
+    description: "An unexpected error occurred. Please restart the application.",
+    unknown: "Unknown error",
+    tryAgain: "Try Again",
+  },
+};
+
+function getErrorStrings(): Record<string, string> {
+  const locale = useSettingsStore.getState().locale;
+  return errorStrings[locale] ?? errorStrings["zh-CN"];
+}
 
 interface Props {
   children: React.ReactNode;
@@ -25,6 +46,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   render() {
     if (this.state.hasError) {
+      const strings = getErrorStrings();
       return (
         <div style={{
           display: "flex",
@@ -38,10 +60,10 @@ export class ErrorBoundary extends React.Component<Props, State> {
           color: "#e0e0e0",
         }}>
           <h2 style={{ marginBottom: "1rem", color: "#ff6b6b" }}>
-            Application Error
+            {strings.title}
           </h2>
-          <p style={{ marginBottom: "1rem", opacity: 0.7, fontSize: "0.9rem", textAlign: "center", maxWidth: "500px" }}>
-            An unexpected error occurred. Please restart the application.
+          <p style={{ marginBottom: "1rem", opacity: 0.7, fontSize: "0.9rem", textAlign: "center", maxWidth: "500px", whiteSpace: "pre-line" }}>
+            {strings.description}
           </p>
           <pre style={{
             padding: "1rem",
@@ -53,7 +75,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
             whiteSpace: "pre-wrap",
             wordBreak: "break-word",
           }}>
-            {this.state.error?.message ?? "Unknown error"}
+            {this.state.error?.message ?? strings.unknown}
           </pre>
           <button
             onClick={() => this.setState({ hasError: false, error: null })}
@@ -68,7 +90,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
               fontSize: "0.9rem",
             }}
           >
-            Try Again
+            {strings.tryAgain}
           </button>
         </div>
       );

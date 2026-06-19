@@ -8,7 +8,6 @@ pub mod conversation_logger;
 pub mod document_parser;
 pub mod error;
 pub mod experience;
-pub mod smartbrain;
 pub mod file_review;
 pub mod git_service;
 pub mod hook_runtime;
@@ -18,8 +17,10 @@ pub mod protocol;
 pub mod relay_client;
 pub mod robot_loader;
 pub mod robot_orchestrator;
+pub mod smartbrain;
 pub mod standalone;
 pub mod state;
+pub mod subagent_engine;
 pub mod terminal;
 pub mod thread_store;
 pub mod tool_executor;
@@ -125,6 +126,7 @@ pub fn run() {
                     .await;
 
                     smartbrain::search::rebuild_index(&workspace_config_dir, &bm25_path);
+                    smartbrain::regenerate_root_index_md(&workspace_config_dir);
 
                     info!("[startup][rust] smartbrain pipeline completed");
                 });
@@ -165,33 +167,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::greet,
             commands::get_server_status,
-            // Thread management
-            commands::thread_start,
-            commands::thread_resume,
-            commands::thread_list,
-            commands::thread_read,
+            // Thread archive (standalone)
             commands::thread_archive,
-            commands::thread_unarchive,
-            commands::thread_set_name,
-            commands::thread_rollback,
-            commands::thread_unsubscribe,
-            // Turn / conversation
-            commands::turn_start,
-            commands::turn_steer,
-            commands::turn_interrupt,
-            // Config
-            commands::config_read,
-            commands::config_value_write,
-            commands::config_batch_write,
             commands::hook_list,
-            // Account
-            commands::account_read,
-            commands::account_login,
-            commands::account_login_cancel,
-            commands::account_logout,
-            commands::account_rate_limits,
-            // Model
-            commands::model_list,
             // Approval
             commands::resolve_approval,
             commands::reject_approval,
@@ -297,6 +275,7 @@ pub fn run() {
             smartbrain::commands::smartbrain_upload_knowledge,
             smartbrain::commands::smartbrain_search,
             smartbrain::commands::smartbrain_rebuild_index,
+            smartbrain::commands::smartbrain_migrate_to_okf,
             // WPS server
         ])
         .run(tauri::generate_context!())

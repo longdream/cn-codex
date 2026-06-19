@@ -384,6 +384,23 @@ impl AgentEngine {
             .await
             .set_mcp_servers(mcp_servers);
 
+        // Set provider config for internal subagents
+        {
+            let system_prompt_prefix = self.build_system_prompt(config, &effective_cwd, "chat", None);
+            self.tool_executor
+                .read()
+                .await
+                .set_subagent_provider_config(crate::tool_executor::SubagentProviderConfig {
+                    base_url: base_url.clone(),
+                    api_key: api_key.clone(),
+                    model: model.clone(),
+                    wire_api: wire_api.clone(),
+                    system_prompt_prefix,
+                    max_output_tokens: config.max_output_tokens,
+                })
+                .await;
+        }
+
         // 机器人外层编排入口（低耦合）：
         // - 仅 mode=goal 且携带 robot_id 时启用；
         // - 编排细节下沉到 robot_orchestrator，agent 仅处理“启用判断 + 结果接线”；
@@ -470,6 +487,56 @@ impl AgentEngine {
                     }),
                 )
                 .await;
+        }
+
+        // SmartBrain pre-recall: automatically retrieve relevant knowledge before first model call
+        if !prompt_hook_blocked && config.smartbrain_config().is_active() {
+            let bm25_path = crate::smartbrain::bm25_index_path(&self.cwd.join("codey"));
+            if bm25_path.exists() {
+                let results = crate::smartbrain::search::unified_search(&bm25_path, user_input, 3);
+                if !results.is_empty() {
+                    let memories_dir = self.cwd.join("codey").join("memories");
+                    let mut context_parts = Vec::new();
+                    for r in &results {
+                        let doc_path = memories_dir.join(&r.file_path);
+                        if let Ok(raw_content) = std::fs::read_to_string(&doc_path) {
+                            let content = crate::smartbrain::okf::extract_body(&raw_content);
+                            let truncated = if content.len() > 2000 {
+                                let end = content
+                                    .char_indices()
+                                    .map(|(i, _)| i)
+                                    .take_while(|&i| i <= 2000)
+                                    .last()
+                                    .unwrap_or(0);
+                                format!("{}...(truncated)", &content[..end])
+                            } else {
+                                content
+                            };
+                            context_parts.push(format!(
+                                "### {} (score: {:.2})\n{}",
+                                r.title, r.score, truncated
+                            ));
+                        }
+                    }
+                    if !context_parts.is_empty() {
+                        let sb_context = format!(
+                            "## SmartBrain Knowledge Recall\n\
+                             The following knowledge was automatically retrieved from SmartBrain and may be relevant:\n\n{}",
+                            context_parts.join("\n\n---\n\n")
+                        );
+                        let sb_msg = ThreadMessage {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            role: "system".to_string(),
+                            content: sb_context,
+                            timestamp: now_secs(),
+                            tool_call_id: None,
+                            tool_name: None,
+                            tool_calls: None,
+                        };
+                        self.thread_store.add_message(thread_id, sb_msg).await?;
+                    }
+                }
+            }
         }
 
         let mut intent_retries: u32 = 0;
@@ -2549,21 +2616,16 @@ fn assistant_is_waiting_for_user(text: &str) -> bool {
         "please clarify",
         "what changes do you want",
     ];
-    if EN_PATTERNS
-        .iter()
-        .any(|pattern| lowered.contains(pattern))
-    {
+    if EN_PATTERNS.iter().any(|pattern| lowered.contains(pattern)) {
         return true;
     }
 
     let question_like = lowered.contains('?') || trimmed.contains('？');
     question_like
-        && (
-            lowered.contains("requirements")
-                || lowered.contains("feature")
-                || lowered.contains("details")
-                || lowered.contains("clarify")
-        )
+        && (lowered.contains("requirements")
+            || lowered.contains("feature")
+            || lowered.contains("details")
+            || lowered.contains("clarify"))
 }
 
 #[cfg(test)]
@@ -3149,6 +3211,7 @@ fn shell_changes_from_args(arguments: &str) -> Vec<FileChange> {
     let Some(command) = shell_command_from_args(arguments) else {
         return Vec::new();
     };
+    let vars = shell_extract_variable_assignments(&command);
     let tokens = shell_command_tokens(&command);
     if tokens.is_empty() {
         return Vec::new();
@@ -3160,39 +3223,50 @@ fn shell_changes_from_args(arguments: &str) -> Vec<FileChange> {
         match lowered.as_str() {
             // 明确写盘命令：默认按 modified 上报。
             "set-content" | "add-content" | "out-file" => {
-                if let Some(path) = shell_flag_value(
+                if let Some(path) = shell_flag_value_with_vars(
                     &tokens,
                     idx,
                     &["-path", "-literalpath", "-filepath"],
+                    &vars,
                 ) {
                     push_shell_change(&mut changes, &path, "modified");
                 }
             }
             // 删除命令：标记 deleted。
             "remove-item" | "del" | "erase" | "rm" => {
-                if let Some(path) = shell_flag_value(&tokens, idx, &["-path", "-literalpath"]) {
+                if let Some(path) =
+                    shell_flag_value_with_vars(&tokens, idx, &["-path", "-literalpath"], &vars)
+                {
                     push_shell_change(&mut changes, &path, "deleted");
                 }
             }
             // 移动命令：目标路径视为 renamed。
             "move-item" | "mv" | "move" => {
-                if let Some(path) =
-                    shell_flag_value(&tokens, idx, &["-destination", "-dest", "-path"])
-                {
+                if let Some(path) = shell_flag_value_with_vars(
+                    &tokens,
+                    idx,
+                    &["-destination", "-dest", "-path"],
+                    &vars,
+                ) {
                     push_shell_change(&mut changes, &path, "renamed");
                 }
             }
             // 复制命令：目标路径按 modified 处理（新建/覆盖都可归并为可见变更）。
             "copy-item" | "copy" | "cp" => {
-                if let Some(path) =
-                    shell_flag_value(&tokens, idx, &["-destination", "-dest", "-path"])
-                {
+                if let Some(path) = shell_flag_value_with_vars(
+                    &tokens,
+                    idx,
+                    &["-destination", "-dest", "-path"],
+                    &vars,
+                ) {
                     push_shell_change(&mut changes, &path, "modified");
                 }
             }
             // 处理显式重定向：`>` / `>>` / `1>` / `1>>` / `2>` / `2>>`。
             ">" | ">>" | "1>" | "1>>" | "2>" | "2>>" => {
-                if let Some(path) = shell_path_candidate(tokens.get(idx + 1).map(String::as_str)) {
+                if let Some(path) =
+                    shell_path_candidate_with_vars(tokens.get(idx + 1).map(String::as_str), &vars)
+                {
                     push_shell_change(&mut changes, &path, "modified");
                 }
             }
@@ -3281,29 +3355,6 @@ fn shell_command_tokens(command: &str) -> Vec<String> {
     tokens
 }
 
-fn shell_flag_value(tokens: &[String], start_idx: usize, flags: &[&str]) -> Option<String> {
-    let mut idx = start_idx + 1;
-    while idx < tokens.len() {
-        let lowered = tokens[idx].to_ascii_lowercase();
-        if lowered == "|" || lowered == ";" {
-            break;
-        }
-
-        if flags.iter().any(|flag| *flag == lowered.as_str()) {
-            return shell_path_candidate(tokens.get(idx + 1).map(String::as_str));
-        }
-
-        if let Some((flag, value)) = tokens[idx].split_once('=') {
-            let lowered_flag = flag.to_ascii_lowercase();
-            if flags.iter().any(|item| *item == lowered_flag.as_str()) {
-                return shell_path_candidate(Some(value));
-            }
-        }
-        idx += 1;
-    }
-    None
-}
-
 fn shell_redirection_target(token: &str) -> Option<String> {
     const PREFIXES: [&str; 6] = ["1>>", "1>", "2>>", "2>", ">>", ">"];
     for prefix in PREFIXES {
@@ -3320,7 +3371,7 @@ fn shell_path_candidate(raw: Option<&str>) -> Option<String> {
         return None;
     }
     // 过滤变量/参数位占位，避免把 `$path`、`-Force` 这类值当成文件。
-    if raw.starts_with('$') || raw.starts_with('-') {
+    if raw.starts_with('$') || raw.starts_with('-') || raw.starts_with('&') {
         return None;
     }
 
@@ -3332,6 +3383,83 @@ fn shell_path_candidate(raw: Option<&str>) -> Option<String> {
         return None;
     }
     Some(trimmed.replace('\\', "/"))
+}
+
+/// 与 `shell_path_candidate` 相同逻辑，但当遇到 `$var` 时尝试从变量表中解析。
+fn shell_path_candidate_with_vars(raw: Option<&str>, vars: &[(String, String)]) -> Option<String> {
+    if let Some(result) = shell_path_candidate(raw) {
+        return Some(result);
+    }
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // 尝试变量解析：`$varName` → 查找变量表
+    if let Some(var_name) = raw.strip_prefix('$') {
+        let var_name_lower = var_name.to_ascii_lowercase();
+        for (name, value) in vars {
+            if name.to_ascii_lowercase() == var_name_lower {
+                return shell_path_candidate(Some(value.as_str()));
+            }
+        }
+    }
+    None
+}
+
+/// 与 `shell_flag_value` 相同，但使用 `shell_path_candidate_with_vars` 做路径解析。
+fn shell_flag_value_with_vars(
+    tokens: &[String],
+    start_idx: usize,
+    flags: &[&str],
+    vars: &[(String, String)],
+) -> Option<String> {
+    let mut idx = start_idx + 1;
+    while idx < tokens.len() {
+        let lowered = tokens[idx].to_ascii_lowercase();
+        if lowered == "|" || lowered == ";" {
+            break;
+        }
+
+        if flags.iter().any(|flag| *flag == lowered.as_str()) {
+            return shell_path_candidate_with_vars(tokens.get(idx + 1).map(String::as_str), vars);
+        }
+
+        if let Some((flag, value)) = tokens[idx].split_once('=') {
+            let lowered_flag = flag.to_ascii_lowercase();
+            if flags.iter().any(|item| *item == lowered_flag.as_str()) {
+                return shell_path_candidate_with_vars(Some(value), vars);
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// 从多行 shell 命令文本中提取简单的 PowerShell 变量赋值。
+/// 识别形如 `$varName = "value"` 或 `$varName = 'value'` 的模式。
+fn shell_extract_variable_assignments(command: &str) -> Vec<(String, String)> {
+    let mut vars = Vec::new();
+    for line in command.lines() {
+        let trimmed = line.trim();
+        // 匹配 $name = "..." 或 $name = '...'
+        if let Some(rest) = trimmed.strip_prefix('$') {
+            if let Some(eq_pos) = rest.find('=') {
+                let var_name = rest[..eq_pos].trim().to_string();
+                if var_name.is_empty() || var_name.contains(' ') || var_name.contains('(') {
+                    continue;
+                }
+                let value_raw = rest[eq_pos + 1..].trim();
+                let value = value_raw
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .trim()
+                    .to_string();
+                if !value.is_empty() {
+                    vars.push((var_name, value));
+                }
+            }
+        }
+    }
+    vars
 }
 
 fn push_shell_change(changes: &mut Vec<FileChange>, path: &str, action: &str) {
@@ -3710,6 +3838,35 @@ mod tests {
     }
 
     #[test]
+    fn file_changes_from_shell_tool_call_detects_variable_path_out_file() {
+        let call = ToolCallRequest {
+            id: "call-shell-var".to_string(),
+            name: "shell_command".to_string(),
+            arguments: serde_json::json!({
+                "command": "$path = \"D:\\cncodetest\\cn-codex-site\\index.html\"\n$content = [System.IO.File]::ReadAllText($path)\n$content -replace '<title>AA</title>', '<title>DD</title>' | Out-File -FilePath $path -Encoding UTF8"
+            })
+            .to_string(),
+        };
+
+        assert_eq!(
+            file_changes_from_tool_call(&call),
+            vec![FileChange {
+                path: "D:/cncodetest/cn-codex-site/index.html".to_string(),
+                action: "modified".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn shell_extract_variable_assignments_parses_simple_assignments() {
+        let cmd = "$path = \"D:\\cncodetest\\index.html\"\n$content = [System.IO.File]::ReadAllText($path)\n$content | Out-File -FilePath $path";
+        let vars = shell_extract_variable_assignments(cmd);
+        assert!(vars.len() >= 1);
+        assert_eq!(vars[0].0, "path");
+        assert_eq!(vars[0].1, "D:\\cncodetest\\index.html");
+    }
+
+    #[test]
     fn file_change_snapshots_capture_before_and_after_content() {
         let root = std::env::temp_dir().join(format!(
             "cn-codex-file-snapshot-test-{}",
@@ -3730,8 +3887,14 @@ mod tests {
         let snapshots = build_changed_file_snapshots(&changes, &snapshot_map, &root);
 
         assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].before_content.as_deref(), Some("<title>AAA</title>"));
-        assert_eq!(snapshots[0].after_content.as_deref(), Some("<title>BBB</title>"));
+        assert_eq!(
+            snapshots[0].before_content.as_deref(),
+            Some("<title>AAA</title>")
+        );
+        assert_eq!(
+            snapshots[0].after_content.as_deref(),
+            Some("<title>BBB</title>")
+        );
 
         std::fs::remove_dir_all(root).ok();
     }
@@ -3757,7 +3920,10 @@ mod tests {
         let snapshots = build_changed_file_snapshots(&changes, &snapshot_map, &root);
 
         assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].before_content.as_deref(), Some("to be deleted"));
+        assert_eq!(
+            snapshots[0].before_content.as_deref(),
+            Some("to be deleted")
+        );
         assert_eq!(snapshots[0].after_content, None);
 
         std::fs::remove_dir_all(root).ok();

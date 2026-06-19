@@ -3,11 +3,12 @@ use std::path::Path;
 use futures_util::StreamExt;
 use tracing::{error, info, warn};
 
-use crate::adapter::{self, types::StreamEvent};
 use crate::adapter::types::{InternalMessage, text_content};
+use crate::adapter::{self, types::StreamEvent};
 use crate::config_system::ConfigToml;
 
 use super::index::{ExperienceIndex, now_secs};
+use super::okf::{OkfDocument, OkfFrontmatter};
 use super::prompts;
 
 /// Consolidate raw experience files into a compact summary and a detailed handbook.
@@ -59,18 +60,11 @@ pub async fn run_consolidation(
         let raw_path = raw_dir.join(format!("{}.md", entry.thread_id));
         match std::fs::read_to_string(&raw_path) {
             Ok(content) if !content.trim().is_empty() => {
-                raw_experiences.push((
-                    entry.thread_id.clone(),
-                    content,
-                    entry.usage_count,
-                ));
+                raw_experiences.push((entry.thread_id.clone(), content, entry.usage_count));
             }
             Ok(_) => {}
             Err(e) => {
-                warn!(
-                    "Could not read raw experience for {}: {e}",
-                    entry.thread_id
-                );
+                warn!("Could not read raw experience for {}: {e}", entry.thread_id);
             }
         }
     }
@@ -98,15 +92,26 @@ pub async fn run_consolidation(
     .await
     {
         Ok((summary, handbook)) => {
+            let timestamp = now_secs();
             if !summary.is_empty() {
+                let summary_fm = OkfFrontmatter::new("Summary")
+                    .with_title("Experience Summary")
+                    .with_description("Compact summary of learned experiences for prompt injection")
+                    .with_timestamp(timestamp);
+                let summary_doc = OkfDocument::new(summary_fm, &summary);
                 let summary_path = experiences_dir.join("experience_summary.md");
-                if let Err(e) = std::fs::write(&summary_path, &summary) {
+                if let Err(e) = summary_doc.write_to(&summary_path) {
                     error!("Failed to write experience_summary.md: {e}");
                 }
             }
             if !handbook.is_empty() {
+                let handbook_fm = OkfFrontmatter::new("Handbook")
+                    .with_title("Experience Handbook")
+                    .with_description("Detailed consolidated reference of all experiences")
+                    .with_timestamp(timestamp);
+                let handbook_doc = OkfDocument::new(handbook_fm, &handbook);
                 let handbook_path = experiences_dir.join("experience_handbook.md");
-                if let Err(e) = std::fs::write(&handbook_path, &handbook) {
+                if let Err(e) = handbook_doc.write_to(&handbook_path) {
                     error!("Failed to write experience_handbook.md: {e}");
                 }
             }
@@ -116,6 +121,15 @@ pub async fn run_consolidation(
             if let Err(e) = index.save(experiences_dir) {
                 error!("Failed to update experience index after consolidation: {e}");
             }
+
+            super::append_log(
+                experiences_dir,
+                "Update",
+                &format!(
+                    "Consolidated {} experiences into summary and handbook",
+                    raw_experiences.len()
+                ),
+            );
 
             info!(
                 "Experience consolidation complete: summary={} chars, handbook={} chars",

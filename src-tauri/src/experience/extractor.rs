@@ -4,8 +4,8 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use tracing::{error, info, warn};
 
-use crate::adapter::{self, types::StreamEvent};
 use crate::adapter::types::{InternalMessage, text_content};
+use crate::adapter::{self, types::StreamEvent};
 use crate::config_system::{ConfigToml, SmartBrainConfig};
 use crate::thread_store::{StoredThread, ThreadStore};
 
@@ -197,7 +197,9 @@ async fn extract_single(
     if !response.status().is_success() {
         let status = response.status();
         let body_text = response.text().await.unwrap_or_default();
-        return Err(format!("Experience extraction LLM error ({status}): {body_text}"));
+        return Err(format!(
+            "Experience extraction LLM error ({status}): {body_text}"
+        ));
     }
 
     let mut result_text = String::new();

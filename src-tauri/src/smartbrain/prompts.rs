@@ -131,7 +131,8 @@ pub fn build_consolidation_messages(
     raw_experiences: &[(String, String, u32)],
     max_summary_tokens: usize,
 ) -> Vec<(String, String)> {
-    let system = CONSOLIDATION_SYSTEM_PROMPT.replace("{max_tokens}", &max_summary_tokens.to_string());
+    let system =
+        CONSOLIDATION_SYSTEM_PROMPT.replace("{max_tokens}", &max_summary_tokens.to_string());
 
     let mut user_content = String::from(
         "Here are the raw experience notes to consolidate. Each entry includes the thread ID, usage count, and content:\n\n",
@@ -143,8 +144,9 @@ pub fn build_consolidation_messages(
         ));
     }
 
-    user_content
-        .push_str("Please consolidate these into experience_summary.md and experience_handbook.md.");
+    user_content.push_str(
+        "Please consolidate these into experience_summary.md and experience_handbook.md.",
+    );
 
     vec![
         ("system".to_string(), system),
@@ -152,9 +154,15 @@ pub fn build_consolidation_messages(
     ]
 }
 
-pub fn build_knowledge_organize_messages(raw_text: &str, source_name: &str) -> Vec<(String, String)> {
+pub fn build_knowledge_organize_messages(
+    raw_text: &str,
+    source_name: &str,
+) -> Vec<(String, String)> {
     vec![
-        ("system".to_string(), KNOWLEDGE_ORGANIZE_SYSTEM_PROMPT.to_string()),
+        (
+            "system".to_string(),
+            KNOWLEDGE_ORGANIZE_SYSTEM_PROMPT.to_string(),
+        ),
         (
             "user".to_string(),
             format!(
@@ -191,18 +199,34 @@ pub fn parse_extraction_output(output: &str) -> Option<ParsedExtraction> {
 }
 
 pub fn parse_consolidation_output(output: &str) -> (String, String) {
-    let summary = extract_delimited(output, "---BEGIN experience_summary.md---", "---END experience_summary.md---")
-        .unwrap_or_default();
-    let handbook = extract_delimited(output, "---BEGIN experience_handbook.md---", "---END experience_handbook.md---")
-        .unwrap_or_default();
+    let summary = extract_delimited(
+        output,
+        "---BEGIN experience_summary.md---",
+        "---END experience_summary.md---",
+    )
+    .unwrap_or_default();
+    let handbook = extract_delimited(
+        output,
+        "---BEGIN experience_handbook.md---",
+        "---END experience_handbook.md---",
+    )
+    .unwrap_or_default();
     (summary, handbook)
 }
 
 pub fn parse_knowledge_organize_output(output: &str) -> (String, Option<serde_json::Value>) {
-    let organized = extract_delimited(output, "---BEGIN organized_knowledge.md---", "---END organized_knowledge.md---")
-        .unwrap_or_else(|| output.to_string());
-    let hierarchy = extract_delimited(output, "---BEGIN hierarchy.json---", "---END hierarchy.json---")
-        .and_then(|s| serde_json::from_str(&s).ok());
+    let organized = extract_delimited(
+        output,
+        "---BEGIN organized_knowledge.md---",
+        "---END organized_knowledge.md---",
+    )
+    .unwrap_or_else(|| output.to_string());
+    let hierarchy = extract_delimited(
+        output,
+        "---BEGIN hierarchy.json---",
+        "---END hierarchy.json---",
+    )
+    .and_then(|s| serde_json::from_str(&s).ok());
     (organized, hierarchy)
 }
 
@@ -272,10 +296,7 @@ debugging, react, nextjs
 fix-react-hydration-mismatch
 ";
         let parsed = parse_extraction_output(output).unwrap();
-        assert_eq!(
-            parsed.slug.as_deref(),
-            Some("fix-react-hydration-mismatch")
-        );
+        assert_eq!(parsed.slug.as_deref(), Some("fix-react-hydration-mismatch"));
         assert_eq!(parsed.categories, vec!["debugging", "react", "nextjs"]);
         assert!(parsed.full_text.contains("hydration mismatch"));
     }

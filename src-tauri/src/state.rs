@@ -142,9 +142,24 @@ fn prepare_workspace_config_dir(project_root: &Path) -> PathBuf {
     let _ = std::fs::create_dir_all(workspace_dir.join("skills"));
     let _ = std::fs::create_dir_all(workspace_dir.join("plugins"));
     let _ = std::fs::create_dir_all(workspace_dir.join("memories"));
-    let _ = std::fs::create_dir_all(workspace_dir.join("memories").join("experiences").join("raw"));
-    let _ = std::fs::create_dir_all(workspace_dir.join("memories").join("knowledge").join("sources"));
-    let _ = std::fs::create_dir_all(workspace_dir.join("memories").join("knowledge").join("docs"));
+    let _ = std::fs::create_dir_all(
+        workspace_dir
+            .join("memories")
+            .join("experiences")
+            .join("raw"),
+    );
+    let _ = std::fs::create_dir_all(
+        workspace_dir
+            .join("memories")
+            .join("knowledge")
+            .join("sources"),
+    );
+    let _ = std::fs::create_dir_all(
+        workspace_dir
+            .join("memories")
+            .join("knowledge")
+            .join("docs"),
+    );
     let _ = std::fs::create_dir_all(workspace_dir.join("robots"));
     workspace_dir
 }
@@ -224,7 +239,6 @@ impl AppState {
             "[startup][rust] usage_recorder_bind done in {} ms",
             phase_started_at.elapsed().as_millis()
         );
-
 
         info!(
             "[startup][rust] AppState::new total {} ms",

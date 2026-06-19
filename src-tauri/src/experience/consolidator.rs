@@ -3,8 +3,8 @@ use std::path::Path;
 use futures_util::StreamExt;
 use tracing::{error, info, warn};
 
-use crate::adapter::{self, types::StreamEvent};
 use crate::adapter::types::{InternalMessage, text_content};
+use crate::adapter::{self, types::StreamEvent};
 use crate::config_system::ConfigToml;
 
 use super::index::ExperienceIndex;
@@ -64,18 +64,11 @@ pub async fn run_consolidation(
         let raw_path = raw_dir.join(format!("{}.md", entry.thread_id));
         match std::fs::read_to_string(&raw_path) {
             Ok(content) if !content.trim().is_empty() => {
-                raw_experiences.push((
-                    entry.thread_id.clone(),
-                    content,
-                    entry.usage_count,
-                ));
+                raw_experiences.push((entry.thread_id.clone(), content, entry.usage_count));
             }
             Ok(_) => {}
             Err(e) => {
-                warn!(
-                    "Could not read raw experience for {}: {e}",
-                    entry.thread_id
-                );
+                warn!("Could not read raw experience for {}: {e}", entry.thread_id);
             }
         }
     }

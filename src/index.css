@@ -745,9 +745,10 @@ textarea:focus {
 
 .patch-diff-line {
   display: grid;
-  grid-template-columns: 54px 54px 20px minmax(0, 1fr);
+  grid-template-columns: 54px 54px 20px max-content;
   align-items: stretch;
-  border-bottom: 1px solid var(--chat-line);
+  width: max-content;
+  min-width: 100%;
 }
 
 .patch-diff-line-number {
@@ -755,7 +756,7 @@ textarea:focus {
   justify-content: flex-end;
   padding: 1px 8px 1px 4px;
   color: var(--chat-faint);
-  border-right: 1px solid var(--chat-line);
+  opacity: 0.6;
   user-select: none;
 }
 
@@ -763,21 +764,20 @@ textarea:focus {
   display: inline-flex;
   justify-content: center;
   padding: 1px 0;
-  border-right: 1px solid var(--chat-line);
   color: var(--chat-faint);
   user-select: none;
 }
 
 .patch-diff-line-text {
   white-space: pre;
-  overflow-x: auto;
+  overflow: visible;
   padding: 1px 8px;
   color: var(--chat-prose);
 }
 
 .patch-diff-line-text--code {
-  white-space: normal;
-  overflow: hidden;
+  white-space: pre;
+  overflow: visible;
   padding: 0;
   color: inherit;
 }
@@ -785,7 +785,7 @@ textarea:focus {
 .patch-diff-line-text--code pre {
   margin: 0;
   padding: 1px 8px;
-  overflow-x: auto;
+  overflow: visible;
   background: transparent;
 }
 

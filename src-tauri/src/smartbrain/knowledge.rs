@@ -4,12 +4,13 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
-use crate::adapter::{self, types::StreamEvent};
 use crate::adapter::types::{InternalMessage, text_content};
+use crate::adapter::{self, types::StreamEvent};
 use crate::config_system::ConfigToml;
 
 use super::bm25_index::{self, BM25Index, SourceType};
 use super::index::now_secs;
+use super::okf::{OkfDocument, OkfFrontmatter};
 use super::prompts;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,8 +126,7 @@ impl KnowledgeHierarchy {
         let path = knowledge_dir.join("hierarchy.json");
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize hierarchy: {e}"))?;
-        std::fs::write(&path, content)
-            .map_err(|e| format!("Failed to write hierarchy: {e}"))?;
+        std::fs::write(&path, content).map_err(|e| format!("Failed to write hierarchy: {e}"))?;
         Ok(())
     }
 
@@ -210,10 +210,6 @@ pub async fn ingest_document(
         (raw_text.clone(), None)
     };
 
-    let doc_path = docs_dir.join(format!("{doc_id}.md"));
-    std::fs::write(&doc_path, &organized_text)
-        .map_err(|e| format!("Failed to write knowledge doc: {e}"))?;
-
     let chunks = chunk_text(&organized_text, sb_config.max_chunk_tokens);
     let chunk_count = chunks.len().max(1);
 
@@ -229,13 +225,28 @@ pub async fn ingest_document(
         })
         .unwrap_or_default();
 
+    let timestamp = now_secs();
+    let frontmatter = OkfFrontmatter::new("Knowledge")
+        .with_title(&file_stem)
+        .with_tags(categories.clone())
+        .with_timestamp(timestamp)
+        .with_extension("source_file", serde_json::json!(file_name))
+        .with_extension("source_type", serde_json::json!(extension))
+        .with_extension("chunk_count", serde_json::json!(chunk_count));
+
+    let doc_path = docs_dir.join(format!("{doc_id}.md"));
+    let okf_doc = OkfDocument::new(frontmatter, &organized_text);
+    okf_doc
+        .write_to(&doc_path)
+        .map_err(|e| format!("Failed to write knowledge doc: {e}"))?;
+
     let mut knowledge_index = KnowledgeIndex::load(knowledge_dir);
     knowledge_index.add_entry(KnowledgeEntry {
         doc_id: doc_id.clone(),
         source_file: file_name.clone(),
         source_type: extension.clone(),
         title: file_stem.clone(),
-        added_at: now_secs(),
+        added_at: timestamp,
         chunk_count,
         categories: categories.clone(),
     });
@@ -245,13 +256,15 @@ pub async fn ingest_document(
 
     let mut bm25 = BM25Index::load(bm25_index_path);
     bm25.remove_document(&format!("know:{doc_id}"));
-    let indexed_doc = bm25_index::build_document(
+    let indexed_doc = bm25_index::build_document_with_metadata(
         format!("know:{doc_id}"),
         SourceType::Knowledge,
         format!("knowledge/docs/{doc_id}.md"),
         file_stem,
         &organized_text,
-        now_secs(),
+        timestamp,
+        categories.clone(),
+        Some("Knowledge".to_string()),
     );
     bm25.add_document(indexed_doc);
     if let Err(e) = bm25.save(bm25_index_path) {
@@ -263,6 +276,18 @@ pub async fn ingest_document(
     }
 
     info!("Knowledge ingested: {file_name} -> {doc_id} ({chunk_count} chunks)");
+
+    let workspace_config_dir = knowledge_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(knowledge_dir);
+    super::regenerate_knowledge_index_md(workspace_config_dir);
+    super::append_log(
+        knowledge_dir,
+        "Creation",
+        &format!("Ingested [{file_name}](docs/{doc_id}.md)"),
+    );
+
     Ok(doc_id)
 }
 
@@ -297,6 +322,18 @@ pub fn remove_knowledge(
     }
 
     info!("Knowledge removed: {doc_id}");
+
+    let workspace_config_dir = knowledge_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(knowledge_dir);
+    super::regenerate_knowledge_index_md(workspace_config_dir);
+    super::append_log(
+        knowledge_dir,
+        "Deletion",
+        &format!("Removed knowledge document `{doc_id}`"),
+    );
+
     Ok(())
 }
 
@@ -345,22 +382,126 @@ pub async fn scan_and_ingest_new(
 fn extract_text_from_file(path: &Path, extension: &str) -> Result<String, String> {
     match extension {
         "md" | "markdown" | "txt" | "text" | "json" | "toml" | "yaml" | "yml" | "rs" | "py"
-        | "js" | "ts" | "tsx" | "jsx" | "html" | "css" | "xml" | "csv" | "sh" | "bat"
-        | "ps1" | "cfg" | "ini" | "log" => {
-            std::fs::read_to_string(path)
-                .map_err(|e| format!("Failed to read text file: {e}"))
+        | "js" | "ts" | "tsx" | "jsx" | "html" | "css" | "xml" | "csv" | "sh" | "bat" | "ps1"
+        | "cfg" | "ini" | "log" => {
+            std::fs::read_to_string(path).map_err(|e| format!("Failed to read text file: {e}"))
         }
         "pdf" => {
-            let bytes = std::fs::read(path)
-                .map_err(|e| format!("Failed to read PDF file: {e}"))?;
+            let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PDF file: {e}"))?;
             pdf_extract::extract_text_from_mem(&bytes)
                 .map_err(|e| format!("Failed to extract PDF text: {e}"))
         }
-        _ => {
-            std::fs::read_to_string(path)
-                .map_err(|e| format!("Unsupported or unreadable file type '{extension}': {e}"))
+        "docx" => extract_docx_text(path),
+        "xlsx" | "xls" => extract_excel_text(path),
+        _ => std::fs::read_to_string(path)
+            .map_err(|e| format!("Unsupported or unreadable file type '{extension}': {e}")),
+    }
+}
+
+fn extract_docx_text(path: &Path) -> Result<String, String> {
+    use quick_xml::events::Event;
+    use quick_xml::reader::Reader;
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).map_err(|e| format!("Failed to open DOCX file: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read DOCX as ZIP: {e}"))?;
+
+    let mut xml_content = String::new();
+    {
+        let mut doc_part = archive
+            .by_name("word/document.xml")
+            .map_err(|e| format!("Failed to find document.xml in DOCX: {e}"))?;
+        doc_part
+            .read_to_string(&mut xml_content)
+            .map_err(|e| format!("Failed to read document.xml: {e}"))?;
+    }
+
+    let mut reader = Reader::from_str(&xml_content);
+    let mut text = String::new();
+    let mut in_paragraph = false;
+    let mut paragraph_buf = String::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let local = e.local_name();
+                if local.as_ref() == b"p" {
+                    in_paragraph = true;
+                    paragraph_buf.clear();
+                } else if local.as_ref() == b"br" && in_paragraph {
+                    paragraph_buf.push('\n');
+                } else if local.as_ref() == b"tab" && in_paragraph {
+                    paragraph_buf.push('\t');
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                if in_paragraph {
+                    if let Ok(t) = e.unescape() {
+                        paragraph_buf.push_str(&t);
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                if e.local_name().as_ref() == b"p" {
+                    if !paragraph_buf.trim().is_empty() {
+                        if !text.is_empty() {
+                            text.push_str("\n\n");
+                        }
+                        text.push_str(paragraph_buf.trim());
+                    }
+                    in_paragraph = false;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(format!("XML parse error in DOCX: {e}")),
+            _ => {}
         }
     }
+
+    Ok(text)
+}
+
+fn extract_excel_text(path: &Path) -> Result<String, String> {
+    use calamine::{Reader, open_workbook_auto};
+
+    let mut workbook =
+        open_workbook_auto(path).map_err(|e| format!("Failed to open Excel file: {e}"))?;
+
+    let mut markdown = String::new();
+    let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
+
+    for sheet_name in &sheet_names {
+        if let Ok(range) = workbook.worksheet_range(sheet_name) {
+            if !markdown.is_empty() {
+                markdown.push_str("\n\n");
+            }
+            markdown.push_str(&format!("## {sheet_name}\n\n"));
+
+            let mut rows_iter = range.rows();
+            if let Some(header) = rows_iter.next() {
+                let header_cells: Vec<String> =
+                    header.iter().map(|cell| cell.to_string()).collect();
+                markdown.push_str("| ");
+                markdown.push_str(&header_cells.join(" | "));
+                markdown.push_str(" |\n");
+                markdown.push_str("|");
+                for _ in &header_cells {
+                    markdown.push_str(" --- |");
+                }
+                markdown.push('\n');
+
+                for row in rows_iter {
+                    let cells: Vec<String> = row.iter().map(|cell| cell.to_string()).collect();
+                    markdown.push_str("| ");
+                    markdown.push_str(&cells.join(" | "));
+                    markdown.push_str(" |\n");
+                }
+            }
+        }
+    }
+
+    Ok(markdown)
 }
 
 fn slug_from_name(name: &str) -> String {
@@ -376,7 +517,9 @@ fn slug_from_name(name: &str) -> String {
             }
         })
         .collect();
-    let slug = slug.trim_matches(|c: char| c == '-' || c == '_').to_string();
+    let slug = slug
+        .trim_matches(|c: char| c == '-' || c == '_')
+        .to_string();
     if slug.is_empty() {
         format!("doc-{}", now_secs())
     } else {
@@ -395,7 +538,8 @@ fn chunk_text(text: &str, max_chunk_tokens: usize) -> Vec<String> {
     let mut current_tokens = 0usize;
 
     for para in paragraphs {
-        let para_tokens = para.split_whitespace().count() + para.chars().filter(|c| is_cjk_char(*c)).count();
+        let para_tokens =
+            para.split_whitespace().count() + para.chars().filter(|c| is_cjk_char(*c)).count();
         if current_tokens + para_tokens > max_chunk_tokens && !current_chunk.is_empty() {
             chunks.push(std::mem::take(&mut current_chunk));
             current_tokens = 0;
@@ -470,7 +614,9 @@ async fn organize_via_llm(
     if !response.status().is_success() {
         let status = response.status();
         let body_text = response.text().await.unwrap_or_default();
-        return Err(format!("Knowledge organization LLM error ({status}): {body_text}"));
+        return Err(format!(
+            "Knowledge organization LLM error ({status}): {body_text}"
+        ));
     }
 
     let mut result_text = String::new();
@@ -513,7 +659,10 @@ async fn organize_via_llm(
 fn update_hierarchy(knowledge_dir: &Path, doc_id: &str, hierarchy_fragment: &serde_json::Value) {
     let mut hierarchy = KnowledgeHierarchy::load(knowledge_dir);
 
-    if let Some(new_cats) = hierarchy_fragment.get("categories").and_then(|v| v.as_array()) {
+    if let Some(new_cats) = hierarchy_fragment
+        .get("categories")
+        .and_then(|v| v.as_array())
+    {
         for cat_val in new_cats {
             if let (Some(name), summary) = (
                 cat_val.get("name").and_then(|n| n.as_str()),

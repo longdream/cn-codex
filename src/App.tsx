@@ -40,13 +40,16 @@ function extractErrorMessage(err: unknown): string {
   return String(err);
 }
 
+function AppContent() {
+  useTauriEvents();
+  return null;
+}
+
 function App() {
   const locale = useSettingsStore((s) => s.locale);
   const theme = useSettingsStore((s) => s.theme);
   const initStarted = useRef(false);
   const initRunSeq = useRef(0);
-
-  useTauriEvents();
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: light)");
@@ -377,6 +380,7 @@ function App() {
         messages={messages[locale] ?? zhCN}
         defaultLocale="zh-CN"
       >
+        <AppContent />
         <div className="app-frame">
           <TitleBar />
           <div className="app-workbench">

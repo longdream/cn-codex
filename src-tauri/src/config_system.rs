@@ -396,7 +396,9 @@ impl ConfigToml {
             }
             "smartbrain.enabled" => {
                 let enabled = value.as_bool().unwrap_or(false);
-                let sb = self.smartbrain.get_or_insert_with(SmartBrainConfig::default);
+                let sb = self
+                    .smartbrain
+                    .get_or_insert_with(SmartBrainConfig::default);
                 sb.enabled = enabled;
             }
             other if other.starts_with("model_providers.") => {

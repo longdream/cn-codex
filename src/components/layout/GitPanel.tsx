@@ -9,6 +9,7 @@ import {
   IconRotateClockwise2,
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useIntl } from "react-intl";
 import {
   gitBranchList,
   gitCherryPick,
@@ -62,6 +63,7 @@ function statusColor(status: string): string {
 }
 
 export function GitPanel({ workspaceCwd }: GitPanelProps) {
+  const intl = useIntl();
   const [view, setView] = useState<GitView>("changes");
   const [status, setStatus] = useState<GitStatusResponse | null>(null);
   const [history, setHistory] = useState<GitLogEntry[]>([]);
@@ -126,10 +128,10 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
         const resp = await gitDiff(workspaceCwd, path, mode === "staged");
         setDiffText(resp.text);
       } catch (error) {
-        setDiffText(`加载 diff 失败：${normalizeError(error)}`);
+        setDiffText(intl.formatMessage({ id: "git.diffLoadFailed" }, { error: normalizeError(error) }));
       }
     },
-    [workspaceCwd],
+    [intl, workspaceCwd],
   );
 
   useEffect(() => {
@@ -163,7 +165,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
       setErrorText(null);
       try {
         const result = await action();
-        setNoticeText(result.message || `${actionLabel} 已完成`);
+        setNoticeText(result.message || intl.formatMessage({ id: "git.actionDone" }, { action: actionLabel }));
         if (result.stderr?.trim()) {
           setNoticeText(`${result.message}\n${result.stderr.trim()}`);
         }
@@ -174,7 +176,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
         setBusyAction(null);
       }
     },
-    [refreshAll],
+    [intl, refreshAll],
   );
 
   const handleStageToggle = useCallback(
@@ -183,12 +185,12 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
         return;
       }
       if (entry.staged) {
-        await runAction("取消暂存", () => gitUnstage([entry.path], workspaceCwd));
+        await runAction(intl.formatMessage({ id: "git.unstage" }), () => gitUnstage([entry.path], workspaceCwd));
       } else {
-        await runAction("暂存", () => gitStage([entry.path], workspaceCwd));
+        await runAction(intl.formatMessage({ id: "git.stage" }), () => gitStage([entry.path], workspaceCwd));
       }
     },
-    [runAction, workspaceCwd],
+    [intl, runAction, workspaceCwd],
   );
 
   const handleCommit = useCallback(async () => {
@@ -197,22 +199,22 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
     }
     const trimmed = commitMessage.trim();
     if (!trimmed) {
-      setErrorText("提交信息不能为空。");
+      setErrorText(intl.formatMessage({ id: "git.commitEmptyError" }));
       return;
     }
-    await runAction("提交", async () => {
+    await runAction(intl.formatMessage({ id: "git.tabCommit" }), async () => {
       const result = await gitCommit(trimmed, workspaceCwd);
       setCommitMessage("");
       return result;
     });
-  }, [commitMessage, runAction, workspaceCwd]);
+  }, [commitMessage, intl, runAction, workspaceCwd]);
 
   const handleCheckout = useCallback(async () => {
     if (!workspaceCwd || !selectedBranch) {
       return;
     }
-    await runAction("切换分支", () => gitCheckout(selectedBranch, false, workspaceCwd));
-  }, [runAction, selectedBranch, workspaceCwd]);
+    await runAction(intl.formatMessage({ id: "git.checkout" }), () => gitCheckout(selectedBranch, false, workspaceCwd));
+  }, [intl, runAction, selectedBranch, workspaceCwd]);
 
   const handleCreateBranch = useCallback(async () => {
     if (!workspaceCwd) {
@@ -220,31 +222,31 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
     }
     const trimmed = newBranchName.trim();
     if (!trimmed) {
-      setErrorText("新分支名称不能为空。");
+      setErrorText(intl.formatMessage({ id: "git.branchNameEmpty" }));
       return;
     }
-    await runAction("新建分支", async () => {
+    await runAction(intl.formatMessage({ id: "git.createAndCheckout" }), async () => {
       const result = await gitCheckout(trimmed, true, workspaceCwd);
       setNewBranchName("");
       setSelectedBranch(trimmed);
       setSyncBranch(trimmed);
       return result;
     });
-  }, [newBranchName, runAction, workspaceCwd]);
+  }, [intl, newBranchName, runAction, workspaceCwd]);
 
   const handlePull = useCallback(async () => {
     if (!workspaceCwd) {
       return;
     }
-    await runAction("拉取", () => gitPull(workspaceCwd, "origin", syncBranch || currentBranch || undefined, false));
-  }, [currentBranch, runAction, syncBranch, workspaceCwd]);
+    await runAction(intl.formatMessage({ id: "git.pull" }), () => gitPull(workspaceCwd, "origin", syncBranch || currentBranch || undefined, false));
+  }, [currentBranch, intl, runAction, syncBranch, workspaceCwd]);
 
   const handlePush = useCallback(async () => {
     if (!workspaceCwd) {
       return;
     }
-    await runAction("推送", () => gitPush(workspaceCwd, "origin", syncBranch || currentBranch || undefined, false));
-  }, [currentBranch, runAction, syncBranch, workspaceCwd]);
+    await runAction(intl.formatMessage({ id: "git.push" }), () => gitPush(workspaceCwd, "origin", syncBranch || currentBranch || undefined, false));
+  }, [currentBranch, intl, runAction, syncBranch, workspaceCwd]);
 
   const handleReset = useCallback(async () => {
     if (!workspaceCwd) {
@@ -253,13 +255,13 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
     const target = resetTarget.trim() || "HEAD";
     const warn =
       resetMode === "hard"
-        ? `你将执行 HARD reset 到 ${target}，工作区未提交变更会被覆盖。确认继续吗？`
-        : `确认执行 ${resetMode.toUpperCase()} reset 到 ${target} 吗？`;
+        ? intl.formatMessage({ id: "git.confirmHardReset" }, { target })
+        : intl.formatMessage({ id: "git.confirmReset" }, { mode: resetMode.toUpperCase(), target });
     if (!window.confirm(warn)) {
       return;
     }
     await runAction("Reset", () => gitReset(resetMode, target, true, workspaceCwd));
-  }, [resetMode, resetTarget, runAction, workspaceCwd]);
+  }, [intl, resetMode, resetTarget, runAction, workspaceCwd]);
 
   const handleRevert = useCallback(async () => {
     if (!workspaceCwd) {
@@ -267,14 +269,14 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
     }
     const commit = revertCommit.trim();
     if (!commit) {
-      setErrorText("请输入要 revert 的 commit。");
+      setErrorText(intl.formatMessage({ id: "git.revertCommitEmpty" }));
       return;
     }
-    if (!window.confirm(`确认回滚 commit ${commit} 吗？该操作会生成新的反向提交。`)) {
+    if (!window.confirm(intl.formatMessage({ id: "git.confirmRevert" }, { commit }))) {
       return;
     }
     await runAction("Revert", () => gitRevert(commit, true, workspaceCwd, true));
-  }, [revertCommit, runAction, workspaceCwd]);
+  }, [intl, revertCommit, runAction, workspaceCwd]);
 
   const handleCherryPick = useCallback(async () => {
     if (!workspaceCwd) {
@@ -282,22 +284,22 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
     }
     const commit = cherryCommit.trim();
     if (!commit) {
-      setErrorText("请输入要 cherry-pick 的 commit。");
+      setErrorText(intl.formatMessage({ id: "git.cherryPickCommitEmpty" }));
       return;
     }
-    const modeHint = cherryNoCommit ? "（不自动提交）" : "";
-    if (!window.confirm(`确认 cherry-pick ${commit} ${modeHint} 吗？`)) {
+    const modeHint = cherryNoCommit ? intl.formatMessage({ id: "git.cherryPickNoCommitHint" }) : "";
+    if (!window.confirm(intl.formatMessage({ id: "git.confirmCherryPick" }, { commit, hint: modeHint }))) {
       return;
     }
     await runAction("Cherry-pick", () =>
       gitCherryPick(commit, true, workspaceCwd, cherryNoCommit),
     );
-  }, [cherryCommit, cherryNoCommit, runAction, workspaceCwd]);
+  }, [cherryCommit, cherryNoCommit, intl, runAction, workspaceCwd]);
 
   if (!workspaceCwd) {
     return (
       <div className="flex h-full items-center justify-center px-4 text-center text-xs text-[var(--text-faint)]">
-        当前未选择项目目录，Git 面板不可用。
+        {intl.formatMessage({ id: "git.noProject" })}
       </div>
     );
   }
@@ -321,7 +323,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
           type="button"
           onClick={() => void refreshAll()}
           className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-          title="刷新 Git 状态"
+          title={intl.formatMessage({ id: "git.refreshTitle" })}
         >
           <IconRefresh size={14} stroke={1.8} className={loading ? "animate-spin" : ""} />
         </button>
@@ -337,7 +339,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
               : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
           }`}
         >
-          Changes
+          {intl.formatMessage({ id: "git.tabChanges" })}
         </button>
         <button
           type="button"
@@ -348,7 +350,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
               : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
           }`}
         >
-          Commit
+          {intl.formatMessage({ id: "git.tabCommit" })}
         </button>
         <button
           type="button"
@@ -359,7 +361,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
               : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
           }`}
         >
-          History
+          {intl.formatMessage({ id: "git.tabHistory" })}
         </button>
       </div>
 
@@ -381,7 +383,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
           disabled={!selectedBranch || busyAction !== null}
           className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
         >
-          切换
+          {intl.formatMessage({ id: "git.checkout" })}
         </button>
       </div>
 
@@ -389,7 +391,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
         <input
           value={newBranchName}
           onChange={(event) => setNewBranchName(event.target.value)}
-          placeholder="新分支名"
+          placeholder={intl.formatMessage({ id: "git.newBranchPlaceholder" })}
           className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
         />
         <button
@@ -398,7 +400,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
           disabled={busyAction !== null}
           className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
         >
-          新建并切换
+          {intl.formatMessage({ id: "git.createAndCheckout" })}
         </button>
       </div>
 
@@ -406,7 +408,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
         <input
           value={syncBranch}
           onChange={(event) => setSyncBranch(event.target.value)}
-          placeholder="同步分支（默认当前）"
+          placeholder={intl.formatMessage({ id: "git.syncBranchPlaceholder" })}
           className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
         />
         <button
@@ -416,7 +418,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
           className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
         >
           <IconArrowDown size={12} />
-          Pull
+          {intl.formatMessage({ id: "git.pull" })}
         </button>
         <button
           type="button"
@@ -425,7 +427,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
           className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
         >
           <IconArrowUp size={12} />
-          Push
+          {intl.formatMessage({ id: "git.push" })}
         </button>
       </div>
 
@@ -449,7 +451,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
             </div>
             <div className="min-h-0 flex-1 overflow-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
               {changes.length === 0 ? (
-                <div className="p-3 text-xs text-[var(--text-faint)]">工作区干净，没有变更。</div>
+                <div className="p-3 text-xs text-[var(--text-faint)]">{intl.formatMessage({ id: "git.workingClean" })}</div>
               ) : (
                 changes.map((entry) => (
                   <div
@@ -484,7 +486,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                         disabled={busyAction !== null}
                         className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-[11px] text-[var(--text-base)] hover:bg-[var(--surface-soft)] disabled:opacity-40"
                       >
-                        {entry.staged ? "取消暂存" : "暂存"}
+                        {entry.staged ? intl.formatMessage({ id: "git.unstage" }) : intl.formatMessage({ id: "git.stage" })}
                       </button>
                     </div>
                   </div>
@@ -493,7 +495,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
             </div>
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
               <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-2 py-1">
-                <span className="truncate text-[11px] text-[var(--text-faint)]">{selectedPath ?? "选择文件查看 diff"}</span>
+                <span className="truncate text-[11px] text-[var(--text-faint)]">{selectedPath ?? intl.formatMessage({ id: "git.selectFileForDiff" })}</span>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
@@ -504,7 +506,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                         : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)]"
                     }`}
                   >
-                    Working
+                    {intl.formatMessage({ id: "git.diffModeWorking" })}
                   </button>
                   <button
                     type="button"
@@ -515,24 +517,24 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                         : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)]"
                     }`}
                   >
-                    Staged
+                    {intl.formatMessage({ id: "git.diffModeStaged" })}
                   </button>
                 </div>
               </div>
               <pre className="thin-scrollbar min-h-0 flex-1 overflow-auto bg-[var(--surface-main)] px-3 py-2 text-[11px] leading-relaxed text-[var(--text-base)]">
-                <code>{diffText || "暂无 diff 内容。"}</code>
+                <code>{diffText || intl.formatMessage({ id: "git.noDiffContent" })}</code>
               </pre>
             </div>
           </div>
         ) : view === "commit" ? (
           <div className="flex h-full flex-col gap-2">
             <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-[11px] text-[var(--text-muted)]">
-              当前暂存文件数：{stagedCount}
+              {intl.formatMessage({ id: "git.stagedFileCount" }, { count: stagedCount })}
             </div>
             <textarea
               value={commitMessage}
               onChange={(event) => setCommitMessage(event.target.value)}
-              placeholder="输入提交信息（必填）"
+              placeholder={intl.formatMessage({ id: "git.commitPlaceholder" })}
               className="min-h-[100px] w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] px-2 py-2 text-xs text-[var(--text-base)]"
             />
             <button
@@ -542,11 +544,11 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
               className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-3 py-2 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
             >
               <IconGitCommit size={14} />
-              Commit
+              {intl.formatMessage({ id: "git.tabCommit" })}
             </button>
 
             <div className="mt-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
-              <div className="mb-2 text-[11px] font-semibold text-[var(--text-muted)]">高级操作（危险）</div>
+              <div className="mb-2 text-[11px] font-semibold text-[var(--text-muted)]">{intl.formatMessage({ id: "git.advancedDanger" })}</div>
               <div className="grid grid-cols-2 gap-2">
                 <select
                   value={resetMode}
@@ -570,7 +572,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                   className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] hover:bg-[var(--surface-elevated)] disabled:opacity-40"
                 >
                   <IconRotateClockwise2 size={13} />
-                  执行 Reset
+                  {intl.formatMessage({ id: "git.executeReset" })}
                 </button>
               </div>
 
@@ -588,7 +590,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                   className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] hover:bg-[var(--surface-elevated)] disabled:opacity-40"
                 >
                   <IconHistory size={13} />
-                  执行 Revert
+                  {intl.formatMessage({ id: "git.executeRevert" })}
                 </button>
               </div>
 
@@ -615,14 +617,14 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                   checked={cherryNoCommit}
                   onChange={(event) => setCherryNoCommit(event.target.checked)}
                 />
-                cherry-pick 使用 --no-commit
+                {intl.formatMessage({ id: "git.cherryPickNoCommit" })}
               </label>
             </div>
           </div>
         ) : (
           <div className="thin-scrollbar h-full overflow-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
             {history.length === 0 ? (
-              <div className="p-3 text-xs text-[var(--text-faint)]">暂无提交历史。</div>
+              <div className="p-3 text-xs text-[var(--text-faint)]">{intl.formatMessage({ id: "git.noHistory" })}</div>
             ) : (
               history.map((entry) => (
                 <div key={entry.hash} className="border-b border-[var(--border-subtle)] px-3 py-2 last:border-b-0">
@@ -644,7 +646,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
 
       {busyAction && (
         <div className="border-t border-[var(--border-subtle)] px-3 py-2 text-[11px] text-[var(--text-faint)]">
-          正在执行：{busyAction} ...
+          {intl.formatMessage({ id: "git.busyRunning" }, { action: busyAction })}
         </div>
       )}
     </div>

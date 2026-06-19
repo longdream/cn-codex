@@ -7,6 +7,7 @@ import {
 } from "@tabler/icons-react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useIntl, type IntlShape } from "react-intl";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -83,19 +84,22 @@ function fileLanguage(path: string): string {
   }
 }
 
-function diffSourceLabel(source: RunSummaryDiffPayload["diffSource"]): string {
-  switch (source) {
-    case "snapshot":
-      return "本轮快照";
-    case "patch":
-      return "补丁回退";
-    default:
-      return "无数据";
-  }
-}
-
 function pathBasename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function diffSourceLabel(
+  source: RunSummaryDiffPayload["diffSource"],
+  intl: IntlShape,
+): string {
+  switch (source) {
+    case "snapshot":
+      return intl.formatMessage({ id: "diff.sourceSnapshot" });
+    case "patch":
+      return intl.formatMessage({ id: "diff.sourcePatch" });
+    default:
+      return intl.formatMessage({ id: "diff.sourceEmpty" });
+  }
 }
 
 function lineCodeMarkdown(text: string, language: string): string {
@@ -137,6 +141,7 @@ function DiffLineCode({ text, language }: { text: string; language: string }) {
 }
 
 export function RunSummaryDiffWindow() {
+  const intl = useIntl();
   const [payload, setPayload] = useState<RunSummaryDiffPayload | null>(null);
   const [persistStatus, setPersistStatus] = useState<PersistStatus>("idle");
   const [notice, setNotice] = useState<{ kind: NoticeKind; text: string } | null>(null);
@@ -156,13 +161,13 @@ export function RunSummaryDiffWindow() {
         }
         setNotice({
           kind: "error",
-          text: `读取 Diff 初始数据失败：${String(err)}`,
+          text: intl.formatMessage({ id: "diff.readFailed" }, { error: String(err) }),
         });
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [intl]);
 
   useEffect(() => {
     let unlisten: UnlistenFn | null = null;
@@ -205,19 +210,19 @@ export function RunSummaryDiffWindow() {
       return null;
     }
     if (!payload) {
-      return "等待主窗口传入 Diff 数据。";
+      return intl.formatMessage({ id: "diff.waitingForData" });
     }
     if (payload.persistHint?.trim()) {
       return payload.persistHint.trim();
     }
     if (action !== "modified") {
-      return "当前仅 modified 文件支持 Keep/Restore。";
+      return intl.formatMessage({ id: "diff.onlyModifiedSupported" });
     }
     if (source !== "snapshot") {
-      return "仅快照模式可写盘。";
+      return intl.formatMessage({ id: "diff.snapshotOnlyPersist" });
     }
-    return "当前数据不可写盘。";
-  }, [action, canWriteDisk, payload, source]);
+    return intl.formatMessage({ id: "diff.cannotPersist" });
+  }, [action, canWriteDisk, intl, payload, source]);
 
   const handleKeep = useCallback(async () => {
     if (!payload || !canWriteDisk || persistStatus !== "idle") {
@@ -227,13 +232,22 @@ export function RunSummaryDiffWindow() {
     setNotice(null);
     try {
       const result = await writeTextFilePreview(payload.path, payload.afterContent);
-      setNotice({ kind: "success", text: `Keep 成功，已写入 ${result.path} (${result.size} bytes)` });
+      setNotice({
+        kind: "success",
+        text: intl.formatMessage(
+          { id: "diff.keepSuccess" },
+          { path: result.path, size: result.size },
+        ),
+      });
     } catch (err) {
-      setNotice({ kind: "error", text: `Keep 失败：${String(err)}` });
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage({ id: "diff.keepFailed" }, { error: String(err) }),
+      });
     } finally {
       setPersistStatus("idle");
     }
-  }, [canWriteDisk, payload, persistStatus]);
+  }, [canWriteDisk, intl, payload, persistStatus]);
 
   const handleRestore = useCallback(async () => {
     if (!payload || !canWriteDisk || persistStatus !== "idle") {
@@ -243,13 +257,22 @@ export function RunSummaryDiffWindow() {
     setNotice(null);
     try {
       const result = await writeTextFilePreview(payload.path, payload.beforeContent);
-      setNotice({ kind: "success", text: `Restore 成功，已还原 ${result.path} (${result.size} bytes)` });
+      setNotice({
+        kind: "success",
+        text: intl.formatMessage(
+          { id: "diff.restoreSuccess" },
+          { path: result.path, size: result.size },
+        ),
+      });
     } catch (err) {
-      setNotice({ kind: "error", text: `Restore 失败：${String(err)}` });
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage({ id: "diff.restoreFailed" }, { error: String(err) }),
+      });
     } finally {
       setPersistStatus("idle");
     }
-  }, [canWriteDisk, payload, persistStatus]);
+  }, [canWriteDisk, intl, payload, persistStatus]);
 
   return (
     <div className="flex h-dvh w-screen flex-col bg-[var(--surface-panel)] text-[var(--text-base)]">
@@ -260,10 +283,10 @@ export function RunSummaryDiffWindow() {
         >
           <IconFileDiff size={14} stroke={1.8} className="text-[var(--accent)]" />
           <span className="truncate text-[12px] text-[var(--text-strong)]">
-            {payload ? pathBasename(payload.path) : "RunSummary Diff"}
+            {payload ? pathBasename(payload.path) : intl.formatMessage({ id: "diff.title" })}
           </span>
           <span className="rounded-full border border-[var(--accent-border)] bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] text-[var(--accent-strong)]">
-            {diffSourceLabel(source)}
+            {diffSourceLabel(source, intl)}
           </span>
         </div>
         <div className="flex h-full items-center">
@@ -272,26 +295,30 @@ export function RunSummaryDiffWindow() {
             onClick={() => void handleRestore()}
             disabled={!canWriteDisk || persistStatus !== "idle"}
             className="flex h-full items-center gap-1 px-3 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-45"
-            title={persistBlockedReason ?? "恢复为修改前版本"}
+            title={persistBlockedReason ?? intl.formatMessage({ id: "diff.restoreTitle" })}
           >
             <IconArrowBackUp size={13} stroke={1.8} />
-            {persistStatus === "restoring" ? "Restoring..." : "Restore"}
+            {persistStatus === "restoring"
+              ? intl.formatMessage({ id: "diff.restoring" })
+              : intl.formatMessage({ id: "diff.restore" })}
           </button>
           <button
             type="button"
             onClick={() => void handleKeep()}
             disabled={!canWriteDisk || persistStatus !== "idle"}
             className="flex h-full items-center gap-1 px-3 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-45"
-            title={persistBlockedReason ?? "保留修改并写入硬盘"}
+            title={persistBlockedReason ?? intl.formatMessage({ id: "diff.keepTitle" })}
           >
             <IconDeviceFloppy size={13} stroke={1.8} />
-            {persistStatus === "keeping" ? "Keeping..." : "Keep"}
+            {persistStatus === "keeping"
+              ? intl.formatMessage({ id: "diff.keeping" })
+              : intl.formatMessage({ id: "diff.keep" })}
           </button>
           <button
             type="button"
             onClick={() => runWindowAction(windowMinimize, "minimize")}
             className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)]"
-            title="最小化"
+            title={intl.formatMessage({ id: "diff.minimize" })}
           >
             <svg width="10" height="1" viewBox="0 0 10 1" fill="currentColor">
               <rect width="10" height="1" />
@@ -301,7 +328,7 @@ export function RunSummaryDiffWindow() {
             type="button"
             onClick={() => runWindowAction(windowCloseRunSummaryDiff, "close runsummary diff")}
             className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[#e81123] hover:text-white"
-            title="关闭"
+            title={intl.formatMessage({ id: "diff.close" })}
           >
             <svg
               width="10"
@@ -320,7 +347,7 @@ export function RunSummaryDiffWindow() {
 
       <div className="border-b border-[var(--border-subtle)] bg-[var(--surface-main)] px-3 py-2">
         <div className="truncate font-mono text-[11px] text-[var(--text-faint)]">
-          {payload?.path ?? "等待主窗口传入 Diff 内容"}
+          {payload?.path ?? intl.formatMessage({ id: "diff.waitingForContent" })}
         </div>
         <div className="mt-1 text-[11px] text-[var(--text-muted)]">
           action: {action}
@@ -349,13 +376,13 @@ export function RunSummaryDiffWindow() {
       <div className="min-h-0 flex-1 overflow-hidden p-3 pt-2">
         {!payload ? (
           <div className="flex h-full items-center justify-center rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-card)] text-[12px] text-[var(--chat-muted)]">
-            等待主窗口打开 Diff...
+            {intl.formatMessage({ id: "diff.waitingForOpen" })}
           </div>
         ) : (
           <div className="h-full overflow-auto rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)]">
             {lines.length === 0 ? (
               <div className="px-3 py-3 text-[11px] text-[var(--chat-muted)]">
-                {payload.emptyHint ?? "当前文件缺少可对比的行级差异。"}
+                {payload.emptyHint ?? intl.formatMessage({ id: "diff.noLineDiff" })}
               </div>
             ) : (
               lines.map((line, index) => (

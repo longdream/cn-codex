@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
@@ -13,9 +14,12 @@ interface TerminalTab {
   label: string;
   terminal: Terminal;
   fitAddon: FitAddon;
+  /** Persistent DOM element for this terminal; xterm opens into it exactly once. */
+  element: HTMLDivElement;
 }
 
 export function TerminalPanel() {
+  const intl = useIntl();
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -41,6 +45,7 @@ export function TerminalPanel() {
     let createdTerminal: Terminal | null = null;
     let createdUnlisten: (() => void) | null = null;
     let createdTabId: string | null = null;
+    let createdElement: HTMLDivElement | null = null;
 
     const cleanupPendingSession = () => {
       if (createdUnlisten) {
@@ -48,6 +53,9 @@ export function TerminalPanel() {
       }
       if (createdTerminal) {
         createdTerminal.dispose();
+      }
+      if (createdElement) {
+        createdElement.remove();
       }
       if (createdSessionId) {
         invoke("terminal_close", { sessionId: createdSessionId }).catch(console.error);
@@ -110,9 +118,23 @@ export function TerminalPanel() {
       const terminal = createdTerminal;
       const unlisten = createdUnlisten;
 
+      // Each terminal gets its own persistent DOM element so open() is only called once.
+      const el = document.createElement("div");
+      el.style.width = "100%";
+      el.style.height = "100%";
+      el.style.display = "none";
+      createdElement = el;
+
+      if (containerRef.current) {
+        containerRef.current.appendChild(el);
+        terminal.open(el);
+        fitAddon.fit();
+      }
+
       cleanupRef.current.set(tabId, () => {
         unlisten();
         terminal.dispose();
+        el.remove();
         invoke("terminal_close", { sessionId }).catch(console.error);
       });
 
@@ -121,9 +143,10 @@ export function TerminalPanel() {
         {
           id: tabId,
           sessionId,
-          label: `Terminal ${prev.length + 1}`,
+          label: `${intl.formatMessage({ id: "terminal.title" })} ${prev.length + 1}`,
           terminal,
           fitAddon,
+          element: el,
         },
       ]);
       setActiveTabId(tabId);
@@ -138,7 +161,7 @@ export function TerminalPanel() {
         setCreating(false);
       }
     }
-  }, [workspaceCwd]);
+  }, [intl, workspaceCwd]);
 
   const closeTab = useCallback(
     (tabId: string) => {
@@ -175,11 +198,13 @@ export function TerminalPanel() {
     }
   }, [createTerminalTab, tabs.length]);
 
+  // Show only the active tab's element; hide all others and fit the visible one.
   useEffect(() => {
-    if (!activeTab || !containerRef.current) return;
-    const el = containerRef.current;
-    el.innerHTML = "";
-    activeTab.terminal.open(el);
+    for (const tab of tabs) {
+      tab.element.style.display = tab.id === activeTabId ? "block" : "none";
+    }
+    if (!activeTab) return;
+
     activeTab.fitAddon.fit();
 
     const cols = activeTab.terminal.cols;
@@ -204,12 +229,12 @@ export function TerminalPanel() {
         // ignore fit errors during resize
       }
     });
-    observer.observe(el);
+    observer.observe(activeTab.element);
 
     return () => {
       observer.disconnect();
     };
-  }, [activeTab?.id]);
+  }, [activeTabId, tabs]);
 
   useEffect(() => {
     return () => {
@@ -252,7 +277,7 @@ export function TerminalPanel() {
           onClick={() => void createTerminalTab()}
           disabled={creating}
           className="flex h-5 w-5 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-45"
-          title="New terminal"
+          title={intl.formatMessage({ id: "terminal.newTab" })}
         >
           {creating ? (
             <IconLoader2 size={12} stroke={2} className="animate-spin" />
@@ -262,7 +287,7 @@ export function TerminalPanel() {
         </button>
       </div>
 
-      {/* Terminal content */}
+      {/* Terminal content — each tab's element is appended here; visibility is toggled via display style */}
       <div ref={containerRef} className="flex-1 overflow-hidden bg-[#1a1a2e] p-1" />
     </div>
   );

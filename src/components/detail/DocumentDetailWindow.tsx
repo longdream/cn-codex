@@ -4,10 +4,13 @@ import {
   IconDeviceFloppy,
   IconFileCode,
   IconMessagePlus,
+  IconPhoto,
   IconX,
 } from "@tabler/icons-react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useIntl } from "react-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -155,6 +158,15 @@ function fileLanguage(name: string): string {
   }
 }
 
+const IMAGE_EXTENSIONS = new Set([
+  "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp",
+]);
+
+function isImageFile(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXTENSIONS.has(ext);
+}
+
 function resolveSelectionMeta(source: string, start: number, end: number): SelectionMeta | null {
   if (end <= start) {
     return null;
@@ -255,8 +267,10 @@ function runWindowAction(action: () => Promise<void>, label: string): void {
 }
 
 export function DocumentDetailWindow() {
+  const intl = useIntl();
   const [activePath, setActivePath] = useState<string | null>(null);
   const [preview, setPreview] = useState<TextFilePreviewResult | null>(null);
+  const [isImage, setIsImage] = useState(false);
   const [draftContent, setDraftContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -329,17 +343,26 @@ export function DocumentDetailWindow() {
     setLoading(true);
     setLoadError(null);
     setNotice(null);
+    setSelectionMeta(null);
+    setFloatingPos(null);
+
+    const fileName = path.replace(/\\/g, "/").split("/").pop() ?? "";
+    if (isImageFile(fileName)) {
+      setIsImage(true);
+      setPreview(null);
+      setDraftContent("");
+      setLoading(false);
+      return;
+    }
+
+    setIsImage(false);
     try {
       const result = await readTextFilePreview(path);
       setPreview(result);
       setDraftContent(result.content);
-      setSelectionMeta(null);
-      setFloatingPos(null);
     } catch (err) {
       setPreview(null);
       setDraftContent("");
-      setSelectionMeta(null);
-      setFloatingPos(null);
       setLoadError(String(err));
     } finally {
       setLoading(false);
@@ -351,7 +374,7 @@ export function DocumentDetailWindow() {
     if (preview.truncated) {
       setNotice({
         kind: "error",
-        text: "当前文件超过预览上限，禁止直接覆盖保存，请改用外部编辑器处理。",
+        text: intl.formatMessage({ id: "docDetail.truncatedSaveBlocked" }),
       });
       return;
     }
@@ -370,13 +393,19 @@ export function DocumentDetailWindow() {
             }
           : prev,
       );
-      setNotice({ kind: "success", text: `已保存到原文件（${saved.size} bytes）` });
+      setNotice({
+        kind: "success",
+        text: intl.formatMessage({ id: "docDetail.savedSuccess" }, { size: saved.size }),
+      });
     } catch (err) {
-      setNotice({ kind: "error", text: `保存失败：${String(err)}` });
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage({ id: "docDetail.saveFailed" }, { error: String(err) }),
+      });
     } finally {
       setSaving(false);
     }
-  }, [preview, draftContent]);
+  }, [preview, draftContent, intl]);
 
   const handleInsertSelection = useCallback(async () => {
     if (!preview || !selectionMeta) return;
@@ -392,13 +421,16 @@ export function DocumentDetailWindow() {
       setNotice({
         kind: "success",
         text: snippet.truncated
-          ? `已插入 ${selectionMeta.lineCount} 行（内容过长已截断）`
-          : `已插入 ${selectionMeta.lineCount} 行到主对话输入框`,
+          ? intl.formatMessage({ id: "docDetail.insertTruncated" }, { lines: selectionMeta.lineCount })
+          : intl.formatMessage({ id: "docDetail.insertSuccess" }, { lines: selectionMeta.lineCount }),
       });
     } catch (err) {
-      setNotice({ kind: "error", text: `插入失败：${String(err)}` });
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage({ id: "docDetail.insertFailed" }, { error: String(err) }),
+      });
     }
-  }, [preview, selectionMeta]);
+  }, [preview, selectionMeta, intl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -479,6 +511,15 @@ export function DocumentDetailWindow() {
     syncHighlightScroll();
   }, [preview?.path, syncHighlightScroll]);
 
+  const imageFileName = useMemo(
+    () => (activePath ? activePath.replace(/\\/g, "/").split("/").pop() ?? "" : ""),
+    [activePath],
+  );
+  const imageSrc = useMemo(
+    () => (isImage && activePath ? convertFileSrc(activePath) : null),
+    [isImage, activePath],
+  );
+
   const canSave = Boolean(preview) && !saving && !loading && isDirty && !preview?.truncated;
 
   return (
@@ -488,32 +529,42 @@ export function DocumentDetailWindow() {
           data-tauri-drag-region
           className="flex min-w-0 flex-1 items-center gap-2 px-3"
         >
-          <IconFileCode size={14} stroke={1.8} className="text-[var(--accent)]" />
+          {isImage ? (
+            <IconPhoto size={14} stroke={1.8} className="text-pink-400" />
+          ) : (
+            <IconFileCode size={14} stroke={1.8} className="text-[var(--accent)]" />
+          )}
           <span className="truncate text-[12px] text-[var(--text-strong)]">
-            {preview?.name ?? "文档详情"}
+            {isImage ? imageFileName : (preview?.name ?? intl.formatMessage({ id: "docDetail.title" }))}
           </span>
           {isDirty && (
             <span className="rounded-full border border-[var(--warning)]/40 bg-[var(--warning)]/12 px-2 py-0.5 text-[10px] text-[var(--warning)]">
-              未保存
+              {intl.formatMessage({ id: "docDetail.unsaved" })}
             </span>
           )}
         </div>
         <div className="flex h-full items-center">
-          <button
-            type="button"
-            disabled={!canSave}
-            onClick={() => void handleSave()}
-            className="flex h-full items-center gap-1 px-3 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-45"
-            title={preview?.truncated ? "文件超过预览上限，已禁用保存" : "保存回原文件"}
-          >
-            <IconDeviceFloppy size={13} stroke={1.8} />
-            保存
-          </button>
+          {!isImage && (
+            <button
+              type="button"
+              disabled={!canSave}
+              onClick={() => void handleSave()}
+              className="flex h-full items-center gap-1 px-3 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-45"
+              title={
+                preview?.truncated
+                  ? intl.formatMessage({ id: "docDetail.saveTitleDisabled" })
+                  : intl.formatMessage({ id: "docDetail.saveTitleEnabled" })
+              }
+            >
+              <IconDeviceFloppy size={13} stroke={1.8} />
+              {intl.formatMessage({ id: "docDetail.save" })}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => runWindowAction(windowMinimize, "minimize")}
             className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)]"
-            title="最小化"
+            title={intl.formatMessage({ id: "docDetail.minimize" })}
           >
             <svg width="10" height="1" viewBox="0 0 10 1" fill="currentColor">
               <rect width="10" height="1" />
@@ -525,7 +576,7 @@ export function DocumentDetailWindow() {
               runWindowAction(windowCloseDocumentDetail, "close document detail")
             }
             className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[#e81123] hover:text-white"
-            title="关闭"
+            title={intl.formatMessage({ id: "docDetail.close" })}
           >
             <svg
               width="10"
@@ -544,7 +595,7 @@ export function DocumentDetailWindow() {
 
       <div className="border-b border-[var(--border-subtle)] bg-[var(--surface-main)] px-3 py-2">
         <div className="truncate font-mono text-[11px] text-[var(--text-faint)]">
-          {preview?.path ?? activePath ?? "请在主窗文件树中打开一个文件"}
+          {preview?.path ?? activePath ?? intl.formatMessage({ id: "docDetail.noFileSelected" })}
         </div>
       </div>
 
@@ -572,23 +623,44 @@ export function DocumentDetailWindow() {
       <div className="relative min-h-0 flex-1 p-3">
         {loading ? (
           <div className="flex h-full items-center justify-center text-sm text-[var(--text-faint)]">
-            正在加载文件内容...
+            {intl.formatMessage({ id: "docDetail.loading" })}
           </div>
         ) : loadError ? (
           <div className="thin-scrollbar h-full overflow-auto rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] p-3 text-sm text-[var(--danger)]">
             {loadError}
           </div>
+        ) : isImage && imageSrc ? (
+          <div className="flex h-full flex-col overflow-hidden rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--surface-main)]">
+            <div className="flex items-center justify-between border-b border-[var(--chat-line)] px-3 py-1.5">
+              <span className="text-[11px] text-[var(--chat-faint)]">
+                {intl.formatMessage({ id: "docDetail.imagePreviewLabel" })}
+              </span>
+              <span className="font-mono text-[11px] text-[var(--chat-faint)]">
+                {imageFileName.split(".").pop()?.toUpperCase()}
+              </span>
+            </div>
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+              <img
+                src={imageSrc}
+                alt={imageFileName}
+                className="max-h-full max-w-full object-contain"
+                draggable={false}
+              />
+            </div>
+          </div>
         ) : preview ? (
           <>
             {preview.truncated && (
               <div className="mb-2 rounded-[var(--radius-sm)] border border-[var(--warning)]/35 bg-[var(--warning)]/12 px-3 py-2 text-[11px] text-[var(--warning)]">
-                文件超过 512KB，仅加载前半部分；为避免误覆盖，当前窗口禁用保存。
+                {intl.formatMessage({ id: "docDetail.truncatedWarning" })}
               </div>
             )}
             {showMarkdownPreview ? (
               <div className="h-full min-h-0 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-paper)]">
                 <div className="flex items-center justify-between border-b border-[var(--chat-line)] px-3 py-1.5">
-                  <span className="text-[11px] text-[var(--chat-faint)]">Markdown 预览（渲染）</span>
+                  <span className="text-[11px] text-[var(--chat-faint)]">
+                    {intl.formatMessage({ id: "docDetail.markdownPreviewLabel" })}
+                  </span>
                   <div className="flex items-center gap-2">
                     <div className="inline-flex items-center rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--surface-main)] p-0.5">
                       <button
@@ -596,14 +668,14 @@ export function DocumentDetailWindow() {
                         onClick={() => setMarkdownViewMode("preview")}
                         className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-prose)] bg-[var(--accent-soft)]"
                       >
-                        预览
+                        {intl.formatMessage({ id: "docDetail.preview" })}
                       </button>
                       <button
                         type="button"
                         onClick={() => setMarkdownViewMode("source")}
                         className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-faint)] transition-colors hover:text-[var(--chat-prose)]"
                       >
-                        源码
+                        {intl.formatMessage({ id: "docDetail.source" })}
                       </button>
                     </div>
                     <span className="font-mono text-[11px] text-[var(--chat-faint)]">
@@ -627,7 +699,9 @@ export function DocumentDetailWindow() {
               <div className="detail-code-shell">
                 <div className="flex items-center justify-between border-b border-[var(--chat-line)] px-3 py-1.5">
                   <span className="text-[11px] text-[var(--chat-faint)]">
-                    {isMarkdownFile ? "Markdown 源码（可编辑）" : "代码预览（可编辑）"}
+                    {isMarkdownFile
+                      ? intl.formatMessage({ id: "docDetail.markdownSourceLabel" })
+                      : intl.formatMessage({ id: "docDetail.codePreviewLabel" })}
                   </span>
                   <div className="flex items-center gap-2">
                     {isMarkdownFile && (
@@ -637,14 +711,14 @@ export function DocumentDetailWindow() {
                           onClick={() => setMarkdownViewMode("preview")}
                           className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-faint)] transition-colors hover:text-[var(--chat-prose)]"
                         >
-                          预览
+                          {intl.formatMessage({ id: "docDetail.preview" })}
                         </button>
                         <button
                           type="button"
                           onClick={() => setMarkdownViewMode("source")}
                           className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-prose)] bg-[var(--accent-soft)]"
                         >
-                          源码
+                          {intl.formatMessage({ id: "docDetail.source" })}
                         </button>
                       </div>
                     )}
@@ -701,7 +775,7 @@ export function DocumentDetailWindow() {
           </>
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-[var(--text-faint)]">
-            等待打开文件...
+            {intl.formatMessage({ id: "docDetail.waitingForFile" })}
           </div>
         )}
       </div>
@@ -714,7 +788,7 @@ export function DocumentDetailWindow() {
           style={{ left: `${floatingPos.left}px`, top: `${floatingPos.top}px` }}
         >
           <IconMessagePlus size={13} stroke={1.8} />
-          插入对话
+          {intl.formatMessage({ id: "docDetail.insertToChat" })}
         </button>
       )}
     </div>

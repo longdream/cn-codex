@@ -670,19 +670,19 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     ],
   },
   {
-    type: "volcengine", name: "火山引擎 Ark", category: "china",
+    type: "volcengine", name: "provider.preset.volcengine", category: "china",
     defaultBaseUrl: "https://ark.cn-beijing.volces.com/api/v3", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
     defaultModels: [{ id: "deepseek-v4-pro-260425", label: "DeepSeek V4 Pro", supportsVision: false, contextLength: 128000 }],
   },
   {
-    type: "qwen", name: "通义千问", category: "china",
+    type: "qwen", name: "provider.preset.qwen", category: "china",
     defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://dashscope.console.aliyun.com/apiKey",
     defaultModels: [{ id: "qwen-max", label: "Qwen Max", supportsVision: true, contextLength: 32768 }],
   },
   {
-    type: "zhipu", name: "智谱 AI", category: "china",
+    type: "zhipu", name: "provider.preset.zhipu", category: "china",
     defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://open.bigmodel.cn/usercenter/apikeys",
     defaultModels: [{ id: "glm-4-plus", label: "GLM-4 Plus", supportsVision: true, contextLength: 128000 }],
@@ -700,7 +700,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultModels: [{ id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3", supportsVision: false, contextLength: 128000 }],
   },
   {
-    type: "baichuan", name: "百川智能", category: "china",
+    type: "baichuan", name: "provider.preset.baichuan", category: "china",
     defaultBaseUrl: "https://api.baichuan-ai.com/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://platform.baichuan-ai.com/console/apikey",
     defaultModels: [{ id: "Baichuan4", label: "Baichuan 4", supportsVision: false, contextLength: 32768 }],
@@ -718,7 +718,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultModels: [{ id: "local-model", label: "Local Model", supportsVision: false, contextLength: 128000 }],
   },
   {
-    type: "custom", name: "自定义", category: "other",
+    type: "custom", name: "provider.preset.custom", category: "other",
     defaultBaseUrl: "", defaultWireApi: "chat", requiresOpenAIAuth: false,
     defaultModels: [],
   },

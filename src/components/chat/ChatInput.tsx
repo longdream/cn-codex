@@ -347,6 +347,9 @@ export function ChatInput({
     const clearCommand = defaults.find((command) => command.name === "clear");
     if (clearCommand) {
       clearCommand.action = () => {
+        if (!window.confirm(intl.formatMessage({ id: "chat.confirmClearHistory" }))) {
+          return;
+        }
         useAppStore.getState().setMessages([]);
         useAppStore.getState().clearStreamingText();
       };
@@ -464,7 +467,10 @@ export function ChatInput({
         requestAnimationFrame(() => textareaRef.current?.focus());
         return true;
       }
-      const payload = buildSkillScopedPrompt(skillCommand.skillId, skillCommand.objective);
+      const payload = intl.formatMessage(
+        { id: "chat.skillPrompt" },
+        { skillId: skillCommand.skillId, objective: skillCommand.objective },
+      );
       onSend(payload, mode, filesToSend);
       resetComposerAfterSubmit();
       return true;
@@ -992,7 +998,7 @@ export function ChatInput({
               </button>
 
               {showRobotMenu && (
-                <div className="absolute left-0 top-full z-30 mt-1 min-w-[200px] rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] py-1 shadow-lg">
+                <div className="absolute left-0 bottom-full z-30 mb-1 w-[180px] max-h-[200px] overflow-y-auto rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] py-1 shadow-lg">
                   <button
                     onClick={() => {
                       setSelectedRobotId(null);
@@ -1017,14 +1023,7 @@ export function ChatInput({
                       }`}
                     >
                       <IconRobot size={13} stroke={1.6} className="shrink-0 opacity-70" />
-                      <div className="min-w-0">
-                        <span className="block truncate font-medium">{robot.name}</span>
-                        {robot.description && (
-                          <span className="block truncate text-[11px] text-[var(--text-faint)]">
-                            {robot.description}
-                          </span>
-                        )}
-                      </div>
+                      <span className="truncate font-medium">{robot.name}</span>
                     </button>
                   ))}
                   <div className="my-1 border-t border-[var(--chat-line)]" />
@@ -1121,7 +1120,15 @@ export function ChatInput({
             onKeyDown={handleKeyDown}
             onInput={handleInput}
             onPaste={handlePaste}
-            placeholder={intl.formatMessage({ id: robotModifyMode ? "chat.robot.modifyPlaceholder" : robotCreateMode ? "chat.robot.placeholder" : "chat.placeholder" })}
+            placeholder={intl.formatMessage({
+              id: isStreaming || goalRunning
+                ? "chat.aiResponding"
+                : robotModifyMode
+                  ? "chat.robot.modifyPlaceholder"
+                  : robotCreateMode
+                    ? "chat.robot.placeholder"
+                    : "chat.inputPlaceholder",
+            })}
             disabled={disabled}
             rows={2}
             className="chat-composer-input max-h-[200px] min-h-[78px] w-full flex-1 resize-none bg-transparent py-2 text-[13px] leading-relaxed text-[var(--chat-prose)] placeholder:text-[var(--chat-faint)] outline-none disabled:opacity-50"
@@ -1194,6 +1201,9 @@ export function ChatInput({
             {contextUsedTokens > 0 && modelContextWindow > 0 && (
               <ContextUsageRing usedTokens={contextUsedTokens} windowTokens={modelContextWindow} />
             )}
+            <span className="hidden text-[var(--chat-faint)] sm:inline">
+              {intl.formatMessage({ id: "chat.inputHint" })}
+            </span>
             {cwdLeaf && (
               <span className="flex min-w-0 items-center gap-1 truncate" title={workspaceCwd ?? undefined}>
                 <IconFolder size={12} stroke={1.8} className="flex-shrink-0" />
@@ -1215,6 +1225,7 @@ function ContextUsageRing({
   usedTokens: number;
   windowTokens: number;
 }) {
+  const intl = useIntl();
   const ratio = Math.max(0, Math.min(1, usedTokens / windowTokens));
   const radius = 7;
   const strokeWidth = 2;
@@ -1235,7 +1246,13 @@ function ContextUsageRing({
   return (
     <span
       className="flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] px-2 py-0.5 text-[var(--chat-muted)]"
-      title={`上下文使用: ${formatter.format(usedTokens)} / ${formatter.format(windowTokens)} tokens`}
+      title={intl.formatMessage(
+        { id: "chat.contextUsage" },
+        {
+          used: formatter.format(usedTokens),
+          total: formatter.format(windowTokens),
+        },
+      )}
     >
       <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
         <circle
@@ -1386,7 +1403,7 @@ export function buildSkillScopedPrompt(skillId: string, objective: string): stri
   if (!normalizedObjective) {
     return normalizedObjective;
   }
-  return `请优先使用 skill "${normalizedSkillId}"，然后完成以下需求：\n${normalizedObjective}`;
+  return `Please prioritize skill "${normalizedSkillId}", then complete the following:\n${normalizedObjective}`;
 }
 
 export interface ParsedModifyRobotCommand {

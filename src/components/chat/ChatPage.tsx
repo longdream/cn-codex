@@ -1,6 +1,7 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
-import { IconFolder, IconSparkles, IconCopy, IconCheck } from "@tabler/icons-react";
+import { IconClock, IconFolder, IconSparkles, IconCopy, IconCheck } from "@tabler/icons-react";
+import { formatDuration } from "../../utils/formatDuration";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   standaloneChat,
@@ -114,7 +115,7 @@ export function ChatPage() {
         store.addMessage({
           id: crypto.randomUUID(),
           role: "assistant",
-          content: `Error: ${err}`,
+          content: intl.formatMessage({ id: "chat.sendFailed" }),
           timestamp: Date.now(),
         });
         // Goal 模式下后端已回退为 paused，前端同步状态
@@ -123,7 +124,7 @@ export function ChatPage() {
         }
       }
     },
-    [currentThreadId],
+    [currentThreadId, intl],
   );
 
   const handleInterrupt = useCallback(async () => {
@@ -134,13 +135,13 @@ export function ChatPage() {
       store.chatMode === "goal" && !!threadId && currentGoal?.status === "active";
 
     // 先做前端状态收敛，保证点击“停止”后转圈立即结束。
-    store.markRunningToolCallsInterrupted("Tool interrupted by user.");
+    store.markRunningToolCallsInterrupted(intl.formatMessage({ id: "chat.toolInterrupted" }));
     const partialText = store.streamingText;
     if (partialText) {
       store.addMessage({
         id: crypto.randomUUID(),
         role: "assistant",
-        content: partialText + "\n\n_(interrupted)_",
+        content: `${partialText}\n\n_(${intl.formatMessage({ id: "chat.interrupted" })})_`,
         timestamp: Date.now(),
       });
       store.clearStreamingText();
@@ -167,7 +168,7 @@ export function ChatPage() {
     }
 
     await interruptPromise;
-  }, []);
+  }, [intl]);
 
   const addSystemMessage = useCallback((content: string) => {
     useAppStore.getState().addMessage({
@@ -252,13 +253,48 @@ export function ChatPage() {
   // 注意：所有 Hook 必须在任何条件 return 之前声明，避免项目切换时触发 Hook 顺序错误。
   const [copyDone, setCopyDone] = useState(false);
 
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const timerRef = useRef<number | null>(null);
+  const lastTickRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (isStreaming) {
+      lastTickRef.current = Date.now();
+      timerRef.current = window.setInterval(() => {
+        const now = Date.now();
+        setElapsedMs((prev) => prev + (now - lastTickRef.current));
+        lastTickRef.current = now;
+      }, 1000);
+    } else if (timerRef.current !== null) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    return () => {
+      if (timerRef.current !== null) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [isStreaming]);
+
+  useEffect(() => {
+    setElapsedMs(0);
+  }, [currentThreadId]);
+
   const handleCopyAll = useCallback(() => {
+    const userLabel = intl.formatMessage({ id: "chat.role.user" });
+    const assistantLabel = intl.formatMessage({ id: "chat.role.assistant" });
+    const toolCallLabel = intl.formatMessage({ id: "chat.toolCall" });
     const lines = messages.map((m) => {
-      const role = m.role === "user" ? "User" : m.role === "assistant" ? "AI" : m.role;
+      const role = m.role === "user"
+        ? userLabel
+        : m.role === "assistant"
+          ? assistantLabel
+          : m.role;
       let text = `[${role}] ${m.content}`;
       if (m.toolCalls) {
         for (const tc of m.toolCalls) {
-          text += `\n  [Tool Call] ${tc.name}(${tc.arguments ?? ""})`;
+          text += `\n  [${toolCallLabel}] ${tc.name}(${tc.arguments ?? ""})`;
         }
       }
       return text;
@@ -267,7 +303,7 @@ export function ChatPage() {
       setCopyDone(true);
       setTimeout(() => setCopyDone(false), 2000);
     });
-  }, [messages]);
+  }, [intl, messages]);
 
   const isGeneralMode = currentProjectId === GENERAL_PROJECT_ID;
   const hasProject = (!!currentProjectId && !!workspaceCwd) || isGeneralMode;
@@ -289,6 +325,7 @@ export function ChatPage() {
     return (
       <div
         onClick={handleAddProject}
+        title={intl.formatMessage({ id: "chat.selectProjectDir" })}
         className="flex min-h-0 flex-1 cursor-pointer flex-col items-center justify-center px-6 py-12 transition-colors hover:bg-[var(--accent-soft)]/20"
       >
         <div className="w-full max-w-sm text-center">
@@ -306,7 +343,16 @@ export function ChatPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {messages.length > 0 && (
-        <div className="flex items-center justify-end px-4 py-1.5 border-b border-[var(--chat-line)]">
+        <div className="flex items-center justify-end gap-2 px-4 py-1.5 border-b border-[var(--chat-line)]">
+          {elapsedMs > 0 && (
+            <span
+              className="flex items-center gap-1 font-mono text-[11px] text-[var(--chat-muted)] select-none"
+              title={intl.formatMessage({ id: "chat.elapsedTooltip" })}
+            >
+              <IconClock size={12} stroke={1.5} />
+              {formatDuration(elapsedMs)}
+            </span>
+          )}
           <button
             onClick={handleCopyAll}
             className="chat-copy-button flex items-center justify-center h-6 w-6 transition-[color,background]"

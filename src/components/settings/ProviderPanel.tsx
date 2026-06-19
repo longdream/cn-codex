@@ -127,11 +127,12 @@ export function ProviderPanel() {
 
   // 从预设创建新实例
   const handleCreateFromPreset = useCallback((preset: ProviderPreset) => {
-    const instance = createProviderFromPreset(preset);
+    const defaultName = intl.formatMessage({ id: preset.name, defaultMessage: preset.name });
+    const instance = createProviderFromPreset(preset, { name: defaultName });
     useAppStore.getState().addCustomProvider(instance);
     setShowPresetDialog(false);
     handleSelect(instance.id);
-  }, [handleSelect]);
+  }, [handleSelect, intl]);
 
   // 删除实例
   const handleDelete = useCallback((providerId: string) => {
@@ -434,17 +435,17 @@ export function ProviderPanel() {
             {/* Wire API 格式选择 */}
             <div className="space-y-1.5">
               <label className="settings-field-label">
-                {intl.formatMessage({ id: "settings.provider.transport", defaultMessage: "API 格式" })}
+                {intl.formatMessage({ id: "settings.provider.transport" })}
               </label>
               <select
                 value={editForm.wireApi}
                 onChange={(e) => setEditForm((f) => ({ ...f, wireApi: e.target.value }))}
                 className="app-select w-56"
               >
-                <option value="chat">OpenAI Chat Completions</option>
-                <option value="responses">OpenAI Responses API</option>
-                <option value="anthropic">Anthropic Messages API</option>
-                <option value="gemini">Google Gemini API</option>
+                <option value="chat">{intl.formatMessage({ id: "provider.transport.chat" })}</option>
+                <option value="responses">{intl.formatMessage({ id: "provider.transport.responses" })}</option>
+                <option value="anthropic">{intl.formatMessage({ id: "provider.transport.anthropic" })}</option>
+                <option value="gemini">{intl.formatMessage({ id: "provider.transport.gemini" })}</option>
               </select>
               <p className="text-[11px] text-[var(--text-faint)]">
                 {editForm.wireApi &&
@@ -596,7 +597,9 @@ export function ProviderPanel() {
                         onClick={() => handleCreateFromPreset(preset)}
                         className="w-full text-left"
                       >
-                        <span className="block text-xs font-medium text-[var(--text-strong)]">{preset.name}</span>
+                        <span className="block text-xs font-medium text-[var(--text-strong)]">
+                          {intl.formatMessage({ id: preset.name, defaultMessage: preset.name })}
+                        </span>
                         <span className="block truncate text-[11px] text-[var(--text-faint)]">
                           {preset.defaultModels[0]?.label ?? preset.type}
                         </span>

@@ -34,6 +34,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage, RunSummary, ToolCallItem } from "../../stores/appStore";
 import { useAppStore } from "../../stores/appStore";
+import { formatDuration } from "../../utils/formatDuration";
 import { CodeBlock } from "./CodeBlock";
 
 interface MessageListProps {
@@ -276,8 +277,8 @@ function RunSummaryCard({
         persistHint: canPersist
           ? undefined
           : normalizedAction !== "modified"
-            ? "当前仅 modified 文件支持 Keep/Restore。"
-            : "当前快照数据不完整，无法执行 Keep/Restore。",
+            ? intl.formatMessage({ id: "diff.onlyModifiedSupported" })
+            : intl.formatMessage({ id: "patchDiff.snapshotIncomplete" }),
       });
       return;
     }
@@ -292,7 +293,7 @@ function RunSummaryCard({
         fileAction: (file.action || "modified").toLowerCase(),
         diffSource: "patch",
         canPersist: false,
-        persistHint: "当前为补丁文本回退视图，仅支持查看 Diff，不支持写盘。",
+        persistHint: intl.formatMessage({ id: "patchDiff.patchViewOnly" }),
       });
       return;
     }
@@ -306,10 +307,10 @@ function RunSummaryCard({
       fileAction: (file.action || "modified").toLowerCase(),
       diffSource: "empty",
       canPersist: false,
-      persistHint: "当前无可写盘的快照数据。",
-      emptyHint: "当前文件无可用的本轮快照与补丁文本，暂无法生成 Diff。",
+      persistHint: intl.formatMessage({ id: "patchDiff.noSnapshotData" }),
+      emptyHint: intl.formatMessage({ id: "patchDiff.noDiffData" }),
     });
-  }, [summary.changedFileSnapshots, workspaceCwd]);
+  }, [intl, summary.changedFileSnapshots, workspaceCwd]);
 
   return (
     <section className="max-w-[1100px]">
@@ -377,7 +378,7 @@ function RunSummaryCard({
                     e.stopPropagation();
                     openDiffForFile(file);
                   }}
-                  title="查看补丁 Diff"
+                  title={intl.formatMessage({ id: "patchDiff.viewDiffTitle" })}
                 >
                   <IconFileDiff size={15} stroke={1.8} />
                 </button>
@@ -634,24 +635,6 @@ function formatTokenCount(value?: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(safe);
 }
 
-function formatDuration(durationMs?: number): string {
-  if (durationMs == null || durationMs < 0) {
-    return "n/a";
-  }
-
-  if (durationMs < 1000) {
-    return `${durationMs}ms`;
-  }
-
-  const seconds = durationMs / 1000;
-  if (seconds < 60) {
-    return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds % 60);
-  return `${minutes}m ${rest}s`;
-}
 
 function fileActionLabel(action: string, intl: ReturnType<typeof useIntl>): string {
   const id = `chat.fileAction.${action}`;
@@ -1831,6 +1814,7 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
 }
 
 function PatchReviewPanel({ toolId }: { toolId: string }) {
+  const intl = useIntl();
   const review = useAppStore((state) => state.pendingFileReviews[toolId]);
   const setSelectedPath = useAppStore((state) => state.setPendingFileReviewSelectedPath);
   const setFileKeep = useAppStore((state) => state.setPendingFileReviewFileKeep);
@@ -1860,7 +1844,7 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
       return;
     }
     if (review.files.filter((file) => file.keep).length === 0) {
-      setRequestError("请至少选择一个 Keep 文件。");
+      setRequestError(intl.formatMessage({ id: "patchDiff.selectAtLeastOne" }));
       return;
     }
     setRequestError(null);
@@ -1896,7 +1880,7 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
       setReviewStatus(toolId, "failed", message);
       setRequestError(message);
     }
-  }, [review, removeReview, setReviewStatus, toolId]);
+  }, [intl, review, removeReview, setReviewStatus, toolId]);
 
   const handleCancel = useCallback(async () => {
     if (!review || applying) {
@@ -1920,7 +1904,10 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
     <div className="patch-review-panel mt-2">
       <div className="flex items-center justify-between gap-2">
         <div className="text-[11px] text-[var(--chat-muted)]">
-          变更待审阅（写盘前） · {keepCount}/{review.files.length} Keep
+          {intl.formatMessage(
+            { id: "patchDiff.reviewPending" },
+            { keepCount, total: review.files.length },
+          )}
         </div>
         <label className="flex items-center gap-1.5 text-[11px] text-[var(--chat-muted)]">
           <input
@@ -1929,7 +1916,7 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
             disabled={applying || review.files.length === 0}
             onChange={(e) => setKeepAll(toolId, e.target.checked)}
           />
-          Keep All
+          {intl.formatMessage({ id: "patchDiff.keepAll" })}
         </label>
       </div>
 
@@ -1970,16 +1957,22 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
           {selectedFile ? (
             <div className="grid gap-2 md:grid-cols-2">
               <div>
-                <div className="mb-1 text-[11px] text-[var(--chat-muted)]">Before</div>
+                <div className="mb-1 text-[11px] text-[var(--chat-muted)]">
+                  {intl.formatMessage({ id: "patchDiff.before" })}
+                </div>
                 <pre className="chat-tool-output thin-scrollbar max-h-[220px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]">
-                  {selectedFile.action === "created" ? "(new file)" : selectedBeforeContent || "(empty)"}
+                  {selectedFile.action === "created"
+                    ? intl.formatMessage({ id: "patchDiff.newFile" })
+                    : selectedBeforeContent || intl.formatMessage({ id: "patchDiff.empty" })}
                 </pre>
               </div>
               <div>
-                <div className="mb-1 text-[11px] text-[var(--chat-muted)]">After</div>
+                <div className="mb-1 text-[11px] text-[var(--chat-muted)]">
+                  {intl.formatMessage({ id: "patchDiff.after" })}
+                </div>
                 {selectedFile.action === "deleted" ? (
                   <pre className="chat-tool-output thin-scrollbar max-h-[220px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]">
-                    (will be deleted)
+                    {intl.formatMessage({ id: "patchDiff.willBeDeleted" })}
                   </pre>
                 ) : (
                   <textarea
@@ -1995,7 +1988,7 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
             </div>
           ) : (
             <div className="chat-tool-output px-2.5 py-2 text-[11px] text-[var(--chat-muted)]">
-              暂无可审阅文件。
+              {intl.formatMessage({ id: "patchDiff.noReviewFiles" })}
             </div>
           )}
         </div>
@@ -2008,7 +2001,7 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
           disabled={applying}
           onClick={() => void handleCancel()}
         >
-          Cancel
+          {intl.formatMessage({ id: "patchDiff.cancel" })}
         </button>
         <button
           type="button"
@@ -2016,7 +2009,7 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
           disabled={applying || keepCount === 0}
           onClick={() => void handleApply()}
         >
-          {applying ? "Applying..." : "Apply"}
+          {intl.formatMessage({ id: applying ? "patchDiff.applying" : "patchDiff.apply" })}
         </button>
       </div>
 

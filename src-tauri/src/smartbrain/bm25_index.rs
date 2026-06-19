@@ -19,6 +19,60 @@ pub struct IndexedDocument {
     pub tokens: Vec<String>,
     pub token_count: usize,
     pub updated_at: i64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub concept_type: Option<String>,
+}
+
+/// Filter criteria for structured search on OKF metadata.
+#[derive(Debug, Clone, Default)]
+pub struct SearchFilter {
+    pub concept_type: Option<String>,
+    pub tags: Vec<String>,
+    pub source_type: Option<SourceType>,
+    pub timestamp_after: Option<i64>,
+    pub timestamp_before: Option<i64>,
+}
+
+impl SearchFilter {
+    pub fn is_empty(&self) -> bool {
+        self.concept_type.is_none()
+            && self.tags.is_empty()
+            && self.source_type.is_none()
+            && self.timestamp_after.is_none()
+            && self.timestamp_before.is_none()
+    }
+
+    fn matches(&self, doc: &IndexedDocument) -> bool {
+        if let Some(ct) = &self.concept_type {
+            if doc.concept_type.as_deref() != Some(ct.as_str()) {
+                return false;
+            }
+        }
+        if let Some(st) = &self.source_type {
+            if doc.source_type != *st {
+                return false;
+            }
+        }
+        if !self.tags.is_empty() {
+            let has_match = self.tags.iter().any(|t| doc.tags.contains(t));
+            if !has_match {
+                return false;
+            }
+        }
+        if let Some(after) = self.timestamp_after {
+            if doc.updated_at < after {
+                return false;
+            }
+        }
+        if let Some(before) = self.timestamp_before {
+            if doc.updated_at > before {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,13 +156,90 @@ impl BM25Index {
         let avg_doc_length = if self.documents.is_empty() {
             1.0
         } else {
-            self.documents.iter().map(|d| d.token_count as f64).sum::<f64>() / total_docs
+            self.documents
+                .iter()
+                .map(|d| d.token_count as f64)
+                .sum::<f64>()
+                / total_docs
         };
 
         let idf = compute_idf(&query_tokens, &self.documents);
 
         let mut scored: Vec<SearchResult> = self
             .documents
+            .iter()
+            .map(|doc| {
+                let score = bm25_score(&query_tokens, &doc.tokens, avg_doc_length, &idf);
+                SearchResult {
+                    doc_id: doc.doc_id.clone(),
+                    source_type: doc.source_type,
+                    file_path: doc.file_path.clone(),
+                    title: doc.title.clone(),
+                    score,
+                }
+            })
+            .filter(|r| r.score > 0.0)
+            .collect();
+
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored.truncate(top_k);
+        scored
+    }
+
+    /// Search with optional structured filter on OKF metadata.
+    pub fn search_with_filter(
+        &self,
+        query: &str,
+        top_k: usize,
+        filter: &SearchFilter,
+    ) -> Vec<SearchResult> {
+        if self.documents.is_empty() {
+            return Vec::new();
+        }
+
+        let filtered_docs: Vec<&IndexedDocument> = if filter.is_empty() {
+            self.documents.iter().collect()
+        } else {
+            self.documents.iter().filter(|d| filter.matches(d)).collect()
+        };
+
+        if filtered_docs.is_empty() {
+            return Vec::new();
+        }
+
+        if query.trim().is_empty() {
+            return filtered_docs
+                .into_iter()
+                .take(top_k)
+                .map(|doc| SearchResult {
+                    doc_id: doc.doc_id.clone(),
+                    source_type: doc.source_type,
+                    file_path: doc.file_path.clone(),
+                    title: doc.title.clone(),
+                    score: 1.0,
+                })
+                .collect();
+        }
+
+        let query_tokens = tokenize(query);
+        if query_tokens.is_empty() {
+            return Vec::new();
+        }
+
+        let total_docs = filtered_docs.len() as f64;
+        let avg_doc_length = filtered_docs
+            .iter()
+            .map(|d| d.token_count as f64)
+            .sum::<f64>()
+            / total_docs;
+
+        let idf = compute_idf_from_refs(&query_tokens, &filtered_docs);
+
+        let mut scored: Vec<SearchResult> = filtered_docs
             .iter()
             .map(|doc| {
                 let score = bm25_score(&query_tokens, &doc.tokens, avg_doc_length, &idf);
@@ -196,6 +327,28 @@ fn is_cjk(ch: char) -> bool {
     )
 }
 
+fn compute_idf_from_refs(
+    query_tokens: &[String],
+    documents: &[&IndexedDocument],
+) -> HashMap<String, f64> {
+    let total_docs = documents.len() as f64;
+    let mut idf_map = HashMap::new();
+
+    for token in query_tokens {
+        if idf_map.contains_key(token) {
+            continue;
+        }
+        let doc_freq = documents
+            .iter()
+            .filter(|d| d.tokens.contains(token))
+            .count() as f64;
+        let idf = ((total_docs - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
+        idf_map.insert(token.clone(), idf.max(0.0));
+    }
+
+    idf_map
+}
+
 fn compute_idf(query_tokens: &[String], documents: &[IndexedDocument]) -> HashMap<String, f64> {
     let total_docs = documents.len() as f64;
     let mut idf_map = HashMap::new();
@@ -266,6 +419,34 @@ pub fn build_document(
         tokens,
         token_count,
         updated_at,
+        tags: Vec::new(),
+        concept_type: None,
+    }
+}
+
+/// Build an IndexedDocument with OKF metadata (tags, concept_type).
+pub fn build_document_with_metadata(
+    doc_id: String,
+    source_type: SourceType,
+    file_path: String,
+    title: String,
+    content: &str,
+    updated_at: i64,
+    tags: Vec<String>,
+    concept_type: Option<String>,
+) -> IndexedDocument {
+    let tokens = tokenize(content);
+    let token_count = tokens.len();
+    IndexedDocument {
+        doc_id,
+        source_type,
+        file_path,
+        title,
+        tokens,
+        token_count,
+        updated_at,
+        tags,
+        concept_type,
     }
 }
 

@@ -10,13 +10,14 @@ import { SkillsPanel } from "./SkillsPanel";
 import { HooksPanel } from "./HooksPanel";
 import { RobotsPanel } from "./RobotsPanel";
 import { UsageDashboard } from "./UsageDashboard";
-import { SmartBrainPanel } from "./SmartBrainPanel";
+import { ExperiencePanel } from "./ExperiencePanel";
+import { KnowledgePanel } from "./KnowledgePanel";
 
 interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "hooks" | "smartbrain";
+type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "hooks" | "experience" | "knowledge";
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const intl = useIntl();
@@ -30,6 +31,8 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [webServerLoading, setWebServerLoading] = useState(false);
   const [relayServerUrl, setRelayServerUrl] = useState("");
   const [relaySaving, setRelaySaving] = useState(false);
+  const [smartbrainEnabled, setSmartbrainEnabled] = useState(false);
+  const [smartbrainLoading, setSmartbrainLoading] = useState(false);
 
   // relay 地址规范化（去空白与末尾 `/`），避免配置被保存成 `http://host:8080/`
   // 后续在拼接 `/m/...` 时出现 `//m/...`。
@@ -44,9 +47,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         invoke<string>("get_mobile_server_url").then(setWebServerUrl).catch(() => {});
       }
     }).catch(() => {});
-    invoke<{ config?: { relay_server_url?: string } }>("standalone_config_read").then((result) => {
+    invoke<{ config?: { relay_server_url?: string; smartbrain?: { enabled?: boolean } } }>("standalone_config_read").then((result) => {
       if (result?.config?.relay_server_url) {
         setRelayServerUrl(normalizeRelayServerUrl(result.config.relay_server_url));
+      }
+      if (result?.config?.smartbrain?.enabled !== undefined) {
+        setSmartbrainEnabled(result.config.smartbrain.enabled);
       }
     }).catch(() => {});
   }, [normalizeRelayServerUrl]);
@@ -71,6 +77,22 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     }
   }, [webServerEnabled, webServerLoading]);
 
+  const handleSmartbrainToggle = useCallback(async () => {
+    if (smartbrainLoading) return;
+    setSmartbrainLoading(true);
+    try {
+      const newValue = !smartbrainEnabled;
+      await invoke("standalone_config_write", {
+        edits: [{ keyPath: "smartbrain.enabled", value: newValue }],
+      });
+      setSmartbrainEnabled(newValue);
+    } catch (err) {
+      console.error("SmartBrain toggle failed:", err);
+    } finally {
+      setSmartbrainLoading(false);
+    }
+  }, [smartbrainEnabled, smartbrainLoading]);
+
   const tabs: Array<{ id: SettingsTab; label: string; detail: string }> = [
     {
       id: "general",
@@ -84,8 +106,8 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     },
     {
       id: "usage",
-      label: intl.formatMessage({ id: "settings.usage", defaultMessage: "用量追踪" }),
-      detail: intl.formatMessage({ id: "settings.usage.description", defaultMessage: "查看 Token 用量和费用统计" }),
+      label: intl.formatMessage({ id: "settings.usage" }),
+      detail: intl.formatMessage({ id: "settings.usage.description" }),
     },
     {
       id: "integration",
@@ -113,9 +135,14 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       detail: intl.formatMessage({ id: "settings.hooks.description" }),
     },
     {
-      id: "smartbrain",
-      label: intl.formatMessage({ id: "settings.smartbrain" }),
-      detail: intl.formatMessage({ id: "settings.smartbrain.description" }),
+      id: "experience",
+      label: intl.formatMessage({ id: "settings.experience" }),
+      detail: intl.formatMessage({ id: "settings.experience.description" }),
+    },
+    {
+      id: "knowledge",
+      label: intl.formatMessage({ id: "settings.knowledge" }),
+      detail: intl.formatMessage({ id: "settings.knowledge.description" }),
     },
   ];
 
@@ -202,10 +229,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
                 <section className="settings-card space-y-3">
                   <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
-                    Web 服务（手机同步）
+                    {intl.formatMessage({ id: "settings.webServer" })}
                   </h4>
                   <p className="text-xs text-[var(--text-faint)]">
-                    开启后可通过手机扫码实时查看 PC 端对话内容
+                    {intl.formatMessage({ id: "settings.webServer.description" })}
                   </p>
                   <div className="flex items-center gap-3">
                     <button
@@ -222,7 +249,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       />
                     </button>
                     <span className="text-xs text-[var(--text-muted)]">
-                      {webServerLoading ? "正在操作..." : webServerEnabled ? "已开启" : "已关闭"}
+                      {webServerLoading
+                        ? intl.formatMessage({ id: "settings.webServer.loading" })
+                        : webServerEnabled
+                          ? intl.formatMessage({ id: "settings.webServer.enabled" })
+                          : intl.formatMessage({ id: "settings.webServer.disabled" })}
                     </span>
                   </div>
                   {webServerEnabled && webServerUrl && (
@@ -234,10 +265,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
                 <section className="settings-card space-y-3">
                   <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
-                    中转服务器（公网访问）
+                    {intl.formatMessage({ id: "settings.relayServer" })}
                   </h4>
                   <p className="text-xs text-[var(--text-faint)]">
-                    配置后二维码将指向中转服务器地址，手机无需与 PC 在同一局域网
+                    {intl.formatMessage({ id: "settings.relayServer.description" })}
                   </p>
                   <div className="flex items-center gap-2">
                     <input
@@ -266,11 +297,46 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       }}
                       className="app-button-secondary text-xs"
                     >
-                      {relaySaving ? "保存中..." : "保存"}
+                      {relaySaving
+                        ? intl.formatMessage({ id: "settings.relayServer.savingBtn" })
+                        : intl.formatMessage({ id: "settings.relayServer.saveBtn" })}
                     </button>
                   </div>
                   <p className="text-[11px] text-[var(--text-faint)]">
-                    留空则使用局域网直连模式。保存后需重新开启 Web 服务生效。
+                    {intl.formatMessage({ id: "settings.relayServer.hint" })}
+                  </p>
+                </section>
+
+                <section className="settings-card space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                      SmartBrain ({intl.formatMessage({ id: "settings.smartbrain" })})
+                    </h4>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handleSmartbrainToggle}
+                        disabled={smartbrainLoading}
+                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                          smartbrainEnabled ? "bg-[var(--accent)]" : "bg-[var(--border-subtle)]"
+                        } ${smartbrainLoading ? "opacity-50" : ""}`}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+                            smartbrainEnabled ? "translate-x-[18px]" : "translate-x-[3px]"
+                          }`}
+                        />
+                      </button>
+                      <span className="text-xs text-[var(--text-muted)]">
+                        {smartbrainLoading
+                          ? "..."
+                          : smartbrainEnabled
+                            ? intl.formatMessage({ id: "settings.smartbrain.enabled" })
+                            : intl.formatMessage({ id: "settings.smartbrain.disabled" })}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "settings.smartbrain.toggle.description" })}
                   </p>
                 </section>
 
@@ -278,11 +344,14 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                   <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
                     {intl.formatMessage({ id: "settings.about" })}
                   </h4>
+                  <p className="text-xs leading-relaxed text-[var(--text-muted)]">
+                    {intl.formatMessage({ id: "settings.about.description" })}
+                  </p>
                   <div className="space-y-1">
-                    <p className="text-xs text-[var(--text-muted)]">
+                    <p className="text-xs text-[var(--text-faint)]">
                       {intl.formatMessage({ id: "settings.about.personalLabel" })}
                     </p>
-                    <p className="text-[13px] text-[var(--text-strong)]">
+                    <p className="text-[13px] font-medium text-[var(--text-strong)]">
                       {intl.formatMessage({ id: "settings.about.personalIntro" })}
                     </p>
                   </div>
@@ -306,7 +375,8 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "skills" && <SkillsPanel />}
             {tab === "robots" && <RobotsPanel />}
             {tab === "hooks" && <HooksPanel />}
-            {tab === "smartbrain" && <SmartBrainPanel />}
+            {tab === "experience" && <ExperiencePanel />}
+            {tab === "knowledge" && <KnowledgePanel />}
           </div>
         </section>
       </div>

@@ -4,12 +4,13 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use tracing::{error, info, warn};
 
-use crate::adapter::{self, types::StreamEvent};
 use crate::adapter::types::{InternalMessage, text_content};
+use crate::adapter::{self, types::StreamEvent};
 use crate::config_system::{ConfigToml, SmartBrainConfig};
 use crate::thread_store::{StoredThread, ThreadStore};
 
 use super::index::{ExperienceEntry, ExperienceIndex, now_secs};
+use super::okf::{OkfDocument, OkfFrontmatter};
 use super::prompts;
 
 /// Extract experiences from recently completed sessions.
@@ -79,15 +80,27 @@ pub async fn run_extraction(
         .await
         {
             Ok(Some(parsed)) => {
+                let timestamp = now_secs();
+                let mut frontmatter = OkfFrontmatter::new("Experience")
+                    .with_tags(parsed.categories.clone())
+                    .with_timestamp(timestamp)
+                    .with_extension("thread_id", serde_json::json!(thread.id))
+                    .with_extension("usage_count", serde_json::json!(0));
+
+                if let Some(slug) = &parsed.slug {
+                    frontmatter = frontmatter.with_title(slug);
+                }
+
+                let okf_doc = OkfDocument::new(frontmatter, &parsed.full_text);
                 let raw_path = raw_dir.join(format!("{}.md", thread.id));
-                if let Err(e) = std::fs::write(&raw_path, &parsed.full_text) {
+                if let Err(e) = okf_doc.write_to(&raw_path) {
                     error!("Failed to write raw experience for {}: {e}", thread.id);
                     continue;
                 }
 
                 let entry = ExperienceEntry {
                     thread_id: thread.id.clone(),
-                    extracted_at: now_secs(),
+                    extracted_at: timestamp,
                     source_updated_at: thread.updated_at,
                     usage_count: 0,
                     last_used_at: None,
@@ -123,6 +136,21 @@ pub async fn run_extraction(
     index.enforce_capacity(sb_config.max_raw_experiences);
     if let Err(e) = index.save(experiences_dir) {
         error!("Failed to save experience index: {e}");
+    }
+
+    let workspace_config_dir = experiences_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or(experiences_dir);
+    super::regenerate_experiences_index_md(workspace_config_dir);
+
+    let processed_count = to_process.len();
+    if processed_count > 0 {
+        super::append_log(
+            experiences_dir,
+            "Update",
+            &format!("Extracted experiences from {processed_count} sessions"),
+        );
     }
 }
 
@@ -193,7 +221,9 @@ async fn extract_single(
     if !response.status().is_success() {
         let status = response.status();
         let body_text = response.text().await.unwrap_or_default();
-        return Err(format!("Experience extraction LLM error ({status}): {body_text}"));
+        return Err(format!(
+            "Experience extraction LLM error ({status}): {body_text}"
+        ));
     }
 
     let mut result_text = String::new();

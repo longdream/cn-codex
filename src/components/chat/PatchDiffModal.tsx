@@ -1,5 +1,6 @@
 import { IconLoader2, IconX } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useIntl, type IntlShape } from "react-intl";
 import { readTextFilePreview, writeTextFilePreview } from "../../api/window";
 import {
   buildPatchLineDiff,
@@ -87,14 +88,14 @@ function fallbackPreviewContent(beforeContent: string, afterContent: string): st
   return "";
 }
 
-function diffSourceLabel(source: PatchDiffModalProps["diffSource"]): string {
+function diffSourceLabel(source: PatchDiffModalProps["diffSource"], intl: IntlShape): string {
   switch (source) {
     case "snapshot":
-      return "本轮快照";
+      return intl.formatMessage({ id: "diff.sourceSnapshot" });
     case "patch":
-      return "补丁文本回退";
+      return intl.formatMessage({ id: "diff.sourcePatch" });
     default:
-      return "无数据";
+      return intl.formatMessage({ id: "diff.sourceEmpty" });
   }
 }
 
@@ -110,6 +111,7 @@ export function PatchDiffModal({
   emptyHint,
   onClose,
 }: PatchDiffModalProps) {
+  const intl = useIntl();
   const lines = useMemo(
     () => buildPatchLineDiff(beforeContent, afterContent),
     [beforeContent, afterContent],
@@ -132,8 +134,8 @@ export function PatchDiffModal({
       setPreviewStatus(fallback ? "ready" : "failed");
       setPreviewCode(fallback);
       setPreviewNote(fallback
-        ? "文件路径为空，已使用本轮快照内容预览。"
-        : "缺少可预览的文件路径。");
+        ? intl.formatMessage({ id: "patchDiff.pathEmptySnapshot" })
+        : intl.formatMessage({ id: "patchDiff.pathEmptyNoPreview" }));
       return;
     }
 
@@ -145,21 +147,21 @@ export function PatchDiffModal({
       setPreviewCode(preview.content);
       setPreviewLanguage(fileLanguageFromPath(preview.name || preview.path || titlePath));
       setPreviewNote(preview.truncated
-        ? "文件过大，详情预览已按安全上限截断。"
+        ? intl.formatMessage({ id: "patchDiff.fileTruncated" })
         : null);
     } catch {
       const fallback = fallbackPreviewContent(beforeContent, afterContent);
       if (fallback) {
         setPreviewStatus("ready");
         setPreviewCode(fallback);
-        setPreviewNote("当前文件不可读，已回退到本轮快照预览。");
+        setPreviewNote(intl.formatMessage({ id: "patchDiff.fileUnreadableSnapshot" }));
       } else {
         setPreviewStatus("failed");
         setPreviewCode("");
-        setPreviewNote("当前文件不可读，且无可回退的快照内容。");
+        setPreviewNote(intl.formatMessage({ id: "patchDiff.fileUnreadableNoFallback" }));
       }
     }
-  }, [afterContent, beforeContent, titlePath]);
+  }, [afterContent, beforeContent, intl, titlePath]);
 
   useEffect(() => {
     if (!open) {
@@ -201,16 +203,16 @@ export function PatchDiffModal({
       return persistHint;
     }
     if (normalizedAction !== "modified") {
-      return "当前仅 modified 文件支持 Keep/Restore。";
+      return intl.formatMessage({ id: "diff.onlyModifiedSupported" });
     }
     if (diffSource !== "snapshot") {
-      return "仅快照模式可写盘。";
+      return intl.formatMessage({ id: "diff.snapshotOnlyPersist" });
     }
     if (!titlePath.trim()) {
-      return "文件路径为空，无法执行写盘。";
+      return intl.formatMessage({ id: "patchDiff.pathEmptyPersist" });
     }
-    return "当前快照数据不可写盘。";
-  }, [canWriteDisk, diffSource, normalizedAction, persistHint, titlePath]);
+    return intl.formatMessage({ id: "patchDiff.snapshotCannotPersist" });
+  }, [canWriteDisk, diffSource, intl, normalizedAction, persistHint, titlePath]);
 
   const handleKeep = useCallback(async () => {
     if (!canWriteDisk || persistStatus !== "idle") {
@@ -220,7 +222,10 @@ export function PatchDiffModal({
     setPersistNotice(null);
     try {
       await writeTextFilePreview(titlePath, afterContent);
-      setPersistNotice({ type: "success", message: "Keep 成功：已保存到硬盘。" });
+      setPersistNotice({
+        type: "success",
+        message: intl.formatMessage({ id: "patchDiff.keepSuccess" }),
+      });
       await loadPreview();
     } catch (error) {
       setPersistNotice({
@@ -230,7 +235,7 @@ export function PatchDiffModal({
     } finally {
       setPersistStatus("idle");
     }
-  }, [afterContent, canWriteDisk, loadPreview, persistStatus, titlePath]);
+  }, [afterContent, canWriteDisk, intl, loadPreview, persistStatus, titlePath]);
 
   const handleRestore = useCallback(async () => {
     if (!canWriteDisk || persistStatus !== "idle") {
@@ -240,7 +245,10 @@ export function PatchDiffModal({
     setPersistNotice(null);
     try {
       await writeTextFilePreview(titlePath, beforeContent);
-      setPersistNotice({ type: "success", message: "Restore 成功：已还原到原始内容。" });
+      setPersistNotice({
+        type: "success",
+        message: intl.formatMessage({ id: "patchDiff.restoreSuccess" }),
+      });
       await loadPreview();
     } catch (error) {
       setPersistNotice({
@@ -250,7 +258,7 @@ export function PatchDiffModal({
     } finally {
       setPersistStatus("idle");
     }
-  }, [beforeContent, canWriteDisk, loadPreview, persistStatus, titlePath]);
+  }, [beforeContent, canWriteDisk, intl, loadPreview, persistStatus, titlePath]);
 
   if (!open) {
     return null;
@@ -269,7 +277,7 @@ export function PatchDiffModal({
         <div className="patch-diff-header">
           <div className="min-w-0">
             <div className="text-[12px] font-semibold text-[var(--chat-prose)]">
-              Diff 预览（Keep 才会写盘）
+              {intl.formatMessage({ id: "patchDiff.title" })}
             </div>
             <div
               className="mt-0.5 truncate font-mono text-[11px] text-[var(--chat-faint)]"
@@ -282,7 +290,7 @@ export function PatchDiffModal({
             type="button"
             onClick={() => onClose()}
             className="patch-diff-close"
-            title="关闭"
+            title={intl.formatMessage({ id: "patchDiff.close" })}
           >
             <IconX size={14} stroke={1.8} />
           </button>
@@ -290,8 +298,14 @@ export function PatchDiffModal({
 
         <div className="patch-diff-toolbar">
           <div className="patch-diff-toolbar-meta">
-            <span>来源：{diffSourceLabel(diffSource)}</span>
-            <span>动作：{normalizedAction}</span>
+            <span>
+              {intl.formatMessage({ id: "patchDiff.source" })}
+              {diffSourceLabel(diffSource, intl)}
+            </span>
+            <span>
+              {intl.formatMessage({ id: "patchDiff.action" })}
+              {normalizedAction}
+            </span>
           </div>
           <div className="patch-diff-toolbar-actions">
             <button
@@ -299,18 +313,18 @@ export function PatchDiffModal({
               className="secondary-button rounded-[var(--radius-sm)] px-2 py-1 text-[11px]"
               disabled={!canWriteDisk || persistStatus !== "idle"}
               onClick={() => void handleRestore()}
-              title={persistBlockedReason ?? "恢复到修改前版本"}
+              title={persistBlockedReason ?? intl.formatMessage({ id: "patchDiff.restoreTitle" })}
             >
-              {persistStatus === "restoring" ? "Restoring..." : "Restore"}
+              {intl.formatMessage({ id: persistStatus === "restoring" ? "diff.restoring" : "diff.restore" })}
             </button>
             <button
               type="button"
               className="primary-button rounded-[var(--radius-sm)] px-2 py-1 text-[11px]"
               disabled={!canWriteDisk || persistStatus !== "idle"}
               onClick={() => void handleKeep()}
-              title={persistBlockedReason ?? "保留当前修改并写入硬盘"}
+              title={persistBlockedReason ?? intl.formatMessage({ id: "patchDiff.keepTitle" })}
             >
-              {persistStatus === "keeping" ? "Keeping..." : "Keep"}
+              {intl.formatMessage({ id: persistStatus === "keeping" ? "diff.keeping" : "diff.keep" })}
             </button>
           </div>
         </div>
@@ -338,18 +352,18 @@ export function PatchDiffModal({
         <div className="patch-diff-body">
           <section className="patch-diff-panel patch-diff-preview-panel">
             <div className="patch-diff-panel-title">
-              详情预览（代码样式）
+              {intl.formatMessage({ id: "patchDiff.previewLabel" })}
             </div>
             <div className="patch-diff-preview-scroll thin-scrollbar">
               {previewStatus === "loading" && (
                 <div className="flex items-center gap-2 px-3 py-2 text-[11px] text-[var(--chat-muted)]">
                   <IconLoader2 size={12} stroke={1.8} className="animate-spin" />
-                  正在加载文件预览...
+                  {intl.formatMessage({ id: "patchDiff.loadingPreview" })}
                 </div>
               )}
               {previewStatus === "failed" && (
                 <p className="px-3 py-2 text-[11px] text-[var(--danger)]">
-                  {previewNote ?? "无法加载文件详情预览。"}
+                  {previewNote ?? intl.formatMessage({ id: "patchDiff.loadFailed" })}
                 </p>
               )}
               {previewStatus === "ready" && (
@@ -360,7 +374,9 @@ export function PatchDiffModal({
                     </p>
                   )}
                   <CodeBlock
-                    code={previewCode.length > 0 ? previewCode : "(empty file)"}
+                    code={previewCode.length > 0
+                      ? previewCode
+                      : intl.formatMessage({ id: "patchDiff.emptyFilePlaceholder" })}
                     language={previewLanguage}
                   />
                 </div>
@@ -370,12 +386,12 @@ export function PatchDiffModal({
 
           <section className="patch-diff-panel patch-diff-result-panel">
             <div className="patch-diff-panel-title">
-              Diff 对比（红删绿增）
+              {intl.formatMessage({ id: "patchDiff.diffLabel" })}
             </div>
             <div className="patch-diff-lines-scroll thin-scrollbar">
               {lines.length === 0 ? (
                 <div className="px-3 py-3 text-[11px] text-[var(--chat-muted)]">
-                  {emptyHint ?? "当前文件缺少可对比的行级差异。"}
+                  {emptyHint ?? intl.formatMessage({ id: "diff.noLineDiff" })}
                 </div>
               ) : (
                 lines.map((line, index) => (

@@ -1,0 +1,12 @@
+openai
+zhipuai
+chromadb
+pydantic>=2.7.0
+click
+rich
+python-dotenv
+sniffio
+anyio
+pyahocorasick>=2.1.0
+customtkinter
+tomli; python_version < "3.11"

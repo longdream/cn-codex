@@ -94,11 +94,7 @@ impl ExperienceIndex {
 
     pub fn record_usage(&mut self, thread_id: &str) {
         let now = now_secs();
-        if let Some(entry) = self
-            .entries
-            .iter_mut()
-            .find(|e| e.thread_id == thread_id)
-        {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.thread_id == thread_id) {
             entry.usage_count += 1;
             entry.last_used_at = Some(now);
         }
@@ -144,12 +140,12 @@ impl ExperienceIndex {
             .enumerate()
             .map(|(i, e)| (ranking_score(e), i))
             .collect();
-        indexed.sort_by(|a, b| {
-            b.0.partial_cmp(&a.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let keep: std::collections::HashSet<usize> =
-            indexed.into_iter().take(max_entries).map(|(_, i)| i).collect();
+        indexed.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let keep: std::collections::HashSet<usize> = indexed
+            .into_iter()
+            .take(max_entries)
+            .map(|(_, i)| i)
+            .collect();
         let mut idx = 0;
         self.entries.retain(|_| {
             let retained = keep.contains(&idx);
@@ -161,11 +157,8 @@ impl ExperienceIndex {
 
 fn ranking_score(entry: &ExperienceEntry) -> f64 {
     let usage_weight = entry.usage_count as f64;
-    let recency_weight = entry
-        .last_used_at
-        .or(Some(entry.extracted_at))
-        .unwrap_or(0) as f64
-        / 1_000_000.0;
+    let recency_weight =
+        entry.last_used_at.or(Some(entry.extracted_at)).unwrap_or(0) as f64 / 1_000_000.0;
     usage_weight * 10.0 + recency_weight
 }
 

@@ -86,6 +86,7 @@ function normalizeLocalImagePath(raw: string): string {
 }
 
 export function RightPanel() {
+  const intl = useIntl();
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
   const rightPanelWidth = useAppStore((s) => s.rightPanelWidth);
   const browserPanelUrl = useAppStore((s) => s.browserPanelUrl);
@@ -220,7 +221,7 @@ export function RightPanel() {
           }`}
         >
           <IconBrowser size={14} stroke={1.8} />
-          Browser
+          {intl.formatMessage({ id: "rightPanel.browser" })}
         </button>
         <button
           onClick={() => setRightPanelTab("project")}
@@ -231,7 +232,7 @@ export function RightPanel() {
           }`}
         >
           <IconFolderOpen size={14} stroke={1.8} />
-          Project
+          {intl.formatMessage({ id: "rightPanel.project" })}
         </button>
         <button
           onClick={() => setRightPanelTab("terminal")}
@@ -242,7 +243,7 @@ export function RightPanel() {
           }`}
         >
           <IconTerminal2 size={14} stroke={1.8} />
-          Terminal
+          {intl.formatMessage({ id: "rightPanel.terminal" })}
         </button>
         <button
           onClick={() => setRightPanelTab("git")}
@@ -253,7 +254,7 @@ export function RightPanel() {
           }`}
         >
           <IconGitBranch size={14} stroke={1.8} />
-          Git
+          {intl.formatMessage({ id: "rightPanel.git" })}
         </button>
       </div>
 
@@ -272,7 +273,7 @@ export function RightPanel() {
                 }`}
               />
               <span className="truncate font-mono text-[11px] text-[var(--text-muted)]">
-                {browserPanelUrl ?? browserOutput?.finalUrl ?? "No active page"}
+                {browserPanelUrl ?? browserOutput?.finalUrl ?? intl.formatMessage({ id: "rightPanel.noActivePage" })}
               </span>
             </div>
             {browserActive && (
@@ -280,7 +281,7 @@ export function RightPanel() {
                 type="button"
                 onClick={handleCloseBrowser}
                 className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--danger)]"
-                title="Close browser"
+                title={intl.formatMessage({ id: "rightPanel.closeBrowser" })}
               >
                 <IconX size={12} stroke={2} />
               </button>
@@ -296,7 +297,7 @@ export function RightPanel() {
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4">
                 <IconBrowser size={32} stroke={1.2} className="text-[var(--text-faint)]" />
                 <p className="text-center text-xs text-[var(--text-muted)]">
-                  Loading browser...
+                  {intl.formatMessage({ id: "rightPanel.loadingBrowser" })}
                 </p>
 
                 {screenshots.length > 0 && (

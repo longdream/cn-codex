@@ -36,6 +36,17 @@ use crate::plugin_loader;
 use crate::protocol::RequestId;
 use crate::state::{AppState, ApprovalAction};
 
+/// Provider configuration for internal subagents (set by parent agent before each turn).
+#[derive(Debug, Clone, Default)]
+pub struct SubagentProviderConfig {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub wire_api: String,
+    pub system_prompt_prefix: String,
+    pub max_output_tokens: Option<i64>,
+}
+
 pub struct ToolExecutor {
     cwd: PathBuf,
     http: reqwest::Client,
@@ -48,12 +59,13 @@ pub struct ToolExecutor {
     mcp_http_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpHttpSession>>>>>,
     web_search_enabled: bool,
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
-    subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
+    subagent_handles: Arc<Mutex<HashMap<String, crate::subagent_engine::SubagentHandle>>>,
     exec_sessions: Arc<Mutex<HashMap<u64, ExecSessionRecord>>>,
     next_exec_session_id: Arc<AtomicU64>,
     permission_grants: Arc<Mutex<Vec<serde_json::Value>>>,
     active_tool_processes: Arc<Mutex<HashMap<String, ActiveToolProcess>>>,
     active_browser_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    subagent_provider_config: Arc<Mutex<SubagentProviderConfig>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,6 +445,7 @@ struct AppConnectorToolEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct SpawnAgentArgs {
     prompt: String,
     #[serde(default)]
@@ -672,13 +685,18 @@ impl ToolExecutor {
             mcp_http_sessions: Arc::new(Mutex::new(HashMap::new())),
             web_search_enabled: false,
             subagents: Arc::new(Mutex::new(subagents)),
-            subagent_stdin: Arc::new(Mutex::new(HashMap::new())),
+            subagent_handles: Arc::new(Mutex::new(HashMap::new())),
             exec_sessions: Arc::new(Mutex::new(HashMap::new())),
             next_exec_session_id: Arc::new(AtomicU64::new(1)),
             permission_grants: Arc::new(Mutex::new(Vec::new())),
             active_tool_processes: Arc::new(Mutex::new(HashMap::new())),
             active_browser_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            subagent_provider_config: Arc::new(Mutex::new(SubagentProviderConfig::default())),
         }
+    }
+
+    pub async fn set_subagent_provider_config(&self, config: SubagentProviderConfig) {
+        *self.subagent_provider_config.lock().await = config;
     }
 
     pub fn set_cwd(&mut self, cwd: PathBuf) {
@@ -2288,6 +2306,32 @@ impl ToolExecutor {
             }));
         }
 
+        if crate::smartbrain::bm25_index_path(&self.workspace_config_dir).exists() {
+            tools.push(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "smartbrain_search",
+                    "description": "Search the SmartBrain knowledge base using BM25 relevance ranking. Returns the most relevant documents (experiences and uploaded knowledge) matching the query. Use memory_read to read full content of results.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query text."
+                            },
+                            "top_k": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 20,
+                                "description": "Maximum number of results. Defaults to 5."
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }));
+        }
+
         tools
     }
 
@@ -2508,6 +2552,10 @@ impl ToolExecutor {
             }
             "memory_search" => {
                 self.exec_memory_search(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "smartbrain_search" => {
+                self.exec_smartbrain_search(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "memory_write" => {
@@ -4055,24 +4103,24 @@ impl ToolExecutor {
         let timeout_ms = args.timeout_ms.unwrap_or(600_000).clamp(1_000, 1_800_000);
         let wait = args.wait.unwrap_or(false);
         let id = format!("agent-{}", uuid::Uuid::new_v4().simple());
-        let subagent_dir = self.workspace_config_dir.join("subagents").join(&id);
-        if let Err(e) = tokio::fs::create_dir_all(&subagent_dir).await {
-            let msg = format!("Error creating subagent directory: {e}");
-            self.emit_tool_end(app_handle, thread_id, call_id, "spawn_agent", -1, &msg);
-            return Ok(msg);
-        }
-
-        let last_message_path = subagent_dir.join("last-message.txt");
-        let command = build_subagent_command(&args, &last_message_path);
-        let command_display = subagent_command_display(&command.program, &command.args);
         let started_at_ms = now_millis();
+
+        let provider_config = self.subagent_provider_config.lock().await.clone();
+        let model = args.model.as_deref().unwrap_or(&provider_config.model).to_string();
+        let system_prompt = format!(
+            "{}\n\nYou are a sub-agent with role: {}. Your working directory is: {}",
+            provider_config.system_prompt_prefix,
+            role,
+            cwd.display()
+        );
+
         let record = SubagentRecord {
             id: id.clone(),
-            role,
+            role: role.clone(),
             status: "running".to_string(),
             prompt: prompt.to_string(),
             cwd: cwd.to_string_lossy().to_string(),
-            command: command_display,
+            command: format!("[internal:{}]", model),
             process_id: None,
             started_at_ms,
             completed_at_ms: None,
@@ -4090,23 +4138,37 @@ impl ToolExecutor {
         }
         persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
 
-        let subagents = self.subagents.clone();
-        let subagent_stdin = self.subagent_stdin.clone();
-        let workspace_config_dir = self.workspace_config_dir.clone();
-        let spawned_id = id.clone();
-        tokio::spawn(async move {
-            run_subagent_process(
-                spawned_id,
-                command,
-                cwd,
-                last_message_path,
-                timeout_ms,
-                workspace_config_dir,
-                subagents,
-                subagent_stdin,
-            )
-            .await;
-        });
+        let subagent_config = crate::subagent_engine::SubagentConfig {
+            base_url: provider_config.base_url.clone(),
+            api_key: provider_config.api_key.clone(),
+            model,
+            wire_api: provider_config.wire_api.clone(),
+            system_prompt,
+            cwd,
+            timeout_ms,
+            max_iterations: 25,
+            max_output_tokens: provider_config.max_output_tokens,
+        };
+
+        let tool_executor_for_subagent = Arc::new(
+            tokio::sync::RwLock::new(
+                ToolExecutor::with_workspace_config_dir(
+                    subagent_config.cwd.clone(),
+                    self.workspace_config_dir.clone(),
+                ),
+            ),
+        );
+
+        let (handle, result_rx) = crate::subagent_engine::spawn_subagent(
+            subagent_config,
+            prompt.to_string(),
+            tool_executor_for_subagent,
+            app_handle.clone(),
+            thread_id.to_string(),
+            id.clone(),
+        );
+
+        self.subagent_handles.lock().await.insert(id.clone(), handle);
 
         let (output, exit_code) = if wait {
             let result =
@@ -4120,6 +4182,48 @@ impl ToolExecutor {
         } else {
             (format_subagent_records(&[record], false), 0)
         };
+
+        // Spawn a background task to update the record when the subagent finishes
+        let subagents_clone = self.subagents.clone();
+        let workspace_config_dir = self.workspace_config_dir.clone();
+        let subagent_handles_clone = self.subagent_handles.clone();
+        let finished_id = id.clone();
+        tokio::spawn(async move {
+            if let Ok(result) = result_rx.await {
+                let (status, output_val, error_val, exit_code) = match result.status {
+                    crate::subagent_engine::SubagentStatus::Completed { output } => {
+                        ("completed", Some(output), None, Some(0))
+                    }
+                    crate::subagent_engine::SubagentStatus::Failed { error } => {
+                        ("failed", None, Some(error), Some(1))
+                    }
+                    crate::subagent_engine::SubagentStatus::TimedOut => {
+                        ("timed_out", None, Some("Subagent timed out".to_string()), Some(124))
+                    }
+                    crate::subagent_engine::SubagentStatus::Cancelled => {
+                        ("closed", None, None, None)
+                    }
+                    crate::subagent_engine::SubagentStatus::Running => {
+                        ("running", None, None, None)
+                    }
+                };
+                let completed_at_ms = now_millis();
+                {
+                    let mut subagents = subagents_clone.lock().await;
+                    if let Some(record) = subagents.get_mut(&finished_id) {
+                        record.status = status.to_string();
+                        record.completed_at_ms = Some(completed_at_ms);
+                        record.duration_ms = Some(result.duration_ms as i64);
+                        record.exit_code = exit_code;
+                        record.output = output_val;
+                        record.error = error_val;
+                    }
+                }
+                persist_subagent_records(&workspace_config_dir, &subagents_clone).await;
+                subagent_handles_clone.lock().await.remove(&finished_id);
+            }
+        });
+
         self.emit_tool_end(
             app_handle,
             thread_id,
@@ -4214,24 +4318,66 @@ impl ToolExecutor {
         };
 
         self.emit_tool_start(app_handle, thread_id, call_id, "send_input", &target);
-        match send_subagent_input(
-            self.subagents.clone(),
-            self.subagent_stdin.clone(),
-            &target,
-            message,
-            args.interrupt.unwrap_or(false),
-        )
-        .await
-        {
-            Ok(result) => {
+
+        // Check if subagent exists
+        let agent_status = {
+            let subagents = self.subagents.lock().await;
+            subagents.get(&target).map(|r| r.status.clone())
+        };
+
+        match agent_status {
+            None => {
+                let msg = format!("No subagent found with id: {target}");
+                self.emit_tool_end(app_handle, thread_id, call_id, "send_input", -1, &msg);
+                Ok(msg)
+            }
+            Some(status) if status != "running" => {
+                let msg = format!("Subagent {target} is not running (status: {status})");
+                self.emit_tool_end(app_handle, thread_id, call_id, "send_input", -1, &msg);
+                Ok(msg)
+            }
+            Some(_) => {
+                let delivered = {
+                    let handles = self.subagent_handles.lock().await;
+                    if let Some(handle) = handles.get(&target) {
+                        handle.input_tx.send(message.clone()).await.is_ok()
+                    } else {
+                        false
+                    }
+                };
+
+                // Record in input history
+                let submission_id = uuid::Uuid::new_v4().to_string();
+                {
+                    let mut subagents = self.subagents.lock().await;
+                    if let Some(record) = subagents.get_mut(&target) {
+                        record.input_history.push(SubagentInputRecord {
+                            submission_id: submission_id.clone(),
+                            message: message.clone(),
+                            submitted_at_ms: now_millis(),
+                            interrupt: args.interrupt.unwrap_or(false),
+                            delivered_to_stdin: delivered,
+                        });
+                        record.last_input_at_ms = Some(now_millis());
+                    }
+                }
                 persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
+
+                let result = SendInputResult {
+                    target: target.clone(),
+                    submission_id,
+                    status: "running".to_string(),
+                    delivered_to_stdin: delivered,
+                    queued: !delivered,
+                    note: if delivered {
+                        "Message delivered to subagent".to_string()
+                    } else {
+                        "Message queued (subagent channel unavailable)".to_string()
+                    },
+                };
                 let output = serde_json::to_string_pretty(&result).unwrap_or_default();
                 self.emit_tool_end(app_handle, thread_id, call_id, "send_input", 0, &output);
                 Ok(output)
-            }
-            Err(msg) => {
-                self.emit_tool_end(app_handle, thread_id, call_id, "send_input", -1, &msg);
-                Ok(msg)
             }
         }
     }
@@ -4265,36 +4411,140 @@ impl ToolExecutor {
         self.emit_tool_start(app_handle, thread_id, call_id, "resume_agent", &target);
 
         let timeout_ms = args.timeout_ms.unwrap_or(600_000).clamp(1_000, 1_800_000);
-        match resume_subagent(
-            self.subagents.clone(),
-            self.subagent_stdin.clone(),
-            self.workspace_config_dir.clone(),
-            &target,
-            timeout_ms,
-        )
-        .await
-        {
-            Ok(result) => {
-                persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
-                let output = if args.wait.unwrap_or(false) && result.resumed {
-                    let wait = wait_for_subagents(
-                        self.subagents.clone(),
-                        vec![target.clone()],
-                        timeout_ms,
-                    )
-                    .await;
-                    wait.output
-                } else {
-                    serde_json::to_string_pretty(&result).unwrap_or_default()
-                };
-                self.emit_tool_end(app_handle, thread_id, call_id, "resume_agent", 0, &output);
-                Ok(output)
+
+        // Get the original prompt and check if it can be resumed
+        let (previous_status, prompt, cwd_str) = {
+            let subagents = self.subagents.lock().await;
+            match subagents.get(&target) {
+                None => {
+                    let msg = format!("No subagent found with id: {target}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "resume_agent", -1, &msg);
+                    return Ok(msg);
+                }
+                Some(record) => {
+                    if record.status == "running" {
+                        let msg = format!("Subagent {target} is already running");
+                        self.emit_tool_end(
+                            app_handle, thread_id, call_id, "resume_agent", -1, &msg,
+                        );
+                        return Ok(msg);
+                    }
+                    (record.status.clone(), record.prompt.clone(), record.cwd.clone())
+                }
             }
-            Err(msg) => {
-                self.emit_tool_end(app_handle, thread_id, call_id, "resume_agent", -1, &msg);
-                Ok(msg)
+        };
+
+        let provider_config = self.subagent_provider_config.lock().await.clone();
+        let cwd = PathBuf::from(&cwd_str);
+        let system_prompt = format!(
+            "{}\n\nYou are a resumed sub-agent. Your working directory is: {}",
+            provider_config.system_prompt_prefix,
+            cwd.display()
+        );
+
+        let subagent_config = crate::subagent_engine::SubagentConfig {
+            base_url: provider_config.base_url.clone(),
+            api_key: provider_config.api_key.clone(),
+            model: provider_config.model.clone(),
+            wire_api: provider_config.wire_api.clone(),
+            system_prompt,
+            cwd: cwd.clone(),
+            timeout_ms,
+            max_iterations: 25,
+            max_output_tokens: provider_config.max_output_tokens,
+        };
+
+        // Update status to running
+        {
+            let mut subagents = self.subagents.lock().await;
+            if let Some(record) = subagents.get_mut(&target) {
+                record.status = "running".to_string();
+                record.started_at_ms = now_millis();
+                record.completed_at_ms = None;
+                record.duration_ms = None;
+                record.exit_code = None;
+                record.output = None;
+                record.error = None;
             }
         }
+        persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
+
+        let tool_executor_for_subagent = Arc::new(
+            tokio::sync::RwLock::new(
+                ToolExecutor::with_workspace_config_dir(cwd, self.workspace_config_dir.clone()),
+            ),
+        );
+
+        let (handle, result_rx) = crate::subagent_engine::spawn_subagent(
+            subagent_config,
+            prompt.clone(),
+            tool_executor_for_subagent,
+            app_handle.clone(),
+            thread_id.to_string(),
+            target.clone(),
+        );
+
+        self.subagent_handles.lock().await.insert(target.clone(), handle);
+
+        // Spawn background updater
+        let subagents_clone = self.subagents.clone();
+        let workspace_config_dir = self.workspace_config_dir.clone();
+        let subagent_handles_clone = self.subagent_handles.clone();
+        let finished_id = target.clone();
+        tokio::spawn(async move {
+            if let Ok(result) = result_rx.await {
+                let (status, output_val, error_val, exit_code) = match result.status {
+                    crate::subagent_engine::SubagentStatus::Completed { output } => {
+                        ("completed", Some(output), None, Some(0))
+                    }
+                    crate::subagent_engine::SubagentStatus::Failed { error } => {
+                        ("failed", None, Some(error), Some(1))
+                    }
+                    crate::subagent_engine::SubagentStatus::TimedOut => {
+                        ("timed_out", None, Some("Subagent timed out".to_string()), Some(124))
+                    }
+                    crate::subagent_engine::SubagentStatus::Cancelled => {
+                        ("closed", None, None, None)
+                    }
+                    crate::subagent_engine::SubagentStatus::Running => {
+                        ("running", None, None, None)
+                    }
+                };
+                let completed_at_ms = now_millis();
+                {
+                    let mut subagents = subagents_clone.lock().await;
+                    if let Some(record) = subagents.get_mut(&finished_id) {
+                        record.status = status.to_string();
+                        record.completed_at_ms = Some(completed_at_ms);
+                        record.duration_ms = Some(result.duration_ms as i64);
+                        record.exit_code = exit_code;
+                        record.output = output_val;
+                        record.error = error_val;
+                    }
+                }
+                persist_subagent_records(&workspace_config_dir, &subagents_clone).await;
+                subagent_handles_clone.lock().await.remove(&finished_id);
+            }
+        });
+
+        let result = ResumeAgentResult {
+            id: target.clone(),
+            resumed: true,
+            previous_status,
+            status: "running".to_string(),
+            note: "Subagent resumed with internal engine".to_string(),
+            agent: None,
+        };
+
+        let output = if args.wait.unwrap_or(false) {
+            let wait =
+                wait_for_subagents(self.subagents.clone(), vec![target.clone()], timeout_ms).await;
+            wait.output
+        } else {
+            serde_json::to_string_pretty(&result).unwrap_or_default()
+        };
+        self.emit_tool_end(app_handle, thread_id, call_id, "resume_agent", 0, &output);
+        Ok(output)
     }
 
     async fn exec_list_agents(
@@ -4360,18 +4610,48 @@ impl ToolExecutor {
         };
 
         self.emit_tool_start(app_handle, thread_id, call_id, "close_agent", &target);
-        match close_subagent(self.subagents.clone(), self.subagent_stdin.clone(), &target).await {
-            Ok(result) => {
-                persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
-                let output = serde_json::to_string_pretty(&result).unwrap_or_default();
-                self.emit_tool_end(app_handle, thread_id, call_id, "close_agent", 0, &output);
-                Ok(output)
-            }
-            Err(msg) => {
-                self.emit_tool_end(app_handle, thread_id, call_id, "close_agent", -1, &msg);
-                Ok(msg)
+
+        let previous_status;
+        let agent_snapshot;
+        {
+            let mut subagents = self.subagents.lock().await;
+            match subagents.get_mut(&target) {
+                None => {
+                    let msg = format!("No subagent found with id: {target}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "close_agent", -1, &msg);
+                    return Ok(msg);
+                }
+                Some(record) => {
+                    previous_status = record.status.clone();
+                    if record.status == "running" {
+                        record.status = "closed".to_string();
+                        record.completed_at_ms = Some(now_millis());
+                    }
+                    agent_snapshot = Some(record.clone());
+                }
             }
         }
+
+        // Signal the subagent to cancel via its AtomicBool flag
+        if previous_status == "running" {
+            let handles = self.subagent_handles.lock().await;
+            if let Some(handle) = handles.get(&target) {
+                handle.cancel_flag.store(true, Ordering::SeqCst);
+            }
+        }
+
+        persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
+
+        let result = SubagentCloseResult {
+            target: target.clone(),
+            closed: previous_status == "running",
+            previous_status,
+            message: "Subagent closed".to_string(),
+            agent: agent_snapshot,
+        };
+        let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+        self.emit_tool_end(app_handle, thread_id, call_id, "close_agent", 0, &output);
+        Ok(output)
     }
 
     async fn exec_tool_search(
@@ -5296,6 +5576,73 @@ impl ToolExecutor {
 
         let output = truncate_output(&output, 16_000);
         self.emit_tool_end(app_handle, thread_id, call_id, "memory_search", 0, &output);
+        Ok(output)
+    }
+
+    async fn exec_smartbrain_search(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct Args {
+            query: String,
+            #[serde(default)]
+            top_k: Option<usize>,
+        }
+
+        let args: Args = serde_json::from_str(arguments).map_err(|e| {
+            crate::error::AppError::Custom(format!("Invalid smartbrain_search args: {e}"))
+        })?;
+        let query = args.query.trim();
+        self.emit_tool_start(app_handle, thread_id, call_id, "smartbrain_search", query);
+
+        if query.is_empty() {
+            let msg = "Error: empty search query".to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_search",
+                -1,
+                &msg,
+            );
+            return Ok(msg);
+        }
+
+        let top_k = args.top_k.unwrap_or(5).clamp(1, 20);
+        let bm25_path = crate::smartbrain::bm25_index_path(&self.workspace_config_dir);
+        let results = crate::smartbrain::search::unified_search(&bm25_path, query, top_k);
+
+        let output = if results.is_empty() {
+            "No matching documents found in SmartBrain knowledge base.".to_string()
+        } else {
+            let mut lines = Vec::new();
+            lines.push(format!(
+                "Found {} results for \"{}\":\n",
+                results.len(),
+                query
+            ));
+            for (i, r) in results.iter().enumerate() {
+                lines.push(format!(
+                    "{}. [{}] {} (score: {:.3})\n   Path: {}\n   Use `memory_read` with path \"{}\" to read full content.",
+                    i + 1, r.source_type, r.title, r.score, r.file_path, r.file_path
+                ));
+            }
+            lines.join("\n")
+        };
+
+        let output = truncate_output(&output, 16_000);
+        self.emit_tool_end(
+            app_handle,
+            thread_id,
+            call_id,
+            "smartbrain_search",
+            0,
+            &output,
+        );
         Ok(output)
     }
 
@@ -7669,12 +8016,6 @@ fn browser_run_initial_url(payload: &serde_json::Value) -> Option<String> {
         })
 }
 
-#[derive(Debug, Clone)]
-struct SubagentCommand {
-    program: String,
-    args: Vec<String>,
-}
-
 fn subagent_state_path(workspace_config_dir: &Path) -> PathBuf {
     workspace_config_dir.join("subagents").join("state.json")
 }
@@ -7727,6 +8068,13 @@ async fn persist_subagent_records(
     }
 }
 
+#[allow(dead_code)]
+struct SubagentCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+#[allow(dead_code)]
 async fn run_subagent_process(
     id: String,
     command: SubagentCommand,
@@ -7882,6 +8230,7 @@ async fn run_subagent_process(
     }
 }
 
+#[allow(dead_code)]
 async fn update_subagent_finished(
     workspace_config_dir: &Path,
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
@@ -7974,6 +8323,7 @@ fn send_input_item_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 async fn send_subagent_input(
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
     subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
@@ -8059,6 +8409,7 @@ fn resume_agent_target(args: &ResumeAgentArgs) -> Option<String> {
     .find(|value| !value.is_empty())
 }
 
+#[allow(dead_code)]
 async fn resume_subagent(
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
     subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
@@ -8157,6 +8508,7 @@ async fn resume_subagent(
     })
 }
 
+#[allow(dead_code)]
 fn build_resume_subagent_prompt(record: &SubagentRecord) -> String {
     let mut parts = vec![
         "Resume this CN-Codex subagent task from prior context.".to_string(),
@@ -8209,6 +8561,7 @@ fn close_agent_target(args: CloseAgentArgs) -> Option<String> {
         .find(|value| !value.is_empty())
 }
 
+#[allow(dead_code)]
 async fn close_subagent(
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
     subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
@@ -8268,6 +8621,7 @@ async fn close_subagent(
     })
 }
 
+#[allow(dead_code)]
 async fn kill_process_tree(pid: u32) -> Result<(), String> {
     let output = if cfg!(windows) {
         let pid = pid.to_string();
@@ -8380,6 +8734,7 @@ async fn wait_for_subagents(
     }
 }
 
+#[allow(dead_code)]
 fn build_subagent_command(args: &SpawnAgentArgs, last_message_path: &Path) -> SubagentCommand {
     if let Ok(raw) = std::env::var("CN_CODEX_SUBAGENT_CMD") {
         if let Some((program, mut command_args)) = split_command_line_simple(&raw) {
@@ -8404,6 +8759,7 @@ fn build_subagent_command(args: &SpawnAgentArgs, last_message_path: &Path) -> Su
     }
 }
 
+#[allow(dead_code)]
 fn build_codex_subagent_args(args: &SpawnAgentArgs, last_message_path: &Path) -> Vec<String> {
     let mut command_args = vec![
         "exec".to_string(),
@@ -8447,6 +8803,7 @@ fn build_codex_subagent_args(args: &SpawnAgentArgs, last_message_path: &Path) ->
     command_args
 }
 
+#[allow(dead_code)]
 fn split_command_line_simple(input: &str) -> Option<(String, Vec<String>)> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -8482,6 +8839,7 @@ fn split_command_line_simple(input: &str) -> Option<(String, Vec<String>)> {
     Some((program, parts))
 }
 
+#[allow(dead_code)]
 fn subagent_command_display(program: &str, args: &[String]) -> String {
     let mut display_args = args.to_vec();
     if let Some(last) = display_args.last_mut() {
