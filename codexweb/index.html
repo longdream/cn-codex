@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="CN-Codex - 强大的 AI 编程助手桌面应用，支持多种 LLM 供应商，提供丰富的工具能力和插件系统">
+  <meta name="description" content="CN-Codex - AI 驱动的全栈编程助手，手机远程控制、机器人自动化、全流程开发，已在 DeepSeek v4 Flash 下完成验证">
   <meta name="keywords" content="AI, 编程助手, CN-Codex, OpenAI, Claude, GPT, 代码生成, 桌面应用">
   <meta name="author" content="CN-Codex Team">
   <title>CN-Codex - AI 编程助手</title>
@@ -25,7 +25,7 @@
         <a href="#tools">工具</a>
         <a href="#plugins">插件</a>
         <a href="usage.html">使用指南</a>
-        <a href="https://github.com/cn-codex/cn-codex" target="_blank" class="nav-github">
+        <a href="https://github.com/longdream/cn-codex" target="_blank" class="nav-github">
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
             <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
           </svg>
@@ -43,16 +43,16 @@
   <!-- 英雄区域 -->
   <header class="hero">
     <div class="container hero-content">
-      <div class="hero-badge">开源 · 免费 · 强大</div>
+      <div class="hero-badge">开源 · 手机控制 · 机器人自动化 · 全栈开发</div>
       <h1 class="hero-title">
         <span class="gradient-text">AI 驱动的</span>
-        <br>编程助手桌面应用
+        <br>全栈编程助手
       </h1>
       <p class="hero-subtitle">
-        基于 Tauri 2 构建，支持多种 LLM 供应商，提供 40+ 内置工具和可扩展插件系统
+        手机扫码远程控制 AI，机器人自动化工作流，从项目创建到测试部署全流程自主执行。已在 DeepSeek v4 Flash 下完成全面验证。
       </p>
       <div class="hero-actions">
-        <a href="https://github.com/cn-codex/cn-codex/releases" class="btn btn-primary">
+        <a href="https://github.com/longdream/cn-codex/releases" class="btn btn-primary">
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
             <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
           </svg>
@@ -75,8 +75,12 @@
           <span class="stat-label">功能插件</span>
         </div>
         <div class="stat-item">
-          <span class="stat-value">6+</span>
+          <span class="stat-value">12+</span>
           <span class="stat-label">LLM 供应商</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value">DeepSeek v4</span>
+          <span class="stat-label">验证模型</span>
         </div>
       </div>
     </div>
@@ -127,8 +131,8 @@
               <path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/>
             </svg>
           </div>
-          <h3 class="feature-title">移动端支持</h3>
-          <p class="feature-desc">扫码连接手机，随时随地使用 AI 编程助手</p>
+          <h3 class="feature-title">手机远程控制</h3>
+          <p class="feature-desc">扫码连接手机，实时监控 AI 执行、远程发消息和审批操作，支持局域网直连和公网中转</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">
@@ -142,11 +146,20 @@
         <div class="feature-card">
           <div class="feature-icon">
             <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.17A7 7 0 0 1 14 23h-4a7 7 0 0 1-6.83-4H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2zM7.5 14a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm9 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">机器人系统</h3>
+          <p class="feature-desc">AI 自动创建专业角色，绑定技能和工作流节点，多机器人协作完成复杂全栈任务</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
             </svg>
           </div>
-          <h3 class="feature-title">插件系统</h3>
-          <p class="feature-desc">可扩展的插件架构，支持自定义技能和工作流自动化</p>
+          <h3 class="feature-title">插件与规则系统</h3>
+          <p class="feature-desc">可扩展插件架构，用户规则和项目规则自动注入系统提示词，精准控制 AI 行为</p>
         </div>
       </div>
     </div>
@@ -330,28 +343,36 @@
       </div>
       <div class="models-grid">
         <div class="model-card">
+          <div class="model-logo">DeepSeek</div>
+          <p>DeepSeek v4 Flash（推荐 · 已验证）</p>
+        </div>
+        <div class="model-card">
           <div class="model-logo">OpenAI</div>
           <p>GPT-4o, GPT-4-turbo, o1, o3</p>
         </div>
         <div class="model-card">
           <div class="model-logo">Claude</div>
-          <p>Claude 3.5 Sonnet, Claude 3 Opus</p>
+          <p>Claude 3.5 Sonnet, Claude 4</p>
         </div>
         <div class="model-card">
           <div class="model-logo">智谱</div>
           <p>GLM-4 系列</p>
         </div>
         <div class="model-card">
-          <div class="model-logo">火山</div>
+          <div class="model-logo">火山引擎</div>
           <p>Doubao 系列</p>
         </div>
         <div class="model-card">
-          <div class="model-logo">百度</div>
-          <p>ERNIE 系列</p>
+          <div class="model-logo">Google</div>
+          <p>Gemini Pro / Flash</p>
         </div>
         <div class="model-card">
-          <div class="model-logo">Google</div>
-          <p>Gemini Pro</p>
+          <div class="model-logo">硅基流动</div>
+          <p>SiliconFlow 模型</p>
+        </div>
+        <div class="model-card">
+          <div class="model-logo">Ollama</div>
+          <p>本地部署模型</p>
         </div>
       </div>
     </div>
@@ -364,7 +385,7 @@
         <h2 class="cta-title">开始使用 CN-Codex</h2>
         <p class="cta-subtitle">下载即用，无需复杂配置，让 AI 成为你的编程伙伴</p>
         <div class="cta-actions">
-          <a href="https://github.com/cn-codex/cn-codex/releases" class="btn btn-primary btn-large">
+          <a href="https://github.com/longdream/cn-codex/releases" class="btn btn-primary btn-large">
             立即下载
           </a>
           <a href="usage.html" class="btn btn-outline btn-large">
@@ -397,17 +418,17 @@
         <div class="footer-column">
           <h4>文档</h4>
           <a href="usage.html">使用指南</a>
-          <a href="https://github.com/cn-codex/cn-codex" target="_blank">GitHub</a>
+          <a href="https://github.com/longdream/cn-codex" target="_blank">GitHub</a>
         </div>
         <div class="footer-column">
           <h4>社区</h4>
-          <a href="https://github.com/cn-codex/cn-codex/issues" target="_blank">问题反馈</a>
-          <a href="https://github.com/cn-codex/cn-codex/discussions" target="_blank">讨论区</a>
+          <a href="https://github.com/longdream/cn-codex/issues" target="_blank">问题反馈</a>
+          <a href="https://github.com/longdream/cn-codex/discussions" target="_blank">讨论区</a>
         </div>
       </div>
     </div>
     <div class="container footer-bottom">
-      <p>&copy; 2024 CN-Codex. MIT License.</p>
+      <p>&copy; 2024-2026 CN-Codex. Apache License 2.0.</p>
     </div>
   </footer>
 
