@@ -478,7 +478,7 @@ body {
 }
 
 .chat-input-textarea:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
 }
 
 .chat-input-send {
@@ -497,6 +497,23 @@ body {
 .chat-input-send:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.chat-input-stop {
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 18px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.chat-input-stop:active {
+  background: #dc2626;
 }
 
 /* --- Scrollbar --- */

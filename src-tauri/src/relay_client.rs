@@ -234,6 +234,22 @@ async fn handle_local_request(
                 None => (404, serde_json::json!({ "error": "not found" })),
             }
         }
+        ("POST", p) if p.starts_with("api/threads/") && p.ends_with("/interrupt") => {
+            let thread_id = p
+                .strip_prefix("api/threads/")
+                .and_then(|s| s.strip_suffix("/interrupt"))
+                .unwrap_or("");
+            info!("[relay_client] interrupt requested for thread {thread_id}");
+            state.agent_engine.interrupt();
+            let interrupted_tools = state
+                .agent_engine
+                .interrupt_active_tools(Some(thread_id))
+                .await;
+            info!(
+                "[relay_client] interrupt completed: thread={thread_id}, interrupted_tools={interrupted_tools}"
+            );
+            (200, serde_json::json!({ "status": "interrupted" }))
+        }
         ("POST", p) if p.starts_with("api/threads/") && p.ends_with("/chat") => {
             let thread_id = p
                 .strip_prefix("api/threads/")

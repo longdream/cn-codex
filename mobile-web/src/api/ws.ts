@@ -129,6 +129,12 @@ function handleEvent(event: string, payload: Record<string, unknown>) {
       break;
     }
 
+    case "active-thread-changed": {
+      const changedThreadId = payload.threadId as string | null;
+      store.setActiveThreadId(changedThreadId);
+      break;
+    }
+
     case "tool-exec-end": {
       const teeThreadId = payload.threadId as string | undefined;
       if (teeThreadId && teeThreadId !== store.currentThreadId) {

@@ -72,6 +72,16 @@ export async function fetchThreadMessages(threadId: string) {
   }
 }
 
+export async function interruptTurn(threadId: string) {
+  const res = await fetch(`${getApiBase()}/threads/${threadId}/interrupt`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(`Interrupt failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function sendMessage(threadId: string, message: string) {
   const res = await fetch(`${getApiBase()}/threads/${threadId}/chat`, {
     method: "POST",

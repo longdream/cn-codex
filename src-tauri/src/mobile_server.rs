@@ -55,7 +55,8 @@ pub async fn start(
         .route("/threads", get(list_threads_handler))
         .route("/threads/{id}", get(get_thread_handler))
         .route("/threads/{id}/messages", get(get_thread_messages_handler))
-        .route("/threads/{id}/chat", post(send_message_handler));
+        .route("/threads/{id}/chat", post(send_message_handler))
+        .route("/threads/{id}/interrupt", post(interrupt_handler));
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
@@ -296,6 +297,22 @@ async fn send_message_handler(
     });
 
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+// --- Interrupt ---
+
+async fn interrupt_handler(
+    AxumState(state): AxumState<SharedMobileState>,
+    AxumPath(thread_id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    info!("Mobile interrupt requested for thread {thread_id}");
+    state.agent_engine.interrupt();
+    let interrupted_tools = state
+        .agent_engine
+        .interrupt_active_tools(Some(&thread_id))
+        .await;
+    info!("Mobile interrupt completed: thread={thread_id}, interrupted_tools={interrupted_tools}");
+    Json(serde_json::json!({ "status": "interrupted" }))
 }
 
 // --- Utilities ---

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMobileStore } from "../stores/mobileStore";
-import { sendMessage, genId } from "../api/http";
+import { sendMessage, interruptTurn, genId } from "../api/http";
 
 export function ChatInput() {
   const [text, setText] = useState("");
@@ -30,6 +30,15 @@ export function ChatInput() {
     }
   };
 
+  const handleStop = async () => {
+    if (!currentThreadId) return;
+    try {
+      await interruptTurn(currentThreadId);
+    } catch (e) {
+      console.error("Interrupt error:", e);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -44,17 +53,26 @@ export function ChatInput() {
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={isStreaming ? "等待回复中..." : "输入消息..."}
-        disabled={sending || isStreaming}
+        placeholder={isStreaming ? "AI 正在回复..." : "输入消息..."}
+        disabled={sending}
         rows={1}
       />
-      <button
-        className="chat-input-send"
-        onClick={() => void handleSend()}
-        disabled={!text.trim() || sending || isStreaming || !currentThreadId}
-      >
-        {sending ? "…" : "发送"}
-      </button>
+      {isStreaming ? (
+        <button
+          className="chat-input-stop"
+          onClick={() => void handleStop()}
+        >
+          停止
+        </button>
+      ) : (
+        <button
+          className="chat-input-send"
+          onClick={() => void handleSend()}
+          disabled={!text.trim() || sending || !currentThreadId}
+        >
+          {sending ? "…" : "发送"}
+        </button>
+      )}
     </div>
   );
 }

@@ -66,6 +66,10 @@ pub async fn standalone_thread_create(state: State<'_, AppState>) -> AppResult<s
         .create_thread(config.model.clone())
         .await?;
     *state.current_thread_id.write().await = Some(thread.id.clone());
+    crate::mobile_server::broadcast(
+        "active-thread-changed",
+        serde_json::json!({ "threadId": thread.id }),
+    );
 
     Ok(serde_json::json!({
         "thread": {
@@ -104,6 +108,10 @@ pub async fn standalone_thread_read(
         .await
         .ok_or_else(|| AppError::Custom(format!("Thread not found: {thread_id}")))?;
     *state.current_thread_id.write().await = Some(thread_id.clone());
+    crate::mobile_server::broadcast(
+        "active-thread-changed",
+        serde_json::json!({ "threadId": thread_id }),
+    );
 
     let turns: Vec<serde_json::Value> = thread
         .turns
