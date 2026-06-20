@@ -373,6 +373,19 @@ kbd {
   margin-top: var(--xs);
 }
 
+.hero-screenshot {
+  margin-top: var(--xxl);
+  text-align: center;
+}
+
+.hero-img {
+  max-width: 900px;
+  width: 100%;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border-subtle);
+}
+
 .hero-bg {
   position: absolute;
   inset: 0;
