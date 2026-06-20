@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="CN-Codex - 强大的 AI 编程助手桌面应用，支持多种 LLM 供应商，提供丰富的工具能力和插件系统">
-  <meta name="keywords" content="AI, 编程助手, CN-Codex, OpenAI, Claude, GPT, 代码生成, 桌面应用">
+  <meta name="description" content="CN-Codex - AI 驱动的全栈编程工作台，手机远程控制、机器人自动化工作流、SmartBrain 经验知识库（LLM Wiki）、44+ 技能、40+ 工具，已在 DeepSeek v4 Flash 下完成全流程验证">
+  <meta name="keywords" content="AI, 编程助手, CN-Codex, DeepSeek, OpenAI, Claude, 机器人, 手机控制, LLM Wiki, SmartBrain, 全栈开发, 桌面应用">
   <meta name="author" content="CN-Codex Team">
-  <title>CN-Codex - AI 编程助手</title>
+  <title>CN-Codex - AI 全栈编程工作台</title>
   <link rel="stylesheet" href="assets/style.css">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2322c55e'%3E%3Cpath d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z'/%3E%3C/svg%3E">
 </head>
@@ -21,11 +21,13 @@
         <span class="logo-text">CN-Codex</span>
       </a>
       <div class="nav-links">
-        <a href="#features">功能</a>
+        <a href="#features">核心功能</a>
+        <a href="#robots">机器人</a>
+        <a href="#smartbrain">SmartBrain</a>
         <a href="#tools">工具</a>
         <a href="#plugins">插件</a>
         <a href="usage.html">使用指南</a>
-        <a href="https://github.com/cn-codex/cn-codex" target="_blank" class="nav-github">
+        <a href="https://github.com/longdream/cn-codex" target="_blank" class="nav-github">
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
             <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
           </svg>
@@ -43,20 +45,21 @@
   <!-- 英雄区域 -->
   <header class="hero">
     <div class="container hero-content">
-      <div class="hero-badge">开源 · 免费 · 强大</div>
+      <div class="hero-badge">开源 · 手机控制 · 机器人自动化 · 全栈开发 · LLM Wiki</div>
       <h1 class="hero-title">
         <span class="gradient-text">AI 驱动的</span>
-        <br>编程助手桌面应用
+        <br>全栈编程工作台
       </h1>
       <p class="hero-subtitle">
-        基于 Tauri 2 构建，支持多种 LLM 供应商，提供 40+ 内置工具和可扩展插件系统
+        手机扫码远程控制 AI · 机器人自动化工作流 · SmartBrain 经验知识库 · 44 个技能 · 40+ 工具 · 7 大插件<br>
+        已在 DeepSeek v4 Flash 模型下完成全栈项目开发、测试的完整验证
       </p>
       <div class="hero-actions">
-        <a href="https://github.com/cn-codex/cn-codex/releases" class="btn btn-primary">
+        <a href="https://github.com/longdream/cn-codex/releases" class="btn btn-primary">
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
             <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
           </svg>
-          下载应用
+          立即下载
         </a>
         <a href="usage.html" class="btn btn-secondary">
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
@@ -67,16 +70,20 @@
       </div>
       <div class="hero-stats">
         <div class="stat-item">
+          <span class="stat-value">44</span>
+          <span class="stat-label">内置技能</span>
+        </div>
+        <div class="stat-item">
           <span class="stat-value">40+</span>
-          <span class="stat-label">内置工具</span>
+          <span class="stat-label">AI 工具</span>
         </div>
         <div class="stat-item">
-          <span class="stat-value">7</span>
-          <span class="stat-label">功能插件</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-value">6+</span>
+          <span class="stat-value">12+</span>
           <span class="stat-label">LLM 供应商</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value">DeepSeek v4</span>
+          <span class="stat-label">已验证模型</span>
         </div>
       </div>
     </div>
@@ -86,31 +93,40 @@
     </div>
   </header>
 
-  <!-- 功能特性 -->
+  <!-- 核心功能 -->
   <section id="features" class="section features">
     <div class="container">
       <div class="section-header">
         <h2 class="section-title">核心功能</h2>
-        <p class="section-subtitle">为开发者打造的专业 AI 编程体验</p>
+        <p class="section-subtitle">不只是聊天助手 — 一个完整的 AI 编程工作台</p>
       </div>
       <div class="features-grid">
         <div class="feature-card">
           <div class="feature-icon">
             <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
+              <path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/>
             </svg>
           </div>
-          <h3 class="feature-title">智能对话</h3>
-          <p class="feature-desc">多轮上下文对话、流式输出、Markdown 渲染、会话管理与搜索分叉</p>
+          <h3 class="feature-title">手机远程控制</h3>
+          <p class="feature-desc">扫码连接手机，实时监控 AI 执行进度，远程发送消息、审批文件操作。支持局域网直连（低延迟）和公网中转服务器（跨网络），WebSocket 实时同步所有事件。</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">
             <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/>
+              <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.17A7 7 0 0 1 14 23h-4a7 7 0 0 1-6.83-4H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2zM7.5 14a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm9 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z"/>
             </svg>
           </div>
-          <h3 class="feature-title">丰富工具</h3>
-          <p class="feature-desc">40+ 内置工具，覆盖文件操作、命令执行、代码审查、浏览器自动化等</p>
+          <h3 class="feature-title">机器人自动化</h3>
+          <p class="feature-desc">AI 自动创建专业角色（前端、测试、架构师），绑定技能和工作流节点。内置全栈开发、QA 测试、需求设计三大机器人，多机器人协作完成复杂任务。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">SmartBrain 经验知识库</h3>
+          <p class="feature-desc">基于 LLM Wiki 模式（Karpathy）的知识管理系统。AI 自动从会话中提取经验、编译为结构化 OKF 文档、建立索引。新任务自动复用历史经验，越用越聪明。</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">
@@ -118,26 +134,17 @@
               <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
             </svg>
           </div>
-          <h3 class="feature-title">Goal 模式</h3>
-          <p class="feature-desc">设置目标后 AI 自主规划执行多步骤任务，遇到问题自动调整策略</p>
+          <h3 class="feature-title">Goal 自主模式</h3>
+          <p class="feature-desc">设置目标后 AI 自主规划执行多步骤任务，支持 Token 预算控制、暂停恢复、遇到问题自动调整策略。真正的"给目标就开干"。</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">
             <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/>
+              <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
             </svg>
           </div>
-          <h3 class="feature-title">移动端支持</h3>
-          <p class="feature-desc">扫码连接手机，随时随地使用 AI 编程助手</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.07 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
-            </svg>
-          </div>
-          <h3 class="feature-title">多模型支持</h3>
-          <p class="feature-desc">OpenAI、Claude、智谱、火山引擎、百度、Google Gemini 等</p>
+          <h3 class="feature-title">子代理引擎</h3>
+          <p class="feature-desc">复杂任务自动拆分为独立子代理并行执行，每个子代理有自己的系统提示、模型和工作目录，结果汇总后继续主流程。</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">
@@ -145,8 +152,166 @@
               <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
             </svg>
           </div>
-          <h3 class="feature-title">插件系统</h3>
-          <p class="feature-desc">可扩展的插件架构，支持自定义技能和工作流自动化</p>
+          <h3 class="feature-title">用户 / 项目规则</h3>
+          <p class="feature-desc">Markdown 格式的全局用户规则和项目级规则，自动注入系统提示词。AI 对话中可直接读写项目规则，精准控制 AI 行为。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M9 11.75c-.69 0-1.25.56-1.25 1.25s.56 1.25 1.25 1.25 1.25-.56 1.25-1.25-.56-1.25-1.25-1.25zm6 0c-.69 0-1.25.56-1.25 1.25s.56 1.25 1.25 1.25 1.25-.56 1.25-1.25-.56-1.25-1.25-1.25zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8 0-.29.02-.58.05-.86 2.36-1.05 4.23-2.98 5.21-5.37C11.07 8.33 14.05 10 17.42 10c.78 0 1.53-.09 2.25-.26.21.71.33 1.47.33 2.26 0 4.41-3.59 8-8 8z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">审批与安全</h3>
+          <p class="feature-desc">Shell 命令和文件变更需用户审批。Patch 审查门控支持逐文件保留/跳过、内联编辑。沙箱权限和前缀规则可配置。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.07 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">多模型多供应商</h3>
+          <p class="feature-desc">12+ LLM 供应商开箱即用：DeepSeek、OpenAI、Claude、Google、火山引擎、智谱、通义、Moonshot、硅基流动、百川、Ollama、LM Studio。支持 4 种 API 协议适配。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 机器人系统 -->
+  <section id="robots" class="section tools">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">机器人自动化工作流</h2>
+        <p class="section-subtitle">AI 驱动的专业角色，从需求到部署全流程自动执行</p>
+      </div>
+      <div class="tools-grid">
+        <div class="tool-category">
+          <h3 class="category-title">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+              <path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/>
+            </svg>
+            全栈开发机器人
+          </h3>
+          <ul class="tool-list">
+            <li>需求分析与技术选型</li>
+            <li>架构设计与数据建模</li>
+            <li>后端 API 开发</li>
+            <li>前端界面实现</li>
+            <li>自动化测试与修复</li>
+            <li>代码审查与优化</li>
+          </ul>
+        </div>
+        <div class="tool-category">
+          <h3 class="category-title">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+              <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+            </svg>
+            QA 测试机器人
+          </h3>
+          <ul class="tool-list">
+            <li>测试策略规划</li>
+            <li>测试用例设计</li>
+            <li>单元测试与 API 测试</li>
+            <li>E2E 端到端测试</li>
+            <li>性能与安全测试</li>
+            <li>测试报告生成</li>
+          </ul>
+        </div>
+        <div class="tool-category">
+          <h3 class="category-title">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+              <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
+            </svg>
+            需求设计机器人
+          </h3>
+          <ul class="tool-list">
+            <li>需求收集与整理</li>
+            <li>系统边界分析</li>
+            <li>用户故事建模</li>
+            <li>业务流程设计</li>
+            <li>PRD 文档导出</li>
+            <li>钉钉文档发布</li>
+          </ul>
+        </div>
+        <div class="tool-category">
+          <h3 class="category-title">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+            </svg>
+            机器人优势
+          </h3>
+          <ul class="tool-list">
+            <li>固定工作流节点，步步推进</li>
+            <li>每节点绑定专属技能集</li>
+            <li>多机器人协作接力</li>
+            <li>对话中创建/修改机器人</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SmartBrain / LLM Wiki -->
+  <section id="smartbrain" class="section features">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">SmartBrain — AI 经验知识库</h2>
+        <p class="section-subtitle">基于 LLM Wiki 模式，知识"编译"而非临时检索，AI 越用越聪明</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">什么是 LLM Wiki？</h3>
+          <p class="feature-desc">由 Andrej Karpathy 提出的知识管理模式。与传统 RAG（查询时临时检索）不同，LLM Wiki 让 AI 提前将原始资料"编译"为结构化知识 — 精炼摘要优于海量原文，显式关联优于向量相似度，编译优于检索。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">三层架构</h3>
+          <p class="feature-desc"><strong>Raw 层</strong> — 只读原始会话记录和文档。<strong>Wiki 层</strong> — AI 维护的 OKF 格式结构化 Markdown，带实体、概念和交叉引用。<strong>Schema 层</strong> — 定义 AI 的工作规则和质量标准。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">经验自动提取</h3>
+          <p class="feature-desc">每次对话结束后，AI 自动从会话中提取关键经验、失败教训和最佳实践，合并为精炼摘要注入后续会话。不再反复犯同样的错。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">OKF 格式 + BM25 搜索</h3>
+          <p class="feature-desc">知识文档采用 Open Knowledge Format，人类可读的 Markdown。内置 BM25 全文检索引擎，跨经验和知识库统一搜索，无需外部向量数据库。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">知识库管理</h3>
+          <p class="feature-desc">上传文档自动分块、组织到知识库。支持 PDF、Word、PPT、Excel、Markdown 等格式。浏览、搜索、删除、重建索引，全部可视化操作。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">6 个记忆工具</h3>
+          <p class="feature-desc">AI 可通过 <code>memory_list</code>、<code>memory_read</code>、<code>memory_search</code>、<code>memory_write</code>、<code>memory_update</code>、<code>memory_forget</code> 工具主动管理知识。</p>
         </div>
       </div>
     </div>
@@ -156,8 +321,8 @@
   <section id="tools" class="section tools">
     <div class="container">
       <div class="section-header">
-        <h2 class="section-title">工具能力</h2>
-        <p class="section-subtitle">40+ 内置工具，让 AI 真正帮助你完成任务</p>
+        <h2 class="section-title">40+ AI 工具</h2>
+        <p class="section-subtitle">从文件操作到浏览器自动化，让 AI 真正帮你完成任务</p>
       </div>
       <div class="tools-grid">
         <div class="tool-category">
@@ -165,13 +330,13 @@
             <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
               <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
             </svg>
-            文件操作
+            文件与代码
           </h3>
           <ul class="tool-list">
-            <li><code>read_file</code> 读取文件内容</li>
-            <li><code>write_file</code> 写入文件</li>
+            <li><code>read_file</code> / <code>write_file</code></li>
             <li><code>list_directory</code> 浏览目录</li>
-            <li><code>apply_patch</code> 应用补丁</li>
+            <li><code>apply_patch</code> 补丁审查门控</li>
+            <li><code>code_review</code> 代码审查</li>
           </ul>
         </div>
         <div class="tool-category">
@@ -179,27 +344,13 @@
             <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
               <path d="M20 19V7H4v12h16m0-16c1.11 0 2 .89 2 2v14c0 1.11-.89 2-2 2H4c-1.11 0-2-.89-2-2V5c0-1.11.89-2 2-2h16M7 9h2v4H7v-4m4 0h2v4h-2v-4m4 0h2v4h-2v-4z"/>
             </svg>
-            命令执行
+            Shell 与进程
           </h3>
           <ul class="tool-list">
-            <li><code>shell</code> 执行 Shell 命令</li>
+            <li><code>shell</code> 执行命令</li>
             <li><code>exec_command</code> 持久会话</li>
-            <li><code>write_stdin</code> 输入交互</li>
-            <li><code>close_exec_session</code> 关闭会话</li>
-          </ul>
-        </div>
-        <div class="tool-category">
-          <h3 class="category-title">
-            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-              <path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/>
-            </svg>
-            代码管理
-          </h3>
-          <ul class="tool-list">
-            <li><code>code_review</code> 审查变更</li>
-            <li><code>apply_patch</code> 应用补丁</li>
-            <li><code>update_plan</code> 更新计划</li>
-            <li><code>spawn_agent</code> 子代理</li>
+            <li><code>write_stdin</code> 交互输入</li>
+            <li>超时控制与沙箱权限</li>
           </ul>
         </div>
         <div class="tool-category">
@@ -210,22 +361,24 @@
             浏览器自动化
           </h3>
           <ul class="tool-list">
-            <li><code>browser_run</code> 运行浏览器</li>
-            <li><code>goto</code> 导航页面</li>
-            <li><code>click/fill</code> 交互操作</li>
-            <li><code>screenshot</code> 截图</li>
+            <li>内嵌 WebView + CDP</li>
+            <li>导航、点击、填写、截图</li>
+            <li>无需 Playwright 安装</li>
+            <li>控制台日志捕获</li>
           </ul>
         </div>
         <div class="tool-category">
           <h3 class="category-title">
             <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-              <path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
+              <path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/>
             </svg>
-            图像处理
+            子代理与规划
           </h3>
           <ul class="tool-list">
-            <li><code>view_image</code> 查看图像</li>
-            <li><code>image_generate</code> AI 生成图像</li>
+            <li><code>spawn_agent</code> / <code>wait_agent</code></li>
+            <li><code>update_plan</code> 任务规划</li>
+            <li><code>request_user_input</code> 交互问答</li>
+            <li><code>tool_search</code> 能力发现</li>
           </ul>
         </div>
         <div class="tool-category">
@@ -236,11 +389,73 @@
             MCP 协议
           </h3>
           <ul class="tool-list">
-            <li><code>mcp_list_servers</code> 列出服务器</li>
-            <li><code>mcp_list_tools</code> 列出工具</li>
-            <li><code>mcp_call_tool</code> 调用工具</li>
-            <li><code>mcp_read_resource</code> 读取资源</li>
+            <li>动态发现 MCP 工具</li>
+            <li>stdio + HTTP 服务器</li>
+            <li>资源/提示模板/工具调用</li>
+            <li>插件可声明 MCP 服务</li>
           </ul>
+        </div>
+        <div class="tool-category">
+          <h3 class="category-title">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+              <path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
+            </svg>
+            网络与媒体
+          </h3>
+          <ul class="tool-list">
+            <li><code>web_search</code> / <code>web_fetch</code></li>
+            <li><code>view_image</code> / <code>image_generate</code></li>
+            <li>文档解析 (PDF/DOCX/PPTX/XLSX)</li>
+            <li>图片预览与附件管理</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- IDE 工作台 -->
+  <section class="section features">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">IDE 级工作台</h2>
+        <p class="section-subtitle">不只是对话框 — 文件树、Git、终端、浏览器一应俱全</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">项目文件树</h3>
+          <p class="feature-desc">按文件类型图标展示，支持拖拽附件、右键菜单（在资源管理器中显示、编辑项目规则）、文档详情窗口、图片预览。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">Git 面板</h3>
+          <p class="feature-desc">完整的 Git 操作：暂存/取消、提交、分支管理、推拉、Diff 查看、重置、回退、Cherry-pick、提交历史浏览。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20 19V7H4v12h16m0-16c1.11 0 2 .89 2 2v14c0 1.11-.89 2-2 2H4c-1.11 0-2-.89-2-2V5c0-1.11.89-2 2-2h16"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">多标签终端</h3>
+          <p class="feature-desc">内嵌 xterm.js 终端面板，支持多标签、PowerShell/Bash，自动绑定工作区目录。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">内嵌浏览器</h3>
+          <p class="feature-desc">右侧面板集成浏览器视图，与 AI 的 browser_run 工具联动。截图预览、控制台日志同步。</p>
         </div>
       </div>
     </div>
@@ -250,8 +465,8 @@
   <section id="plugins" class="section plugins">
     <div class="container">
       <div class="section-header">
-        <h2 class="section-title">内置插件</h2>
-        <p class="section-subtitle">强大的插件系统，扩展无限可能</p>
+        <h2 class="section-title">7 大内置插件 · 44 个技能</h2>
+        <p class="section-subtitle">从文档生成到 AI 小说写作，技能可扩展、可组合</p>
       </div>
       <div class="plugins-grid">
         <div class="plugin-card">
@@ -261,7 +476,7 @@
             </svg>
           </div>
           <h3 class="plugin-title">Browser</h3>
-          <p class="plugin-desc">浏览器自动化与网页测试，支持导航、交互、截图等</p>
+          <p class="plugin-desc">浏览器自动化与网页测试</p>
         </div>
         <div class="plugin-card">
           <div class="plugin-icon" style="--plugin-color: #8b5cf6;">
@@ -270,7 +485,7 @@
             </svg>
           </div>
           <h3 class="plugin-title">Computer Use</h3>
-          <p class="plugin-desc">Windows 应用控制，自动化桌面操作</p>
+          <p class="plugin-desc">Windows 桌面自动化控制</p>
         </div>
         <div class="plugin-card">
           <div class="plugin-icon" style="--plugin-color: #10b981;">
@@ -279,7 +494,7 @@
             </svg>
           </div>
           <h3 class="plugin-title">Documents</h3>
-          <p class="plugin-desc">Word 文档创建与编辑，支持格式化和渲染预览</p>
+          <p class="plugin-desc">Word 文档创建与编辑</p>
         </div>
         <div class="plugin-card">
           <div class="plugin-icon" style="--plugin-color: #f59e0b;">
@@ -288,7 +503,7 @@
             </svg>
           </div>
           <h3 class="plugin-title">Presentations</h3>
-          <p class="plugin-desc">PowerPoint 演示文稿生成，支持主题和布局</p>
+          <p class="plugin-desc">PPT 演示文稿生成</p>
         </div>
         <div class="plugin-card">
           <div class="plugin-icon" style="--plugin-color: #ef4444;">
@@ -297,7 +512,7 @@
             </svg>
           </div>
           <h3 class="plugin-title">Spreadsheets</h3>
-          <p class="plugin-desc">Excel 电子表格处理，支持公式和图表</p>
+          <p class="plugin-desc">Excel 电子表格处理</p>
         </div>
         <div class="plugin-card">
           <div class="plugin-icon" style="--plugin-color: #06b6d4;">
@@ -306,7 +521,7 @@
             </svg>
           </div>
           <h3 class="plugin-title">Sites</h3>
-          <p class="plugin-desc">网站托管与部署，快速发布静态站点</p>
+          <p class="plugin-desc">网站构建与部署</p>
         </div>
         <div class="plugin-card">
           <div class="plugin-icon" style="--plugin-color: #ec4899;">
@@ -315,8 +530,11 @@
             </svg>
           </div>
           <h3 class="plugin-title">Superpowers</h3>
-          <p class="plugin-desc">高级技能集合：TDD、调试、代码审查、计划编写等</p>
+          <p class="plugin-desc">TDD、调试、审查、计划</p>
         </div>
+      </div>
+      <div class="section-header" style="margin-top: var(--xl);">
+        <p class="section-subtitle">44 个内置技能覆盖：代码审查 · 测试策略 · 需求建模 · 设计自动化 · 部署流水线 · AI 小说写作 · MCP 构建 · Sentry 分拣 · 浏览器测试 · 批量生成 等</p>
       </div>
     </div>
   </section>
@@ -325,33 +543,123 @@
   <section class="section models">
     <div class="container">
       <div class="section-header">
-        <h2 class="section-title">支持的 LLM 供应商</h2>
-        <p class="section-subtitle">灵活配置，按需选择最适合的模型</p>
+        <h2 class="section-title">12+ LLM 供应商</h2>
+        <p class="section-subtitle">灵活配置，支持 4 种 API 协议适配（OpenAI Chat/Responses、Anthropic、Gemini）</p>
       </div>
       <div class="models-grid">
         <div class="model-card">
+          <div class="model-logo">DeepSeek</div>
+          <p>v4 Flash（推荐 · 已验证）</p>
+        </div>
+        <div class="model-card">
           <div class="model-logo">OpenAI</div>
-          <p>GPT-4o, GPT-4-turbo, o1, o3</p>
+          <p>GPT-4o, o1, o3</p>
         </div>
         <div class="model-card">
           <div class="model-logo">Claude</div>
-          <p>Claude 3.5 Sonnet, Claude 3 Opus</p>
+          <p>Claude 4, Claude 3.5 Sonnet</p>
+        </div>
+        <div class="model-card">
+          <div class="model-logo">Google</div>
+          <p>Gemini Pro / Flash</p>
+        </div>
+        <div class="model-card">
+          <div class="model-logo">火山引擎</div>
+          <p>Doubao 系列</p>
         </div>
         <div class="model-card">
           <div class="model-logo">智谱</div>
           <p>GLM-4 系列</p>
         </div>
         <div class="model-card">
-          <div class="model-logo">火山</div>
-          <p>Doubao 系列</p>
+          <div class="model-logo">通义千问</div>
+          <p>Qwen 系列</p>
         </div>
         <div class="model-card">
-          <div class="model-logo">百度</div>
-          <p>ERNIE 系列</p>
+          <div class="model-logo">Moonshot</div>
+          <p>Kimi 系列</p>
         </div>
         <div class="model-card">
-          <div class="model-logo">Google</div>
-          <p>Gemini Pro</p>
+          <div class="model-logo">硅基流动</div>
+          <p>SiliconFlow 模型</p>
+        </div>
+        <div class="model-card">
+          <div class="model-logo">百川</div>
+          <p>Baichuan 系列</p>
+        </div>
+        <div class="model-card">
+          <div class="model-logo">Ollama</div>
+          <p>本地部署模型</p>
+        </div>
+        <div class="model-card">
+          <div class="model-logo">LM Studio</div>
+          <p>本地 GUI 推理</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 更多功能 -->
+  <section class="section features">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">更多功能</h2>
+        <p class="section-subtitle">每一处细节都为开发者体验而设计</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM7 10h2v7H7zm4-3h2v10h-2zm4 6h2v4h-2z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">用量统计面板</h3>
+          <p class="feature-desc">SQLite 记录每次 LLM 调用的 Token 用量。日趋势图、按模型分类统计、自定义计价。7 天 / 30 天 / 全部时间维度。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">会话管理</h3>
+          <p class="feature-desc">多项目对话、通用聊天模式。线程搜索、归档、分叉。持久化存储，重启不丢失。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0014.07 6H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">双语界面</h3>
+          <p class="feature-desc">中文 / 英文运行时切换。暗色 / 亮色 / 跟随系统三种主题。无边框自定义标题栏。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">Hooks 自动化</h3>
+          <p class="feature-desc">7 个生命周期事件钩子：agent 启动/结束、用户提交、文件变更、命令执行、工具使用后、子代理停止。可阻断、注入上下文。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">上下文压缩</h3>
+          <p class="feature-desc">当对话超过模型上下文窗口 90% 时自动压缩，生成交接摘要。也可手动 <code>/compact</code> 触发。长对话不中断。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">对话日志</h3>
+          <p class="feature-desc">每个线程的完整 JSONL 日志：请求、响应、工具调用、Token 用量。可追溯、可分析。</p>
         </div>
       </div>
     </div>
@@ -362,9 +670,9 @@
     <div class="container">
       <div class="cta-content">
         <h2 class="cta-title">开始使用 CN-Codex</h2>
-        <p class="cta-subtitle">下载即用，无需复杂配置，让 AI 成为你的编程伙伴</p>
+        <p class="cta-subtitle">下载即用，无需复杂配置 — 手机在手，代码我有</p>
         <div class="cta-actions">
-          <a href="https://github.com/cn-codex/cn-codex/releases" class="btn btn-primary btn-large">
+          <a href="https://github.com/longdream/cn-codex/releases" class="btn btn-primary btn-large">
             立即下载
           </a>
           <a href="usage.html" class="btn btn-outline btn-large">
@@ -385,29 +693,32 @@
           </svg>
           <span class="logo-text">CN-Codex</span>
         </a>
-        <p class="footer-tagline">强大的 AI 编程助手桌面应用</p>
+        <p class="footer-tagline">AI 驱动的全栈编程工作台</p>
       </div>
       <div class="footer-links">
         <div class="footer-column">
           <h4>产品</h4>
-          <a href="#features">功能特性</a>
+          <a href="#features">核心功能</a>
+          <a href="#robots">机器人系统</a>
+          <a href="#smartbrain">SmartBrain</a>
           <a href="#tools">工具能力</a>
-          <a href="#plugins">插件系统</a>
+          <a href="#plugins">插件 & 技能</a>
         </div>
         <div class="footer-column">
           <h4>文档</h4>
           <a href="usage.html">使用指南</a>
-          <a href="https://github.com/cn-codex/cn-codex" target="_blank">GitHub</a>
+          <a href="https://github.com/longdream/cn-codex" target="_blank">GitHub</a>
+          <a href="https://github.com/longdream/cn-codex/releases" target="_blank">下载</a>
         </div>
         <div class="footer-column">
           <h4>社区</h4>
-          <a href="https://github.com/cn-codex/cn-codex/issues" target="_blank">问题反馈</a>
-          <a href="https://github.com/cn-codex/cn-codex/discussions" target="_blank">讨论区</a>
+          <a href="https://github.com/longdream/cn-codex/issues" target="_blank">问题反馈</a>
+          <a href="https://github.com/longdream/cn-codex/discussions" target="_blank">讨论区</a>
         </div>
       </div>
     </div>
     <div class="container footer-bottom">
-      <p>&copy; 2024 CN-Codex. MIT License.</p>
+      <p>&copy; 2024-2026 CN-Codex. Apache License 2.0.</p>
     </div>
   </footer>
 
