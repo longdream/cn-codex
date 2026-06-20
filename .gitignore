@@ -22,41 +22,19 @@ Thumbs.db
 .env
 .env.local
 
-# CN-Codex browser runtime artifacts (generated at runtime)
+# CN-Codex runtime data (generated at runtime, not source code)
+codey/config.toml
+codey/sessions/
+codey/memories/
+codey/usage.db
+codey/usage.db-shm
+codey/usage.db-wal
 codey/browser/webview-data/
 codey/browser/screenshots/
 codey/browser/visible-browser.json
+codey/subagents/
+logs/
 
 # Embedded Node.js (bundled at publish time, not checked into git)
 codey/node/
 tools/node-cache/
-
-# Runtime config with API tokens
-codey/config.toml
-codey/sessions/
-codey/usage.db
-codey/usage.db-shm
-codey/usage.db-wal
-codey/skills/**/.skill.env
-
-# Logs
-logs/
-
-# Cursor IDE
-.cursor/
-
-# Cargo local config (root level)
-.cargo/
-
-# Windows batch scripts (local dev only)
-*.bat
-
-# VS Code workspace (references local paths)
-*.code-workspace
-
-# Mobile dist (build artifact)
-mobile-dist/
-
-# Private skills (GitHub only)
-codey/skills/tender-document-parsing/
-codey/skills/bid-review/

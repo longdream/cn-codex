@@ -1,0 +1,24 @@
+{
+  "workspace": {
+    "novel_name": "二十八星宿：逆天改命"
+  },
+  "writing": {
+    "target_word_count": 6000,
+    "min_word_count": 4000,
+    "max_word_count": 8000,
+    "history_chapters_count": 3,
+    "previous_chapter_chars": 2000,
+    "progress_chunk_size": 1000
+  },
+  "review": {
+    "deep_review_enabled": true,
+    "auto_fix_title": true,
+    "word_count_check": true
+  },
+  "generation": {
+    "temperature": 0.85,
+    "max_retries": 3,
+    "timeout": 120,
+    "retry_delay": 5
+  }
+}

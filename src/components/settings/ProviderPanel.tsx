@@ -15,7 +15,13 @@ import {
 import {
   standaloneConfigWrite,
 } from "../../api";
-import { useAppStore, PROVIDER_PRESETS, createProviderFromPreset } from "../../stores/appStore";
+import {
+  useAppStore,
+  PROVIDER_PRESETS,
+  createProviderFromPreset,
+  DEFAULT_MODEL_CONTEXT_LENGTH,
+  DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+} from "../../stores/appStore";
 import type { ProviderConfig, ProviderPreset, ProviderModel } from "../../types/provider";
 import type { ConfigEdit } from "../../types";
 
@@ -40,12 +46,22 @@ export function ProviderPanel() {
     apiKey: string;
     baseUrl: string;
     wireApi: string;
-    maxOutputTokens: string;
     newModelId: string;
     newModelLabel: string;
     newModelContextLength: string;
+    newModelMaxOutputTokens: string;
     newModelSupportsVision: boolean;
-  }>({ name: "", apiKey: "", baseUrl: "", wireApi: "", maxOutputTokens: "131072", newModelId: "", newModelLabel: "", newModelContextLength: "65535", newModelSupportsVision: false });
+  }>({
+    name: "",
+    apiKey: "",
+    baseUrl: "",
+    wireApi: "",
+    newModelId: "",
+    newModelLabel: "",
+    newModelContextLength: String(DEFAULT_MODEL_CONTEXT_LENGTH),
+    newModelMaxOutputTokens: String(DEFAULT_MODEL_MAX_OUTPUT_TOKENS),
+    newModelSupportsVision: false,
+  });
 
   const selectedProvider = useMemo(
     () => providers.find((p) => p.id === selectedId) ?? null,
@@ -75,14 +91,12 @@ export function ProviderPanel() {
       apiKey: "",
       baseUrl: selectedProvider.baseUrl,
       wireApi: selectedProvider.wireApi,
-      maxOutputTokens: String(selectedProvider.maxOutputTokens ?? 131072),
     }));
   }, [
     selectedProvider?.id,
     selectedProvider?.name,
     selectedProvider?.baseUrl,
     selectedProvider?.wireApi,
-    selectedProvider?.maxOutputTokens,
   ]);
 
   // 选中实例时加载配置到编辑表单
@@ -96,10 +110,10 @@ export function ProviderPanel() {
         apiKey: "",
         baseUrl: provider.baseUrl,
         wireApi: provider.wireApi,
-        maxOutputTokens: String(provider.maxOutputTokens ?? 131072),
         newModelId: "",
         newModelLabel: "",
-        newModelContextLength: "65535",
+        newModelContextLength: String(DEFAULT_MODEL_CONTEXT_LENGTH),
+        newModelMaxOutputTokens: String(DEFAULT_MODEL_MAX_OUTPUT_TOKENS),
         newModelSupportsVision: false,
       });
     }
@@ -113,11 +127,12 @@ export function ProviderPanel() {
 
   // 从预设创建新实例
   const handleCreateFromPreset = useCallback((preset: ProviderPreset) => {
-    const instance = createProviderFromPreset(preset);
+    const defaultName = intl.formatMessage({ id: preset.name, defaultMessage: preset.name });
+    const instance = createProviderFromPreset(preset, { name: defaultName });
     useAppStore.getState().addCustomProvider(instance);
     setShowPresetDialog(false);
     handleSelect(instance.id);
-  }, [handleSelect]);
+  }, [handleSelect, intl]);
 
   // 删除实例
   const handleDelete = useCallback((providerId: string) => {
@@ -148,22 +163,19 @@ export function ProviderPanel() {
       const trimmedApiKey = editForm.apiKey.trim();
       const trimmedWireApi = editForm.wireApi.trim();
 
-      const parsedMaxTokens = parseInt(editForm.maxOutputTokens, 10);
-      const maxOutputTokens = Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : 131072;
-
       const updates: Partial<ProviderConfig> = {
         name: trimmedName,
         baseUrl: trimmedBaseUrl,
         wireApi: trimmedWireApi || selectedProvider.wireApi,
-        maxOutputTokens,
       };
       if (trimmedApiKey) {
         updates.apiKey = trimmedApiKey;
       }
-      useAppStore.getState().updateProvider(selectedProvider.id, updates);
+      const store = useAppStore.getState();
+      store.updateProvider(selectedProvider.id, updates);
 
       // 如果是激活的实例，同步写入 config.toml
-      if (selectedProvider.id === useAppStore.getState().activeProviderId) {
+      if (selectedProvider.id === store.activeProviderId) {
         const providerKey = selectedProvider.type || "custom";
         const providerOverride: Record<string, unknown> = {};
         if (trimmedBaseUrl) providerOverride.base_url = trimmedBaseUrl;
@@ -172,12 +184,21 @@ export function ProviderPanel() {
         if (persistedKey) providerOverride.experimental_bearer_token = persistedKey;
         providerOverride.requires_openai_auth = selectedProvider.requiresOpenAIAuth;
 
-        const defaultModel = selectedProvider.models[0]?.id ?? "";
+        const activeModelEntry = store.getActiveModel();
+        const preferredModelId = activeModelEntry?.provider === selectedProvider.id
+          ? activeModelEntry.model
+          : undefined;
+        const targetModel = selectedProvider.models.find((model) => model.id === preferredModelId)
+          ?? selectedProvider.models[0];
+        const targetModelId = targetModel?.id ?? "";
+        const targetModelContextLength = targetModel?.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH;
+        const targetModelMaxTokens = targetModel?.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS;
         const edits: ConfigEdit[] = [
           { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
-          { keyPath: "model", value: defaultModel, mergeStrategy: "replace" },
+          { keyPath: "model", value: targetModelId, mergeStrategy: "replace" },
           { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
-          { keyPath: "max_output_tokens", value: maxOutputTokens, mergeStrategy: "replace" },
+          { keyPath: "model_context_window", value: targetModelContextLength, mergeStrategy: "replace" },
+          { keyPath: "max_output_tokens", value: targetModelMaxTokens, mergeStrategy: "replace" },
         ];
         await standaloneConfigWrite(edits);
       }
@@ -195,15 +216,28 @@ export function ProviderPanel() {
   // 添加模型
   const handleAddModel = useCallback(() => {
     if (!selectedProvider || !editForm.newModelId.trim()) return;
-    const parsedCtx = parseInt(editForm.newModelContextLength, 10);
+    const parsedContextLength = parseInt(editForm.newModelContextLength, 10);
+    const parsedMaxTokens = parseInt(editForm.newModelMaxOutputTokens, 10);
     const model: ProviderModel = {
       id: editForm.newModelId.trim(),
       label: editForm.newModelLabel.trim() || editForm.newModelId.trim(),
       supportsVision: editForm.newModelSupportsVision,
-      contextLength: Number.isFinite(parsedCtx) && parsedCtx > 0 ? parsedCtx : 65535,
+      contextLength: Number.isFinite(parsedContextLength) && parsedContextLength > 0
+        ? parsedContextLength
+        : DEFAULT_MODEL_CONTEXT_LENGTH,
+      maxOutputTokens: Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0
+        ? parsedMaxTokens
+        : DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
     };
     useAppStore.getState().addProviderModel(selectedProvider.id, model);
-    setEditForm((f) => ({ ...f, newModelId: "", newModelLabel: "", newModelContextLength: "65535", newModelSupportsVision: false }));
+    setEditForm((f) => ({
+      ...f,
+      newModelId: "",
+      newModelLabel: "",
+      newModelContextLength: String(DEFAULT_MODEL_CONTEXT_LENGTH),
+      newModelMaxOutputTokens: String(DEFAULT_MODEL_MAX_OUTPUT_TOKENS),
+      newModelSupportsVision: false,
+    }));
   }, [selectedProvider, editForm]);
 
   // 删除模型
@@ -401,40 +435,23 @@ export function ProviderPanel() {
             {/* Wire API 格式选择 */}
             <div className="space-y-1.5">
               <label className="settings-field-label">
-                {intl.formatMessage({ id: "settings.provider.transport", defaultMessage: "API 格式" })}
+                {intl.formatMessage({ id: "settings.provider.transport" })}
               </label>
               <select
                 value={editForm.wireApi}
                 onChange={(e) => setEditForm((f) => ({ ...f, wireApi: e.target.value }))}
                 className="app-select w-56"
               >
-                <option value="chat">OpenAI Chat Completions</option>
-                <option value="responses">OpenAI Responses API</option>
-                <option value="anthropic">Anthropic Messages API</option>
-                <option value="gemini">Google Gemini API</option>
+                <option value="chat">{intl.formatMessage({ id: "provider.transport.chat" })}</option>
+                <option value="responses">{intl.formatMessage({ id: "provider.transport.responses" })}</option>
+                <option value="anthropic">{intl.formatMessage({ id: "provider.transport.anthropic" })}</option>
+                <option value="gemini">{intl.formatMessage({ id: "provider.transport.gemini" })}</option>
               </select>
               <p className="text-[11px] text-[var(--text-faint)]">
                 {editForm.wireApi &&
                   intl.formatMessage({
                     id: `settings.provider.transportHint.${editForm.wireApi}`,
                   })}
-              </p>
-            </div>
-
-            {/* 最大输出 Token */}
-            <div className="space-y-1.5">
-              <label className="settings-field-label">
-                {intl.formatMessage({ id: "settings.provider.maxOutputTokens" })}
-              </label>
-              <input
-                type="number"
-                min={1}
-                value={editForm.maxOutputTokens}
-                onChange={(e) => setEditForm((f) => ({ ...f, maxOutputTokens: e.target.value }))}
-                className="app-input w-56"
-              />
-              <p className="text-[11px] text-[var(--text-faint)]">
-                {intl.formatMessage({ id: "settings.provider.maxOutputTokensHint" })}
               </p>
             </div>
 
@@ -481,6 +498,20 @@ export function ProviderPanel() {
                       min={1}
                       value={editForm.newModelContextLength}
                       onChange={(e) => setEditForm((f) => ({ ...f, newModelContextLength: e.target.value }))}
+                      className="app-input w-24 text-xs"
+                      title={intl.formatMessage({ id: "settings.provider.contextLengthHint" })}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleAddModel(); }}
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[11px] text-[var(--text-faint)]">
+                      {intl.formatMessage({ id: "settings.provider.maxOutputTokens" })}
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={editForm.newModelMaxOutputTokens}
+                      onChange={(e) => setEditForm((f) => ({ ...f, newModelMaxOutputTokens: e.target.value }))}
                       className="app-input w-24 text-xs"
                       onKeyDown={(e) => { if (e.key === "Enter") handleAddModel(); }}
                     />
@@ -566,7 +597,9 @@ export function ProviderPanel() {
                         onClick={() => handleCreateFromPreset(preset)}
                         className="w-full text-left"
                       >
-                        <span className="block text-xs font-medium text-[var(--text-strong)]">{preset.name}</span>
+                        <span className="block text-xs font-medium text-[var(--text-strong)]">
+                          {intl.formatMessage({ id: preset.name, defaultMessage: preset.name })}
+                        </span>
                         <span className="block truncate text-[11px] text-[var(--text-faint)]">
                           {preset.defaultModels[0]?.label ?? preset.type}
                         </span>
@@ -605,8 +638,14 @@ function ModelRow({
   onRemove: () => void;
 }) {
   const intl = useIntl();
-  const [editingCtx, setEditingCtx] = useState(false);
-  const [ctxValue, setCtxValue] = useState(String(model.contextLength ?? 65535));
+  const [editingContextLength, setEditingContextLength] = useState(false);
+  const [contextLengthValue, setContextLengthValue] = useState(
+    String(model.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH),
+  );
+  const [editingMaxTokens, setEditingMaxTokens] = useState(false);
+  const [maxTokensValue, setMaxTokensValue] = useState(
+    String(model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS),
+  );
 
   const handleToggleVision = useCallback(() => {
     useAppStore.getState().updateProviderModel(providerId, model.id, {
@@ -614,15 +653,25 @@ function ModelRow({
     });
   }, [providerId, model.id, model.supportsVision]);
 
+  const handleSaveMaxOutputTokens = useCallback(() => {
+    const parsed = parseInt(maxTokensValue, 10);
+    useAppStore.getState().updateProviderModel(providerId, model.id, {
+      maxOutputTokens: Number.isFinite(parsed) && parsed > 0
+        ? parsed
+        : DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+    });
+    setEditingMaxTokens(false);
+  }, [providerId, model.id, maxTokensValue]);
+
   const handleSaveContextLength = useCallback(() => {
-    const parsed = parseInt(ctxValue, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      useAppStore.getState().updateProviderModel(providerId, model.id, {
-        contextLength: parsed,
-      });
-    }
-    setEditingCtx(false);
-  }, [providerId, model.id, ctxValue]);
+    const parsed = parseInt(contextLengthValue, 10);
+    useAppStore.getState().updateProviderModel(providerId, model.id, {
+      contextLength: Number.isFinite(parsed) && parsed > 0
+        ? parsed
+        : DEFAULT_MODEL_CONTEXT_LENGTH,
+    });
+    setEditingContextLength(false);
+  }, [providerId, model.id, contextLengthValue]);
 
   return (
     <div className="flex items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] px-3 py-1.5">
@@ -632,34 +681,66 @@ function ModelRow({
           <span className="break-all font-mono text-[11px] text-[var(--text-faint)]">{model.id}</span>
         </div>
         <div className="mt-0.5 flex items-center gap-2">
-          {editingCtx ? (
+          {editingContextLength ? (
             <div className="flex items-center gap-1">
               <input
                 type="number"
                 min={1}
-                value={ctxValue}
-                onChange={(e) => setCtxValue(e.target.value)}
+                value={contextLengthValue}
+                onChange={(e) => setContextLengthValue(e.target.value)}
                 onBlur={handleSaveContextLength}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleSaveContextLength();
-                  if (e.key === "Escape") setEditingCtx(false);
+                  if (e.key === "Escape") setEditingContextLength(false);
                 }}
                 className="app-input w-24 text-[11px]"
                 autoFocus
               />
-              <span className="text-[10px] text-[var(--text-faint)]">tokens</span>
+              <span className="text-[10px] text-[var(--text-faint)]">ctx</span>
             </div>
           ) : (
             <button
               type="button"
               onClick={() => {
-                setCtxValue(String(model.contextLength ?? 65535));
-                setEditingCtx(true);
+                setContextLengthValue(String(model.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH));
+                setEditingContextLength(true);
+                setEditingMaxTokens(false);
               }}
-              className="text-[11px] text-[var(--text-faint)] hover:text-[var(--accent)] transition-colors"
+              className="text-[11px] text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
               title={intl.formatMessage({ id: "settings.provider.contextLengthHint" })}
             >
-              {(model.contextLength ?? 65535).toLocaleString()} ctx
+              {(model.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH).toLocaleString()} ctx
+            </button>
+          )}
+          {editingMaxTokens ? (
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={1}
+                value={maxTokensValue}
+                onChange={(e) => setMaxTokensValue(e.target.value)}
+                onBlur={handleSaveMaxOutputTokens}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSaveMaxOutputTokens();
+                  if (e.key === "Escape") setEditingMaxTokens(false);
+                }}
+                className="app-input w-24 text-[11px]"
+                autoFocus
+              />
+              <span className="text-[10px] text-[var(--text-faint)]">max</span>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setMaxTokensValue(String(model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS));
+                setEditingMaxTokens(true);
+                setEditingContextLength(false);
+              }}
+              className="text-[11px] text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
+              title={intl.formatMessage({ id: "settings.provider.maxOutputTokensHint" })}
+            >
+              {(model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS).toLocaleString()} max
             </button>
           )}
           <button

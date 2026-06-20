@@ -22,13 +22,19 @@ import {
   IconTerminal2,
 } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { revealInExplorer } from "../../api/window";
+import { fileReviewApply, fileReviewCancel, fileReviewUpdate } from "../../api/fileReview";
+import {
+  revealInExplorer,
+  windowOpenRunSummaryDiff,
+  type RunSummaryDiffPayload,
+} from "../../api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage, RunSummary, ToolCallItem } from "../../stores/appStore";
 import { useAppStore } from "../../stores/appStore";
+import { formatDuration } from "../../utils/formatDuration";
 import { CodeBlock } from "./CodeBlock";
 
 interface MessageListProps {
@@ -92,8 +98,13 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   return (
     <div className="chat-dialog-surface thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pb-7 pt-6 sm:px-8">
       <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-5">
-        {messages.map((message) => (
-          <MessageRow key={message.id} message={message} />
+        {messages.map((message, index) => (
+          <MessageRow
+            key={message.id}
+            message={message}
+            messageIndex={index}
+            sourceMessages={messages}
+          />
         ))}
 
         {isStreaming && streamingText && (
@@ -128,11 +139,23 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   );
 }
 
-function MessageRow({ message }: { message: ChatMessage }) {
-  const intl = useIntl();
-
+function MessageRow({
+  message,
+  messageIndex,
+  sourceMessages,
+}: {
+  message: ChatMessage;
+  messageIndex: number;
+  sourceMessages: ChatMessage[];
+}) {
   if (message.runSummary) {
-    return <RunSummaryCard summary={message.runSummary} />;
+    return (
+      <RunSummaryCard
+        summary={message.runSummary}
+        messageIndex={messageIndex}
+        sourceMessages={sourceMessages}
+      />
+    );
   }
 
   if (message.toolCalls && message.toolCalls.length > 0) {
@@ -155,10 +178,6 @@ function MessageRow({ message }: { message: ChatMessage }) {
     return (
       <div className="flex justify-end py-1">
         <div className="chat-user-message group relative max-w-[min(88%,760px)] px-4 py-3 text-[13px] leading-relaxed">
-          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-[var(--chat-muted)]">
-            <IconMessage2 size={13} stroke={1.8} />
-            <span>{intl.formatMessage({ id: "chat.role.user" })}</span>
-          </div>
           <MessageContent content={message.content} />
           <CopyButton text={message.content} />
         </div>
@@ -199,13 +218,99 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function RunSummaryCard({ summary }: { summary: RunSummary }) {
+function RunSummaryCard({
+  summary,
+  messageIndex,
+  sourceMessages,
+}: {
+  summary: RunSummary;
+  messageIndex: number;
+  sourceMessages: ChatMessage[];
+}) {
   const intl = useIntl();
   const changedFiles = summary.changedFiles ?? [];
   const usage = summary.usage;
   const goalBudgetTokens = summary.goalBudgetTokens;
   const globalCwd = useAppStore((s) => s.workspaceCwd);
   const workspaceCwd = summary.cwd ?? globalCwd;
+  const patchDiffEntries = useRef<RunSummaryPatchDiffEntry[]>([]);
+
+  useEffect(() => {
+    // 仅提取“当前 RunSummary 所属轮次”的 apply_patch 补丁，
+    // 避免将历史轮次的文件差异误展示到当前按钮点击结果。
+    patchDiffEntries.current = collectRunSummaryPatchDiffEntries(
+      sourceMessages,
+      messageIndex,
+    );
+  }, [messageIndex, sourceMessages]);
+
+  const openDiffForFile = useCallback((file: { path: string; action: string }) => {
+    const filePath = file.path;
+    const absolutePath = toAbsolutePath(filePath, workspaceCwd);
+    const openDiffWindow = (payload: RunSummaryDiffPayload) => {
+      void windowOpenRunSummaryDiff(payload).catch((err) => {
+        console.error("Open runsummary diff window failed:", err);
+      });
+    };
+    const snapshotMatch = findRunSummarySnapshotEntry(
+      filePath,
+      summary.changedFileSnapshots,
+    );
+    const hasBeforeSnapshot = snapshotMatch?.beforeContent !== undefined;
+    const hasAfterSnapshot = snapshotMatch?.afterContent !== undefined;
+    if (
+      snapshotMatch
+      && (
+        hasBeforeSnapshot
+        || hasAfterSnapshot
+      )
+    ) {
+      const normalizedAction = (file.action || snapshotMatch.action || "modified").toLowerCase();
+      const canPersist = normalizedAction === "modified" && hasBeforeSnapshot && hasAfterSnapshot;
+      openDiffWindow({
+        path: absolutePath,
+        beforeContent: snapshotMatch.beforeContent ?? "",
+        afterContent: snapshotMatch.afterContent ?? "",
+        fileAction: normalizedAction,
+        diffSource: "snapshot",
+        canPersist,
+        persistHint: canPersist
+          ? undefined
+          : normalizedAction !== "modified"
+            ? intl.formatMessage({ id: "diff.onlyModifiedSupported" })
+            : intl.formatMessage({ id: "patchDiff.snapshotIncomplete" }),
+      });
+      return;
+    }
+
+    // 新增的独立 Diff 图标只做补丁详情预览，不影响原有“打开资源管理器”行为。
+    const match = findRunSummaryPatchDiffEntry(filePath, patchDiffEntries.current);
+    if (match) {
+      openDiffWindow({
+        path: absolutePath,
+        beforeContent: match.beforeContent,
+        afterContent: match.afterContent,
+        fileAction: (file.action || "modified").toLowerCase(),
+        diffSource: "patch",
+        canPersist: false,
+        persistHint: intl.formatMessage({ id: "patchDiff.patchViewOnly" }),
+      });
+      return;
+    }
+
+    // 某些文件改动可能来自 write_file / shell，无法映射到 apply_patch 文本；
+    // 这里给出明确提示，避免用户误以为按钮失效。
+    openDiffWindow({
+      path: absolutePath,
+      beforeContent: "",
+      afterContent: "",
+      fileAction: (file.action || "modified").toLowerCase(),
+      diffSource: "empty",
+      canPersist: false,
+      persistHint: intl.formatMessage({ id: "patchDiff.noSnapshotData" }),
+      emptyHint: intl.formatMessage({ id: "patchDiff.noDiffData" }),
+    });
+  }, [intl, summary.changedFileSnapshots, workspaceCwd]);
 
   return (
     <section className="max-w-[1100px]">
@@ -223,7 +328,7 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
         <span className="font-mono text-[0.95em]">{formatDuration(summary.durationMs)}</span>
         {usage && (
           <span className="font-mono text-[0.95em]">
-            {formatTokenCount(usage.totalTokens)} tokens
+            {formatTokenCount(usage.callCount ?? 0)} calls / {formatTokenCount(usage.totalTokens)} tokens
           </span>
         )}
         {goalBudgetTokens && (
@@ -232,12 +337,12 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
           </span>
         )}
         <IconChevronRight size={17} stroke={1.8} className="text-[var(--chat-faint)]" />
-        <span className="ml-auto hidden items-center gap-1.5 text-[13px] sm:flex">
-          {summary.mode === "goal" ? <IconTargetArrow size={14} stroke={1.8} /> : <IconMessage2 size={14} stroke={1.8} />}
-          {summary.mode === "goal"
-            ? intl.formatMessage({ id: "chat.mode.goal" })
-            : intl.formatMessage({ id: "chat.mode.chat" })}
-        </span>
+        {summary.mode === "goal" && (
+          <span className="ml-auto hidden items-center gap-1.5 text-[13px] sm:flex">
+            <IconTargetArrow size={14} stroke={1.8} />
+            {intl.formatMessage({ id: "chat.mode.goal" })}
+          </span>
+        )}
       </div>
 
       <div className="mt-5 grid gap-3">
@@ -265,14 +370,30 @@ function RunSummaryCard({ summary }: { summary: RunSummary }) {
                   {file.path}
                 </div>
               </div>
-              <button
-                type="button"
-                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--accent)]"
-                onClick={(e) => { e.stopPropagation(); void revealInExplorer(toAbsolutePath(file.path, workspaceCwd)); }}
-                title={intl.formatMessage({ id: "chat.runSummary.revealFile" })}
-              >
-                <IconExternalLink size={15} stroke={1.8} />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--accent)]"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openDiffForFile(file);
+                  }}
+                  title={intl.formatMessage({ id: "patchDiff.viewDiffTitle" })}
+                >
+                  <IconFileDiff size={15} stroke={1.8} />
+                </button>
+                <button
+                  type="button"
+                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--accent)]"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void revealInExplorer(toAbsolutePath(file.path, workspaceCwd));
+                  }}
+                  title={intl.formatMessage({ id: "chat.runSummary.revealFile" })}
+                >
+                  <IconExternalLink size={15} stroke={1.8} />
+                </button>
+              </div>
             </div>
           ))
         ) : (
@@ -291,6 +412,215 @@ function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+interface RunSummaryPatchDiffEntry {
+  // 一个补丁项可能同时命中旧路径/新路径（例如 rename）。
+  paths: string[];
+  // 作为 Diff 左侧输入的文本。
+  beforeContent: string;
+  // 作为 Diff 右侧输入的文本。
+  afterContent: string;
+}
+
+interface RunSummarySnapshotEntry {
+  path: string;
+  action: string;
+  beforeContent?: string;
+  afterContent?: string;
+}
+
+function findRunSummarySnapshotEntry(
+  filePath: string,
+  snapshots?: RunSummarySnapshotEntry[],
+): RunSummarySnapshotEntry | null {
+  if (!Array.isArray(snapshots) || snapshots.length === 0) {
+    return null;
+  }
+  // 反向查找保持“后写覆盖前写”，与补丁回退策略一致。
+  for (let i = snapshots.length - 1; i >= 0; i -= 1) {
+    const snapshot = snapshots[i];
+    if (patchPathMatches(filePath, snapshot.path)) {
+      return snapshot;
+    }
+  }
+  return null;
+}
+
+function collectRunSummaryPatchDiffEntries(
+  messages: ChatMessage[],
+  summaryIndex: number,
+): RunSummaryPatchDiffEntry[] {
+  // 以“上一条 RunSummary”作为轮次边界，只解析当前轮消息中的补丁。
+  let startIndex = 0;
+  for (let i = summaryIndex - 1; i >= 0; i -= 1) {
+    if (messages[i].runSummary) {
+      startIndex = i + 1;
+      break;
+    }
+  }
+
+  const entries: RunSummaryPatchDiffEntry[] = [];
+  for (let i = startIndex; i < summaryIndex; i += 1) {
+    const message = messages[i];
+    for (const call of message.toolCalls ?? []) {
+      if (call.name !== "apply_patch") {
+        continue;
+      }
+      const patchBody = patchTextFromToolCall(call);
+      if (!patchBody) {
+        continue;
+      }
+      entries.push(...parsePatchDiffEntries(patchBody));
+    }
+  }
+  return entries;
+}
+
+function patchTextFromToolCall(call: ToolCallItem): string | null {
+  const args = parseToolArgs(call);
+  // apply_patch 在不同适配器下可能是 raw body，也可能放在 patch/command 字段。
+  const patchCandidate =
+    typeof args.patch === "string"
+      ? args.patch
+      : typeof args.command === "string"
+        ? args.command
+        : call.arguments;
+
+  if (
+    typeof patchCandidate !== "string" ||
+    !patchCandidate.trim().startsWith("*** Begin Patch")
+  ) {
+    return null;
+  }
+  return patchCandidate;
+}
+
+function parsePatchDiffEntries(patch: string): RunSummaryPatchDiffEntry[] {
+  // 解析 apply_patch 文本得到每个文件的 before/after 内容块。
+  // 说明：这里是“补丁级还原”，用于 Diff 可视化，不做完整文件重建。
+  const lines = patch.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const result: RunSummaryPatchDiffEntry[] = [];
+  let idx = 0;
+
+  const isBoundary = (line: string): boolean => {
+    return (
+      line.startsWith("*** Add File: ") ||
+      line.startsWith("*** Update File: ") ||
+      line.startsWith("*** Delete File: ") ||
+      line.startsWith("*** End Patch")
+    );
+  };
+
+  while (idx < lines.length) {
+    const line = lines[idx];
+
+    if (line.startsWith("*** Add File: ")) {
+      const path = line.slice("*** Add File: ".length).trim();
+      idx += 1;
+      const afterLines: string[] = [];
+      while (idx < lines.length && !isBoundary(lines[idx])) {
+        const body = lines[idx];
+        if (body.startsWith("+")) {
+          afterLines.push(body.slice(1));
+        }
+        idx += 1;
+      }
+      result.push({
+        paths: [path],
+        beforeContent: "",
+        afterContent: afterLines.join("\n"),
+      });
+      continue;
+    }
+
+    if (line.startsWith("*** Delete File: ")) {
+      const path = line.slice("*** Delete File: ".length).trim();
+      idx += 1;
+      result.push({
+        paths: [path],
+        // 删除文件在补丁里通常不含完整正文，这里用占位确保弹窗有明确反馈。
+        beforeContent: "[deleted file]",
+        afterContent: "",
+      });
+      continue;
+    }
+
+    if (line.startsWith("*** Update File: ")) {
+      const path = line.slice("*** Update File: ".length).trim();
+      let moveTo: string | null = null;
+      const beforeLines: string[] = [];
+      const afterLines: string[] = [];
+      idx += 1;
+      while (idx < lines.length && !isBoundary(lines[idx])) {
+        const body = lines[idx];
+        if (body.startsWith("*** Move to: ")) {
+          moveTo = body.slice("*** Move to: ".length).trim();
+          idx += 1;
+          continue;
+        }
+        if (body.startsWith("@@")) {
+          idx += 1;
+          continue;
+        }
+        if (body.startsWith("-")) {
+          beforeLines.push(body.slice(1));
+        } else if (body.startsWith("+")) {
+          afterLines.push(body.slice(1));
+        } else if (body.startsWith(" ")) {
+          const context = body.slice(1);
+          beforeLines.push(context);
+          afterLines.push(context);
+        }
+        idx += 1;
+      }
+      result.push({
+        paths: moveTo ? [path, moveTo] : [path],
+        beforeContent: beforeLines.join("\n"),
+        afterContent: afterLines.join("\n"),
+      });
+      continue;
+    }
+
+    idx += 1;
+  }
+
+  return result;
+}
+
+function normalizePathForDiffMatch(path: string): string {
+  // 统一路径格式，兼容 Windows 与 Unix 分隔符差异。
+  return path
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .toLowerCase();
+}
+
+function patchPathMatches(targetPath: string, patchPath: string): boolean {
+  const target = normalizePathForDiffMatch(targetPath);
+  const candidate = normalizePathForDiffMatch(patchPath);
+  if (!target || !candidate) {
+    return false;
+  }
+  return (
+    target === candidate ||
+    target.endsWith(`/${candidate}`) ||
+    candidate.endsWith(`/${target}`)
+  );
+}
+
+function findRunSummaryPatchDiffEntry(
+  filePath: string,
+  entries: RunSummaryPatchDiffEntry[],
+): RunSummaryPatchDiffEntry | null {
+  // 反向查找可保证“同轮多次修改同文件”时优先展示最后一次补丁形态。
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    if (entries[i].paths.some((path) => patchPathMatches(filePath, path))) {
+      return entries[i];
+    }
+  }
+  return null;
+}
+
 function toAbsolutePath(filePath: string, cwd: string | null): string {
   if (!cwd) return filePath;
   if (/^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith("/") || filePath.startsWith("\\\\")) {
@@ -305,24 +635,6 @@ function formatTokenCount(value?: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(safe);
 }
 
-function formatDuration(durationMs?: number): string {
-  if (durationMs == null || durationMs < 0) {
-    return "n/a";
-  }
-
-  if (durationMs < 1000) {
-    return `${durationMs}ms`;
-  }
-
-  const seconds = durationMs / 1000;
-  if (seconds < 60) {
-    return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds % 60);
-  return `${minutes}m ${rest}s`;
-}
 
 function fileActionLabel(action: string, intl: ReturnType<typeof useIntl>): string {
   const id = `chat.fileAction.${action}`;
@@ -990,6 +1302,7 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
               {patch.slice(0, 800)}{patch.length > 800 ? "..." : ""}
             </pre>
           )}
+          <PatchReviewPanel toolId={item.id} />
         </div>
       )}
       {item.name === "list_directory" && path && (
@@ -1495,6 +1808,215 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
             {item.output}
           </pre>
         </div>
+      )}
+    </div>
+  );
+}
+
+function PatchReviewPanel({ toolId }: { toolId: string }) {
+  const intl = useIntl();
+  const review = useAppStore((state) => state.pendingFileReviews[toolId]);
+  const setSelectedPath = useAppStore((state) => state.setPendingFileReviewSelectedPath);
+  const setFileKeep = useAppStore((state) => state.setPendingFileReviewFileKeep);
+  const setKeepAll = useAppStore((state) => state.setPendingFileReviewKeepAll);
+  const setEditedContent = useAppStore((state) => state.setPendingFileReviewEditedContent);
+  const setReviewStatus = useAppStore((state) => state.setPendingFileReviewStatus);
+  const removeReview = useAppStore((state) => state.removePendingFileReview);
+  const [requestError, setRequestError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setRequestError(review?.error ?? null);
+  }, [review?.error]);
+
+  if (!review) {
+    return null;
+  }
+
+  const selectedPath = review.selectedPath ?? review.files[0]?.path ?? null;
+  const selectedFile = selectedPath
+    ? review.files.find((file) => file.path === selectedPath) ?? review.files[0]
+    : review.files[0];
+  const keepCount = review.files.filter((file) => file.keep).length;
+  const applying = review.status === "applying";
+
+  const handleApply = useCallback(async () => {
+    if (!review) {
+      return;
+    }
+    if (review.files.filter((file) => file.keep).length === 0) {
+      setRequestError(intl.formatMessage({ id: "patchDiff.selectAtLeastOne" }));
+      return;
+    }
+    setRequestError(null);
+    setReviewStatus(toolId, "applying");
+    try {
+      // 先把本地编辑过的内容回写到后端审阅缓存，再执行最终应用。
+      // 这样可以保证 apply 阶段只负责“写盘决策”，不会丢失前端编辑结果。
+      for (const file of review.files) {
+        if (file.action === "deleted") {
+          continue;
+        }
+        const candidate = file.candidateContent ?? "";
+        const edited = file.editedContent ?? candidate;
+        if (edited !== candidate) {
+          await fileReviewUpdate(
+            review.threadId,
+            review.callId,
+            file.path,
+            undefined,
+            edited,
+          );
+        }
+      }
+      await fileReviewApply(
+        review.threadId,
+        review.callId,
+        review.keepAll,
+        review.files.filter((file) => file.keep).map((file) => file.path),
+      );
+      removeReview(toolId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setReviewStatus(toolId, "failed", message);
+      setRequestError(message);
+    }
+  }, [intl, review, removeReview, setReviewStatus, toolId]);
+
+  const handleCancel = useCallback(async () => {
+    if (!review || applying) {
+      return;
+    }
+    setRequestError(null);
+    try {
+      await fileReviewCancel(review.threadId, review.callId);
+      removeReview(toolId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setReviewStatus(toolId, "failed", message);
+      setRequestError(message);
+    }
+  }, [applying, review, removeReview, setReviewStatus, toolId]);
+
+  const selectedAfterContent = selectedFile?.editedContent ?? selectedFile?.candidateContent ?? "";
+  const selectedBeforeContent = selectedFile?.baseContent ?? "";
+
+  return (
+    <div className="patch-review-panel mt-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] text-[var(--chat-muted)]">
+          {intl.formatMessage(
+            { id: "patchDiff.reviewPending" },
+            { keepCount, total: review.files.length },
+          )}
+        </div>
+        <label className="flex items-center gap-1.5 text-[11px] text-[var(--chat-muted)]">
+          <input
+            type="checkbox"
+            checked={review.keepAll}
+            disabled={applying || review.files.length === 0}
+            onChange={(e) => setKeepAll(toolId, e.target.checked)}
+          />
+          {intl.formatMessage({ id: "patchDiff.keepAll" })}
+        </label>
+      </div>
+
+      <div className="mt-2 grid gap-2 md:grid-cols-[220px_minmax(0,1fr)]">
+        <div className="patch-review-file-list thin-scrollbar max-h-[240px] overflow-auto rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-paper)] p-1.5">
+          {review.files.map((file) => (
+            <button
+              key={`${file.path}:${file.moveTo ?? ""}`}
+              type="button"
+              className={`patch-review-file-item w-full text-left ${
+                selectedPath === file.path ? "is-selected" : ""
+              }`}
+              onClick={() => setSelectedPath(toolId, file.path)}
+            >
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={file.keep}
+                  disabled={applying}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    setFileKeep(toolId, file.path, e.target.checked);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <span className="rounded-[var(--radius-sm)] bg-[var(--chat-chip)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--chat-muted)]">
+                  {patchActionLabel(file.action)}
+                </span>
+              </div>
+              <div className="mt-1 truncate font-mono text-[11px] text-[var(--chat-prose)]" title={file.path}>
+                {file.moveTo ? `${file.path} -> ${file.moveTo}` : file.path}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          {selectedFile ? (
+            <div className="grid gap-2 md:grid-cols-2">
+              <div>
+                <div className="mb-1 text-[11px] text-[var(--chat-muted)]">
+                  {intl.formatMessage({ id: "patchDiff.before" })}
+                </div>
+                <pre className="chat-tool-output thin-scrollbar max-h-[220px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]">
+                  {selectedFile.action === "created"
+                    ? intl.formatMessage({ id: "patchDiff.newFile" })
+                    : selectedBeforeContent || intl.formatMessage({ id: "patchDiff.empty" })}
+                </pre>
+              </div>
+              <div>
+                <div className="mb-1 text-[11px] text-[var(--chat-muted)]">
+                  {intl.formatMessage({ id: "patchDiff.after" })}
+                </div>
+                {selectedFile.action === "deleted" ? (
+                  <pre className="chat-tool-output thin-scrollbar max-h-[220px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]">
+                    {intl.formatMessage({ id: "patchDiff.willBeDeleted" })}
+                  </pre>
+                ) : (
+                  <textarea
+                    className="patch-review-editor thin-scrollbar h-[220px] w-full rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-paper)] px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]"
+                    value={selectedAfterContent}
+                    disabled={applying}
+                    onChange={(e) =>
+                      setEditedContent(toolId, selectedFile.path, e.target.value)
+                    }
+                  />
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="chat-tool-output px-2.5 py-2 text-[11px] text-[var(--chat-muted)]">
+              {intl.formatMessage({ id: "patchDiff.noReviewFiles" })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-2 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          className="secondary-button rounded-[var(--radius-sm)] px-2.5 py-1.5 text-[11px]"
+          disabled={applying}
+          onClick={() => void handleCancel()}
+        >
+          {intl.formatMessage({ id: "patchDiff.cancel" })}
+        </button>
+        <button
+          type="button"
+          className="primary-button rounded-[var(--radius-sm)] px-2.5 py-1.5 text-[11px]"
+          disabled={applying || keepCount === 0}
+          onClick={() => void handleApply()}
+        >
+          {intl.formatMessage({ id: applying ? "patchDiff.applying" : "patchDiff.apply" })}
+        </button>
+      </div>
+
+      {requestError && (
+        <p className="mt-2 rounded-[var(--radius-sm)] bg-[var(--danger-soft)] px-2.5 py-1.5 text-[11px] text-[var(--danger)]">
+          {requestError}
+        </p>
       )}
     </div>
   );

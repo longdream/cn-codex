@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
 
 interface QrCodePopoverProps {
@@ -6,6 +7,7 @@ interface QrCodePopoverProps {
 }
 
 export function QrCodePopover({ onClose }: QrCodePopoverProps) {
+  const intl = useIntl();
   const [svg, setSvg] = useState<string>("");
   const [url, setUrl] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -41,13 +43,15 @@ export function QrCodePopover({ onClose }: QrCodePopoverProps) {
       className="absolute right-0 top-full z-[100] mt-1 w-64 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-4 shadow-xl"
     >
       <p className="mb-3 text-center text-xs font-medium text-[var(--text-strong)]">
-        手机扫码访问
+        {intl.formatMessage({ id: "qr.scanToAccess" })}
       </p>
       {error ? (
         <div className="text-center py-4">
-          <p className="text-xs text-[var(--text-muted)] mb-2">Web 服务未启动</p>
+          <p className="text-xs text-[var(--text-muted)] mb-2">
+            {intl.formatMessage({ id: "qr.webServerNotStarted" })}
+          </p>
           <p className="text-[11px] text-[var(--text-faint)]">
-            请前往「设置 → 通用」开启 Web 服务
+            {intl.formatMessage({ id: "qr.enableInSettings" })}
           </p>
         </div>
       ) : svg ? (
@@ -57,7 +61,9 @@ export function QrCodePopover({ onClose }: QrCodePopoverProps) {
         />
       ) : (
         <div className="flex h-48 items-center justify-center">
-          <span className="text-xs text-[var(--text-muted)]">加载中...</span>
+          <span className="text-xs text-[var(--text-muted)]">
+            {intl.formatMessage({ id: "common.loading" })}
+          </span>
         </div>
       )}
       {url && (

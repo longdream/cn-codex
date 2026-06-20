@@ -12,9 +12,16 @@ export interface ProviderModel {
   id: string;
   label: string;
   supportsVision: boolean;
-  /** 上下文窗口大小（token），默认 65535 */
+  /** 上下文窗口大小（token），默认 128000 */
   contextLength: number;
+  /** 单次回复最大输出 token 数，默认 65535 */
+  maxOutputTokens: number;
 }
+
+/** 预设模型模板（允许省略 maxOutputTokens，实例化时补默认值） */
+export type ProviderPresetModel = Omit<ProviderModel, "maxOutputTokens"> & {
+  maxOutputTokens?: number;
+};
 
 /**
  * 供应商预设模板
@@ -34,7 +41,7 @@ export interface ProviderPreset {
   /** 是否需要 OpenAI 风格鉴权 */
   requiresOpenAIAuth: boolean;
   /** 默认可用模型列表 */
-  defaultModels: ProviderModel[];
+  defaultModels: ProviderPresetModel[];
   /** 注册/获取 API Key 的链接（用于引导用户） */
   signupUrl?: string;
 }
@@ -66,8 +73,6 @@ export interface ProviderConfig {
   isCustom: boolean;
   /** 创建时间戳（用于排序） */
   createdAt: number;
-  /** 单次回复最大输出 token 数 */
-  maxOutputTokens: number;
 }
 
 /** 附件文件（输入框增强用） */

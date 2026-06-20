@@ -1,10 +1,10 @@
 import {
   IconArrowUp,
+  IconBrain,
   IconChevronDown,
   IconCpu,
   IconFile,
   IconFolder,
-  IconMessage2,
   IconPaperclip,
   IconPlugConnected,
   IconPlus,
@@ -16,17 +16,39 @@ import {
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
-import { useAppStore, type ChatMode, type ChatSendOptions } from "../../stores/appStore";
-import { SlashCommandPanel, getDefaultSlashCommands } from "./SlashCommandPanel";
+import {
+  DEFAULT_MODEL_CONTEXT_LENGTH,
+  useAppStore,
+  type ChatMode,
+  type ChatSendOptions,
+} from "../../stores/appStore";
+import {
+  SlashCommandPanel,
+  getDefaultSlashCommands,
+  type SlashCommand,
+} from "./SlashCommandPanel";
 import type { AttachedFile } from "../../types/provider";
+import { invoke } from "@tauri-apps/api/core";
 import { readFileForAttach } from "../../api/window";
 import { robotList } from "../../api/robot";
 import type { RobotSummary } from "../../types/robot";
+import { skillList } from "../../api/skill";
+import type { SkillSummary } from "../../types/skill";
 
 /** 支持的文档 MIME 类型和扩展名 */
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
 const IMAGE_ACCEPT = "image/*";
 const ALL_ACCEPT = `${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`;
+
+interface ClipboardImageItemLike {
+  type: string;
+  getAsFile: () => File | null;
+}
+
+interface BrowserFileAttachmentInput {
+  file: File;
+  fallbackName?: string;
+}
 
 function guessTypeFromExt(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
@@ -49,6 +71,56 @@ function guessTypeFromExt(name: string): string {
     toml: "application/toml",
   };
   return map[ext] ?? "application/octet-stream";
+}
+
+function imageExtensionFromMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase().trim();
+  switch (normalized) {
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/svg+xml":
+      return "svg";
+    case "image/vnd.microsoft.icon":
+    case "image/x-icon":
+      return "ico";
+    default:
+      break;
+  }
+  if (!normalized.startsWith("image/")) {
+    return "png";
+  }
+  const subtype = normalized.slice("image/".length).split(";")[0].replace(/[^a-z0-9]/gi, "");
+  return subtype || "png";
+}
+
+export function buildPastedImageName(mimeType: string, seed = Date.now(), sequence = 1): string {
+  const safeSequence = Number.isFinite(sequence) && sequence > 0 ? Math.floor(sequence) : 1;
+  return `pasted-image-${seed}-${safeSequence}.${imageExtensionFromMimeType(mimeType)}`;
+}
+
+export function extractClipboardImageFiles(
+  items: ArrayLike<ClipboardImageItemLike>,
+  seed = Date.now(),
+): BrowserFileAttachmentInput[] {
+  const imageFiles: BrowserFileAttachmentInput[] = [];
+  let imageCount = 0;
+  for (const item of Array.from(items)) {
+    if (!item.type?.toLowerCase().startsWith("image/")) {
+      continue;
+    }
+    const file = item.getAsFile();
+    if (!file) {
+      continue;
+    }
+    imageCount += 1;
+    const trimmedName = file.name.trim();
+    imageFiles.push({
+      file,
+      fallbackName: trimmedName ? undefined : buildPastedImageName(file.type || item.type, seed, imageCount),
+    });
+  }
+  return imageFiles;
 }
 
 export interface ChatSendExtendedOptions extends ChatSendOptions {
@@ -101,6 +173,7 @@ export function ChatInput({
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showRobotMenu, setShowRobotMenu] = useState(false);
   const [robots, setRobots] = useState<RobotSummary[]>([]);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [robotModifyMode, setRobotModifyMode] = useState(false);
   const [visionWarning, setVisionWarning] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -108,10 +181,13 @@ export function ChatInput({
 
   const initialized = useAppStore((s) => s.initialized);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
+  const messages = useAppStore((s) => s.messages);
   const attachedFiles = useAppStore((s) => s.attachedFiles);
+  const pendingComposerInsert = useAppStore((s) => s.pendingComposerInsert);
   const currentGoal = useAppStore((s) => s.currentGoal);
   const autoApprove = useAppStore((s) => s.autoApprove);
   const setAutoApprove = useAppStore((s) => s.setAutoApprove);
+  const consumeComposerInsert = useAppStore((s) => s.consumeComposerInsert);
   const selectedRobotId = useAppStore((s) => s.selectedRobotId);
   const robotCreateMode = useAppStore((s) => s.robotCreateMode);
   const setSelectedRobotId = useAppStore((s) => s.setSelectedRobotId);
@@ -143,6 +219,45 @@ export function ChatInput({
     ?? activeProvider?.name
     ?? defaultProvider;
 
+  const modelContextWindow = useMemo(() => {
+    if (activeEntry) {
+      const matchedProvider = providers.find(
+        (provider) => provider.id === activeEntry.provider || provider.type === activeEntry.provider,
+      );
+      const matchedModel = matchedProvider?.models.find((model) => model.id === activeEntry.model);
+      if (matchedModel?.contextLength) {
+        return matchedModel.contextLength;
+      }
+    }
+
+    if (currentModel) {
+      for (const provider of providers) {
+        const matchedModel = provider.models.find((model) => model.id === currentModel);
+        if (matchedModel?.contextLength) {
+          return matchedModel.contextLength;
+        }
+      }
+    }
+
+    return providerModels[0]?.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH;
+  }, [activeEntry, currentModel, providerModels, providers]);
+
+  const contextUsedTokens = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const usage = messages[index].runSummary?.usage;
+      if (!usage) {
+        continue;
+      }
+      const used = usage.lastSinglePromptTokens && usage.lastSinglePromptTokens > 0
+        ? usage.lastSinglePromptTokens
+        : usage.promptTokens;
+      if (used > 0) {
+        return used;
+      }
+    }
+    return 0;
+  }, [messages]);
+
   useEffect(() => {
     robotList().then(setRobots).catch(() => setRobots([]));
     const handler = () => {
@@ -150,6 +265,10 @@ export function ChatInput({
     };
     window.addEventListener("robot-list-changed", handler);
     return () => window.removeEventListener("robot-list-changed", handler);
+  }, []);
+
+  useEffect(() => {
+    skillList().then(setSkills).catch(() => setSkills([]));
   }, []);
 
   const selectedRobotName = useMemo(
@@ -169,31 +288,236 @@ export function ChatInput({
     }
   }, [robots, selectedRobotId, setSelectedRobotId]);
 
+  useEffect(() => {
+    if (!pendingComposerInsert) {
+      return;
+    }
+    // 预览面板把代码片段投递到 store 后，这里统一并入输入框并恢复焦点。
+    const payload = consumeComposerInsert();
+    if (!payload) {
+      return;
+    }
+    setText((prev) => (prev.trim().length > 0 ? `${prev}\n\n${payload}` : payload));
+    setShowSlash(false);
+    requestAnimationFrame(() => {
+      const element = textareaRef.current;
+      if (!element) return;
+      element.focus();
+      element.style.height = "auto";
+      element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+    });
+  }, [consumeComposerInsert, pendingComposerInsert]);
+
   const setMode = useCallback((nextMode: ChatMode) => {
     useAppStore.getState().setChatMode(nextMode);
     textareaRef.current?.focus();
   }, []);
 
-  const slashCommands = useMemo(() => {
+  const appendSystemMessage = useCallback((content: string) => {
+    useAppStore.getState().addMessage({
+      id: crypto.randomUUID(),
+      role: "system",
+      content,
+      timestamp: Date.now(),
+    });
+  }, []);
+
+  const activateRobotModifyMode = useCallback(() => {
+    if (!selectedRobotId) {
+      appendSystemMessage(intl.formatMessage({ id: "chat.robot.modifyNeedSelection" }));
+      return false;
+    }
+    setRobotModifyMode(true);
+    useAppStore.getState().setChatMode("goal");
+    requestAnimationFrame(() => textareaRef.current?.focus());
+    return true;
+  }, [appendSystemMessage, intl, selectedRobotId]);
+
+  const slashSkillQuery = useMemo(() => parseSkillSelectionQuery(text), [text]);
+  const slashCommandQuery = useMemo(() => {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith("/")) {
+      return "";
+    }
+    return trimmed.slice(1).trim();
+  }, [text]);
+
+  const slashCommands = useMemo<SlashCommand[]>(() => {
     const defaults = getDefaultSlashCommands();
-    defaults.find((command) => command.name === "clear")!.action = () => {
-      useAppStore.getState().setMessages([]);
-      useAppStore.getState().clearStreamingText();
-    };
-    defaults.find((command) => command.name === "model")!.action = () => {
-      useAppStore.getState().setShowSettings(true);
-    };
-    if (selectedRobotId) {
-      defaults.push({
-        name: "modify",
-        description: intl.formatMessage({ id: "chat.slashModify" }),
-        action: () => {
-          setRobotModifyMode(true);
-        },
-      });
+    const clearCommand = defaults.find((command) => command.name === "clear");
+    if (clearCommand) {
+      clearCommand.action = () => {
+        if (!window.confirm(intl.formatMessage({ id: "chat.confirmClearHistory" }))) {
+          return;
+        }
+        useAppStore.getState().setMessages([]);
+        useAppStore.getState().clearStreamingText();
+      };
+    }
+    const modelCommand = defaults.find((command) => command.name === "model");
+    if (modelCommand) {
+      modelCommand.action = () => {
+        useAppStore.getState().setShowSettings(true);
+      };
+    }
+    const goalCommand = defaults.find((command) => command.name === "goal");
+    if (goalCommand) {
+      goalCommand.action = () => {
+        setMode("goal");
+      };
+    }
+    const skillCommand = defaults.find((command) => command.name === "skill");
+    if (skillCommand) {
+      skillCommand.description = intl.formatMessage({ id: "chat.slashSkill" });
+      skillCommand.action = () => {
+        const nextText = "/skill ";
+        setText(nextText);
+        setShowSlash(true);
+        requestAnimationFrame(() => {
+          const element = textareaRef.current;
+          if (!element) return;
+          element.focus();
+          element.setSelectionRange(nextText.length, nextText.length);
+          element.style.height = "auto";
+          element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+        });
+      };
+      skillCommand.closeOnSelect = false;
+    }
+    const modifyRobotCommand = defaults.find(
+      (command) => command.name === "modifyrobot",
+    );
+    if (modifyRobotCommand) {
+      modifyRobotCommand.description = intl.formatMessage({ id: "chat.slashModifyRobot" });
+      modifyRobotCommand.action = () => {
+        const activated = activateRobotModifyMode();
+        if (activated) {
+          setText("");
+        }
+      };
     }
     return defaults;
-  }, [selectedRobotId, intl]);
+  }, [activateRobotModifyMode, intl, setMode]);
+
+  const slashSkillCommands = useMemo<SlashCommand[]>(() => {
+    if (slashSkillQuery == null) {
+      return [];
+    }
+    const query = slashSkillQuery.toLowerCase();
+    return skills
+      .filter((skill) => {
+        if (!query) return true;
+        const tags = Array.isArray(skill.tags) ? skill.tags.join(" ") : "";
+        const haystack = `${skill.id} ${skill.name} ${skill.description} ${tags}`.toLowerCase();
+        return haystack.includes(query);
+      })
+      .map((skill) => {
+        const description = skill.description?.trim()
+          ? `${skill.name} · ${skill.description}`
+          : skill.name;
+        return {
+          name: `skill:${skill.id}`,
+          trigger: `skill ${skill.id}`,
+          description,
+          searchText: `${skill.id} ${skill.name} ${skill.description} ${(skill.tags ?? []).join(" ")}`,
+          action: () => {
+            const nextText = `/skill ${skill.id} `;
+            setText(nextText);
+            requestAnimationFrame(() => {
+              const element = textareaRef.current;
+              if (!element) return;
+              element.focus();
+              element.setSelectionRange(nextText.length, nextText.length);
+              element.style.height = "auto";
+              element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+            });
+          },
+        } satisfies SlashCommand;
+      });
+  }, [skills, slashSkillQuery]);
+
+  const slashPanelCommands = useMemo(() => {
+    if (slashSkillQuery != null) {
+      return slashSkillCommands;
+    }
+    return slashCommands;
+  }, [slashCommands, slashSkillCommands, slashSkillQuery]);
+
+  const slashPanelQuery = useMemo(() => {
+    if (slashSkillQuery != null) {
+      return slashSkillQuery;
+    }
+    return slashCommandQuery;
+  }, [slashCommandQuery, slashSkillQuery]);
+
+  const resetComposerAfterSubmit = useCallback(() => {
+    setText("");
+    setShowSlash(false);
+    useAppStore.getState().clearAttachedFiles();
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
+  }, []);
+
+  const handleSkillCommandSubmit = useCallback((trimmed: string, filesToSend: AttachedFile[]) => {
+    const skillCommand = parseSkillCommand(trimmed);
+    if (skillCommand) {
+      if (!skillCommand.objective) {
+        setShowSlash(true);
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return true;
+      }
+      const payload = intl.formatMessage(
+        { id: "chat.skillPrompt" },
+        { skillId: skillCommand.skillId, objective: skillCommand.objective },
+      );
+      onSend(payload, mode, filesToSend);
+      resetComposerAfterSubmit();
+      return true;
+    }
+
+    if (/^\/skill(?:\s+[\s\S]*)?$/i.test(trimmed)) {
+      if (skills.length === 0) {
+        appendSystemMessage(intl.formatMessage({ id: "chat.skill.noneAvailable" }));
+        setShowSlash(false);
+      } else {
+        setShowSlash(true);
+      }
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return true;
+    }
+
+    return false;
+  }, [appendSystemMessage, intl, mode, onSend, resetComposerAfterSubmit, skills.length]);
+
+  const handleModifyRobotCommandSubmit = useCallback((trimmed: string, filesToSend: AttachedFile[]) => {
+    const modifyCommand = parseModifyRobotCommand(trimmed);
+    if (!modifyCommand) {
+      return false;
+    }
+
+    const activated = activateRobotModifyMode();
+    if (!activated) {
+      setShowSlash(false);
+      setText("");
+      return true;
+    }
+
+    if (!modifyCommand.objective) {
+      setShowSlash(false);
+      setText("");
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return true;
+    }
+
+    onSend(modifyCommand.objective, mode, filesToSend, {
+      robotModifyMode: true,
+      robotId: selectedRobotId!,
+    });
+    setRobotModifyMode(false);
+    resetComposerAfterSubmit();
+    return true;
+  }, [activateRobotModifyMode, mode, onSend, resetComposerAfterSubmit, selectedRobotId]);
 
   const handleSubmit = useCallback(() => {
     // 仅目标模式在 active 时禁止提交；聊天模式行为保持不变。
@@ -201,6 +525,13 @@ export function ChatInput({
     const trimmed = text.trim();
     if ((!trimmed && attachedFiles.length === 0) || disabled) return;
     const filesToSend = attachedFiles;
+
+    if (handleModifyRobotCommandSubmit(trimmed, filesToSend)) {
+      return;
+    }
+    if (handleSkillCommandSubmit(trimmed, filesToSend)) {
+      return;
+    }
 
     const goalCommand = parseGoalCommand(trimmed);
     if (goalCommand) {
@@ -248,13 +579,23 @@ export function ChatInput({
     } else {
       onSend(trimmed, mode, filesToSend);
     }
-    setText("");
-    setShowSlash(false);
-    useAppStore.getState().clearAttachedFiles();
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
-  }, [attachedFiles, currentGoal, disabled, goalRunning, isStreaming, mode, onGoalCommand, onSend, robotModifyMode, selectedRobotId, text]);
+    resetComposerAfterSubmit();
+  }, [
+    attachedFiles,
+    currentGoal,
+    disabled,
+    goalRunning,
+    handleModifyRobotCommandSubmit,
+    handleSkillCommandSubmit,
+    isStreaming,
+    mode,
+    onGoalCommand,
+    onSend,
+    resetComposerAfterSubmit,
+    robotModifyMode,
+    selectedRobotId,
+    text,
+  ]);
 
   const goalStatusLabel = useMemo(() => {
     if (!currentGoal) {
@@ -290,7 +631,7 @@ export function ChatInput({
   const handleChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = event.target.value;
     setText(value);
-    setShowSlash(value.startsWith("/") && !value.includes(" "));
+    setShowSlash(shouldShowSlashPanel(value));
   }, []);
 
   const handleInput = useCallback(() => {
@@ -306,38 +647,66 @@ export function ChatInput({
     fileInputRef.current?.click();
   }, []);
 
+  const warnVisionUnsupportedIfNeeded = useCallback((mimeType: string) => {
+    if (!mimeType.startsWith("image/")) {
+      return;
+    }
+    if (activeEntry?.supportsVision) {
+      return;
+    }
+    const providerVision = providerModels.some((m) => m.supportsVision);
+    if (!providerVision) {
+      setVisionWarning(true);
+      setTimeout(() => setVisionWarning(false), 4000);
+    }
+  }, [activeEntry, providerModels]);
+
+  const addBrowserFileAttachment = useCallback((file: File, fallbackName?: string) => {
+    const resolvedName = file.name.trim() || fallbackName || `attachment-${Date.now()}`;
+    const resolvedType = file.type || guessTypeFromExt(resolvedName);
+    warnVisionUnsupportedIfNeeded(resolvedType);
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const attached: AttachedFile = {
+        name: resolvedName,
+        type: resolvedType,
+        dataUrl: reader.result as string,
+        size: file.size,
+      };
+      useAppStore.getState().addAttachedFile(attached);
+    };
+    reader.readAsDataURL(file);
+  }, [warnVisionUnsupportedIfNeeded]);
+
+  const addBrowserFileAttachments = useCallback((files: BrowserFileAttachmentInput[]) => {
+    for (const fileEntry of files) {
+      addBrowserFileAttachment(fileEntry.file, fileEntry.fallbackName);
+    }
+  }, [addBrowserFileAttachment]);
+
   const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
-
-    for (const file of Array.from(files)) {
-      // 图片类型检查视觉支持
-      if (file.type.startsWith("image/") && !activeEntry?.supportsVision) {
-        const providerVision = providerModels.some((m) => m.supportsVision);
-        if (!providerVision) {
-          setVisionWarning(true);
-          setTimeout(() => setVisionWarning(false), 4000);
-        }
-      }
-
-      const reader = new FileReader();
-      reader.onload = () => {
-        const attached: AttachedFile = {
-          name: file.name,
-          type: file.type,
-          dataUrl: reader.result as string,
-          size: file.size,
-        };
-        useAppStore.getState().addAttachedFile(attached);
-      };
-      reader.readAsDataURL(file);
-    }
+    addBrowserFileAttachments(Array.from(files).map((file) => ({ file })));
     event.target.value = "";
-  }, [activeEntry, providerModels]);
+  }, [addBrowserFileAttachments]);
 
   const handleRemoveFile = useCallback((index: number) => {
     useAppStore.getState().removeAttachedFile(index);
   }, []);
+
+  const [smartBrainAdded, setSmartBrainAdded] = useState<Set<number>>(new Set());
+
+  const handleAddToSmartBrain = useCallback(async (file: AttachedFile, index: number) => {
+    if (!file.sourcePath || smartBrainAdded.has(index)) return;
+    try {
+      await invoke("smartbrain_upload_knowledge", { filePath: file.sourcePath });
+      setSmartBrainAdded((prev) => new Set(prev).add(index));
+    } catch (err) {
+      console.error("Add to SmartBrain failed:", err);
+    }
+  }, [smartBrainAdded]);
 
   // --- 拖拽支持 ---
   const [isDragging, setIsDragging] = useState(false);
@@ -397,29 +766,21 @@ export function ChatInput({
 
     const files = e.dataTransfer.files;
     if (!files || files.length === 0) return;
+    addBrowserFileAttachments(Array.from(files).map((file) => ({ file })));
+  }, [addBrowserFileAttachments]);
 
-    for (const file of Array.from(files)) {
-      if (file.type.startsWith("image/") && !activeEntry?.supportsVision) {
-        const providerVision = providerModels.some((m) => m.supportsVision);
-        if (!providerVision) {
-          setVisionWarning(true);
-          setTimeout(() => setVisionWarning(false), 4000);
-        }
-      }
-
-      const reader = new FileReader();
-      reader.onload = () => {
-        const attached: AttachedFile = {
-          name: file.name,
-          type: file.type || guessTypeFromExt(file.name),
-          dataUrl: reader.result as string,
-          size: file.size,
-        };
-        useAppStore.getState().addAttachedFile(attached);
-      };
-      reader.readAsDataURL(file);
+  const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardItems = event.clipboardData?.items;
+    if (!clipboardItems || clipboardItems.length === 0) {
+      return;
     }
-  }, [activeEntry, providerModels]);
+    const imageFiles = extractClipboardImageFiles(clipboardItems);
+    if (imageFiles.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    addBrowserFileAttachments(imageFiles);
+  }, [addBrowserFileAttachments]);
 
   const handleModelSelect = useCallback((modelId: string) => {
     useAppStore.getState().setActiveModelId(modelId);
@@ -481,21 +842,19 @@ export function ChatInput({
       )}
       {showSlash && (
         <SlashCommandPanel
-          query={text}
-          commands={slashCommands}
+          query={slashPanelQuery}
+          commands={slashPanelCommands}
           onSelect={(command) => {
             command.action();
-            if (command.name === "goal") {
-              setMode("goal");
-            } else if (command.name === "modify") {
-              // /modify 仅设状态，不发送消息；用户输入修改描述后 submit
-            } else if (command.name === "plan" || command.name === "help" || command.name === "compact") {
+            if (command.name === "plan" || command.name === "help" || command.name === "compact") {
               if (!goalRunning) {
                 onSend(`/${command.name}`, mode, []);
               }
+              setText("");
             }
-            setText("");
-            setShowSlash(false);
+            if (command.closeOnSelect !== false) {
+              setShowSlash(false);
+            }
           }}
           onClose={() => setShowSlash(false)}
         />
@@ -582,7 +941,6 @@ export function ChatInput({
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           {isGeneralMode ? (
             <div className="inline-flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] px-3 py-1">
-              <IconMessage2 size={12} stroke={1.8} className="text-[var(--accent)]" />
               <span className="text-[11px] font-medium text-[var(--chat-prose)]">
                 {intl.formatMessage({ id: "chat.mode.chat" })}
               </span>
@@ -599,7 +957,6 @@ export function ChatInput({
                   : "text-[var(--chat-muted)] hover:text-[var(--chat-prose)]"
               }`}
             >
-              <IconMessage2 size={12} stroke={1.8} />
               {intl.formatMessage({ id: "chat.mode.chat" })}
             </button>
             <button
@@ -641,7 +998,7 @@ export function ChatInput({
               </button>
 
               {showRobotMenu && (
-                <div className="absolute left-0 top-full z-30 mt-1 min-w-[200px] rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] py-1 shadow-lg">
+                <div className="absolute left-0 bottom-full z-30 mb-1 w-[180px] max-h-[200px] overflow-y-auto rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] py-1 shadow-lg">
                   <button
                     onClick={() => {
                       setSelectedRobotId(null);
@@ -666,14 +1023,7 @@ export function ChatInput({
                       }`}
                     >
                       <IconRobot size={13} stroke={1.6} className="shrink-0 opacity-70" />
-                      <div className="min-w-0">
-                        <span className="block truncate font-medium">{robot.name}</span>
-                        {robot.description && (
-                          <span className="block truncate text-[11px] text-[var(--text-faint)]">
-                            {robot.description}
-                          </span>
-                        )}
-                      </div>
+                      <span className="truncate font-medium">{robot.name}</span>
                     </button>
                   ))}
                   <div className="my-1 border-t border-[var(--chat-line)]" />
@@ -716,6 +1066,21 @@ export function ChatInput({
                   <p className="truncate text-[11px] text-[var(--chat-prose)]">{file.name}</p>
                   <p className="text-[11px] text-[var(--chat-faint)]">{formatSize(file.size)}</p>
                 </div>
+                {file.sourcePath && !file.type.startsWith("image/") && (
+                  <button
+                    type="button"
+                    onClick={() => handleAddToSmartBrain(file, idx)}
+                    disabled={smartBrainAdded.has(idx)}
+                    className={`absolute -left-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full shadow transition-opacity group-hover:opacity-100 ${
+                      smartBrainAdded.has(idx)
+                        ? "bg-[var(--accent)] text-white opacity-100"
+                        : "bg-[var(--chat-card-solid)] text-[var(--chat-faint)] opacity-0 hover:text-[var(--accent)]"
+                    }`}
+                    title={intl.formatMessage({ id: smartBrainAdded.has(idx) ? "chat.addedToSmartBrain" : "chat.addToSmartBrain" })}
+                  >
+                    <IconBrain size={10} stroke={2} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleRemoveFile(idx)}
@@ -754,7 +1119,16 @@ export function ChatInput({
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onInput={handleInput}
-            placeholder={intl.formatMessage({ id: robotModifyMode ? "chat.robot.modifyPlaceholder" : robotCreateMode ? "chat.robot.placeholder" : "chat.placeholder" })}
+            onPaste={handlePaste}
+            placeholder={intl.formatMessage({
+              id: isStreaming || goalRunning
+                ? "chat.aiResponding"
+                : robotModifyMode
+                  ? "chat.robot.modifyPlaceholder"
+                  : robotCreateMode
+                    ? "chat.robot.placeholder"
+                    : "chat.inputPlaceholder",
+            })}
             disabled={disabled}
             rows={2}
             className="chat-composer-input max-h-[200px] min-h-[78px] w-full flex-1 resize-none bg-transparent py-2 text-[13px] leading-relaxed text-[var(--chat-prose)] placeholder:text-[var(--chat-faint)] outline-none disabled:opacity-50"
@@ -824,6 +1198,12 @@ export function ChatInput({
             </button>
           </div>
           <div className="flex min-w-0 items-center gap-2">
+            {contextUsedTokens > 0 && modelContextWindow > 0 && (
+              <ContextUsageRing usedTokens={contextUsedTokens} windowTokens={modelContextWindow} />
+            )}
+            <span className="hidden text-[var(--chat-faint)] sm:inline">
+              {intl.formatMessage({ id: "chat.inputHint" })}
+            </span>
             {cwdLeaf && (
               <span className="flex min-w-0 items-center gap-1 truncate" title={workspaceCwd ?? undefined}>
                 <IconFolder size={12} stroke={1.8} className="flex-shrink-0" />
@@ -835,6 +1215,69 @@ export function ChatInput({
         </div>
       </div>
     </div>
+  );
+}
+
+function ContextUsageRing({
+  usedTokens,
+  windowTokens,
+}: {
+  usedTokens: number;
+  windowTokens: number;
+}) {
+  const intl = useIntl();
+  const ratio = Math.max(0, Math.min(1, usedTokens / windowTokens));
+  const radius = 7;
+  const strokeWidth = 2;
+  const normalizedRadius = radius - strokeWidth / 2;
+  const circumference = 2 * Math.PI * normalizedRadius;
+  const dashOffset = circumference * (1 - ratio);
+  const formatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+  const percentage = ratio * 100;
+  const percentageText = percentage >= 99.95
+    ? "100%"
+    : `${percentage.toFixed(percentage < 10 ? 1 : 0)}%`;
+  const progressColor = ratio >= 0.9
+    ? "var(--danger)"
+    : ratio >= 0.75
+      ? "var(--warning)"
+      : "var(--accent)";
+
+  return (
+    <span
+      className="flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] px-2 py-0.5 text-[var(--chat-muted)]"
+      title={intl.formatMessage(
+        { id: "chat.contextUsage" },
+        {
+          used: formatter.format(usedTokens),
+          total: formatter.format(windowTokens),
+        },
+      )}
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+        <circle
+          cx="8"
+          cy="8"
+          r={normalizedRadius}
+          fill="none"
+          stroke="var(--chat-line)"
+          strokeWidth={strokeWidth}
+        />
+        <circle
+          cx="8"
+          cy="8"
+          r={normalizedRadius}
+          fill="none"
+          stroke={progressColor}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={`${circumference} ${circumference}`}
+          strokeDashoffset={dashOffset}
+          transform="rotate(-90 8 8)"
+        />
+      </svg>
+      <span className="font-mono tabular-nums">{percentageText}</span>
+    </span>
   );
 }
 
@@ -921,4 +1364,69 @@ function parseGoalTokenBudget(value: string): number | undefined {
       : 1;
   const tokens = Math.round(base * multiplier);
   return tokens > 0 ? tokens : undefined;
+}
+
+export interface ParsedSkillCommand {
+  skillId: string;
+  objective: string;
+}
+
+export function parseSkillCommand(value: string): ParsedSkillCommand | null {
+  const match = value.trim().match(/^\/skill(?:\s+(\S+))(?:\s+([\s\S]+))?$/i);
+  if (!match) {
+    return null;
+  }
+  return {
+    skillId: match[1].trim(),
+    objective: match[2]?.trim() ?? "",
+  };
+}
+
+export function parseSkillSelectionQuery(value: string): string | null {
+  const match = value.trim().match(/^\/skill(?:\s+([\s\S]*))?$/i);
+  if (!match) {
+    return null;
+  }
+  const body = match[1]?.trim() ?? "";
+  if (!body) {
+    return "";
+  }
+  if (/\s/.test(body)) {
+    return null;
+  }
+  return body;
+}
+
+export function buildSkillScopedPrompt(skillId: string, objective: string): string {
+  const normalizedSkillId = skillId.trim();
+  const normalizedObjective = objective.trim();
+  if (!normalizedObjective) {
+    return normalizedObjective;
+  }
+  return `Please prioritize skill "${normalizedSkillId}", then complete the following:\n${normalizedObjective}`;
+}
+
+export interface ParsedModifyRobotCommand {
+  objective: string;
+}
+
+export function parseModifyRobotCommand(value: string): ParsedModifyRobotCommand | null {
+  const match = value.trim().match(/^\/(?:modifyrobot|modify)(?:\s+([\s\S]+))?$/i);
+  if (!match) {
+    return null;
+  }
+  return {
+    objective: match[1]?.trim() ?? "",
+  };
+}
+
+export function shouldShowSlashPanel(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("/")) {
+    return false;
+  }
+  if (parseSkillSelectionQuery(trimmed) != null) {
+    return true;
+  }
+  return !trimmed.includes(" ");
 }

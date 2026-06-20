@@ -59,6 +59,25 @@ export interface FileChangePatchUpdated {
   changes?: PatchProgressChange[];
 }
 
+export interface FileReviewReady {
+  threadId?: string;
+  itemId?: string;
+  callId?: string;
+  fileCount?: number;
+}
+
+export interface FileReviewUpdated {
+  threadId?: string;
+  callId?: string;
+  status?: "updated" | "applied" | "cancelled" | "failed";
+  message?: string;
+  changedFiles?: Array<{ path: string; action: string }>;
+}
+
+export interface DocumentDetailInsertSnippet {
+  snippet?: string;
+}
+
 export interface ThreadStartedNotification {
   thread: {
     id: string;
@@ -112,6 +131,9 @@ export type ServerEventName =
   | "command-output-delta"
   | "file-change-output-delta"
   | "file-change-patch-updated"
+  | "file-review-ready"
+  | "file-review-updated"
+  | "document-detail-insert-snippet"
   | "reasoning-text-delta"
   | "reasoning-summary-delta"
   | "plan-delta"

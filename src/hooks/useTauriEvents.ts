@@ -1,10 +1,14 @@
 import { useEffect } from "react";
+import { useIntl, type IntlShape } from "react-intl";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { fileReviewGet } from "../api/fileReview";
 import {
   createRunSummaryMessage,
   useAppStore,
   type ChatMode,
   type FileChange,
+  type FileChangeSnapshot,
+  type PendingFileReview,
   type PatchProgressChange,
   type RunSummary,
   type ThreadGoal,
@@ -24,6 +28,7 @@ interface TurnEventPayload {
     completedAt?: number;
     durationMs?: number;
     changedFiles?: FileChange[];
+    changedFileSnapshots?: FileChangeSnapshot[];
     usage?: TokenUsage | null;
     goalBudgetTokens?: number | null;
     budgetLimited?: boolean | null;
@@ -48,10 +53,32 @@ function runSummaryFromTurn(turn: TurnEventPayload["turn"]): RunSummary | null {
     completedAt: toTimestamp(turn.completedAt),
     durationMs: turn.durationMs,
     changedFiles: turn.changedFiles ?? [],
+    changedFileSnapshots: normalizeFileChangeSnapshots(turn.changedFileSnapshots),
     usage: normalizeTokenUsage(turn.usage),
     goalBudgetTokens: normalizeTokenBudget(turn.goalBudgetTokens),
     budgetLimited: Boolean(turn.budgetLimited),
   };
+}
+
+function normalizeFileChangeSnapshots(
+  snapshots?: FileChangeSnapshot[] | null,
+): FileChangeSnapshot[] | undefined {
+  if (!Array.isArray(snapshots) || snapshots.length === 0) {
+    return undefined;
+  }
+
+  const normalized = snapshots
+    .map((snapshot) => ({
+      path: String(snapshot.path ?? "").trim(),
+      action: String(snapshot.action ?? "modified").trim() || "modified",
+      beforeContent:
+        typeof snapshot.beforeContent === "string" ? snapshot.beforeContent : undefined,
+      afterContent:
+        typeof snapshot.afterContent === "string" ? snapshot.afterContent : undefined,
+    }))
+    .filter((snapshot) => snapshot.path.length > 0);
+
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined {
@@ -62,7 +89,15 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const promptTokens = Number(usage.promptTokens ?? 0);
   const completionTokens = Number(usage.completionTokens ?? 0);
   const totalTokens = Number(usage.totalTokens ?? promptTokens + completionTokens);
-  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0) {
+  const callCount = Number(usage.callCount ?? 0);
+  const lastSinglePromptTokens = Number(usage.lastSinglePromptTokens ?? 0);
+  if (
+    promptTokens <= 0 &&
+    completionTokens <= 0 &&
+    totalTokens <= 0 &&
+    callCount <= 0 &&
+    lastSinglePromptTokens <= 0
+  ) {
     return undefined;
   }
 
@@ -70,6 +105,10 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     promptTokens: Math.max(0, promptTokens),
     completionTokens: Math.max(0, completionTokens),
     totalTokens: Math.max(0, totalTokens),
+    ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
+    ...(lastSinglePromptTokens > 0
+      ? { lastSinglePromptTokens: Math.max(0, Math.round(lastSinglePromptTokens)) }
+      : {}),
   };
 }
 
@@ -81,28 +120,31 @@ function normalizeTokenBudget(value?: number | null): number | undefined {
   return Math.floor(budget);
 }
 
-function toolActivityLabel(calls: Array<{ name: string; arguments: string }>): string {
-  if (calls.length === 0) return "正在执行...";
+function toolActivityLabel(
+  calls: Array<{ name: string; arguments: string }>,
+  intl: IntlShape,
+): string {
+  if (calls.length === 0) return intl.formatMessage({ id: "tool.executing" });
   const first = calls[0];
   const base = first.name;
   const labelMap: Record<string, string> = {
-    shell: "执行命令",
-    shell_command: "执行命令",
-    exec_command: "执行命令",
-    read_file: "读取文件",
-    write_file: "写入文件",
-    apply_patch: "修改文件",
-    list_directory: "浏览目录",
-    tool_search: "搜索",
-    code_review: "代码审查",
-    browser_run: "浏览网页",
-    image_generate: "生成图片",
-    view_image: "查看图片",
-    spawn_agent: "启动子任务",
-    update_plan: "更新计划",
+    shell: intl.formatMessage({ id: "tool.shell" }),
+    shell_command: intl.formatMessage({ id: "tool.shell" }),
+    exec_command: intl.formatMessage({ id: "tool.shell" }),
+    read_file: intl.formatMessage({ id: "tool.readFile" }),
+    write_file: intl.formatMessage({ id: "tool.writeFile" }),
+    apply_patch: intl.formatMessage({ id: "tool.applyPatch" }),
+    list_directory: intl.formatMessage({ id: "tool.listDirectory" }),
+    tool_search: intl.formatMessage({ id: "tool.search" }),
+    code_review: intl.formatMessage({ id: "tool.codeReview" }),
+    browser_run: intl.formatMessage({ id: "tool.browserRun" }),
+    image_generate: intl.formatMessage({ id: "tool.imageGenerate" }),
+    view_image: intl.formatMessage({ id: "tool.viewImage" }),
+    spawn_agent: intl.formatMessage({ id: "tool.spawnAgent" }),
+    update_plan: intl.formatMessage({ id: "tool.updatePlan" }),
   };
   const desc = base.startsWith("mcp__")
-    ? "调用 MCP 工具"
+    ? intl.formatMessage({ id: "tool.mcpCall" })
     : (labelMap[base] ?? base);
   const detail = toolDisplayLabel(first.name, first.arguments);
   const suffix = calls.length > 1 ? ` (+${calls.length - 1})` : "";
@@ -281,6 +323,42 @@ function normalizePatchProgressChanges(payload: {
   return [];
 }
 
+function normalizePendingFileReview(
+  review: Awaited<ReturnType<typeof fileReviewGet>>,
+): PendingFileReview {
+  const files: PendingFileReview["files"] = [];
+  if (Array.isArray(review.files)) {
+    for (const file of review.files) {
+      const path = typeof file.path === "string" ? file.path.trim() : "";
+      if (!path) {
+        continue;
+      }
+      files.push({
+        path,
+        action: typeof file.action === "string" ? file.action : "modified",
+        moveTo: typeof file.moveTo === "string" ? file.moveTo : undefined,
+        baseContent: typeof file.baseContent === "string" ? file.baseContent : undefined,
+        candidateContent:
+          typeof file.candidateContent === "string" ? file.candidateContent : undefined,
+        editedContent: typeof file.editedContent === "string" ? file.editedContent : undefined,
+        keep: file.keep !== false,
+      });
+    }
+  }
+
+  return {
+    threadId: review.threadId,
+    callId: review.callId,
+    rawPatch: typeof review.rawPatch === "string" ? review.rawPatch : "",
+    createdAtMs: Number(review.createdAtMs ?? Date.now()),
+    updatedAtMs: Number(review.updatedAtMs ?? Date.now()),
+    files,
+    selectedPath: files[0]?.path ?? null,
+    keepAll: files.length > 0 && files.every((file) => file.keep),
+    status: "pending",
+  };
+}
+
 function parseBrowserRunOutput(output?: string): {
   title?: string;
   finalUrl?: string;
@@ -302,7 +380,34 @@ function parseBrowserRunOutput(output?: string): {
   }
 }
 
+function optionIsRecommended(option: Record<string, unknown>): boolean {
+  if (option.recommended === true || option.isRecommended === true) {
+    return true;
+  }
+  const label = typeof option.label === "string" ? option.label : "";
+  const description = typeof option.description === "string" ? option.description : "";
+  const lowered = `${label} ${description}`.toLowerCase();
+  return lowered.includes("recommended") || label.includes("推荐") || description.includes("推荐");
+}
+
+function preferredQuestionOptionLabel(question: Record<string, unknown>): string {
+  const options = Array.isArray(question.options)
+    ? question.options.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    : [];
+  if (options.length === 0) {
+    return "";
+  }
+  const recommended = options.find(optionIsRecommended);
+  if (recommended && typeof recommended.label === "string" && recommended.label.trim()) {
+    return recommended.label;
+  }
+  const first = options.find((option) => typeof option.label === "string" && option.label.trim());
+  return typeof first?.label === "string" ? first.label : "";
+}
+
 export function useTauriEvents() {
+  const intl = useIntl();
+
   useEffect(() => {
     let cancelled = false;
     const unlisten: UnlistenFn[] = [];
@@ -316,11 +421,11 @@ export function useTauriEvents() {
           }
           const currentLen = store.streamingText.length;
           if (currentLen === 0) {
-            store.setStreamingLabel("正在生成响应...");
+            store.setStreamingLabel(intl.formatMessage({ id: "streaming.generating" }));
           } else if (currentLen > 200 && currentLen <= 220) {
-            store.setStreamingLabel("正在组织答案结构...");
+            store.setStreamingLabel(intl.formatMessage({ id: "streaming.structuring" }));
           } else if (currentLen > 800 && currentLen <= 820) {
-            store.setStreamingLabel("正在汇总信息...");
+            store.setStreamingLabel(intl.formatMessage({ id: "streaming.summarizing" }));
           }
           store.appendStreamingText(e.payload.delta);
         }),
@@ -335,7 +440,7 @@ export function useTauriEvents() {
             store.setCurrentTurnId(e.payload.turn?.id ?? null);
             store.setStreaming(true);
             store.clearStreamingText();
-            store.setStreamingLabel("正在处理请求...");
+            store.setStreamingLabel(intl.formatMessage({ id: "streaming.processing" }));
             if ("goal" in e.payload) {
               store.setCurrentGoal(e.payload.goal ?? null);
             }
@@ -446,7 +551,7 @@ export function useTauriEvents() {
             timestamp: Date.now(),
             toolCalls: items,
           });
-          store.setStreamingLabel(toolActivityLabel(e.payload.calls));
+          store.setStreamingLabel(toolActivityLabel(e.payload.calls, intl));
         }),
 
         listen<{ threadId: string; callId?: string; tool: string; exitCode?: number; output?: string }>(
@@ -513,6 +618,80 @@ export function useTauriEvents() {
           if (changes.length) {
             useAppStore.getState().updateToolCallPatchProgress(toolId, changes);
           }
+        }),
+
+        listen<{
+          threadId?: string;
+          callId?: string;
+          itemId?: string;
+        }>("file-review-ready", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
+          const threadId = e.payload.threadId;
+          const callId = e.payload.callId ?? e.payload.itemId;
+          if (!threadId || !callId) {
+            return;
+          }
+          // 后端只广播“审阅就绪”的轻量事件，完整内容在此按需拉取，
+          // 避免大文件内容直接随事件广播导致前端卡顿。
+          void fileReviewGet(threadId, callId)
+            .then((review) => {
+              const latestStore = useAppStore.getState();
+              if (threadId && latestStore.currentThreadId && threadId !== latestStore.currentThreadId) {
+                return;
+              }
+              latestStore.upsertPendingFileReview(normalizePendingFileReview(review));
+            })
+            .catch((err) => {
+              console.error("[event] file-review-ready: fetch review failed", err);
+            });
+        }),
+
+        listen<{
+          threadId?: string;
+          callId?: string;
+          status?: string;
+          message?: string;
+        }>("file-review-updated", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
+          const callId = e.payload.callId;
+          if (!callId) {
+            return;
+          }
+          // 统一处理后端状态机事件：updated/applied/cancelled/failed。
+          // 这样即使用户在别的入口触发 apply/cancel，本地 UI 也能实时收敛。
+          switch (e.payload.status) {
+            case "updated":
+              store.setPendingFileReviewStatus(callId, "pending");
+              break;
+            case "applied":
+            case "cancelled":
+              store.removePendingFileReview(callId);
+              break;
+            case "failed":
+              store.setPendingFileReviewStatus(
+                callId,
+                "failed",
+                e.payload.message ?? "Review apply failed.",
+              );
+              break;
+            default:
+              break;
+          }
+        }),
+
+        listen<{ snippet?: string }>("document-detail-insert-snippet", (e) => {
+          const snippet = e.payload.snippet;
+          if (!snippet || !snippet.trim()) {
+            return;
+          }
+          // 详情窗只负责产生片段，真正写入输入框仍复用主窗既有 queue/consume 链路。
+          useAppStore.getState().queueComposerInsert(snippet);
         }),
 
         listen<{ threadId: string; results: Array<{ id: string; tool: string; success: boolean; interrupted?: boolean }> }>(
@@ -582,7 +761,7 @@ export function useTauriEvents() {
             return;
           }
 
-          // 自动审批 + 用户输入：如果所有问题都有选项，自动选择推荐项（第一个选项）
+          // 自动审批 + 用户输入：优先选推荐项，未标记时回退到首项
           if (useAppStore.getState().autoApprove && isUserInput) {
             const questions = e.payload.params?.questions;
             if (
@@ -594,15 +773,26 @@ export function useTauriEvents() {
               )
             ) {
               const reqId = e.payload.requestId ?? e.payload.id ?? "";
+              const answerEntries: Array<[string, { answers: string[] }]> = [];
+              questions.forEach((q: Record<string, unknown>) => {
+                const questionId = typeof q.id === "string" ? q.id : "";
+                if (!questionId) {
+                  return;
+                }
+                const preferredLabel = preferredQuestionOptionLabel(q);
+                if (!preferredLabel) {
+                  return;
+                }
+                answerEntries.push([questionId, { answers: [preferredLabel] }]);
+              });
+              if (answerEntries.length !== questions.length) {
+                window.dispatchEvent(
+                  new CustomEvent("cn-codex:server-request", { detail: e.payload }),
+                );
+                return;
+              }
               const answers = Object.fromEntries(
-                questions.map((q: Record<string, unknown>) => [
-                  q.id,
-                  {
-                    answers: [
-                      (q.options as Array<Record<string, string>>)[0].label,
-                    ],
-                  },
-                ]),
+                answerEntries,
               );
               resolveApproval(reqId, { answers }).catch((err) =>
                 console.error("Auto-approve user input failed:", err),
@@ -648,5 +838,5 @@ export function useTauriEvents() {
       cancelled = true;
       unlisten.forEach((fn) => fn());
     };
-  }, []);
+  }, [intl]);
 }

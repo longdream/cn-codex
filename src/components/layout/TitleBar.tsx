@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useIntl } from "react-intl";
 import {
   windowClose,
   windowMinimize,
@@ -21,6 +22,7 @@ function runWindowAction(action: () => Promise<void>, label: string) {
 }
 
 export function TitleBar() {
+  const intl = useIntl();
   const rightPanelVisible = useAppStore((s) => s.rightPanelVisible);
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
@@ -54,7 +56,7 @@ export function TitleBar() {
         <div className="relative">
           <button
             type="button"
-            aria-label="Mobile QR Code"
+            aria-label={intl.formatMessage({ id: "titleBar.qrCode" })}
             onClick={() => setShowQr(!showQr)}
             className={`flex h-full w-11 items-center justify-center transition-colors ${
               showQr
@@ -68,7 +70,7 @@ export function TitleBar() {
         </div>
         <button
           type="button"
-          aria-label="Toggle project panel"
+          aria-label={intl.formatMessage({ id: "titleBar.togglePanel" })}
           onClick={() => {
             if (rightPanelVisible && rightPanelTab === "project") {
               setRightPanelVisible(false);
@@ -86,7 +88,7 @@ export function TitleBar() {
         </button>
         <button
           type="button"
-          aria-label="Minimize window"
+          aria-label={intl.formatMessage({ id: "titleBar.minimize" })}
           onClick={() => runWindowAction(windowMinimize, "minimize")}
           className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)]"
         >
@@ -96,7 +98,7 @@ export function TitleBar() {
         </button>
         <button
           type="button"
-          aria-label="Maximize window"
+          aria-label={intl.formatMessage({ id: "titleBar.maximize" })}
           onClick={() =>
             runWindowAction(windowToggleMaximize, "toggle maximize")
           }
@@ -115,7 +117,7 @@ export function TitleBar() {
         </button>
         <button
           type="button"
-          aria-label="Close window"
+          aria-label={intl.formatMessage({ id: "titleBar.close" })}
           onClick={() => runWindowAction(windowClose, "close")}
           className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[#e81123] hover:text-white"
         >

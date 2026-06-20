@@ -74,7 +74,13 @@ impl ConversationLogger {
         let date = Utc::now().format("%Y-%m-%d");
         let safe_id: String = thread_id
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         self.log_dir.join(format!("{safe_id}_{date}.jsonl"))
     }
@@ -95,7 +101,10 @@ impl ConversationLogger {
                 }
             }
             Err(e) => {
-                warn!("Failed to open conversation log file {}: {e}", path.display());
+                warn!(
+                    "Failed to open conversation log file {}: {e}",
+                    path.display()
+                );
             }
         }
     }

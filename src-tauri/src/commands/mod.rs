@@ -1,15 +1,13 @@
-pub mod account;
 pub mod app_state;
 pub mod approval;
-pub mod config;
+pub mod file_review;
+pub mod git;
 pub mod hook;
 pub mod mobile;
-pub mod model;
 pub mod plugin;
 pub mod robot;
+pub mod rules;
 pub mod skill;
-pub mod thread;
-pub mod turn;
 pub mod usage;
 pub mod window;
 
@@ -17,21 +15,20 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::error::AppResult;
+use crate::protocol::ThreadArchiveParams;
 use crate::state::AppState;
 
-pub use account::*;
 pub use app_state::*;
 pub use approval::*;
-pub use config::*;
+pub use file_review::*;
+pub use git::*;
 pub use hook::*;
-pub use model::*;
+pub use mobile::*;
 pub use plugin::*;
 pub use robot::*;
+pub use rules::*;
 pub use skill::*;
-pub use thread::*;
-pub use turn::*;
 pub use usage::*;
-pub use mobile::*;
 pub use window::*;
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +65,15 @@ pub(crate) fn normalize_windows_verbatim_prefix(raw: &str) -> String {
     {
         raw.trim().to_string()
     }
+}
+
+#[tauri::command]
+pub async fn thread_archive(
+    state: State<'_, AppState>,
+    params: ThreadArchiveParams,
+) -> AppResult<serde_json::Value> {
+    state.thread_store.delete_thread(&params.thread_id).await?;
+    Ok(serde_json::json!({ "status": "ok" }))
 }
 
 #[tauri::command]

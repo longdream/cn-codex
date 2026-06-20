@@ -285,8 +285,11 @@ pub async fn standalone_chat(
     Ok(serde_json::json!({ "status": "ok" }))
 }
 
-fn resolve_robot_id_for_run_turn<'a>(mode: Option<&str>, robot_id: Option<&'a str>) -> Option<&'a str> {
-    if mode == Some("goal") {
+fn resolve_robot_id_for_run_turn<'a>(
+    mode: Option<&str>,
+    robot_id: Option<&'a str>,
+) -> Option<&'a str> {
+    if matches!(mode, Some("goal" | "robot-modify")) {
         robot_id
     } else {
         None
@@ -336,14 +339,22 @@ mod tests {
     use super::resolve_robot_id_for_run_turn;
 
     #[test]
-    fn resolve_robot_id_for_run_turn_only_enables_in_goal_mode() {
+    fn resolve_robot_id_for_run_turn_enables_in_goal_and_robot_modify_modes() {
         assert_eq!(
             resolve_robot_id_for_run_turn(Some("chat"), Some("robot-a")),
+            None
+        );
+        assert_eq!(
+            resolve_robot_id_for_run_turn(Some("robot-create"), Some("robot-a")),
             None
         );
         assert_eq!(resolve_robot_id_for_run_turn(Some("goal"), None), None);
         assert_eq!(
             resolve_robot_id_for_run_turn(Some("goal"), Some("robot-a")),
+            Some("robot-a")
+        );
+        assert_eq!(
+            resolve_robot_id_for_run_turn(Some("robot-modify"), Some("robot-a")),
             Some("robot-a")
         );
     }

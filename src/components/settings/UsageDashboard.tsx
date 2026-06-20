@@ -69,7 +69,7 @@ export function UsageDashboard() {
     return (
       <div className="flex items-center justify-center py-12">
         <div className="animate-pulse text-sm text-[var(--text-muted)]">
-          {intl.formatMessage({ id: "usage.loading", defaultMessage: "加载用量数据..." })}
+          {intl.formatMessage({ id: "usage.loading" })}
         </div>
       </div>
     );
@@ -80,7 +80,7 @@ export function UsageDashboard() {
       {/* 时间范围选择器 */}
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold text-[var(--text-strong)]">
-          {intl.formatMessage({ id: "usage.title", defaultMessage: "用量概览" })}
+          {intl.formatMessage({ id: "usage.title" })}
         </h4>
         <div className="flex gap-1 rounded-lg bg-[var(--surface-soft)] p-0.5">
           {(["7d", "30d", "all"] as TimeRange[]).map((range) => (
@@ -94,10 +94,10 @@ export function UsageDashboard() {
               }`}
             >
               {range === "7d"
-                ? intl.formatMessage({ id: "usage.range.7d", defaultMessage: "7 天" })
+                ? intl.formatMessage({ id: "usage.range.7d" })
                 : range === "30d"
-                  ? intl.formatMessage({ id: "usage.range.30d", defaultMessage: "30 天" })
-                  : intl.formatMessage({ id: "usage.range.all", defaultMessage: "全部" })}
+                  ? intl.formatMessage({ id: "usage.range.30d" })
+                  : intl.formatMessage({ id: "usage.range.all" })}
             </button>
           ))}
         </div>
@@ -107,19 +107,19 @@ export function UsageDashboard() {
       {stats && (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <StatCard
-            label={intl.formatMessage({ id: "usage.totalRequests", defaultMessage: "总请求数" })}
+            label={intl.formatMessage({ id: "usage.totalRequests" })}
             value={formatNumber(stats.totalRequests)}
           />
           <StatCard
-            label={intl.formatMessage({ id: "usage.totalTokens", defaultMessage: "总 Token" })}
+            label={intl.formatMessage({ id: "usage.totalTokens" })}
             value={formatNumber(stats.totalTokens)}
           />
           <StatCard
-            label={intl.formatMessage({ id: "usage.inputTokens", defaultMessage: "输入 Token" })}
+            label={intl.formatMessage({ id: "usage.inputTokens" })}
             value={formatNumber(stats.totalPromptTokens)}
           />
           <StatCard
-            label={intl.formatMessage({ id: "usage.totalCost", defaultMessage: "总费用" })}
+            label={intl.formatMessage({ id: "usage.totalCost" })}
             value={formatCost(stats.totalCostUsd)}
             highlight
           />
@@ -128,11 +128,11 @@ export function UsageDashboard() {
 
       {/* 每日趋势 */}
       {dailyUsage.length > 0 && (
-        <section className="settings-card space-y-3">
+        <section className="settings-card space-y-3 overflow-visible">
           <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            {intl.formatMessage({ id: "usage.dailyTrend", defaultMessage: "每日趋势" })}
+            {intl.formatMessage({ id: "usage.dailyTrend" })}
           </h4>
-          <div className="overflow-x-auto">
+          <div className="relative pt-14">
             <div className="flex items-end gap-1" style={{ minHeight: "80px" }}>
               {dailyUsage.map((day) => {
                 const maxTokens = Math.max(...dailyUsage.map((d) => d.totalTokens), 1);
@@ -144,7 +144,7 @@ export function UsageDashboard() {
                     style={{ flex: "1 1 0" }}
                   >
                     {/* tooltip */}
-                    <div className="pointer-events-none absolute -top-16 left-1/2 z-10 hidden -translate-x-1/2 rounded-md bg-[var(--surface-elevated)] px-2 py-1 text-[11px] shadow-lg group-hover:block">
+                    <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--surface-elevated)] px-2 py-1 text-[11px] shadow-lg group-hover:block">
                       <div className="font-medium text-[var(--text-strong)]">{day.date}</div>
                       <div className="text-[var(--text-muted)]">
                         {formatNumber(day.totalTokens)} tokens
@@ -168,7 +168,7 @@ export function UsageDashboard() {
       {modelUsage.length > 0 && (
         <section className="settings-card space-y-3">
           <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            {intl.formatMessage({ id: "usage.byModel", defaultMessage: "按模型统计" })}
+            {intl.formatMessage({ id: "usage.byModel" })}
           </h4>
           <div className="space-y-2">
             {modelUsage.map((item) => (
@@ -184,7 +184,7 @@ export function UsageDashboard() {
                   <span className="text-[11px] text-[var(--text-faint)]">({item.provider})</span>
                 </div>
                 <div className="flex items-center gap-4 text-xs text-[var(--text-muted)]">
-                  <span>{item.requests} 次</span>
+                  <span>{intl.formatMessage({ id: "usage.requestCount" }, { count: item.requests })}</span>
                   <span>{formatNumber(item.totalTokens)} tokens</span>
                   <span className="font-medium text-[var(--text-strong)]">
                     {formatCost(item.costUsd)}
@@ -201,10 +201,7 @@ export function UsageDashboard() {
         <div className="flex flex-col items-center justify-center py-12 text-center">
           <div className="mb-2 text-3xl opacity-30">📊</div>
           <p className="text-sm text-[var(--text-muted)]">
-            {intl.formatMessage({
-              id: "usage.empty",
-              defaultMessage: "暂无用量数据，开始对话后将自动记录",
-            })}
+            {intl.formatMessage({ id: "usage.empty" })}
           </p>
         </div>
       )}

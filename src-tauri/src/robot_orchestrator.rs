@@ -16,8 +16,14 @@ pub const ROBOT_NODE_DONE_SENTINEL: &str = "<workflow_node_done/>";
 /// - Completed: 全部节点完成，机器人运行态已清理。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeProgressResult {
-    ContinueCurrent { state: ThreadRobotState, nudge: String },
-    Advanced { state: ThreadRobotState, nudge: String },
+    ContinueCurrent {
+        state: ThreadRobotState,
+        nudge: String,
+    },
+    Advanced {
+        state: ThreadRobotState,
+        nudge: String,
+    },
     Completed,
 }
 
@@ -248,8 +254,10 @@ impl RobotOrchestrator {
         }
 
         if !node_done_signal {
-            let nudge =
-                build_robot_node_completion_nudge(state.current_node_index, state.runtime_nodes.len());
+            let nudge = build_robot_node_completion_nudge(
+                state.current_node_index,
+                state.runtime_nodes.len(),
+            );
             return Ok(NodeProgressResult::ContinueCurrent { state, nudge });
         }
 
@@ -273,7 +281,8 @@ impl RobotOrchestrator {
         self.bind_goal_to_current_node(thread_store, thread_id, &state)
             .await?;
 
-        let nudge = build_robot_node_advance_prompt(state.current_node_index, state.runtime_nodes.len());
+        let nudge =
+            build_robot_node_advance_prompt(state.current_node_index, state.runtime_nodes.len());
         Ok(NodeProgressResult::Advanced { state, nudge })
     }
 
@@ -289,7 +298,9 @@ impl RobotOrchestrator {
             .runtime_nodes
             .get(state.current_node_index)
             .cloned()
-            .ok_or_else(|| AppError::Custom("Current robot node objective is missing".to_string()))?;
+            .ok_or_else(|| {
+                AppError::Custom("Current robot node objective is missing".to_string())
+            })?;
 
         let has_goal = thread_store
             .get_thread(thread_id)
@@ -342,8 +353,11 @@ pub fn build_robot_node_advance_prompt(next_node_index: usize, total_nodes: usiz
 pub fn build_robot_node_completion_nudge(current_node_index: usize, total_nodes: usize) -> String {
     format!(
         "Current workflow node {}/{} is not complete yet. \
-         Continue working on the CURRENT node only, use tools to produce concrete progress, \
-         and include `{}` only when this node is fully done.",
+         Continue working on the CURRENT node only and produce concrete artifacts \
+         (analysis notes, plans, file edits, test results). Do NOT keep repeating generic \
+         requirement questions. If critical information is missing, call `request_user_input` \
+         once with specific options, then wait for user response. Include `{}` only when this \
+         node is fully done.",
         current_node_index.saturating_add(1),
         total_nodes.max(1),
         ROBOT_NODE_DONE_SENTINEL

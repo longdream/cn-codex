@@ -27,6 +27,13 @@ export interface FileChange {
   action: string;
 }
 
+export interface FileChangeSnapshot {
+  path: string;
+  action: string;
+  beforeContent?: string;
+  afterContent?: string;
+}
+
 export interface PatchProgressChange {
   path: string;
   action: string;
@@ -37,6 +44,31 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  callCount?: number;
+  lastSinglePromptTokens?: number;
+}
+
+export interface PendingFileReviewFile {
+  path: string;
+  action: string;
+  moveTo?: string;
+  baseContent?: string;
+  candidateContent?: string;
+  editedContent?: string;
+  keep: boolean;
+}
+
+export interface PendingFileReview {
+  threadId: string;
+  callId: string;
+  rawPatch: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  files: PendingFileReviewFile[];
+  selectedPath: string | null;
+  keepAll: boolean;
+  status: "pending" | "applying" | "applied" | "cancelled" | "failed";
+  error?: string;
 }
 
 export interface RunSummary {
@@ -47,6 +79,7 @@ export interface RunSummary {
   completedAt?: number;
   durationMs?: number;
   changedFiles: FileChange[];
+  changedFileSnapshots?: FileChangeSnapshot[];
   usage?: TokenUsage;
   goalBudgetTokens?: number;
   budgetLimited?: boolean;
@@ -95,8 +128,20 @@ export interface ModelEntry {
   supportsVision: boolean;
 }
 
-export type RightPanelTab = "browser" | "project" | "terminal";
+export type RightPanelTab = "browser" | "project" | "terminal" | "git";
 export type SidebarTab = "chats" | "projects";
+
+// 左侧栏宽度边界：保持目录可读，并避免过宽挤占聊天区。
+export const SIDEBAR_WIDTH_MIN = 220;
+export const SIDEBAR_WIDTH_MAX = 520;
+export const DEFAULT_SIDEBAR_WIDTH = 256;
+
+// 右侧栏宽度边界：支持 Git/终端面板信息展示，同时控制总体占比。
+export const RIGHT_PANEL_WIDTH_MIN = 320;
+export const RIGHT_PANEL_WIDTH_MAX = 760;
+export const DEFAULT_RIGHT_PANEL_WIDTH = 384;
+export const DEFAULT_MODEL_CONTEXT_LENGTH = 128000;
+export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 65535;
 
 interface RawToolCallInfo {
   id: string;
@@ -123,6 +168,7 @@ interface RawTurn {
   mode?: ChatMode | null;
   durationMs?: number | null;
   changedFiles?: FileChange[];
+  changedFileSnapshots?: FileChangeSnapshot[];
   usage?: TokenUsage | null;
   goalBudgetTokens?: number | null;
   budgetLimited?: boolean | null;
@@ -308,10 +354,32 @@ function normalizeRunSummary(turn: RawTurn): RunSummary | null {
     completedAt: turn.completedAt ? toMillis(turn.completedAt) : undefined,
     durationMs: turn.durationMs ?? undefined,
     changedFiles: turn.changedFiles ?? [],
+    changedFileSnapshots: normalizeFileChangeSnapshots(turn.changedFileSnapshots),
     usage: normalizeTokenUsage(turn.usage),
     goalBudgetTokens: normalizeTokenBudget(turn.goalBudgetTokens),
     budgetLimited: Boolean(turn.budgetLimited),
   };
+}
+
+function normalizeFileChangeSnapshots(
+  snapshots?: FileChangeSnapshot[] | null,
+): FileChangeSnapshot[] | undefined {
+  if (!Array.isArray(snapshots) || snapshots.length === 0) {
+    return undefined;
+  }
+
+  const normalized = snapshots
+    .map((snapshot) => ({
+      path: String(snapshot.path ?? "").trim(),
+      action: String(snapshot.action ?? "modified").trim() || "modified",
+      beforeContent:
+        typeof snapshot.beforeContent === "string" ? snapshot.beforeContent : undefined,
+      afterContent:
+        typeof snapshot.afterContent === "string" ? snapshot.afterContent : undefined,
+    }))
+    .filter((snapshot) => snapshot.path.length > 0);
+
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined {
@@ -322,7 +390,15 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const promptTokens = Number(usage.promptTokens ?? 0);
   const completionTokens = Number(usage.completionTokens ?? 0);
   const totalTokens = Number(usage.totalTokens ?? promptTokens + completionTokens);
-  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0) {
+  const callCount = Number(usage.callCount ?? 0);
+  const lastSinglePromptTokens = Number(usage.lastSinglePromptTokens ?? 0);
+  if (
+    promptTokens <= 0 &&
+    completionTokens <= 0 &&
+    totalTokens <= 0 &&
+    callCount <= 0 &&
+    lastSinglePromptTokens <= 0
+  ) {
     return undefined;
   }
 
@@ -330,6 +406,10 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     promptTokens: Math.max(0, promptTokens),
     completionTokens: Math.max(0, completionTokens),
     totalTokens: Math.max(0, totalTokens),
+    ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
+    ...(lastSinglePromptTokens > 0
+      ? { lastSinglePromptTokens: Math.max(0, Math.round(lastSinglePromptTokens)) }
+      : {}),
   };
 }
 
@@ -339,6 +419,34 @@ function normalizeTokenBudget(value?: number | null): number | undefined {
     return undefined;
   }
   return Math.floor(budget);
+}
+
+function normalizePendingFileReviewFiles(files: PendingFileReviewFile[]): PendingFileReviewFile[] {
+  return files.map((file) => ({
+    path: file.path.trim(),
+    action: file.action || "modified",
+    moveTo: file.moveTo,
+    baseContent: file.baseContent,
+    candidateContent: file.candidateContent,
+    editedContent: file.editedContent,
+    keep: file.keep !== false,
+  })).filter((file) => file.path.length > 0);
+}
+
+function normalizePendingFileReview(review: PendingFileReview): PendingFileReview {
+  const files = normalizePendingFileReviewFiles(review.files);
+  const keepAll = files.length > 0 && files.every((file) => file.keep);
+  const selectedPath = review.selectedPath && files.some((file) => file.path === review.selectedPath)
+    ? review.selectedPath
+    : files[0]?.path ?? null;
+  return {
+    ...review,
+    files,
+    selectedPath,
+    keepAll,
+    status: review.status ?? "pending",
+    error: review.error,
+  };
 }
 
 function normalizeThreadGoal(goal?: ApiThreadGoal | null): ThreadGoal | null {
@@ -444,6 +552,82 @@ const ACTIVE_MODEL_KEY = "active-model";
 const PROVIDERS_KEY = "providers";
 const ACTIVE_PROVIDER_KEY = "active-provider";
 const AUTO_APPROVE_KEY = "auto-approve";
+const SIDEBAR_WIDTH_KEY = "sidebar-width";
+const RIGHT_PANEL_WIDTH_KEY = "right-panel-width";
+
+type PersistedProviderRecord = Omit<ProviderConfig, "models"> & {
+  models?: Array<Partial<ProviderModel>>;
+  maxOutputTokens?: unknown;
+};
+
+function normalizePositiveInt(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+function normalizeContextLength(value: unknown): number {
+  return normalizePositiveInt(value, DEFAULT_MODEL_CONTEXT_LENGTH);
+}
+
+function normalizeModelMaxOutputTokens(
+  value: unknown,
+  fallback = DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+): number {
+  return normalizePositiveInt(value, fallback);
+}
+
+function normalizeProviderModel(
+  model: Partial<ProviderModel>,
+  fallbackMaxOutputTokens = DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+): ProviderModel {
+  const id = typeof model.id === "string" ? model.id : "";
+  const label = typeof model.label === "string" && model.label.trim() ? model.label : id;
+  return {
+    id,
+    label,
+    supportsVision: Boolean(model.supportsVision),
+    contextLength: normalizeContextLength(model.contextLength),
+    maxOutputTokens: normalizeModelMaxOutputTokens(model.maxOutputTokens, fallbackMaxOutputTokens),
+  };
+}
+
+function resolveProviderModelByEntry(
+  providers: ProviderConfig[],
+  entry: ModelEntry | undefined,
+  modelName: string,
+): { provider: ProviderConfig | null; model: ProviderModel | null } {
+  if (entry) {
+    const matchedProvider = providers.find(
+      (provider) => provider.id === entry.provider || provider.type === entry.provider,
+    );
+    if (matchedProvider) {
+      const matchedModel = matchedProvider.models.find((model) => model.id === modelName);
+      if (matchedModel) {
+        return { provider: matchedProvider, model: matchedModel };
+      }
+    }
+  }
+
+  for (const provider of providers) {
+    const matchedModel = provider.models.find((model) => model.id === modelName);
+    if (matchedModel) {
+      return { provider, model: matchedModel };
+    }
+  }
+
+  return { provider: null, model: null };
+}
+
+function modelMaxOutputTokensOrDefault(model: ProviderModel | null | undefined): number {
+  return normalizeModelMaxOutputTokens(model?.maxOutputTokens);
+}
+
+function modelContextLengthOrDefault(model: ProviderModel | null | undefined): number {
+  return normalizeContextLength(model?.contextLength);
+}
 
 /**
  * 供应商预设模板列表
@@ -481,24 +665,24 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultBaseUrl: "https://api.deepseek.com/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://platform.deepseek.com/api_keys",
     defaultModels: [
-      { id: "deepseek-chat", label: "DeepSeek Chat", supportsVision: false, contextLength: 65535 },
-      { id: "deepseek-reasoner", label: "DeepSeek Reasoner", supportsVision: false, contextLength: 65535 },
+      { id: "deepseek-chat", label: "DeepSeek Chat", supportsVision: false, contextLength: 128000 },
+      { id: "deepseek-reasoner", label: "DeepSeek Reasoner", supportsVision: false, contextLength: 128000 },
     ],
   },
   {
-    type: "volcengine", name: "火山引擎 Ark", category: "china",
+    type: "volcengine", name: "provider.preset.volcengine", category: "china",
     defaultBaseUrl: "https://ark.cn-beijing.volces.com/api/v3", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
-    defaultModels: [{ id: "deepseek-v4-pro-260425", label: "DeepSeek V4 Pro", supportsVision: false, contextLength: 65535 }],
+    defaultModels: [{ id: "deepseek-v4-pro-260425", label: "DeepSeek V4 Pro", supportsVision: false, contextLength: 128000 }],
   },
   {
-    type: "qwen", name: "通义千问", category: "china",
+    type: "qwen", name: "provider.preset.qwen", category: "china",
     defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://dashscope.console.aliyun.com/apiKey",
     defaultModels: [{ id: "qwen-max", label: "Qwen Max", supportsVision: true, contextLength: 32768 }],
   },
   {
-    type: "zhipu", name: "智谱 AI", category: "china",
+    type: "zhipu", name: "provider.preset.zhipu", category: "china",
     defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://open.bigmodel.cn/usercenter/apikeys",
     defaultModels: [{ id: "glm-4-plus", label: "GLM-4 Plus", supportsVision: true, contextLength: 128000 }],
@@ -513,10 +697,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     type: "siliconflow", name: "SiliconFlow", category: "china",
     defaultBaseUrl: "https://api.siliconflow.cn/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://cloud.siliconflow.cn/account/ak",
-    defaultModels: [{ id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3", supportsVision: false, contextLength: 65535 }],
+    defaultModels: [{ id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3", supportsVision: false, contextLength: 128000 }],
   },
   {
-    type: "baichuan", name: "百川智能", category: "china",
+    type: "baichuan", name: "provider.preset.baichuan", category: "china",
     defaultBaseUrl: "https://api.baichuan-ai.com/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://platform.baichuan-ai.com/console/apikey",
     defaultModels: [{ id: "Baichuan4", label: "Baichuan 4", supportsVision: false, contextLength: 32768 }],
@@ -531,10 +715,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     type: "lmstudio", name: "LM Studio", category: "local",
     defaultBaseUrl: "http://localhost:1234/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://lmstudio.ai/",
-    defaultModels: [{ id: "local-model", label: "Local Model", supportsVision: false, contextLength: 65535 }],
+    defaultModels: [{ id: "local-model", label: "Local Model", supportsVision: false, contextLength: 128000 }],
   },
   {
-    type: "custom", name: "自定义", category: "other",
+    type: "custom", name: "provider.preset.custom", category: "other",
     defaultBaseUrl: "", defaultWireApi: "chat", requiresOpenAIAuth: false,
     defaultModels: [],
   },
@@ -554,10 +738,11 @@ export function createProviderFromPreset(
     apiKey: overrides?.apiKey ?? "",
     wireApi: preset.defaultWireApi,
     requiresOpenAIAuth: preset.requiresOpenAIAuth,
-    models: [...preset.defaultModels],
+    models: preset.defaultModels.map((model) =>
+      normalizeProviderModel(model, DEFAULT_MODEL_MAX_OUTPUT_TOKENS),
+    ),
     isCustom: preset.type === "custom",
     createdAt: Date.now(),
-    maxOutputTokens: 131072,
   };
 }
 
@@ -601,6 +786,21 @@ function saveActiveProject(id: string | null, cwd: string | null) {
   }
 }
 
+function clampPanelWidth(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function saveSidebarWidth(width: number) {
+  void appStateSet(SIDEBAR_WIDTH_KEY, String(clampPanelWidth(width, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)));
+}
+
+function saveRightPanelWidth(width: number) {
+  void appStateSet(
+    RIGHT_PANEL_WIDTH_KEY,
+    String(clampPanelWidth(width, RIGHT_PANEL_WIDTH_MIN, RIGHT_PANEL_WIDTH_MAX)),
+  );
+}
+
 function getLeafName(path: string): string {
   const parts = path.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || path;
@@ -626,6 +826,10 @@ interface AppState {
 
   /** 输入框附件列表 */
   attachedFiles: AttachedFile[];
+  /** 由外部面板注入到输入框的待插入文本（例如代码片段） */
+  pendingComposerInsert: string | null;
+  /** apply_patch 的“写盘前审阅”会话，按 callId 建索引。 */
+  pendingFileReviews: Record<string, PendingFileReview>;
 
   projects: Project[];
   currentProjectId: string | null;
@@ -641,6 +845,8 @@ interface AppState {
   showSettings: boolean;
   rightPanelVisible: boolean;
   rightPanelTab: RightPanelTab;
+  sidebarWidth: number;
+  rightPanelWidth: number;
   browserPanelUrl: string | null;
   browserPanelTitle: string | null;
   browserPanelStatus: "idle" | "running" | "success" | "failed";
@@ -684,6 +890,8 @@ interface AppState {
   addAttachedFile: (file: AttachedFile) => void;
   removeAttachedFile: (index: number) => void;
   clearAttachedFiles: () => void;
+  queueComposerInsert: (text: string) => void;
+  consumeComposerInsert: () => string | null;
 
   userHomeDir: string | null;
   setUserHomeDir: (dir: string) => void;
@@ -711,6 +919,17 @@ interface AppState {
   addMessage: (message: ChatMessage) => void;
   updateToolCallStatus: (toolId: string, status: "success" | "failed", output?: string) => void;
   updateToolCallPatchProgress: (toolId: string, changes: PatchProgressChange[]) => void;
+  upsertPendingFileReview: (review: PendingFileReview) => void;
+  removePendingFileReview: (callId: string) => void;
+  setPendingFileReviewSelectedPath: (callId: string, path: string) => void;
+  setPendingFileReviewFileKeep: (callId: string, path: string, keep: boolean) => void;
+  setPendingFileReviewKeepAll: (callId: string, keepAll: boolean) => void;
+  setPendingFileReviewEditedContent: (callId: string, path: string, content: string) => void;
+  setPendingFileReviewStatus: (
+    callId: string,
+    status: PendingFileReview["status"],
+    error?: string,
+  ) => void;
   markRunningToolCallsInterrupted: (reason?: string) => void;
   appendStreamingText: (delta: string) => void;
   clearStreamingText: () => void;
@@ -722,6 +941,8 @@ interface AppState {
   setRightPanelVisible: (v: boolean) => void;
   toggleRightPanel: () => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
+  setSidebarWidth: (width: number) => void;
+  setRightPanelWidth: (width: number) => void;
   setAutoApprove: (v: boolean) => void;
   setSidebarTab: (tab: SidebarTab) => void;
   setSelectedRobotId: (id: string | null) => void;
@@ -747,6 +968,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   providers: [],
   activeProviderId: null,
   attachedFiles: [],
+  pendingComposerInsert: null,
+  pendingFileReviews: {},
   workspaceCwd: null,
   configDir: null,
   configPath: null,
@@ -772,6 +995,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   robotCreateMode: false,
   rightPanelVisible: false,
   rightPanelTab: "browser",
+  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+  rightPanelWidth: DEFAULT_RIGHT_PANEL_WIDTH,
   browserPanelUrl: null,
   browserPanelTitle: null,
   browserPanelStatus: "idle",
@@ -781,7 +1006,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   retryInit: null,
   setRetryInit: (fn) => set({ retryInit: fn }),
   setCurrentThread: (id) => {
-    set({ currentThreadId: id, messages: [], streamingText: "", streamingLabel: "", currentGoal: null, selectedRobotId: null, robotCreateMode: false });
+    set({
+      currentThreadId: id,
+      messages: [],
+      streamingText: "",
+      streamingLabel: "",
+      currentGoal: null,
+      selectedRobotId: null,
+      robotCreateMode: false,
+      pendingComposerInsert: null,
+      pendingFileReviews: {},
+    });
   },
   startNewThreadWithMessage: (threadId, message) => {
     set({
@@ -791,6 +1026,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       streamingLabel: "",
       isStreaming: false,
       currentGoal: null,
+      pendingComposerInsert: null,
+      pendingFileReviews: {},
     });
   },
   setCurrentTurnId: (id) => set({ currentTurnId: id }),
@@ -801,27 +1038,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setActiveModelId: (id) => {
     saveActiveModelId(id);
-    const models = get().configuredModels;
+    const state = get();
+    const models = state.configuredModels;
     const entry = models.find((m) => m.id === id);
     const modelName = entry?.model ?? id;
     set({ activeModelId: id, currentModel: modelName });
     if (modelName) {
+      const { model } = resolveProviderModelByEntry(state.providers, entry, modelName);
       const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
         { keyPath: "model", value: modelName, mergeStrategy: "replace" },
+        {
+          keyPath: "model_context_window",
+          value: modelContextLengthOrDefault(model),
+          mergeStrategy: "replace",
+        },
       ];
-      // 查找该模型在供应商中的 contextLength 并同步到 model_context_window
-      const state = get();
-      let contextLength: number | undefined;
-      for (const p of state.providers) {
-        const pm = p.models.find((m) => m.id === modelName);
-        if (pm?.contextLength) {
-          contextLength = pm.contextLength;
-          break;
-        }
-      }
-      if (contextLength) {
-        edits.push({ keyPath: "model_context_window", value: contextLength, mergeStrategy: "replace" });
-      }
+      edits.push({
+        keyPath: "max_output_tokens",
+        value: modelMaxOutputTokensOrDefault(model),
+        mergeStrategy: "replace",
+      });
       standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync model to config:", err));
     }
   },
@@ -938,7 +1174,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   activateProvider: (providerId: string) => {
     saveActiveProviderId(providerId);
     set({ activeProviderId: providerId });
-    const provider = get().providers.find((p) => p.id === providerId);
+    const state = get();
+    const provider = state.providers.find((p) => p.id === providerId);
     if (provider) {
       const providerKey = provider.type || "custom";
       const providerOverride: Record<string, unknown> = {};
@@ -946,16 +1183,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (provider.wireApi) providerOverride.wire_api = provider.wireApi;
       if (provider.apiKey) providerOverride.experimental_bearer_token = provider.apiKey;
       providerOverride.requires_openai_auth = provider.requiresOpenAIAuth;
-      const defaultModel = provider.models[0];
+      const activeEntry = state.activeModelId
+        ? state.configuredModels.find((m) => m.id === state.activeModelId)
+        : null;
+      const preferredModelId = activeEntry
+        && (activeEntry.provider === provider.id || activeEntry.provider === provider.type)
+        ? activeEntry.model
+        : undefined;
+      const selectedModel = provider.models.find((model) => model.id === preferredModelId)
+        ?? provider.models[0];
       const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
         { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
-        { keyPath: "model", value: defaultModel?.id ?? "", mergeStrategy: "replace" },
+        { keyPath: "model", value: selectedModel?.id ?? "", mergeStrategy: "replace" },
         { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
-        { keyPath: "max_output_tokens", value: provider.maxOutputTokens ?? 131072, mergeStrategy: "replace" },
+        {
+          keyPath: "model_context_window",
+          value: modelContextLengthOrDefault(selectedModel),
+          mergeStrategy: "replace",
+        },
+        {
+          keyPath: "max_output_tokens",
+          value: modelMaxOutputTokensOrDefault(selectedModel),
+          mergeStrategy: "replace",
+        },
       ];
-      if (defaultModel?.contextLength) {
-        edits.push({ keyPath: "model_context_window", value: defaultModel.contextLength, mergeStrategy: "replace" });
-      }
       standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync provider config:", err));
     }
   },
@@ -993,21 +1244,76 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   addProviderModel: (providerId: string, model: ProviderModel) => {
+    const normalizedModel = normalizeProviderModel(model);
     const providers = get().providers.map((p) =>
-      p.id === providerId ? { ...p, models: [...p.models, model] } : p,
+      p.id === providerId ? { ...p, models: [...p.models, normalizedModel] } : p,
     );
     saveProviders(providers);
     set({ providers });
   },
 
   updateProviderModel: (providerId: string, modelId: string, updates: Partial<ProviderModel>) => {
+    const normalizedUpdates: Partial<ProviderModel> = { ...updates };
+    if (normalizedUpdates.contextLength !== undefined) {
+      normalizedUpdates.contextLength = normalizeContextLength(normalizedUpdates.contextLength);
+    }
+    if (normalizedUpdates.maxOutputTokens !== undefined) {
+      normalizedUpdates.maxOutputTokens = normalizeModelMaxOutputTokens(normalizedUpdates.maxOutputTokens);
+    }
+
     const providers = get().providers.map((p) =>
       p.id === providerId
-        ? { ...p, models: p.models.map((m) => m.id === modelId ? { ...m, ...updates } : m) }
+        ? {
+            ...p,
+            models: p.models.map((m) =>
+              m.id === modelId ? normalizeProviderModel({ ...m, ...normalizedUpdates }) : m,
+            ),
+          }
         : p,
     );
     saveProviders(providers);
     set({ providers });
+
+    const state = get();
+    const activeProvider = providers.find((provider) => provider.id === providerId);
+    if (!activeProvider || state.activeProviderId !== providerId) {
+      return;
+    }
+    const activeEntry = state.activeModelId
+      ? state.configuredModels.find((entry) => entry.id === state.activeModelId)
+      : null;
+    const selectedProviderMatches = activeEntry
+      ? activeEntry.provider === providerId || activeEntry.provider === activeProvider.type
+      : true;
+    const isActiveModel = selectedProviderMatches
+      && (
+        activeEntry
+          ? activeEntry.model === modelId
+          : state.currentModel === modelId
+      );
+    if (!isActiveModel) {
+      return;
+    }
+
+    const activeModel = activeProvider.models.find((model) => model.id === modelId);
+    if (!activeModel) {
+      return;
+    }
+    const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
+      {
+        keyPath: "model_context_window",
+        value: modelContextLengthOrDefault(activeModel),
+        mergeStrategy: "replace",
+      },
+      {
+        keyPath: "max_output_tokens",
+        value: modelMaxOutputTokensOrDefault(activeModel),
+        mergeStrategy: "replace",
+      },
+    ];
+    standaloneConfigWrite(edits).catch((err) => {
+      console.error("Failed to sync active model config:", err);
+    });
   },
 
   removeProviderModel: (providerId: string, modelId: string) => {
@@ -1031,6 +1337,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   removeAttachedFile: (index) =>
     set((s) => ({ attachedFiles: s.attachedFiles.filter((_, i) => i !== index) })),
   clearAttachedFiles: () => set({ attachedFiles: [] }),
+  queueComposerInsert: (text) =>
+    set((state) => {
+      const payload = text.trim();
+      if (!payload) {
+        return {};
+      }
+      // 支持连续注入：若输入框尚未消费上一段内容，则按空行拼接，避免覆盖。
+      return {
+        pendingComposerInsert: state.pendingComposerInsert
+          ? `${state.pendingComposerInsert}\n\n${payload}`
+          : payload,
+      };
+    }),
+  consumeComposerInsert: () => {
+    const current = get().pendingComposerInsert;
+    if (current) {
+      set({ pendingComposerInsert: null });
+    }
+    return current;
+  },
 
   setThreads: (threads) => set({ threads }),
   addThread: (thread) => {
@@ -1091,7 +1417,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       threads,
       threadProjectMap: tpMap,
       ...(isCurrent
-        ? { currentThreadId: null, messages: [], streamingText: "", currentTurnId: null }
+        ? {
+          currentThreadId: null,
+          messages: [],
+          streamingText: "",
+          currentTurnId: null,
+          pendingFileReviews: {},
+        }
         : {}),
     });
     threadArchive(threadId).catch(() => {});
@@ -1137,6 +1469,120 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
       return {};
+    }),
+  upsertPendingFileReview: (review) =>
+    set((state) => {
+      const normalized = normalizePendingFileReview(review);
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [normalized.callId]: normalized,
+        },
+      };
+    }),
+  removePendingFileReview: (callId) =>
+    set((state) => {
+      if (!state.pendingFileReviews[callId]) {
+        return {};
+      }
+      const next = { ...state.pendingFileReviews };
+      delete next[callId];
+      return { pendingFileReviews: next };
+    }),
+  setPendingFileReviewSelectedPath: (callId, path) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      if (!review.files.some((file) => file.path === path)) return {};
+      if (review.selectedPath === path) return {};
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: { ...review, selectedPath: path },
+        },
+      };
+    }),
+  setPendingFileReviewFileKeep: (callId, path, keep) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      let changed = false;
+      const files = review.files.map((file) => {
+        if (file.path !== path) {
+          return file;
+        }
+        if (file.keep === keep) {
+          return file;
+        }
+        changed = true;
+        return { ...file, keep };
+      });
+      if (!changed) {
+        return {};
+      }
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: {
+            ...review,
+            files,
+            keepAll: files.length > 0 && files.every((file) => file.keep),
+          },
+        },
+      };
+    }),
+  setPendingFileReviewKeepAll: (callId, keepAll) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      const files = review.files.map((file) => ({ ...file, keep: keepAll }));
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: { ...review, files, keepAll },
+        },
+      };
+    }),
+  setPendingFileReviewEditedContent: (callId, path, content) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      let changed = false;
+      const files = review.files.map((file) => {
+        if (file.path !== path || file.action === "deleted") {
+          return file;
+        }
+        if ((file.editedContent ?? file.candidateContent ?? "") === content) {
+          return file;
+        }
+        changed = true;
+        const editedContent = file.candidateContent === content ? undefined : content;
+        return {
+          ...file,
+          ...(editedContent !== undefined ? { editedContent } : { editedContent: undefined }),
+        };
+      });
+      if (!changed) {
+        return {};
+      }
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: { ...review, files, status: "pending", error: undefined },
+        },
+      };
+    }),
+  setPendingFileReviewStatus: (callId, status, error) =>
+    set((state) => {
+      const review = state.pendingFileReviews[callId];
+      if (!review) return {};
+      if (review.status === status && review.error === error) return {};
+      return {
+        pendingFileReviews: {
+          ...state.pendingFileReviews,
+          [callId]: { ...review, status, error },
+        },
+      };
     }),
   markRunningToolCallsInterrupted: (reason = "Tool interrupted by user.") =>
     set((s) => {
@@ -1200,6 +1646,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   setRightPanelVisible: (v) => set({ rightPanelVisible: v }),
   toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
   setRightPanelTab: (tab) => set({ rightPanelTab: tab, rightPanelVisible: true }),
+  setSidebarWidth: (width) => {
+    const clamped = clampPanelWidth(width, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
+    saveSidebarWidth(clamped);
+    set({ sidebarWidth: clamped });
+  },
+  setRightPanelWidth: (width) => {
+    const clamped = clampPanelWidth(width, RIGHT_PANEL_WIDTH_MIN, RIGHT_PANEL_WIDTH_MAX);
+    saveRightPanelWidth(clamped);
+    set({ rightPanelWidth: clamped });
+  },
   setBrowserPanelState: (state) =>
     set({
       ...(state.url !== undefined ? { browserPanelUrl: state.url } : {}),
@@ -1221,6 +1677,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           isStreaming: false,
           currentTurnId: null,
           currentGoal: null,
+          pendingFileReviews: {},
           ...(isGeneral ? { chatMode: "chat" as ChatMode } : {}),
         });
         const newThread: ThreadSummary = {
@@ -1290,6 +1747,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamingText: "",
         isStreaming: false,
         currentGoal: normalizeThreadGoal(rawThread?.goal),
+        pendingFileReviews: {},
       });
       if (rawThread?.id) {
         set((state) => {
@@ -1316,6 +1774,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamingText: "",
         isStreaming: false,
         currentGoal: null,
+        pendingFileReviews: {},
       });
     }
   },
@@ -1337,6 +1796,8 @@ export async function initStoreFromDb(): Promise<void> {
   let activeModelId: string | null = null;
   let autoApprove = false;
   let sidebarTab: SidebarTab = "chats";
+  let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+  let rightPanelWidth = DEFAULT_RIGHT_PANEL_WIDTH;
   let currentProjectId: string | null = null;
   let workspaceCwd: string | null = null;
 
@@ -1350,17 +1811,25 @@ export async function initStoreFromDb(): Promise<void> {
 
   try {
     if (all[PROVIDERS_KEY]) {
-      const parsed = JSON.parse(all[PROVIDERS_KEY]) as ProviderConfig[];
-      providers = parsed.map((p) => ({
-        ...p,
-        type: p.type ?? p.id ?? "custom",
-        createdAt: p.createdAt ?? Date.now(),
-        maxOutputTokens: p.maxOutputTokens ?? 131072,
-        models: (p.models ?? []).map((m) => ({
-          ...m,
-          contextLength: m.contextLength ?? 65535,
-        })),
-      }));
+      const parsed = JSON.parse(all[PROVIDERS_KEY]) as PersistedProviderRecord[];
+      providers = parsed.map((provider) => {
+        const fallbackModelMaxTokens = normalizeModelMaxOutputTokens(provider.maxOutputTokens);
+        return {
+          id: provider.id ?? crypto.randomUUID(),
+          type: provider.type ?? provider.id ?? "custom",
+          name: provider.name ?? provider.type ?? provider.id ?? "Custom",
+          category: provider.category ?? "other",
+          baseUrl: provider.baseUrl ?? "",
+          apiKey: provider.apiKey ?? "",
+          wireApi: provider.wireApi ?? "chat",
+          requiresOpenAIAuth: provider.requiresOpenAIAuth ?? false,
+          models: (provider.models ?? []).map((model) =>
+            normalizeProviderModel(model, fallbackModelMaxTokens),
+          ),
+          isCustom: provider.isCustom ?? provider.type === "custom",
+          createdAt: provider.createdAt ?? Date.now(),
+        };
+      });
     }
   } catch { /* ignore */ }
 
@@ -1373,6 +1842,18 @@ export async function initStoreFromDb(): Promise<void> {
   activeModelId = all[ACTIVE_MODEL_KEY] ?? null;
   autoApprove = all[AUTO_APPROVE_KEY] === "true";
   if (all["sidebar-tab"] === "projects") sidebarTab = "projects";
+  if (all[SIDEBAR_WIDTH_KEY]) {
+    const parsed = Number(all[SIDEBAR_WIDTH_KEY]);
+    if (Number.isFinite(parsed)) {
+      sidebarWidth = clampPanelWidth(parsed, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
+    }
+  }
+  if (all[RIGHT_PANEL_WIDTH_KEY]) {
+    const parsed = Number(all[RIGHT_PANEL_WIDTH_KEY]);
+    if (Number.isFinite(parsed)) {
+      rightPanelWidth = clampPanelWidth(parsed, RIGHT_PANEL_WIDTH_MIN, RIGHT_PANEL_WIDTH_MAX);
+    }
+  }
 
   try {
     if (all[ACTIVE_PROJECT_KEY]) {
@@ -1396,6 +1877,8 @@ export async function initStoreFromDb(): Promise<void> {
     activeModelId,
     autoApprove,
     sidebarTab,
+    sidebarWidth,
+    rightPanelWidth,
     currentProjectId,
     workspaceCwd,
   });

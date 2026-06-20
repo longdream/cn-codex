@@ -1,12 +1,15 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc};
 use tracing::info;
 
 use crate::agent::AgentEngine;
 use crate::config_system::ConfigManager;
+use crate::file_review::PendingPatchReview;
 use crate::protocol::{JSONRPCErrorError, RequestId};
 use crate::standalone::StandaloneState;
 use crate::thread_store::ThreadStore;
@@ -27,6 +30,27 @@ pub enum ApprovalAction {
     },
 }
 
+/// RunSummary Diff 独立窗口所需的完整载荷。
+///
+/// 说明：
+/// - 由主窗在点击 Diff 图标时写入；
+/// - 独立窗口首次启动时通过 command 读取该缓存，避免“事件先发后收”导致首屏空白；
+/// - 字段命名使用 camelCase，便于与前端 TypeScript 接口直接对齐。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSummaryDiffPayload {
+    pub path: String,
+    pub before_content: String,
+    pub after_content: String,
+    pub file_action: String,
+    pub diff_source: String,
+    pub can_persist: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_hint: Option<String>,
+}
+
 pub struct AppState {
     pub locale: RwLock<String>,
     pub current_thread_id: Arc<RwLock<Option<String>>>,
@@ -44,6 +68,26 @@ pub struct AppState {
     pub usage_db: Arc<UsageDb>,
     /// 价格表
     pub pricing_table: Arc<std::sync::RwLock<PricingTable>>,
+    /// apply_patch 待审阅会话缓存（写盘前确认）。
+    ///
+    /// 说明：
+    /// - key 由 `threadId + callId` 组合，保证同线程多次 apply_patch 不互相覆盖；
+    /// - 由 tool_executor 写入，file_review 命令读取/更新/应用/取消。
+    pub file_review_sessions: Arc<RwLock<HashMap<String, PendingPatchReview>>>,
+    /// 当前文档详情窗激活的文件路径。
+    ///
+    /// 说明：
+    /// - 该状态由 `window_open_document_detail` 更新；
+    /// - 详情窗初始化时读取该值，避免“窗口刚创建时事件尚未监听”造成首屏空白；
+    /// - 关闭详情窗后清空，防止主窗后续误读旧路径。
+    pub document_detail_active_path: Arc<RwLock<Option<String>>>,
+    /// 当前 RunSummary Diff 独立窗口激活的载荷。
+    ///
+    /// 说明：
+    /// - 该状态由 `window_open_runsummary_diff` 更新；
+    /// - Diff 窗初始化时读取该值，保证单实例复用与首帧可见；
+    /// - 关闭 Diff 窗后清空，避免后续复用时误读旧内容。
+    pub runsummary_diff_payload: Arc<RwLock<Option<RunSummaryDiffPayload>>>,
 }
 
 fn canonicalize_or_keep(path: PathBuf) -> PathBuf {
@@ -98,6 +142,24 @@ fn prepare_workspace_config_dir(project_root: &Path) -> PathBuf {
     let _ = std::fs::create_dir_all(workspace_dir.join("skills"));
     let _ = std::fs::create_dir_all(workspace_dir.join("plugins"));
     let _ = std::fs::create_dir_all(workspace_dir.join("memories"));
+    let _ = std::fs::create_dir_all(
+        workspace_dir
+            .join("memories")
+            .join("experiences")
+            .join("raw"),
+    );
+    let _ = std::fs::create_dir_all(
+        workspace_dir
+            .join("memories")
+            .join("knowledge")
+            .join("sources"),
+    );
+    let _ = std::fs::create_dir_all(
+        workspace_dir
+            .join("memories")
+            .join("knowledge")
+            .join("docs"),
+    );
     let _ = std::fs::create_dir_all(workspace_dir.join("robots"));
     workspace_dir
 }
@@ -198,6 +260,9 @@ impl AppState {
             agent_engine,
             usage_db,
             pricing_table,
+            file_review_sessions: Arc::new(RwLock::new(HashMap::new())),
+            document_detail_active_path: Arc::new(RwLock::new(None)),
+            runsummary_diff_payload: Arc::new(RwLock::new(None)),
         }
     }
 }

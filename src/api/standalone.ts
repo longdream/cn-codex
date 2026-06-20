@@ -70,10 +70,18 @@ export async function standaloneThreadRead(threadId: string): Promise<{
       mode?: "chat" | "goal";
       durationMs?: number;
       changedFiles?: Array<{ path: string; action: string }>;
+      changedFileSnapshots?: Array<{
+        path: string;
+        action: string;
+        beforeContent?: string;
+        afterContent?: string;
+      }>;
       usage?: {
         promptTokens: number;
         completionTokens: number;
         totalTokens: number;
+        callCount?: number;
+        lastSinglePromptTokens?: number;
       };
       goalBudgetTokens?: number;
       budgetLimited?: boolean;

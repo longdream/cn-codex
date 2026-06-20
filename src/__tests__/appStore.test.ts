@@ -23,6 +23,8 @@ describe("appStore", () => {
       chatMode: "chat",
       currentGoal: null,
       showSettings: false,
+      pendingComposerInsert: null,
+      pendingFileReviews: {},
     });
     vi.clearAllMocks();
   });
@@ -65,6 +67,58 @@ describe("appStore", () => {
       expect(useAppStore.getState().chatMode).toBe("goal");
       useAppStore.getState().setChatMode("chat");
       expect(useAppStore.getState().chatMode).toBe("chat");
+    });
+
+    it("queues and consumes composer inserts for cross-panel snippets", () => {
+      const store = useAppStore.getState();
+      store.queueComposerInsert("first block");
+      store.queueComposerInsert("second block");
+      expect(useAppStore.getState().pendingComposerInsert).toContain("first block");
+      expect(useAppStore.getState().pendingComposerInsert).toContain("second block");
+
+      const consumed = useAppStore.getState().consumeComposerInsert();
+      expect(consumed).toContain("first block");
+      expect(consumed).toContain("second block");
+      expect(useAppStore.getState().pendingComposerInsert).toBeNull();
+    });
+
+    it("tracks pending file review keep/edit state", () => {
+      const store = useAppStore.getState();
+      store.upsertPendingFileReview({
+        threadId: "thread-1",
+        callId: "call-1",
+        rawPatch: "*** Begin Patch\n*** End Patch",
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        files: [
+          {
+            path: "src/app.ts",
+            action: "modified",
+            candidateContent: "old",
+            keep: true,
+          },
+          {
+            path: "src/new.ts",
+            action: "created",
+            candidateContent: "new",
+            keep: true,
+          },
+        ],
+        selectedPath: null,
+        keepAll: true,
+        status: "pending",
+      });
+
+      store.setPendingFileReviewKeepAll("call-1", false);
+      store.setPendingFileReviewFileKeep("call-1", "src/app.ts", true);
+      store.setPendingFileReviewEditedContent("call-1", "src/app.ts", "edited");
+      store.setPendingFileReviewSelectedPath("call-1", "src/app.ts");
+
+      const review = useAppStore.getState().pendingFileReviews["call-1"];
+      expect(review.keepAll).toBe(false);
+      expect(review.selectedPath).toBe("src/app.ts");
+      expect(review.files.find((file) => file.path === "src/app.ts")?.editedContent).toBe("edited");
+      expect(review.files.find((file) => file.path === "src/new.ts")?.keep).toBe(false);
     });
   });
 
@@ -222,6 +276,7 @@ describe("appStore", () => {
                     promptTokens: 1200,
                     completionTokens: 345,
                     totalTokens: 1545,
+                    callCount: 4,
                   },
                   goalBudgetTokens: 1500,
                   budgetLimited: true,
@@ -261,6 +316,7 @@ describe("appStore", () => {
           promptTokens: 1200,
           completionTokens: 345,
           totalTokens: 1545,
+          callCount: 4,
         },
         goalBudgetTokens: 1500,
         budgetLimited: true,

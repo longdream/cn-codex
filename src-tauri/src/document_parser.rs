@@ -51,14 +51,12 @@ fn decode_data_url(data_url: &str) -> Result<Vec<u8>, String> {
 }
 
 fn extract_pdf(bytes: &[u8]) -> Result<String, String> {
-    pdf_extract::extract_text_from_mem(bytes)
-        .map_err(|e| format!("PDF extraction error: {e}"))
+    pdf_extract::extract_text_from_mem(bytes).map_err(|e| format!("PDF extraction error: {e}"))
 }
 
 fn extract_docx(bytes: &[u8]) -> Result<String, String> {
     let cursor = Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| format!("DOCX zip error: {e}"))?;
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("DOCX zip error: {e}"))?;
 
     let mut text = String::new();
     let doc_xml = archive
@@ -101,8 +99,7 @@ fn extract_docx(bytes: &[u8]) -> Result<String, String> {
 
 fn extract_pptx(bytes: &[u8]) -> Result<String, String> {
     let cursor = Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| format!("PPTX zip error: {e}"))?;
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("PPTX zip error: {e}"))?;
 
     let mut all_text = String::new();
     let mut slide_names: Vec<String> = Vec::new();

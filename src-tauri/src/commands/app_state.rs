@@ -33,9 +33,7 @@ pub async fn app_state_delete(state: State<'_, AppState>, key: String) -> AppRes
 }
 
 #[tauri::command]
-pub async fn app_state_get_all(
-    state: State<'_, AppState>,
-) -> AppResult<HashMap<String, String>> {
+pub async fn app_state_get_all(state: State<'_, AppState>) -> AppResult<HashMap<String, String>> {
     let pairs = state.usage_db.state_get_all()?;
     Ok(pairs.into_iter().collect())
 }

@@ -31,9 +31,21 @@ impl CommandNoConsole for Command {
 use crate::commands::plugin as plugin_commands;
 use crate::config_system::McpServerConfig;
 use crate::error::AppResult;
+use crate::git_service::{GitCommandOutput, GitService};
 use crate::plugin_loader;
 use crate::protocol::RequestId;
 use crate::state::{AppState, ApprovalAction};
+
+/// Provider configuration for internal subagents (set by parent agent before each turn).
+#[derive(Debug, Clone, Default)]
+pub struct SubagentProviderConfig {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub wire_api: String,
+    pub system_prompt_prefix: String,
+    pub max_output_tokens: Option<i64>,
+}
 
 pub struct ToolExecutor {
     cwd: PathBuf,
@@ -47,12 +59,13 @@ pub struct ToolExecutor {
     mcp_http_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpHttpSession>>>>>,
     web_search_enabled: bool,
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
-    subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
+    subagent_handles: Arc<Mutex<HashMap<String, crate::subagent_engine::SubagentHandle>>>,
     exec_sessions: Arc<Mutex<HashMap<u64, ExecSessionRecord>>>,
     next_exec_session_id: Arc<AtomicU64>,
     permission_grants: Arc<Mutex<Vec<serde_json::Value>>>,
     active_tool_processes: Arc<Mutex<HashMap<String, ActiveToolProcess>>>,
     active_browser_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    subagent_provider_config: Arc<Mutex<SubagentProviderConfig>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,13 +340,6 @@ struct CodeReviewSummary {
     findings: Vec<ReviewFinding>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GitCommandOutput {
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 struct ToolSearchEntry {
     kind: String,
@@ -439,6 +445,7 @@ struct AppConnectorToolEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct SpawnAgentArgs {
     prompt: String,
     #[serde(default)]
@@ -678,13 +685,18 @@ impl ToolExecutor {
             mcp_http_sessions: Arc::new(Mutex::new(HashMap::new())),
             web_search_enabled: false,
             subagents: Arc::new(Mutex::new(subagents)),
-            subagent_stdin: Arc::new(Mutex::new(HashMap::new())),
+            subagent_handles: Arc::new(Mutex::new(HashMap::new())),
             exec_sessions: Arc::new(Mutex::new(HashMap::new())),
             next_exec_session_id: Arc::new(AtomicU64::new(1)),
             permission_grants: Arc::new(Mutex::new(Vec::new())),
             active_tool_processes: Arc::new(Mutex::new(HashMap::new())),
             active_browser_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            subagent_provider_config: Arc::new(Mutex::new(SubagentProviderConfig::default())),
         }
+    }
+
+    pub async fn set_subagent_provider_config(&self, config: SubagentProviderConfig) {
+        *self.subagent_provider_config.lock().await = config;
     }
 
     pub fn set_cwd(&mut self, cwd: PathBuf) {
@@ -1411,7 +1423,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "apply_patch",
-                    "description": "Apply a multi-file patch in Codex apply_patch format. Prefer sending the raw/freeform patch body when the provider supports it; this function wrapper also accepts JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
+                    "description": "Queue a multi-file patch for pre-apply review in Codex apply_patch format. Prefer sending the raw/freeform patch body when the provider supports it; this function wrapper also accepts JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1511,7 +1523,7 @@ impl ToolExecutor {
                                         },
                                         "options": {
                                             "type": "array",
-                                            "description": "Optional mutually exclusive choices. Put the recommended option first when there is one.",
+                                            "description": "Optional mutually exclusive choices. Put the recommended option first when there is one, and prefer adding '(Recommended)' to the recommended label.",
                                             "minItems": 0,
                                             "maxItems": 3,
                                             "items": {
@@ -2243,6 +2255,28 @@ impl ToolExecutor {
                     }
                 }
             }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "edit_project_rules",
+                    "description": "Read or write the project rules file (.rule.md) in the current working directory. When action is 'read', returns the current rules content. When action is 'write', overwrites the rules file with the provided content. Project rules are injected into the system prompt to guide AI behavior for this project.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["read", "write"],
+                                "description": "Whether to read or write the rules file."
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "New rules content in Markdown format. Required when action is 'write'."
+                            }
+                        },
+                        "required": ["action"]
+                    }
+                }
+            }),
         ];
 
         if web_search_enabled {
@@ -2289,6 +2323,32 @@ impl ToolExecutor {
                             }
                         },
                         "required": ["url"]
+                    }
+                }
+            }));
+        }
+
+        if crate::smartbrain::bm25_index_path(&self.workspace_config_dir).exists() {
+            tools.push(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "smartbrain_search",
+                    "description": "Search the SmartBrain knowledge base using BM25 relevance ranking. Returns the most relevant documents (experiences and uploaded knowledge) matching the query. Use memory_read to read full content of results.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query text."
+                            },
+                            "top_k": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 20,
+                                "description": "Maximum number of results. Defaults to 5."
+                            }
+                        },
+                        "required": ["query"]
                     }
                 }
             }));
@@ -2516,6 +2576,10 @@ impl ToolExecutor {
                 self.exec_memory_search(arguments, call_id, app_handle, thread_id)
                     .await
             }
+            "smartbrain_search" => {
+                self.exec_smartbrain_search(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
             "memory_write" => {
                 self.exec_memory_write(arguments, call_id, app_handle, thread_id)
                     .await
@@ -2570,6 +2634,10 @@ impl ToolExecutor {
             }
             "web_fetch" => {
                 self.exec_web_fetch(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "edit_project_rules" => {
+                self.exec_edit_project_rules(arguments, call_id, app_handle, thread_id)
                     .await
             }
             other => Ok(format!("Unknown tool: {other}")),
@@ -3234,6 +3302,58 @@ impl ToolExecutor {
         Ok(result)
     }
 
+    async fn exec_edit_project_rules(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct Args {
+            action: String,
+            content: Option<String>,
+        }
+
+        let args: Args = serde_json::from_str(arguments)
+            .map_err(|e| crate::error::AppError::Custom(format!("Invalid edit_project_rules args: {e}")))?;
+
+        let rules_path = self.cwd.join(".rule.md");
+
+        match args.action.as_str() {
+            "read" => {
+                self.emit_tool_start(app_handle, thread_id, call_id, "edit_project_rules", "read");
+                let content = tokio::fs::read_to_string(&rules_path)
+                    .await
+                    .unwrap_or_default();
+                let result = if content.is_empty() {
+                    "No project rules found (.rule.md does not exist or is empty).".to_string()
+                } else {
+                    content
+                };
+                self.emit_tool_end(app_handle, thread_id, call_id, "edit_project_rules", 0, &result);
+                Ok(result)
+            }
+            "write" => {
+                let content = args.content.unwrap_or_default();
+                self.emit_tool_start(app_handle, thread_id, call_id, "edit_project_rules", "write");
+                match tokio::fs::write(&rules_path, &content).await {
+                    Ok(()) => {
+                        let msg = format!("Successfully wrote project rules ({} bytes) to .rule.md", content.len());
+                        self.emit_tool_end(app_handle, thread_id, call_id, "edit_project_rules", 0, &msg);
+                        Ok(msg)
+                    }
+                    Err(e) => {
+                        let msg = format!("Error writing .rule.md: {e}");
+                        self.emit_tool_end(app_handle, thread_id, call_id, "edit_project_rules", -1, &msg);
+                        Ok(msg)
+                    }
+                }
+            }
+            other => Ok(format!("Unknown action for edit_project_rules: {other}. Use 'read' or 'write'.")),
+        }
+    }
+
     async fn exec_apply_patch(
         &self,
         arguments: &str,
@@ -3273,20 +3393,44 @@ impl ToolExecutor {
             }
         }
 
-        let result = match apply_patch_to_workspace(&self.cwd, &patch) {
-            Ok(report) => {
-                let msg = format_apply_patch_report(&report);
-                self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", 0, &msg);
-                msg
-            }
+        // 新流程：apply_patch 先落入“待审阅会话”，不立即写盘。
+        // 用户在聊天区 Keep / Keep All 后，再通过 file_review_apply 执行真正写盘。
+        let review = match crate::file_review::build_pending_patch_review(
+            &self.cwd, thread_id, call_id, &patch,
+        ) {
+            Ok(review) => review,
             Err(msg) => {
                 let msg = format!("Error applying patch: {msg}");
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
-                msg
+                return Ok(msg);
             }
         };
+        let review_file_count = review.files.len();
+        {
+            let state = app_handle.state::<AppState>();
+            let mut sessions = state.file_review_sessions.write().await;
+            sessions.insert(
+                crate::file_review::pending_review_key(thread_id, call_id),
+                review,
+            );
+        }
+        let ready_payload = serde_json::json!({
+            "threadId": thread_id,
+            "callId": call_id,
+            "itemId": call_id,
+            "fileCount": review_file_count,
+        });
+        app_handle
+            .emit("file-review-ready", ready_payload.clone())
+            .ok();
+        crate::mobile_server::broadcast("file-review-ready", ready_payload);
 
-        Ok(result)
+        let msg = format!(
+            "Patch parsed successfully. {} file(s) queued for review. Use Keep / Keep All to apply changes.",
+            review_file_count
+        );
+        self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", 0, &msg);
+        Ok(msg)
     }
 
     async fn exec_list_dir(
@@ -3383,7 +3527,7 @@ impl ToolExecutor {
         app_handle: &AppHandle,
         thread_id: &str,
     ) -> AppResult<String> {
-        let args: RequestUserInputArgs = match serde_json::from_str(arguments) {
+        let mut args: RequestUserInputArgs = match serde_json::from_str(arguments) {
             Ok(args) => args,
             Err(e) => {
                 let msg = format!("Invalid request_user_input args: {e}");
@@ -3426,6 +3570,7 @@ impl ToolExecutor {
             );
             return Ok(msg);
         }
+        normalize_request_user_input_args(&mut args);
 
         let request_id = RequestId::String(call_id.to_string());
         app_handle
@@ -4036,24 +4181,24 @@ impl ToolExecutor {
         let timeout_ms = args.timeout_ms.unwrap_or(600_000).clamp(1_000, 1_800_000);
         let wait = args.wait.unwrap_or(false);
         let id = format!("agent-{}", uuid::Uuid::new_v4().simple());
-        let subagent_dir = self.workspace_config_dir.join("subagents").join(&id);
-        if let Err(e) = tokio::fs::create_dir_all(&subagent_dir).await {
-            let msg = format!("Error creating subagent directory: {e}");
-            self.emit_tool_end(app_handle, thread_id, call_id, "spawn_agent", -1, &msg);
-            return Ok(msg);
-        }
-
-        let last_message_path = subagent_dir.join("last-message.txt");
-        let command = build_subagent_command(&args, &last_message_path);
-        let command_display = subagent_command_display(&command.program, &command.args);
         let started_at_ms = now_millis();
+
+        let provider_config = self.subagent_provider_config.lock().await.clone();
+        let model = args.model.as_deref().unwrap_or(&provider_config.model).to_string();
+        let system_prompt = format!(
+            "{}\n\nYou are a sub-agent with role: {}. Your working directory is: {}",
+            provider_config.system_prompt_prefix,
+            role,
+            cwd.display()
+        );
+
         let record = SubagentRecord {
             id: id.clone(),
-            role,
+            role: role.clone(),
             status: "running".to_string(),
             prompt: prompt.to_string(),
             cwd: cwd.to_string_lossy().to_string(),
-            command: command_display,
+            command: format!("[internal:{}]", model),
             process_id: None,
             started_at_ms,
             completed_at_ms: None,
@@ -4071,23 +4216,37 @@ impl ToolExecutor {
         }
         persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
 
-        let subagents = self.subagents.clone();
-        let subagent_stdin = self.subagent_stdin.clone();
-        let workspace_config_dir = self.workspace_config_dir.clone();
-        let spawned_id = id.clone();
-        tokio::spawn(async move {
-            run_subagent_process(
-                spawned_id,
-                command,
-                cwd,
-                last_message_path,
-                timeout_ms,
-                workspace_config_dir,
-                subagents,
-                subagent_stdin,
-            )
-            .await;
-        });
+        let subagent_config = crate::subagent_engine::SubagentConfig {
+            base_url: provider_config.base_url.clone(),
+            api_key: provider_config.api_key.clone(),
+            model,
+            wire_api: provider_config.wire_api.clone(),
+            system_prompt,
+            cwd,
+            timeout_ms,
+            max_iterations: 25,
+            max_output_tokens: provider_config.max_output_tokens,
+        };
+
+        let tool_executor_for_subagent = Arc::new(
+            tokio::sync::RwLock::new(
+                ToolExecutor::with_workspace_config_dir(
+                    subagent_config.cwd.clone(),
+                    self.workspace_config_dir.clone(),
+                ),
+            ),
+        );
+
+        let (handle, result_rx) = crate::subagent_engine::spawn_subagent(
+            subagent_config,
+            prompt.to_string(),
+            tool_executor_for_subagent,
+            app_handle.clone(),
+            thread_id.to_string(),
+            id.clone(),
+        );
+
+        self.subagent_handles.lock().await.insert(id.clone(), handle);
 
         let (output, exit_code) = if wait {
             let result =
@@ -4101,6 +4260,48 @@ impl ToolExecutor {
         } else {
             (format_subagent_records(&[record], false), 0)
         };
+
+        // Spawn a background task to update the record when the subagent finishes
+        let subagents_clone = self.subagents.clone();
+        let workspace_config_dir = self.workspace_config_dir.clone();
+        let subagent_handles_clone = self.subagent_handles.clone();
+        let finished_id = id.clone();
+        tokio::spawn(async move {
+            if let Ok(result) = result_rx.await {
+                let (status, output_val, error_val, exit_code) = match result.status {
+                    crate::subagent_engine::SubagentStatus::Completed { output } => {
+                        ("completed", Some(output), None, Some(0))
+                    }
+                    crate::subagent_engine::SubagentStatus::Failed { error } => {
+                        ("failed", None, Some(error), Some(1))
+                    }
+                    crate::subagent_engine::SubagentStatus::TimedOut => {
+                        ("timed_out", None, Some("Subagent timed out".to_string()), Some(124))
+                    }
+                    crate::subagent_engine::SubagentStatus::Cancelled => {
+                        ("closed", None, None, None)
+                    }
+                    crate::subagent_engine::SubagentStatus::Running => {
+                        ("running", None, None, None)
+                    }
+                };
+                let completed_at_ms = now_millis();
+                {
+                    let mut subagents = subagents_clone.lock().await;
+                    if let Some(record) = subagents.get_mut(&finished_id) {
+                        record.status = status.to_string();
+                        record.completed_at_ms = Some(completed_at_ms);
+                        record.duration_ms = Some(result.duration_ms as i64);
+                        record.exit_code = exit_code;
+                        record.output = output_val;
+                        record.error = error_val;
+                    }
+                }
+                persist_subagent_records(&workspace_config_dir, &subagents_clone).await;
+                subagent_handles_clone.lock().await.remove(&finished_id);
+            }
+        });
+
         self.emit_tool_end(
             app_handle,
             thread_id,
@@ -4195,24 +4396,66 @@ impl ToolExecutor {
         };
 
         self.emit_tool_start(app_handle, thread_id, call_id, "send_input", &target);
-        match send_subagent_input(
-            self.subagents.clone(),
-            self.subagent_stdin.clone(),
-            &target,
-            message,
-            args.interrupt.unwrap_or(false),
-        )
-        .await
-        {
-            Ok(result) => {
+
+        // Check if subagent exists
+        let agent_status = {
+            let subagents = self.subagents.lock().await;
+            subagents.get(&target).map(|r| r.status.clone())
+        };
+
+        match agent_status {
+            None => {
+                let msg = format!("No subagent found with id: {target}");
+                self.emit_tool_end(app_handle, thread_id, call_id, "send_input", -1, &msg);
+                Ok(msg)
+            }
+            Some(status) if status != "running" => {
+                let msg = format!("Subagent {target} is not running (status: {status})");
+                self.emit_tool_end(app_handle, thread_id, call_id, "send_input", -1, &msg);
+                Ok(msg)
+            }
+            Some(_) => {
+                let delivered = {
+                    let handles = self.subagent_handles.lock().await;
+                    if let Some(handle) = handles.get(&target) {
+                        handle.input_tx.send(message.clone()).await.is_ok()
+                    } else {
+                        false
+                    }
+                };
+
+                // Record in input history
+                let submission_id = uuid::Uuid::new_v4().to_string();
+                {
+                    let mut subagents = self.subagents.lock().await;
+                    if let Some(record) = subagents.get_mut(&target) {
+                        record.input_history.push(SubagentInputRecord {
+                            submission_id: submission_id.clone(),
+                            message: message.clone(),
+                            submitted_at_ms: now_millis(),
+                            interrupt: args.interrupt.unwrap_or(false),
+                            delivered_to_stdin: delivered,
+                        });
+                        record.last_input_at_ms = Some(now_millis());
+                    }
+                }
                 persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
+
+                let result = SendInputResult {
+                    target: target.clone(),
+                    submission_id,
+                    status: "running".to_string(),
+                    delivered_to_stdin: delivered,
+                    queued: !delivered,
+                    note: if delivered {
+                        "Message delivered to subagent".to_string()
+                    } else {
+                        "Message queued (subagent channel unavailable)".to_string()
+                    },
+                };
                 let output = serde_json::to_string_pretty(&result).unwrap_or_default();
                 self.emit_tool_end(app_handle, thread_id, call_id, "send_input", 0, &output);
                 Ok(output)
-            }
-            Err(msg) => {
-                self.emit_tool_end(app_handle, thread_id, call_id, "send_input", -1, &msg);
-                Ok(msg)
             }
         }
     }
@@ -4246,36 +4489,140 @@ impl ToolExecutor {
         self.emit_tool_start(app_handle, thread_id, call_id, "resume_agent", &target);
 
         let timeout_ms = args.timeout_ms.unwrap_or(600_000).clamp(1_000, 1_800_000);
-        match resume_subagent(
-            self.subagents.clone(),
-            self.subagent_stdin.clone(),
-            self.workspace_config_dir.clone(),
-            &target,
-            timeout_ms,
-        )
-        .await
-        {
-            Ok(result) => {
-                persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
-                let output = if args.wait.unwrap_or(false) && result.resumed {
-                    let wait = wait_for_subagents(
-                        self.subagents.clone(),
-                        vec![target.clone()],
-                        timeout_ms,
-                    )
-                    .await;
-                    wait.output
-                } else {
-                    serde_json::to_string_pretty(&result).unwrap_or_default()
-                };
-                self.emit_tool_end(app_handle, thread_id, call_id, "resume_agent", 0, &output);
-                Ok(output)
+
+        // Get the original prompt and check if it can be resumed
+        let (previous_status, prompt, cwd_str) = {
+            let subagents = self.subagents.lock().await;
+            match subagents.get(&target) {
+                None => {
+                    let msg = format!("No subagent found with id: {target}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "resume_agent", -1, &msg);
+                    return Ok(msg);
+                }
+                Some(record) => {
+                    if record.status == "running" {
+                        let msg = format!("Subagent {target} is already running");
+                        self.emit_tool_end(
+                            app_handle, thread_id, call_id, "resume_agent", -1, &msg,
+                        );
+                        return Ok(msg);
+                    }
+                    (record.status.clone(), record.prompt.clone(), record.cwd.clone())
+                }
             }
-            Err(msg) => {
-                self.emit_tool_end(app_handle, thread_id, call_id, "resume_agent", -1, &msg);
-                Ok(msg)
+        };
+
+        let provider_config = self.subagent_provider_config.lock().await.clone();
+        let cwd = PathBuf::from(&cwd_str);
+        let system_prompt = format!(
+            "{}\n\nYou are a resumed sub-agent. Your working directory is: {}",
+            provider_config.system_prompt_prefix,
+            cwd.display()
+        );
+
+        let subagent_config = crate::subagent_engine::SubagentConfig {
+            base_url: provider_config.base_url.clone(),
+            api_key: provider_config.api_key.clone(),
+            model: provider_config.model.clone(),
+            wire_api: provider_config.wire_api.clone(),
+            system_prompt,
+            cwd: cwd.clone(),
+            timeout_ms,
+            max_iterations: 25,
+            max_output_tokens: provider_config.max_output_tokens,
+        };
+
+        // Update status to running
+        {
+            let mut subagents = self.subagents.lock().await;
+            if let Some(record) = subagents.get_mut(&target) {
+                record.status = "running".to_string();
+                record.started_at_ms = now_millis();
+                record.completed_at_ms = None;
+                record.duration_ms = None;
+                record.exit_code = None;
+                record.output = None;
+                record.error = None;
             }
         }
+        persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
+
+        let tool_executor_for_subagent = Arc::new(
+            tokio::sync::RwLock::new(
+                ToolExecutor::with_workspace_config_dir(cwd, self.workspace_config_dir.clone()),
+            ),
+        );
+
+        let (handle, result_rx) = crate::subagent_engine::spawn_subagent(
+            subagent_config,
+            prompt.clone(),
+            tool_executor_for_subagent,
+            app_handle.clone(),
+            thread_id.to_string(),
+            target.clone(),
+        );
+
+        self.subagent_handles.lock().await.insert(target.clone(), handle);
+
+        // Spawn background updater
+        let subagents_clone = self.subagents.clone();
+        let workspace_config_dir = self.workspace_config_dir.clone();
+        let subagent_handles_clone = self.subagent_handles.clone();
+        let finished_id = target.clone();
+        tokio::spawn(async move {
+            if let Ok(result) = result_rx.await {
+                let (status, output_val, error_val, exit_code) = match result.status {
+                    crate::subagent_engine::SubagentStatus::Completed { output } => {
+                        ("completed", Some(output), None, Some(0))
+                    }
+                    crate::subagent_engine::SubagentStatus::Failed { error } => {
+                        ("failed", None, Some(error), Some(1))
+                    }
+                    crate::subagent_engine::SubagentStatus::TimedOut => {
+                        ("timed_out", None, Some("Subagent timed out".to_string()), Some(124))
+                    }
+                    crate::subagent_engine::SubagentStatus::Cancelled => {
+                        ("closed", None, None, None)
+                    }
+                    crate::subagent_engine::SubagentStatus::Running => {
+                        ("running", None, None, None)
+                    }
+                };
+                let completed_at_ms = now_millis();
+                {
+                    let mut subagents = subagents_clone.lock().await;
+                    if let Some(record) = subagents.get_mut(&finished_id) {
+                        record.status = status.to_string();
+                        record.completed_at_ms = Some(completed_at_ms);
+                        record.duration_ms = Some(result.duration_ms as i64);
+                        record.exit_code = exit_code;
+                        record.output = output_val;
+                        record.error = error_val;
+                    }
+                }
+                persist_subagent_records(&workspace_config_dir, &subagents_clone).await;
+                subagent_handles_clone.lock().await.remove(&finished_id);
+            }
+        });
+
+        let result = ResumeAgentResult {
+            id: target.clone(),
+            resumed: true,
+            previous_status,
+            status: "running".to_string(),
+            note: "Subagent resumed with internal engine".to_string(),
+            agent: None,
+        };
+
+        let output = if args.wait.unwrap_or(false) {
+            let wait =
+                wait_for_subagents(self.subagents.clone(), vec![target.clone()], timeout_ms).await;
+            wait.output
+        } else {
+            serde_json::to_string_pretty(&result).unwrap_or_default()
+        };
+        self.emit_tool_end(app_handle, thread_id, call_id, "resume_agent", 0, &output);
+        Ok(output)
     }
 
     async fn exec_list_agents(
@@ -4341,18 +4688,48 @@ impl ToolExecutor {
         };
 
         self.emit_tool_start(app_handle, thread_id, call_id, "close_agent", &target);
-        match close_subagent(self.subagents.clone(), self.subagent_stdin.clone(), &target).await {
-            Ok(result) => {
-                persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
-                let output = serde_json::to_string_pretty(&result).unwrap_or_default();
-                self.emit_tool_end(app_handle, thread_id, call_id, "close_agent", 0, &output);
-                Ok(output)
-            }
-            Err(msg) => {
-                self.emit_tool_end(app_handle, thread_id, call_id, "close_agent", -1, &msg);
-                Ok(msg)
+
+        let previous_status;
+        let agent_snapshot;
+        {
+            let mut subagents = self.subagents.lock().await;
+            match subagents.get_mut(&target) {
+                None => {
+                    let msg = format!("No subagent found with id: {target}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "close_agent", -1, &msg);
+                    return Ok(msg);
+                }
+                Some(record) => {
+                    previous_status = record.status.clone();
+                    if record.status == "running" {
+                        record.status = "closed".to_string();
+                        record.completed_at_ms = Some(now_millis());
+                    }
+                    agent_snapshot = Some(record.clone());
+                }
             }
         }
+
+        // Signal the subagent to cancel via its AtomicBool flag
+        if previous_status == "running" {
+            let handles = self.subagent_handles.lock().await;
+            if let Some(handle) = handles.get(&target) {
+                handle.cancel_flag.store(true, Ordering::SeqCst);
+            }
+        }
+
+        persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
+
+        let result = SubagentCloseResult {
+            target: target.clone(),
+            closed: previous_status == "running",
+            previous_status,
+            message: "Subagent closed".to_string(),
+            agent: agent_snapshot,
+        };
+        let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+        self.emit_tool_end(app_handle, thread_id, call_id, "close_agent", 0, &output);
+        Ok(output)
     }
 
     async fn exec_tool_search(
@@ -4811,20 +5188,22 @@ impl ToolExecutor {
             return Ok(msg);
         };
 
-        let mut config: crate::robot_loader::RobotConfig = match serde_json::from_value(config_value) {
-            Ok(c) => c,
-            Err(e) => {
-                let msg = format!("Invalid robot config: {e}");
-                self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
-                return Ok(msg);
-            }
-        };
+        let mut config: crate::robot_loader::RobotConfig =
+            match serde_json::from_value(config_value) {
+                Ok(c) => c,
+                Err(e) => {
+                    let msg = format!("Invalid robot config: {e}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
+                    return Ok(msg);
+                }
+            };
 
         // 强约束校验：workflow 必须可归一化为节点，且每个节点都要绑定至少一个 skill。
         // 这里做服务端兜底，即使模型未严格遵循 schema，也能及时返回清晰错误。
         let normalized_nodes = config.normalized_workflow_nodes();
         if normalized_nodes.is_empty() {
-            let msg = "Invalid robot config: workflowNodes must contain at least one node".to_string();
+            let msg =
+                "Invalid robot config: workflowNodes must contain at least one node".to_string();
             self.emit_tool_end(app_handle, thread_id, call_id, "robot_save", -1, &msg);
             return Ok(msg);
         }
@@ -5013,56 +5392,13 @@ impl ToolExecutor {
         args: &[String],
         max_output_bytes: usize,
     ) -> Result<GitCommandOutput, String> {
-        let mut cmd = Command::new("git");
-        cmd.args(args)
-            .current_dir(&self.cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        cmd.no_console();
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn git: {e}"))?;
-
-        let child_stdout = child.stdout.take();
-        let child_stderr = child.stderr.take();
-        let stdout_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut out) = child_stdout {
-                tokio::io::AsyncReadExt::read_to_end(&mut out, &mut buf)
-                    .await
-                    .ok();
-            }
-            buf
-        });
-        let stderr_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut err) = child_stderr {
-                tokio::io::AsyncReadExt::read_to_end(&mut err, &mut buf)
-                    .await
-                    .ok();
-            }
-            buf
-        });
-
-        match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait()).await {
-            Ok(Ok(status)) => {
-                let stdout_bytes = stdout_handle.await.unwrap_or_default();
-                let stderr_bytes = stderr_handle.await.unwrap_or_default();
-                Ok(GitCommandOutput {
-                    exit_code: status.code().unwrap_or(-1),
-                    stdout: truncate_bytes_to_string(&stdout_bytes, max_output_bytes),
-                    stderr: truncate_bytes_to_string(&stderr_bytes, max_output_bytes / 2),
-                })
-            }
-            Ok(Err(e)) => Err(format!("Failed to wait for git: {e}")),
-            Err(_) => {
-                child.kill().await.ok();
-                stdout_handle.abort();
-                stderr_handle.abort();
-                Err("git command timed out after 30 seconds".to_string())
-            }
-        }
+        // 统一复用 git_service 的执行与截断逻辑，避免工具层与右侧 Git 面板重复实现。
+        let service = GitService::new(self.cwd.clone());
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        service
+            .run_allow_failure(&refs, max_output_bytes)
+            .await
+            .map_err(|err| err.to_string())
     }
 
     async fn exec_memory_list(
@@ -5234,6 +5570,9 @@ impl ToolExecutor {
         };
         let output = truncate_output(&output_body, 16_000);
         self.emit_tool_end(app_handle, thread_id, call_id, "memory_read", 0, &output);
+
+        self.track_experience_usage(&args.path);
+
         Ok(output)
     }
 
@@ -5315,6 +5654,73 @@ impl ToolExecutor {
 
         let output = truncate_output(&output, 16_000);
         self.emit_tool_end(app_handle, thread_id, call_id, "memory_search", 0, &output);
+        Ok(output)
+    }
+
+    async fn exec_smartbrain_search(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct Args {
+            query: String,
+            #[serde(default)]
+            top_k: Option<usize>,
+        }
+
+        let args: Args = serde_json::from_str(arguments).map_err(|e| {
+            crate::error::AppError::Custom(format!("Invalid smartbrain_search args: {e}"))
+        })?;
+        let query = args.query.trim();
+        self.emit_tool_start(app_handle, thread_id, call_id, "smartbrain_search", query);
+
+        if query.is_empty() {
+            let msg = "Error: empty search query".to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_search",
+                -1,
+                &msg,
+            );
+            return Ok(msg);
+        }
+
+        let top_k = args.top_k.unwrap_or(5).clamp(1, 20);
+        let bm25_path = crate::smartbrain::bm25_index_path(&self.workspace_config_dir);
+        let results = crate::smartbrain::search::unified_search(&bm25_path, query, top_k);
+
+        let output = if results.is_empty() {
+            "No matching documents found in SmartBrain knowledge base.".to_string()
+        } else {
+            let mut lines = Vec::new();
+            lines.push(format!(
+                "Found {} results for \"{}\":\n",
+                results.len(),
+                query
+            ));
+            for (i, r) in results.iter().enumerate() {
+                lines.push(format!(
+                    "{}. [{}] {} (score: {:.3})\n   Path: {}\n   Use `memory_read` with path \"{}\" to read full content.",
+                    i + 1, r.source_type, r.title, r.score, r.file_path, r.file_path
+                ));
+            }
+            lines.join("\n")
+        };
+
+        let output = truncate_output(&output, 16_000);
+        self.emit_tool_end(
+            app_handle,
+            thread_id,
+            call_id,
+            "smartbrain_search",
+            0,
+            &output,
+        );
         Ok(output)
     }
 
@@ -7022,14 +7428,41 @@ impl ToolExecutor {
     fn resolve_memory_path(&self, path: &str) -> Result<PathBuf, String> {
         resolve_memory_path(&self.memories_dir(), path)
     }
+
+    /// Track experience usage when the model reads files under `experiences/`.
+    ///
+    /// Track usage of SmartBrain content (experience or knowledge) when
+    /// the model reads it via memory_read.
+    fn track_experience_usage(&self, memory_path: &str) {
+        let normalized = memory_path.replace('\\', "/");
+
+        if normalized.starts_with("experiences/") {
+            let experiences_dir = crate::smartbrain::experiences_dir(&self.workspace_config_dir);
+            let mut index = crate::smartbrain::index::ExperienceIndex::load(&experiences_dir);
+
+            if let Some(rest) = normalized.strip_prefix("experiences/raw/") {
+                if let Some(thread_id) = rest.strip_suffix(".md") {
+                    index.record_usage(thread_id);
+                    let _ = index.save(&experiences_dir);
+                }
+            } else if normalized == "experiences/experience_handbook.md"
+                || normalized == "experiences/experience_summary.md"
+            {
+                index.record_usage_all();
+                let _ = index.save(&experiences_dir);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 struct ApplyPatchReport {
     changes: Vec<ApplyPatchReportChange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 struct ApplyPatchReportChange {
     path: String,
     action: &'static str,
@@ -7130,6 +7563,7 @@ fn apply_patch_progress_changes(actions: &[ParsedPatchAction]) -> Vec<ApplyPatch
         .collect()
 }
 
+#[allow(dead_code)]
 fn apply_patch_to_workspace(root: &Path, patch: &str) -> Result<ApplyPatchReport, String> {
     let actions = parse_patch_actions(patch)?;
     if actions.is_empty() {
@@ -7363,6 +7797,7 @@ fn is_patch_section_boundary(line: &str) -> bool {
         || line.starts_with("*** Delete File: ")
 }
 
+#[allow(dead_code)]
 fn apply_update_hunks(
     lines: &mut Vec<String>,
     hunks: &[PatchHunk],
@@ -7391,6 +7826,7 @@ fn apply_update_hunks(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn find_subsequence(lines: &[String], needle: &[String], start: usize) -> Option<usize> {
     if needle.is_empty() {
         return Some(start.min(lines.len()));
@@ -7408,6 +7844,7 @@ fn find_subsequence(lines: &[String], needle: &[String], start: usize) -> Option
     })
 }
 
+#[allow(dead_code)]
 fn resolve_patch_path(root: &Path, input: &str) -> Result<PathBuf, String> {
     let trimmed = input.trim().replace('\\', "/");
     if trimmed.is_empty() {
@@ -7449,6 +7886,7 @@ fn normalize_patch_display_path(input: &str) -> String {
         .join("/")
 }
 
+#[allow(dead_code)]
 fn detect_eol(content: &str) -> &'static str {
     if content.contains("\r\n") {
         "\r\n"
@@ -7457,6 +7895,7 @@ fn detect_eol(content: &str) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn split_file_lines(content: &str) -> (Vec<String>, bool) {
     let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
     let final_newline = normalized.ends_with('\n');
@@ -7476,6 +7915,7 @@ fn split_file_lines(content: &str) -> (Vec<String>, bool) {
     }
 }
 
+#[allow(dead_code)]
 fn join_file_lines(lines: &[String], eol: &str, final_newline: bool) -> String {
     let mut content = lines.join(eol);
     if final_newline {
@@ -7484,6 +7924,7 @@ fn join_file_lines(lines: &[String], eol: &str, final_newline: bool) -> String {
     content
 }
 
+#[allow(dead_code)]
 fn format_apply_patch_report(report: &ApplyPatchReport) -> String {
     let mut output = "Success. Applied patch.".to_string();
     for change in &report.changes {
@@ -7653,12 +8094,6 @@ fn browser_run_initial_url(payload: &serde_json::Value) -> Option<String> {
         })
 }
 
-#[derive(Debug, Clone)]
-struct SubagentCommand {
-    program: String,
-    args: Vec<String>,
-}
-
 fn subagent_state_path(workspace_config_dir: &Path) -> PathBuf {
     workspace_config_dir.join("subagents").join("state.json")
 }
@@ -7711,6 +8146,13 @@ async fn persist_subagent_records(
     }
 }
 
+#[allow(dead_code)]
+struct SubagentCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+#[allow(dead_code)]
 async fn run_subagent_process(
     id: String,
     command: SubagentCommand,
@@ -7866,6 +8308,7 @@ async fn run_subagent_process(
     }
 }
 
+#[allow(dead_code)]
 async fn update_subagent_finished(
     workspace_config_dir: &Path,
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
@@ -7958,6 +8401,7 @@ fn send_input_item_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 async fn send_subagent_input(
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
     subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
@@ -8043,6 +8487,7 @@ fn resume_agent_target(args: &ResumeAgentArgs) -> Option<String> {
     .find(|value| !value.is_empty())
 }
 
+#[allow(dead_code)]
 async fn resume_subagent(
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
     subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
@@ -8141,6 +8586,7 @@ async fn resume_subagent(
     })
 }
 
+#[allow(dead_code)]
 fn build_resume_subagent_prompt(record: &SubagentRecord) -> String {
     let mut parts = vec![
         "Resume this CN-Codex subagent task from prior context.".to_string(),
@@ -8193,6 +8639,7 @@ fn close_agent_target(args: CloseAgentArgs) -> Option<String> {
         .find(|value| !value.is_empty())
 }
 
+#[allow(dead_code)]
 async fn close_subagent(
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
     subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
@@ -8252,6 +8699,7 @@ async fn close_subagent(
     })
 }
 
+#[allow(dead_code)]
 async fn kill_process_tree(pid: u32) -> Result<(), String> {
     let output = if cfg!(windows) {
         let pid = pid.to_string();
@@ -8364,6 +8812,7 @@ async fn wait_for_subagents(
     }
 }
 
+#[allow(dead_code)]
 fn build_subagent_command(args: &SpawnAgentArgs, last_message_path: &Path) -> SubagentCommand {
     if let Ok(raw) = std::env::var("CN_CODEX_SUBAGENT_CMD") {
         if let Some((program, mut command_args)) = split_command_line_simple(&raw) {
@@ -8388,6 +8837,7 @@ fn build_subagent_command(args: &SpawnAgentArgs, last_message_path: &Path) -> Su
     }
 }
 
+#[allow(dead_code)]
 fn build_codex_subagent_args(args: &SpawnAgentArgs, last_message_path: &Path) -> Vec<String> {
     let mut command_args = vec![
         "exec".to_string(),
@@ -8431,6 +8881,7 @@ fn build_codex_subagent_args(args: &SpawnAgentArgs, last_message_path: &Path) ->
     command_args
 }
 
+#[allow(dead_code)]
 fn split_command_line_simple(input: &str) -> Option<(String, Vec<String>)> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -8466,6 +8917,7 @@ fn split_command_line_simple(input: &str) -> Option<(String, Vec<String>)> {
     Some((program, parts))
 }
 
+#[allow(dead_code)]
 fn subagent_command_display(program: &str, args: &[String]) -> String {
     let mut display_args = args.to_vec();
     if let Some(last) = display_args.last_mut() {
@@ -9921,18 +10373,6 @@ fn code_review_git_args(mode: &str, base_ref: Option<&str>, paths: &[String]) ->
     args
 }
 
-fn truncate_bytes_to_string(bytes: &[u8], max_bytes: usize) -> String {
-    if bytes.len() <= max_bytes {
-        return decode_command_output_bytes(bytes);
-    }
-    let mut output = decode_command_output_bytes(&bytes[..max_bytes]);
-    output.push_str(&format!(
-        "\n\n... [truncated {} bytes] ...",
-        bytes.len().saturating_sub(max_bytes)
-    ));
-    output
-}
-
 fn combine_stdout_stderr(stdout: &str, stderr: &str) -> String {
     match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
         (true, true) => String::new(),
@@ -11176,6 +11616,29 @@ fn format_plan_update(explanation: Option<&str>, plan: &[PlanItemArg]) -> Result
 
 fn format_json_value(value: &serde_json::Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn option_is_recommended(option: &RequestUserInputQuestionOption) -> bool {
+    let label_lower = option.label.to_ascii_lowercase();
+    let desc_lower = option.description.to_ascii_lowercase();
+    label_lower.contains("recommended")
+        || desc_lower.contains("recommended")
+        || option.label.contains("推荐")
+        || option.description.contains("推荐")
+}
+
+fn normalize_request_user_input_args(args: &mut RequestUserInputArgs) {
+    for question in &mut args.questions {
+        if question.options.len() <= 1 {
+            continue;
+        }
+        if let Some(index) = question.options.iter().position(option_is_recommended) {
+            if index > 0 {
+                let option = question.options.remove(index);
+                question.options.insert(0, option);
+            }
+        }
+    }
 }
 
 fn validate_request_user_input_args(args: &RequestUserInputArgs) -> Result<(), String> {

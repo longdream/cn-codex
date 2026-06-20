@@ -19,6 +19,7 @@ interface ApprovalRequest {
 interface UserInputQuestionOption {
   label: string;
   description: string;
+  recommended?: boolean;
 }
 
 interface UserInputQuestion {
@@ -81,7 +82,7 @@ export function ApprovalModal() {
       Object.fromEntries(
         userInputQuestions.map((question) => [
           question.id,
-          question.options?.[0]?.label ?? "",
+          preferredQuestionOptionLabel(question.options),
         ]),
       ),
     );
@@ -97,7 +98,11 @@ export function ApprovalModal() {
           answers: Object.fromEntries(
             userInputQuestions.map((question) => [
               question.id,
-              { answers: [answers[question.id] ?? question.options?.[0]?.label ?? ""] },
+              {
+                answers: [
+                  answers[question.id] ?? preferredQuestionOptionLabel(question.options),
+                ],
+              },
             ]),
           ),
         }
@@ -145,7 +150,7 @@ export function ApprovalModal() {
     : isFile
       ? intl.formatMessage({ id: "approval.fileChange" })
       : isPermissions
-        ? "Permission Request"
+        ? intl.formatMessage({ id: "approval.permissionRequest" })
         : intl.formatMessage({ id: "approval.title" });
 
   return (
@@ -168,6 +173,12 @@ export function ApprovalModal() {
         </div>
 
         <div className="thin-scrollbar max-h-[70vh] overflow-y-auto px-5 py-4">
+          {(isCommand || isFile) && (
+            <p className="mb-4 text-sm text-[var(--text-muted)]">
+              {intl.formatMessage({ id: "approval.description" })}
+            </p>
+          )}
+
           {isCommand && "command" in current.params && (
             <section className="rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] p-4">
               <div className="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-strong)]">
@@ -181,6 +192,7 @@ export function ApprovalModal() {
               </pre>
               {"cwd" in current.params && (
                 <p className="mt-2 break-all font-mono text-xs text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "approval.path" })}
                   {String(current.params.cwd)}
                 </p>
               )}
@@ -194,6 +206,7 @@ export function ApprovalModal() {
                 {intl.formatMessage({ id: "approval.fileLabel" })}
               </div>
               <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3 font-mono text-sm text-[var(--text-base)]">
+                {intl.formatMessage({ id: "approval.path" })}
                 {String(current.params.path)}
               </div>
               {"patch" in current.params && (
@@ -273,7 +286,7 @@ export function ApprovalModal() {
                             [question.id]: event.target.value,
                           }))
                         }
-                        placeholder="Other"
+                        placeholder={intl.formatMessage({ id: "approval.other" })}
                         rows={2}
                         className="w-full resize-none rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] px-3 py-2 text-sm text-[var(--text-base)] outline-none focus:border-[var(--accent-border)]"
                       />
@@ -345,7 +358,7 @@ export function ApprovalModal() {
           </button>
           <button onClick={handleApprove} className="primary-button flex items-center gap-2 px-4">
             <IconShieldCheck size={16} stroke={1.8} />
-            {intl.formatMessage({ id: "approval.approve" })}
+            {intl.formatMessage({ id: "approval.allow" })}
           </button>
         </div>
       </div>
@@ -380,12 +393,30 @@ function userInputQuestionsFromParams(params: Record<string, unknown>): UserInpu
               const raw = option as Record<string, unknown>;
               const label = typeof raw.label === "string" ? raw.label : "";
               const description = typeof raw.description === "string" ? raw.description : "";
-              return label ? { label, description } : null;
+              const recommended = raw.recommended === true
+                || raw.isRecommended === true
+                || label.toLowerCase().includes("recommended")
+                || label.includes("推荐")
+                || description.toLowerCase().includes("recommended")
+                || description.includes("推荐");
+              return label ? { label, description, recommended } : null;
             })
             .filter((option): option is UserInputQuestionOption => option !== null)
+            .sort((left, right) => Number(Boolean(right.recommended)) - Number(Boolean(left.recommended)))
         : undefined;
 
       return { id, header, question: prompt, options };
     })
     .filter((question): question is UserInputQuestion => question !== null);
+}
+
+function preferredQuestionOptionLabel(options?: UserInputQuestionOption[]): string {
+  if (!options || options.length === 0) {
+    return "";
+  }
+  const recommended = options.find((option) => option.recommended && option.label.trim());
+  if (recommended) {
+    return recommended.label;
+  }
+  return options[0]?.label ?? "";
 }

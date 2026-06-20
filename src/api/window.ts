@@ -8,6 +8,29 @@ export interface BrowserWindowInfo {
   cdpEndpoint: string;
 }
 
+export interface DocumentDetailWindowInfo {
+  label: string;
+  path: string;
+  created: boolean;
+}
+
+export interface RunSummaryDiffPayload {
+  path: string;
+  beforeContent: string;
+  afterContent: string;
+  fileAction: string;
+  diffSource: "snapshot" | "patch" | "empty";
+  canPersist: boolean;
+  persistHint?: string;
+  emptyHint?: string;
+}
+
+export interface RunSummaryDiffWindowInfo {
+  label: string;
+  path: string;
+  created: boolean;
+}
+
 export async function windowStartDragging(): Promise<void> {
   await invoke("window_start_dragging");
 }
@@ -59,6 +82,36 @@ export async function windowCloseBrowser(): Promise<void> {
   await invoke("window_close_browser");
 }
 
+export async function windowOpenDocumentDetail(path: string): Promise<DocumentDetailWindowInfo> {
+  return invoke<DocumentDetailWindowInfo>("window_open_document_detail", { path });
+}
+
+export async function windowCloseDocumentDetail(): Promise<void> {
+  await invoke("window_close_document_detail");
+}
+
+export async function windowGetDocumentDetailPath(): Promise<string | null> {
+  return invoke<string | null>("window_get_document_detail_path");
+}
+
+export async function windowOpenRunSummaryDiff(
+  payload: RunSummaryDiffPayload,
+): Promise<RunSummaryDiffWindowInfo> {
+  return invoke<RunSummaryDiffWindowInfo>("window_open_runsummary_diff", { payload });
+}
+
+export async function windowCloseRunSummaryDiff(): Promise<void> {
+  await invoke("window_close_runsummary_diff");
+}
+
+export async function windowGetRunSummaryDiffPayload(): Promise<RunSummaryDiffPayload | null> {
+  return invoke<RunSummaryDiffPayload | null>("window_get_runsummary_diff_payload");
+}
+
+export async function documentDetailInsertSnippet(snippet: string): Promise<void> {
+  await invoke("document_detail_insert_snippet", { snippet });
+}
+
 export async function revealInExplorer(path: string): Promise<void> {
   await invoke("reveal_in_explorer", { path });
 }
@@ -102,4 +155,16 @@ export interface TextFilePreviewResult {
 
 export async function readTextFilePreview(path: string): Promise<TextFilePreviewResult> {
   return invoke<TextFilePreviewResult>("read_text_file_preview", { path });
+}
+
+export interface TextFileWriteResult {
+  path: string;
+  size: number;
+}
+
+export async function writeTextFilePreview(
+  path: string,
+  content: string,
+): Promise<TextFileWriteResult> {
+  return invoke<TextFileWriteResult>("write_text_file_preview", { path, content });
 }

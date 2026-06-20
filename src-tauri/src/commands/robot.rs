@@ -10,10 +10,7 @@ pub async fn robot_list(state: State<'_, AppState>) -> AppResult<Vec<RobotSummar
 }
 
 #[tauri::command]
-pub async fn robot_read(
-    state: State<'_, AppState>,
-    robot_id: String,
-) -> AppResult<RobotDetail> {
+pub async fn robot_read(state: State<'_, AppState>, robot_id: String) -> AppResult<RobotDetail> {
     robot_loader::read_robot(&state.workspace_config_dir, &robot_id)
         .ok_or_else(|| AppError::Custom(format!("Robot not found: {robot_id}")))
 }
@@ -24,8 +21,7 @@ pub async fn robot_delete(
     state: State<'_, AppState>,
     robot_id: String,
 ) -> AppResult<()> {
-    robot_loader::delete_robot(&state.workspace_config_dir, &robot_id)
-        .map_err(AppError::Custom)?;
+    robot_loader::delete_robot(&state.workspace_config_dir, &robot_id).map_err(AppError::Custom)?;
     app_handle
         .emit(
             "robot-deleted",

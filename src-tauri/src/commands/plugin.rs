@@ -102,7 +102,7 @@ pub(crate) fn default_codex_plugin_cache_dir() -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)?;
-    Some(home.join(".codex").join("plugins").join("cache"))
+    Some(home.join(".cn-codex").join("plugins").join("cache"))
 }
 
 fn import_codex_plugin_cache(

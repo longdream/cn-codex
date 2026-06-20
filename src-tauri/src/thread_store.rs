@@ -33,6 +33,9 @@ pub struct TurnUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    /// 本轮内成功发起并完成的 LLM 请求次数。
+    #[serde(default)]
+    pub call_count: u32,
     /// 最后一次单次 API 调用返回的 prompt_tokens（代表当前 context 实际大小）
     #[serde(default)]
     pub last_single_prompt_tokens: u64,
@@ -435,8 +438,7 @@ impl ThreadStore {
         };
         let json = serde_json::to_string(&meta)
             .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
-        writeln!(file, "{json}")
-            .map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+        writeln!(file, "{json}").map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
 
         // 在重写文件时同步持久化机器人流程状态，保证崩溃恢复后仍能继续当前节点。
         if let Some(robot_state) = &thread.robot_state {
@@ -446,8 +448,7 @@ impl ThreadStore {
             };
             let json = serde_json::to_string(&line)
                 .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
-            writeln!(file, "{json}")
-                .map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+            writeln!(file, "{json}").map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
         }
 
         for turn in &thread.turns {
@@ -459,8 +460,7 @@ impl ThreadStore {
             };
             let json = serde_json::to_string(&ts)
                 .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
-            writeln!(file, "{json}")
-                .map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+            writeln!(file, "{json}").map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
 
             for msg in &turn.messages {
                 let line = RolloutLine::Message(msg.clone());
@@ -753,7 +753,10 @@ impl ThreadStore {
             thread.goal = None;
             // 目标被清除时同步重置机器人流程状态，避免下一次 goal 恢复时跳到旧节点。
             if thread.robot_state.is_some() {
-                self.append_line(thread_id, &RolloutLine::ThreadRobotStateClear { updated_at: now })?;
+                self.append_line(
+                    thread_id,
+                    &RolloutLine::ThreadRobotStateClear { updated_at: now },
+                )?;
                 thread.robot_state = None;
             }
             thread.updated_at = now;
@@ -920,9 +923,7 @@ impl ThreadStore {
         self.ensure_loaded().await;
         let mut threads = self.threads.write().await;
         let Some(thread) = threads.get_mut(thread_id) else {
-            return Err(AppError::Custom(format!(
-                "Thread not found: {thread_id}"
-            )));
+            return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
         };
 
         // Estimate token count of compacted history to prevent re-triggering compaction
@@ -945,6 +946,7 @@ impl ThreadStore {
                 prompt_tokens: estimated_tokens,
                 completion_tokens: 0,
                 total_tokens: estimated_tokens,
+                call_count: 0,
                 last_single_prompt_tokens: estimated_tokens,
             }),
             goal_budget_tokens: None,
@@ -989,6 +991,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 40,
             total_tokens: 140,
+            call_count: 3,
             last_single_prompt_tokens: 100,
         };
         let thread_id = runtime.block_on(async {
