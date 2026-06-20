@@ -611,5 +611,14 @@
   "provider.transport.anthropic": "Anthropic Messages API",
   "provider.transport.gemini": "Google Gemini API",
 
-  "fileTree.openDetailFailed": "Failed to open document detail: {error}"
+  "fileTree.openDetailFailed": "Failed to open document detail: {error}",
+  "fileTree.editProjectRules": "Edit Project Rules",
+
+  "settings.rules": "User Rules",
+  "settings.rules.description": "Custom AI behavior rules injected into the system prompt.",
+  "settings.rules.hint": "Write user rules here (Markdown format). These rules are injected into the AI system prompt and apply to all conversations. For project-level rules, right-click a project folder and add a .rule.md file.",
+  "settings.rules.placeholder": "# My Rules\n\n- Reply in English\n- Use concise implementations\n- Always explain before making changes",
+  "settings.rules.save": "Save",
+  "settings.rules.saving": "Saving...",
+  "settings.rules.saved": "Saved"
 }

@@ -186,6 +186,11 @@ pub fn run() {
             commands::robot_list,
             commands::robot_read,
             commands::robot_delete,
+            // Rules
+            commands::rules_read,
+            commands::rules_write,
+            commands::rules_read_project,
+            commands::rules_write_project,
             // App State (SQLite KV)
             commands::app_state_get,
             commands::app_state_set,

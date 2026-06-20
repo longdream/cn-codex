@@ -611,5 +611,14 @@
   "provider.transport.anthropic": "Anthropic Messages API",
   "provider.transport.gemini": "Google Gemini API",
 
-  "fileTree.openDetailFailed": "打开文档详情窗失败：{error}"
+  "fileTree.openDetailFailed": "打开文档详情窗失败：{error}",
+  "fileTree.editProjectRules": "编辑项目规则",
+
+  "settings.rules": "用户规则",
+  "settings.rules.description": "自定义 AI 行为规则，注入到系统提示词中。",
+  "settings.rules.hint": "在此编写用户规则（Markdown 格式），这些规则会注入到 AI 的系统提示词中，影响所有对话。项目级规则请在项目文件夹右键菜单中添加 .rule.md 文件。",
+  "settings.rules.placeholder": "# 我的规则\n\n- 请用中文回复\n- 代码注释使用中文\n- 优先使用简洁的实现方式",
+  "settings.rules.save": "保存",
+  "settings.rules.saving": "保存中...",
+  "settings.rules.saved": "已保存"
 }

@@ -1510,12 +1510,29 @@ impl AgentEngine {
         let os_info = std::env::consts::OS;
         let arch_info = std::env::consts::ARCH;
 
-        let user_instructions = config
-            .instructions
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("\n\nAdditional instructions from user:\n{s}"))
-            .unwrap_or_default();
+        let user_rules_path = self.cwd.join("codey").join("user-rules.md");
+        let user_rules_content = std::fs::read_to_string(&user_rules_path).unwrap_or_default();
+        let user_instructions = if !user_rules_content.trim().is_empty() {
+            let truncated = &user_rules_content[..user_rules_content.len().min(4000)];
+            format!("\n\n## User Rules (from codey/user-rules.md)\n{truncated}")
+        } else {
+            config
+                .instructions
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| format!("\n\n## User Rules\n{s}"))
+                .unwrap_or_default()
+        };
+
+        let project_rules_path = effective_cwd.join(".rule.md");
+        let project_rules_content = std::fs::read_to_string(&project_rules_path).unwrap_or_default();
+        let project_rules = if !project_rules_content.trim().is_empty() {
+            let truncated = &project_rules_content[..project_rules_content.len().min(4000)];
+            format!("\n\n## Project Rules (from .rule.md)\n{truncated}")
+        } else {
+            String::new()
+        };
+
         let skills_instructions = self.render_available_skills_prompt();
         let apps_instructions = self.render_plugin_apps_prompt();
         let web_tool_instructions = if config.web_search_enabled() {
@@ -1656,7 +1673,8 @@ impl AgentEngine {
              \n\
              WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
              use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \
-             directories. Alternatively, set the 'workdir' parameter in the shell tool call.{skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{smartbrain_instructions}"
+             directories. Alternatively, set the 'workdir' parameter in the shell tool call.\n\
+             - edit_project_rules: Read or write the project rules file (.rule.md) in the current working directory.{skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{project_rules}{smartbrain_instructions}"
         )
     }
 

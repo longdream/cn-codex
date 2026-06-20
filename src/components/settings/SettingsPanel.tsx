@@ -17,7 +17,7 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "hooks" | "experience" | "knowledge";
+type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "hooks" | "experience" | "knowledge" | "rules";
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const intl = useIntl();
@@ -33,6 +33,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [relaySaving, setRelaySaving] = useState(false);
   const [smartbrainEnabled, setSmartbrainEnabled] = useState(false);
   const [smartbrainLoading, setSmartbrainLoading] = useState(false);
+  const [rulesContent, setRulesContent] = useState("");
+  const [rulesLoaded, setRulesLoaded] = useState(false);
+  const [rulesSaving, setRulesSaving] = useState(false);
+  const [rulesSaved, setRulesSaved] = useState(false);
 
   // relay 地址规范化（去空白与末尾 `/`），避免配置被保存成 `http://host:8080/`
   // 后续在拼接 `/m/...` 时出现 `//m/...`。
@@ -93,6 +97,29 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     }
   }, [smartbrainEnabled, smartbrainLoading]);
 
+  useEffect(() => {
+    if (tab === "rules" && !rulesLoaded) {
+      invoke<string>("rules_read").then((content) => {
+        setRulesContent(content);
+        setRulesLoaded(true);
+      }).catch(() => setRulesLoaded(true));
+    }
+  }, [tab, rulesLoaded]);
+
+  const handleRulesSave = useCallback(async () => {
+    setRulesSaving(true);
+    setRulesSaved(false);
+    try {
+      await invoke("rules_write", { content: rulesContent });
+      setRulesSaved(true);
+      setTimeout(() => setRulesSaved(false), 2000);
+    } catch (err) {
+      console.error("Rules save failed:", err);
+    } finally {
+      setRulesSaving(false);
+    }
+  }, [rulesContent]);
+
   const tabs: Array<{ id: SettingsTab; label: string; detail: string }> = [
     {
       id: "general",
@@ -143,6 +170,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       id: "knowledge",
       label: intl.formatMessage({ id: "settings.knowledge" }),
       detail: intl.formatMessage({ id: "settings.knowledge.description" }),
+    },
+    {
+      id: "rules",
+      label: intl.formatMessage({ id: "settings.rules" }),
+      detail: intl.formatMessage({ id: "settings.rules.description" }),
     },
   ];
 
@@ -377,6 +409,40 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "hooks" && <HooksPanel />}
             {tab === "experience" && <ExperiencePanel />}
             {tab === "knowledge" && <KnowledgePanel />}
+            {tab === "rules" && (
+              <div className="space-y-5">
+                <section className="settings-card space-y-3">
+                  <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                    {intl.formatMessage({ id: "settings.rules" })}
+                  </h4>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    {intl.formatMessage({ id: "settings.rules.hint" })}
+                  </p>
+                  <textarea
+                    value={rulesContent}
+                    onChange={(e) => setRulesContent(e.target.value)}
+                    placeholder={intl.formatMessage({ id: "settings.rules.placeholder" })}
+                    className="w-full min-h-[300px] rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3 font-mono text-xs text-[var(--text-base)] placeholder:text-[var(--text-faint)] focus:border-[var(--accent-strong)] focus:outline-none resize-y"
+                  />
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleRulesSave}
+                      disabled={rulesSaving}
+                      className="rounded-lg bg-[var(--accent-strong)] px-4 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+                    >
+                      {rulesSaving
+                        ? intl.formatMessage({ id: "settings.rules.saving" })
+                        : intl.formatMessage({ id: "settings.rules.save" })}
+                    </button>
+                    {rulesSaved && (
+                      <span className="text-xs text-green-500">
+                        {intl.formatMessage({ id: "settings.rules.saved" })}
+                      </span>
+                    )}
+                  </div>
+                </section>
+              </div>
+            )}
           </div>
         </section>
       </div>

@@ -2255,6 +2255,28 @@ impl ToolExecutor {
                     }
                 }
             }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "edit_project_rules",
+                    "description": "Read or write the project rules file (.rule.md) in the current working directory. When action is 'read', returns the current rules content. When action is 'write', overwrites the rules file with the provided content. Project rules are injected into the system prompt to guide AI behavior for this project.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["read", "write"],
+                                "description": "Whether to read or write the rules file."
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "New rules content in Markdown format. Required when action is 'write'."
+                            }
+                        },
+                        "required": ["action"]
+                    }
+                }
+            }),
         ];
 
         if web_search_enabled {
@@ -2612,6 +2634,10 @@ impl ToolExecutor {
             }
             "web_fetch" => {
                 self.exec_web_fetch(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "edit_project_rules" => {
+                self.exec_edit_project_rules(arguments, call_id, app_handle, thread_id)
                     .await
             }
             other => Ok(format!("Unknown tool: {other}")),
@@ -3274,6 +3300,58 @@ impl ToolExecutor {
             }
         };
         Ok(result)
+    }
+
+    async fn exec_edit_project_rules(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct Args {
+            action: String,
+            content: Option<String>,
+        }
+
+        let args: Args = serde_json::from_str(arguments)
+            .map_err(|e| crate::error::AppError::Custom(format!("Invalid edit_project_rules args: {e}")))?;
+
+        let rules_path = self.cwd.join(".rule.md");
+
+        match args.action.as_str() {
+            "read" => {
+                self.emit_tool_start(app_handle, thread_id, call_id, "edit_project_rules", "read");
+                let content = tokio::fs::read_to_string(&rules_path)
+                    .await
+                    .unwrap_or_default();
+                let result = if content.is_empty() {
+                    "No project rules found (.rule.md does not exist or is empty).".to_string()
+                } else {
+                    content
+                };
+                self.emit_tool_end(app_handle, thread_id, call_id, "edit_project_rules", 0, &result);
+                Ok(result)
+            }
+            "write" => {
+                let content = args.content.unwrap_or_default();
+                self.emit_tool_start(app_handle, thread_id, call_id, "edit_project_rules", "write");
+                match tokio::fs::write(&rules_path, &content).await {
+                    Ok(()) => {
+                        let msg = format!("Successfully wrote project rules ({} bytes) to .rule.md", content.len());
+                        self.emit_tool_end(app_handle, thread_id, call_id, "edit_project_rules", 0, &msg);
+                        Ok(msg)
+                    }
+                    Err(e) => {
+                        let msg = format!("Error writing .rule.md: {e}");
+                        self.emit_tool_end(app_handle, thread_id, call_id, "edit_project_rules", -1, &msg);
+                        Ok(msg)
+                    }
+                }
+            }
+            other => Ok(format!("Unknown action for edit_project_rules: {other}. Use 'read' or 'write'.")),
+        }
     }
 
     async fn exec_apply_patch(

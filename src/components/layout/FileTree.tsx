@@ -14,9 +14,11 @@ import {
   IconMarkdown,
   IconMessagePlus,
   IconPhoto,
+  IconRuler,
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
+import { invoke } from "@tauri-apps/api/core";
 import {
   readDirectory,
   readFileForAttach,
@@ -221,6 +223,25 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                       size: result.size,
                       sourcePath: result.sourcePath,
                     });
+                  });
+                },
+              } satisfies ContextMenuEntry,
+            ]
+          : []),
+        ...(contextMenu.node.isDir
+          ? [
+              {
+                id: "project-rules",
+                label: intl.formatMessage({ id: "fileTree.editProjectRules" }),
+                icon: <IconRuler size={14} stroke={1.8} />,
+                onClick: () => {
+                  const dirPath = contextMenu.node.path;
+                  const rulePath = dirPath.replace(/[\\/]$/, "") + "/.rule.md";
+                  void invoke<string>("rules_read_project", { projectPath: dirPath }).then((content) => {
+                    if (!content) {
+                      void invoke("rules_write_project", { projectPath: dirPath, content: "# Project Rules\n\n" });
+                    }
+                    void windowOpenDocumentDetail(rulePath);
                   });
                 },
               } satisfies ContextMenuEntry,
