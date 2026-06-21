@@ -15,6 +15,7 @@ import { ApprovalModal } from "./components/approval/ApprovalModal";
 import { FortuneBubble } from "./components/common/FortuneBubble";
 import { RecordingToggle } from "./components/common/RecordingToggle";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
+import { WorkflowExtractModal } from "./components/workflow/WorkflowExtractModal";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import enUS from "./i18n/en-US/common.json";
 import zhCN from "./i18n/zh-CN/common.json";
@@ -423,6 +424,7 @@ function App() {
         </div>
         {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
         <ApprovalModal />
+        <WorkflowExtractModal />
         <FortuneBubble />
         <RecordingToggle />
       </IntlProvider>

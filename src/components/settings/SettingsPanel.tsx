@@ -9,6 +9,7 @@ import { PluginsPanel } from "./PluginsPanel";
 import { SkillsPanel } from "./SkillsPanel";
 import { HooksPanel } from "./HooksPanel";
 import { RobotsPanel } from "./RobotsPanel";
+import { WorkflowsPanel } from "./WorkflowsPanel";
 import { UsageDashboard } from "./UsageDashboard";
 import { ExperiencePanel } from "./ExperiencePanel";
 import { KnowledgePanel } from "./KnowledgePanel";
@@ -16,7 +17,7 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "hooks" | "experience" | "knowledge" | "rules";
+type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "workflows" | "hooks" | "experience" | "knowledge" | "rules";
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const intl = useIntl();
@@ -181,6 +182,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       id: "robots",
       label: intl.formatMessage({ id: "settings.robots" }),
       detail: intl.formatMessage({ id: "settings.robots.description" }),
+    },
+    {
+      id: "workflows",
+      label: intl.formatMessage({ id: "settings.workflows.title" }),
+      detail: intl.formatMessage({ id: "settings.workflows.description" }),
     },
     {
       id: "hooks",
@@ -625,6 +631,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "plugins" && <PluginsPanel />}
             {tab === "skills" && <SkillsPanel />}
             {tab === "robots" && <RobotsPanel />}
+            {tab === "workflows" && <WorkflowsPanel />}
             {tab === "hooks" && <HooksPanel />}
             {tab === "experience" && <ExperiencePanel />}
             {tab === "knowledge" && <KnowledgePanel />}

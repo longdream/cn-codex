@@ -162,6 +162,7 @@ fn prepare_workspace_config_dir(project_root: &Path) -> PathBuf {
             .join("knowledge")
             .join("docs"),
     );
+    let _ = std::fs::create_dir_all(workspace_dir.join("workflows"));
     let _ = std::fs::create_dir_all(workspace_dir.join("robots"));
     workspace_dir
 }

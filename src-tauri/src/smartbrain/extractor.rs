@@ -26,24 +26,40 @@ pub async fn run_extraction(
     }
 
     let (provider_id, provider) = config.resolve_provider();
-    let base_url = match provider.resolve_base_url() {
-        Some(url) => url,
-        None => {
-            info!("Experience extraction skipped: no base URL for provider '{provider_id}'");
+    let (base_url, api_key, wire_api) = if !config.model_endpoints.is_empty() {
+        let idx = config.active_endpoint_index.unwrap_or(0);
+        let ep = &config.model_endpoints[idx.min(config.model_endpoints.len() - 1)];
+        let ep_wire_api = ep
+            .wire_api
+            .as_deref()
+            .or(provider.wire_api.as_deref())
+            .unwrap_or("chat");
+        (
+            ep.url.clone(),
+            ep.api_key.clone().unwrap_or_default(),
+            ep_wire_api.to_string(),
+        )
+    } else {
+        let url = match provider.resolve_base_url() {
+            Some(url) => url,
+            None => {
+                info!("Experience extraction skipped: no base URL for provider '{provider_id}'");
+                return;
+            }
+        };
+        let key = provider.resolve_api_key().unwrap_or_default();
+        if key.is_empty() {
+            info!("Experience extraction skipped: no API key configured");
             return;
         }
+        let wire = provider.wire_api.as_deref().unwrap_or("chat").to_string();
+        (url, key, wire)
     };
-    let api_key = provider.resolve_api_key().unwrap_or_default();
-    if api_key.is_empty() {
-        info!("Experience extraction skipped: no API key configured");
-        return;
-    }
     let model = config.resolve_model();
     if model.is_empty() {
         info!("Experience extraction skipped: no model configured");
         return;
     }
-    let wire_api = provider.wire_api.as_deref().unwrap_or("chat");
 
     let mut index = ExperienceIndex::load(experiences_dir);
     let threads = thread_store.list_threads().await;
@@ -73,7 +89,7 @@ pub async fn run_extraction(
             &base_url,
             &api_key,
             &model,
-            wire_api,
+            &wire_api,
             &messages,
             config.max_output_tokens,
         )

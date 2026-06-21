@@ -1829,6 +1829,37 @@ impl AgentEngine {
             skills.push(line);
         }
 
+        // Workflows (exposed as skills)
+        let workflows_dir = self.cwd.join("codey").join("workflows");
+        if let Ok(entries) = std::fs::read_dir(&workflows_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let skill_md = path.join("SKILL.md");
+                if !skill_md.is_file() {
+                    continue;
+                }
+                let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
+                let (name, description) = parse_skill_prompt_frontmatter(&content);
+                let display_name = if name.is_empty() {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "workflow".to_string())
+                } else {
+                    format!("[Workflow] {name}")
+                };
+                let rendered_path = skill_md.to_string_lossy().to_string();
+                let line = if description.is_empty() {
+                    format!("- {display_name}: (file: {rendered_path})")
+                } else {
+                    format!("- {display_name}: {description} (file: {rendered_path})")
+                };
+                skills.push(line);
+            }
+        }
+
         if skills.is_empty() {
             return String::new();
         }

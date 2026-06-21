@@ -28,6 +28,7 @@ pub mod terminal;
 pub mod thread_store;
 pub mod tool_executor;
 pub mod usage;
+pub mod workflow;
 
 use state::AppState;
 use tauri::Manager;
@@ -295,6 +296,12 @@ pub fn run() {
             smartbrain::commands::smartbrain_search,
             smartbrain::commands::smartbrain_rebuild_index,
             smartbrain::commands::smartbrain_migrate_to_okf,
+            // Workflow
+            workflow::commands::workflow_extract,
+            workflow::commands::workflow_save,
+            workflow::commands::workflow_list,
+            workflow::commands::workflow_read,
+            workflow::commands::workflow_delete,
             // WPS server
         ])
         .run(tauri::generate_context!())

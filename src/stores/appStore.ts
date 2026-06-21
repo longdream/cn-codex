@@ -883,6 +883,9 @@ interface AppState {
   selectedRobotId: string | null;
   robotCreateMode: boolean;
 
+  /** Workflow 提取：当设置为非空 threadId 时弹出提取对话框 */
+  workflowExtractThreadId: string | null;
+
   setInitialized: (v: boolean) => void;
   setInitError: (err: string | null) => void;
   retryInit: (() => void) | null;
@@ -980,6 +983,7 @@ interface AppState {
   setSidebarTab: (tab: SidebarTab) => void;
   setSelectedRobotId: (id: string | null) => void;
   setRobotCreateMode: (v: boolean) => void;
+  setWorkflowExtractThreadId: (id: string | null) => void;
   setBrowserPanelState: (state: Partial<{
     url: string | null;
     title: string | null;
@@ -1030,6 +1034,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarTab: "chats",
   selectedRobotId: null,
   robotCreateMode: false,
+  workflowExtractThreadId: null,
   rightPanelVisible: false,
   rightPanelTab: "browser",
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
@@ -1731,6 +1736,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setRobotCreateMode: (v) => {
     set({ robotCreateMode: v, selectedRobotId: null });
+  },
+  setWorkflowExtractThreadId: (id) => {
+    set({ workflowExtractThreadId: id });
   },
   setRightPanelVisible: (v) => set({ rightPanelVisible: v }),
   toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
