@@ -10,6 +10,7 @@ relay-server/publish/
 # Node
 node_modules/
 publish/
+
 # IDE
 .vscode/
 .idea/
@@ -38,3 +39,25 @@ logs/
 # Embedded Node.js (bundled at publish time, not checked into git)
 codey/node/
 tools/node-cache/
+
+# Runtime config with API tokens
+codey/skills/**/.skill.env
+
+# Cursor IDE
+.cursor/
+
+# Cargo local config (root level)
+.cargo/
+
+# Windows batch scripts (local dev only)
+*.bat
+
+# VS Code workspace (references local paths)
+*.code-workspace
+
+# Mobile dist (build artifact)
+mobile-dist/
+
+# Private skills (not for public repo)
+codey/skills/tender-document-parsing/
+codey/skills/bid-review/
