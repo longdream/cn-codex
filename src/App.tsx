@@ -12,6 +12,8 @@ import { RightPanel } from "./components/layout/RightPanel";
 import { Sidebar } from "./components/layout/Sidebar";
 import { TitleBar } from "./components/layout/TitleBar";
 import { ApprovalModal } from "./components/approval/ApprovalModal";
+import { FortuneBubble } from "./components/common/FortuneBubble";
+import { RecordingToggle } from "./components/common/RecordingToggle";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { useTauriEvents } from "./hooks/useTauriEvents";
 import enUS from "./i18n/en-US/common.json";
@@ -174,6 +176,10 @@ function App() {
               return;
             }
             useAppStore.getState().setCurrentModel(model);
+          }
+          const activeEpIdx = cfg?.config?.active_endpoint_index;
+          if (typeof activeEpIdx === "number" && isLatestRun()) {
+            useAppStore.setState({ activeEndpointIndex: activeEpIdx });
           }
           if (isLatestRun()) {
             logInitPhase("model_config_restored");
@@ -417,6 +423,8 @@ function App() {
         </div>
         {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
         <ApprovalModal />
+        <FortuneBubble />
+        <RecordingToggle />
       </IntlProvider>
     </ErrorBoundary>
   );

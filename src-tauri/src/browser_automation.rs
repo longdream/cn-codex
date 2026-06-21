@@ -7,7 +7,7 @@ use base64::{Engine as _, engine::general_purpose};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tokio::fs;
 use tokio::net::TcpStream;
 use tokio::time::sleep;
@@ -137,6 +137,7 @@ pub async fn run_webview_js_injection(
     let cdp_endpoint = browser_info.cdp_endpoint.clone();
 
     ensure_cdp_ready(&http, &cdp_endpoint, Duration::from_secs(8), &cancel_flag).await?;
+    app_handle.emit("browser-webview-ready", ()).ok();
     let mut session =
         BrowserSession::connect(http.clone(), cdp_endpoint.clone(), cancel_flag.clone()).await?;
 
@@ -224,6 +225,110 @@ pub async fn run_webview_js_injection(
         asset_bundles,
         console: Vec::new(),
         notes: vec!["js-injection".to_string()],
+    })
+}
+
+/// Run browser actions against an external Chrome/Edge via CDP.
+///
+/// Unlike `run_webview_js_injection`, this connects to a pre-launched external
+/// browser (managed by `ExternalBrowser`) rather than the embedded Tauri WebView.
+pub async fn run_external_browser(
+    cdp_endpoint: &str,
+    workspace_config_dir: &Path,
+    cwd: &Path,
+    http: reqwest::Client,
+    payload: &serde_json::Value,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<BrowserRunOutput, String> {
+    let started_at = Instant::now();
+
+    ensure_cdp_ready(&http, cdp_endpoint, Duration::from_secs(8), &cancel_flag).await?;
+    let mut session =
+        BrowserSession::connect(http.clone(), cdp_endpoint.to_string(), cancel_flag.clone())
+            .await?;
+
+    let browser_dir = workspace_config_dir.join("browser");
+    let screenshot_dir = path_from_payload_or_default(
+        payload,
+        "defaultScreenshotDir",
+        browser_dir.join("screenshots"),
+    );
+    let asset_dir =
+        path_from_payload_or_default(payload, "defaultAssetDir", browser_dir.join("assets"));
+    fs::create_dir_all(&screenshot_dir).await.ok();
+    fs::create_dir_all(&asset_dir).await.ok();
+
+    if let Some(url) = payload
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        session.navigate(url, DEFAULT_NAV_TIMEOUT_MS).await?;
+    }
+
+    if let Some(viewport) = payload.get("viewport") {
+        let width = viewport.get("width").and_then(serde_json::Value::as_u64);
+        let height = viewport.get("height").and_then(serde_json::Value::as_u64);
+        if let (Some(width), Some(height)) = (width, height) {
+            session
+                .set_viewport(width as i64, height as i64)
+                .await
+                .map_err(|e| format!("Failed to apply viewport: {e}"))?;
+        }
+    }
+
+    let mut screenshots = Vec::new();
+    let mut asset_bundles = Vec::new();
+    let mut action_results = Vec::new();
+    let actions = payload
+        .get("actions")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    for (index, action) in actions.iter().enumerate() {
+        ensure_not_cancelled(&cancel_flag)?;
+        let action_result = run_action(
+            &mut session,
+            action,
+            index,
+            cwd,
+            &screenshot_dir,
+            &asset_dir,
+            &mut screenshots,
+            &mut asset_bundles,
+            &http,
+            &cancel_flag,
+        )
+        .await
+        .map_err(|error| {
+            let action_type = action
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(missing type)");
+            format!("Action {index} ({action_type}) failed: {error}")
+        })?;
+        action_results.push(action_result);
+    }
+
+    let final_url = session.current_url().await.unwrap_or_default();
+    let title = session.current_title().await.unwrap_or_default();
+    let tabs = session.describe_tabs().await?;
+
+    Ok(BrowserRunOutput {
+        ok: true,
+        browser_mode: "external-chrome".to_string(),
+        cdp_endpoint: cdp_endpoint.to_string(),
+        final_url,
+        title,
+        tabs,
+        duration_ms: started_at.elapsed().as_millis(),
+        actions: action_results,
+        screenshots,
+        asset_bundles,
+        console: Vec::new(),
+        notes: vec!["external-chrome".to_string()],
     })
 }
 

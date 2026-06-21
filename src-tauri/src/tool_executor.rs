@@ -2354,6 +2354,30 @@ impl ToolExecutor {
             }));
         }
 
+        // Recording tools
+        tools.push(serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "recording_control",
+                "description": "Control browser recording for the Record & Replay workflow. Use action='launch_browser' to open an external Chrome, 'show_toggle' to display the recording UI so the user can start/stop recording, 'read_trace' to read a completed recording trace, or 'list_traces' to list all saved recordings.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["launch_browser", "show_toggle", "hide_toggle", "status", "read_trace", "list_traces"],
+                            "description": "The recording control action to perform."
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID of the trace to read (required for read_trace action)."
+                        }
+                    },
+                    "required": ["action"]
+                }
+            }
+        }));
+
         tools
     }
 
@@ -2538,6 +2562,10 @@ impl ToolExecutor {
             }
             "browser_run" => {
                 self.exec_browser_run(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "recording_control" => {
+                self.exec_recording_control(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "spawn_agent" => {
@@ -4080,18 +4108,39 @@ impl ToolExecutor {
         self.register_active_browser_cancellation(thread_id, call_id, cancel_flag.clone())
             .await;
 
-        let outcome = tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            crate::browser_automation::run_webview_js_injection(
-                app_handle,
-                &self.workspace_config_dir,
-                &self.cwd,
-                self.http.clone(),
-                &payload,
-                cancel_flag.clone(),
-            ),
-        )
-        .await;
+        // Try external browser first if available, fall back to embedded WebView.
+        let external_endpoint = {
+            let state = app_handle.state::<crate::state::AppState>();
+            state.external_browser.get_cdp_endpoint().await
+        };
+
+        let outcome = if let Some(ref ext_endpoint) = external_endpoint {
+            tokio::time::timeout(
+                Duration::from_millis(timeout_ms),
+                crate::browser_automation::run_external_browser(
+                    ext_endpoint,
+                    &self.workspace_config_dir,
+                    &self.cwd,
+                    self.http.clone(),
+                    &payload,
+                    cancel_flag.clone(),
+                ),
+            )
+            .await
+        } else {
+            tokio::time::timeout(
+                Duration::from_millis(timeout_ms),
+                crate::browser_automation::run_webview_js_injection(
+                    app_handle,
+                    &self.workspace_config_dir,
+                    &self.cwd,
+                    self.http.clone(),
+                    &payload,
+                    cancel_flag.clone(),
+                ),
+            )
+            .await
+        };
 
         self.unregister_active_browser_cancellation(thread_id, call_id)
             .await;
@@ -4135,6 +4184,169 @@ impl ToolExecutor {
             &truncated,
         );
         Ok(truncated)
+    }
+
+    async fn exec_recording_control(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(serde::Deserialize)]
+        struct Args {
+            action: String,
+            #[serde(default)]
+            session_id: Option<String>,
+        }
+
+        let args: Args = match serde_json::from_str(arguments) {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = format!("Invalid recording_control args: {e}");
+                self.emit_tool_start(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "recording_control",
+                    "invalid",
+                );
+                self.emit_tool_end(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "recording_control",
+                    -1,
+                    &msg,
+                );
+                return Ok(msg);
+            }
+        };
+
+        self.emit_tool_start(
+            app_handle,
+            thread_id,
+            call_id,
+            "recording_control",
+            &args.action,
+        );
+
+        let state = app_handle.state::<crate::state::AppState>();
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_default();
+
+        let result = match args.action.as_str() {
+            "launch_browser" => {
+                match state.external_browser.launch(&http, None, None).await {
+                    Ok(endpoint) => {
+                        // Also show the recording toggle
+                        app_handle
+                            .emit("recording-toggle-visibility", true)
+                            .ok();
+                        serde_json::json!({
+                            "ok": true,
+                            "cdpEndpoint": endpoint,
+                            "message": "External Chrome launched. The recording toggle is now visible. Tell the user to click 'Start Recording', perform their actions in Chrome, then click 'Stop Recording'."
+                        })
+                        .to_string()
+                    }
+                    Err(e) => {
+                        serde_json::json!({ "ok": false, "error": e }).to_string()
+                    }
+                }
+            }
+            "show_toggle" => {
+                app_handle
+                    .emit("recording-toggle-visibility", true)
+                    .ok();
+                serde_json::json!({
+                    "ok": true,
+                    "message": "Recording toggle is now visible in the UI."
+                })
+                .to_string()
+            }
+            "hide_toggle" => {
+                app_handle
+                    .emit("recording-toggle-visibility", false)
+                    .ok();
+                serde_json::json!({
+                    "ok": true,
+                    "message": "Recording toggle hidden."
+                })
+                .to_string()
+            }
+            "status" => {
+                let recording_status = state.recorder.get_status().await;
+                let browser_running = state.external_browser.is_running(&http).await;
+                serde_json::json!({
+                    "ok": true,
+                    "recordingStatus": recording_status,
+                    "browserRunning": browser_running,
+                })
+                .to_string()
+            }
+            "read_trace" => {
+                let session_id = match &args.session_id {
+                    Some(id) => id.clone(),
+                    None => {
+                        let msg = "session_id is required for read_trace action";
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "recording_control",
+                            -1,
+                            msg,
+                        );
+                        return Ok(msg.to_string());
+                    }
+                };
+                let trace_path = self
+                    .workspace_config_dir
+                    .join("recordings")
+                    .join(format!("{session_id}.trace.json"));
+                match tokio::fs::read_to_string(&trace_path).await {
+                    Ok(content) => content,
+                    Err(e) => {
+                        serde_json::json!({
+                            "ok": false,
+                            "error": format!("Failed to read trace: {e}")
+                        })
+                        .to_string()
+                    }
+                }
+            }
+            "list_traces" => {
+                let recordings_dir = self.workspace_config_dir.join("recordings");
+                match crate::recording::Recorder::list_traces(&recordings_dir).await {
+                    Ok(traces) => {
+                        serde_json::json!({ "ok": true, "traces": traces }).to_string()
+                    }
+                    Err(e) => {
+                        serde_json::json!({ "ok": false, "error": e }).to_string()
+                    }
+                }
+            }
+            other => {
+                serde_json::json!({
+                    "ok": false,
+                    "error": format!("Unknown recording_control action: {other}")
+                })
+                .to_string()
+            }
+        };
+
+        self.emit_tool_end(
+            app_handle,
+            thread_id,
+            call_id,
+            "recording_control",
+            0,
+            &result,
+        );
+        Ok(result)
     }
 
     async fn exec_spawn_agent(
@@ -7221,13 +7433,12 @@ impl ToolExecutor {
         app_handle: &AppHandle,
         thread_id: &str,
     ) -> String {
-        let extract_script = r#"
+        let bing_extract_script = r#"
             (() => {
                 const results = [];
-                // 百度搜索结果
-                document.querySelectorAll('.result.c-container, .c-container').forEach(el => {
-                    const a = el.querySelector('h3 a, .t a');
-                    const snippet = el.querySelector('.c-abstract, .content-right_8Zs40');
+                document.querySelectorAll('li.b_algo').forEach(el => {
+                    const a = el.querySelector('h2 a');
+                    const snippet = el.querySelector('.b_caption p, .b_lineclamp2, .b_algoSlug');
                     if (a) {
                         results.push({
                             title: a.innerText.trim(),
@@ -7236,46 +7447,50 @@ impl ToolExecutor {
                         });
                     }
                 });
-                // DuckDuckGo 搜索结果 (备选)
-                if (results.length === 0) {
-                    document.querySelectorAll('.result, .nrn-react-div').forEach(el => {
-                        const a = el.querySelector('.result__a, a.result-link');
-                        const snippet = el.querySelector('.result__snippet, .result__body');
-                        if (a) {
-                            results.push({
-                                title: a.innerText.trim(),
-                                url: a.href || '',
-                                snippet: snippet ? snippet.innerText.trim() : ''
-                            });
-                        }
-                    });
-                }
                 return JSON.stringify(results);
             })()
         "#;
 
-        let baidu_url = format!(
-            "https://www.baidu.com/s?wd={}",
+        let ddg_extract_script = r#"
+            (() => {
+                const results = [];
+                document.querySelectorAll('.result, .nrn-react-div').forEach(el => {
+                    const a = el.querySelector('.result__a, a.result-link');
+                    const snippet = el.querySelector('.result__snippet, .result__body');
+                    if (a) {
+                        results.push({
+                            title: a.innerText.trim(),
+                            url: a.href || '',
+                            snippet: snippet ? snippet.innerText.trim() : ''
+                        });
+                    }
+                });
+                return JSON.stringify(results);
+            })()
+        "#;
+
+        let bing_url = format!(
+            "https://cn.bing.com/search?q={}",
             encode_query_component(query)
         );
-        let browser_args = serde_json::json!({
+        let browser_args_bing = serde_json::json!({
             "engine": "webview-js-injection",
-            "url": baidu_url,
+            "url": bing_url,
             "waitUntil": "networkidle",
             "use_visible_browser": true,
             "actions": [
                 { "type": "wait_for_timeout", "ms": 2500 },
-                { "type": "eval", "script": extract_script },
+                { "type": "eval", "script": bing_extract_script },
                 { "type": "title" },
                 { "type": "url" }
             ]
         });
 
-        let browser_output = self
-            .exec_browser_run(&browser_args.to_string(), call_id, app_handle, thread_id)
+        let bing_output = self
+            .exec_browser_run(&browser_args_bing.to_string(), call_id, app_handle, thread_id)
             .await;
 
-        if let Ok(ref raw) = browser_output {
+        if let Ok(ref raw) = bing_output {
             if let Some(results) = parse_browser_search_results(raw, max_results) {
                 if !results.is_empty() {
                     return format_browser_search_results(query, &results);
@@ -7294,7 +7509,7 @@ impl ToolExecutor {
             "use_visible_browser": true,
             "actions": [
                 { "type": "wait_for_timeout", "ms": 3000 },
-                { "type": "eval", "script": extract_script },
+                { "type": "eval", "script": ddg_extract_script },
                 { "type": "title" },
                 { "type": "url" }
             ]
@@ -7318,7 +7533,7 @@ impl ToolExecutor {
         }
 
         format!(
-            "No web search results found for: {query} (tried API, Baidu, and DuckDuckGo browser search)"
+            "No web search results found for: {query} (tried API, Bing, and DuckDuckGo browser search)"
         )
     }
 

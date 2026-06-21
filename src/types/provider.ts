@@ -7,6 +7,21 @@
 /** 供应商分类 */
 export type ProviderCategory = "global" | "china" | "local" | "other";
 
+/** 资源池模型的单个后端端点地址 */
+export interface PoolModelEndpoint {
+  id: string;
+  /** 实际请求地址，如 http://10.0.0.1:8080/v1 */
+  url: string;
+  /** 可选标签，如 "节点1" */
+  label: string;
+  /** 是否启用 */
+  enabled: boolean;
+  /** 该端点的 API Key */
+  apiKey?: string;
+  /** 该端点的 API 协议（chat/responses/anthropic/gemini），留空则用供应商默认 */
+  wireApi?: string;
+}
+
 /** 供应商下的单个模型 */
 export interface ProviderModel {
   id: string;
@@ -16,6 +31,8 @@ export interface ProviderModel {
   contextLength: number;
   /** 单次回复最大输出 token 数，默认 65535 */
   maxOutputTokens: number;
+  /** 仅 local-pool 供应商使用：该模型的后端端点列表，按顺序切换容灾 */
+  endpoints?: PoolModelEndpoint[];
 }
 
 /** 预设模型模板（允许省略 maxOutputTokens，实例化时补默认值） */

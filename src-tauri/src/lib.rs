@@ -4,6 +4,8 @@ pub mod browser_automation;
 pub mod commands;
 pub mod compaction;
 pub mod config_system;
+pub mod external_browser;
+pub mod local_pool;
 pub mod conversation_logger;
 pub mod document_parser;
 pub mod error;
@@ -14,6 +16,7 @@ pub mod hook_runtime;
 pub mod mobile_server;
 pub mod plugin_loader;
 pub mod protocol;
+pub mod recording;
 pub mod relay_client;
 pub mod robot_loader;
 pub mod robot_orchestrator;
@@ -202,7 +205,9 @@ pub fn run() {
             standalone::standalone_config_write,
             standalone::standalone_thread_create,
             standalone::standalone_thread_list,
+            standalone::standalone_thread_peek_goal,
             standalone::standalone_thread_read,
+            standalone::fortune_llm_call,
             standalone::standalone_thread_goal_set,
             standalone::standalone_thread_goal_status,
             standalone::standalone_thread_goal_edit,
@@ -270,6 +275,15 @@ pub fn run() {
             commands::get_mobile_server_status,
             commands::get_mobile_server_url,
             commands::get_qrcode_svg,
+            // Recording & External Browser
+            commands::launch_browser,
+            commands::close_external_browser,
+            commands::recording_start,
+            commands::recording_stop,
+            commands::recording_status,
+            commands::recording_show_toggle,
+            commands::recording_list_traces,
+            commands::recording_read_trace,
             // SmartBrain
             smartbrain::commands::smartbrain_list_experiences,
             smartbrain::commands::smartbrain_read_experience,

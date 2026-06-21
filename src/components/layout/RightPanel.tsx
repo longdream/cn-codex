@@ -1,9 +1,10 @@
 import { IconBrowser, IconExternalLink, IconFolderOpen, IconGitBranch, IconRefresh, IconTerminal2, IconX } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import { useAppStore } from "../../stores/appStore";
-import { revealInExplorer, windowCloseBrowser, windowOpenBrowser, windowResizeBrowser } from "../../api/window";
+import { revealInExplorer, windowCloseBrowser, windowNavigateBrowser, windowOpenBrowser, windowResizeBrowser } from "../../api/window";
 import { FileTree } from "./FileTree";
 import { GitPanel } from "./GitPanel";
 import { TerminalPanel } from "./TerminalPanel";
@@ -91,12 +92,13 @@ export function RightPanel() {
   const rightPanelWidth = useAppStore((s) => s.rightPanelWidth);
   const browserPanelUrl = useAppStore((s) => s.browserPanelUrl);
   const browserPanelStatus = useAppStore((s) => s.browserPanelStatus);
+  const browserSyncTrigger = useAppStore((s) => s.browserSyncTrigger);
+  const browserActive = useAppStore((s) => s.browserActive);
+  const setBrowserActive = useAppStore((s) => s.setBrowserActive);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const messages = useAppStore((s) => s.messages);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const setBrowserPanelState = useAppStore((s) => s.setBrowserPanelState);
-
-  const [browserActive, setBrowserActive] = useState(false);
   const browserContainerRef = useRef<HTMLDivElement>(null);
   const resizeTimerRef = useRef<number | null>(null);
 
@@ -161,8 +163,11 @@ export function RightPanel() {
       setBrowserActive(true);
       setTimeout(syncBrowserPosition, 100);
       requestAnimationFrame(syncBrowserPosition);
+    }).catch(() => {
+      setBrowserActive(true);
+      syncBrowserPosition();
     });
-  }, [syncBrowserPosition]);
+  }, [setBrowserActive, syncBrowserPosition]);
 
   const handleCloseBrowser = useCallback(() => {
     void windowCloseBrowser().finally(() => {
@@ -174,7 +179,7 @@ export function RightPanel() {
       });
       setBrowserActive(false);
     });
-  }, [setBrowserPanelState]);
+  }, [setBrowserActive, setBrowserPanelState]);
 
   // 切换 tab 时隐藏/恢复 webview 位置（不关闭）
   useEffect(() => {
@@ -185,7 +190,34 @@ export function RightPanel() {
     }
   }, [rightPanelTab, browserActive, syncBrowserPosition]);
 
-  // 当切到 browser tab 时自动激活 webview
+  // browser_run 开始时强制重新定位 WebView，避免黑屏
+  useEffect(() => {
+    if (browserSyncTrigger > 0 && browserActive && rightPanelTab === "browser") {
+      syncBrowserPosition();
+    }
+  }, [browserSyncTrigger, browserActive, rightPanelTab, syncBrowserPosition]);
+
+  // 后端 CDP 就绪后重新定位 WebView（解决后端 -9999 覆盖前端定位的竞态）
+  useEffect(() => {
+    const unlisten = listen("browser-webview-ready", () => {
+      if (browserActive && rightPanelTab === "browser") {
+        syncBrowserPosition();
+        setTimeout(syncBrowserPosition, 100);
+      }
+    });
+    return () => { void unlisten.then((fn) => fn()); };
+  }, [browserActive, rightPanelTab, syncBrowserPosition]);
+
+  // browserActive 变为 true 时延迟同步位置（确保 DOM 已布局）
+  useEffect(() => {
+    if (browserActive && rightPanelTab === "browser") {
+      const timer = setTimeout(syncBrowserPosition, 50);
+      requestAnimationFrame(syncBrowserPosition);
+      return () => clearTimeout(timer);
+    }
+  }, [browserActive, rightPanelTab, syncBrowserPosition]);
+
+  // 当切到 browser tab 时自动激活 webview（仅在后端未主动创建时触发）
   useEffect(() => {
     if (rightPanelTab === "browser" && !browserActive) {
       handleOpenBrowser();
@@ -197,6 +229,7 @@ export function RightPanel() {
       // 组件卸载（例如右侧面板被整体隐藏）时强制关闭 WebView。
       // 这是防止白屏覆盖残留的最终兜底逻辑。
       void windowCloseBrowser().finally(() => {
+        setBrowserActive(false);
         setBrowserPanelState({
           status: "idle",
           url: null,
@@ -204,7 +237,7 @@ export function RightPanel() {
         });
       });
     };
-  }, [setBrowserPanelState]);
+  }, [setBrowserActive, setBrowserPanelState]);
 
   return (
     <aside
@@ -260,8 +293,8 @@ export function RightPanel() {
 
       {rightPanelTab === "browser" ? (
         <div className="flex flex-1 flex-col overflow-hidden">
-          {/* Browser info bar */}
-          <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-2">
+          {/* Browser address bar */}
+          <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-1.5">
             <div className="flex min-w-0 flex-1 items-center gap-1.5">
               <span
                 className={`h-2 w-2 flex-shrink-0 rounded-full ${
@@ -272,9 +305,25 @@ export function RightPanel() {
                     : "bg-[var(--text-faint)]"
                 }`}
               />
-              <span className="truncate font-mono text-[11px] text-[var(--text-muted)]">
-                {browserPanelUrl ?? browserOutput?.finalUrl ?? intl.formatMessage({ id: "rightPanel.noActivePage" })}
-              </span>
+              <input
+                type="text"
+                className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-muted)] outline-none transition-colors focus:border-[var(--accent)] focus:text-[var(--text-strong)]"
+                defaultValue={browserPanelUrl ?? browserOutput?.finalUrl ?? ""}
+                key={browserPanelUrl ?? browserOutput?.finalUrl ?? "empty"}
+                placeholder={intl.formatMessage({ id: "rightPanel.noActivePage" })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const url = (e.target as HTMLInputElement).value.trim();
+                    if (!url) return;
+                    const normalizedUrl = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+                    if (browserActive) {
+                      void windowNavigateBrowser(normalizedUrl);
+                    } else {
+                      handleOpenBrowser(normalizedUrl);
+                    }
+                  }
+                }}
+              />
             </div>
             {browserActive && (
               <button

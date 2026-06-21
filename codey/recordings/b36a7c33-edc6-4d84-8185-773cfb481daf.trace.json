@@ -1,0 +1,21 @@
+{
+  "sessionId": "b36a7c33-edc6-4d84-8185-773cfb481daf",
+  "sessionName": "recording-b36a7c33",
+  "startUrl": "edge://sync-confirmation/",
+  "startedAt": "2026-06-21T07:27:46.016554500+00:00",
+  "stoppedAt": "2026-06-21T07:28:04.323309300+00:00",
+  "events": [
+    {
+      "type": "click",
+      "timestamp": 1782026867814,
+      "url": "edge://sync-confirmation/",
+      "selector": "button.c0133.c0134",
+      "selectorCandidates": [
+        "button.c0133.c0134"
+      ],
+      "tagName": "button",
+      "value": null,
+      "screenshot": null
+    }
+  ]
+}

@@ -124,6 +124,18 @@ impl SmartBrainConfig {
     }
 }
 
+/// 资源池模型的单个后端端点
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelEndpointInfo {
+    pub url: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub wire_api: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigToml {
     #[serde(default)]
@@ -156,6 +168,12 @@ pub struct ConfigToml {
     pub relay_server_url: Option<String>,
     #[serde(default, alias = "experience")]
     pub smartbrain: Option<SmartBrainConfig>,
+    /// 当前选中的 local-pool 模型的端点列表（仅 local-pool 类型供应商使用）
+    #[serde(default)]
+    pub model_endpoints: Vec<ModelEndpointInfo>,
+    /// 当前正在使用的端点索引（持久化以便重启后恢复）
+    #[serde(default)]
+    pub active_endpoint_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,6 +424,16 @@ impl ConfigToml {
                 if let Ok(info) = serde_json::from_value::<ModelProviderInfo>(value.clone()) {
                     self.model_providers.insert(provider_key.to_string(), info);
                 }
+            }
+            "model_endpoints" => {
+                if value.is_null() || value.is_array() && value.as_array().is_some_and(|a| a.is_empty()) {
+                    self.model_endpoints.clear();
+                } else if let Ok(endpoints) = serde_json::from_value::<Vec<ModelEndpointInfo>>(value.clone()) {
+                    self.model_endpoints = endpoints;
+                }
+            }
+            "active_endpoint_index" => {
+                self.active_endpoint_index = value.as_u64().map(|v| v as usize);
             }
             _ => {}
         }
@@ -677,5 +705,57 @@ mod tests {
             remote.headers.get("Authorization").map(String::as_str),
             Some("Bearer token")
         );
+    }
+
+    #[test]
+    fn model_endpoints_parse_from_toml() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+            model = "deepseek-chat"
+            model_provider = "local-pool"
+
+            [model_providers.local-pool]
+            wire_api = "chat"
+
+            [[model_endpoints]]
+            url = "http://10.0.0.1:8080/v1"
+            label = "节点1"
+            api_key = "sk-aaa"
+            wire_api = "chat"
+
+            [[model_endpoints]]
+            url = "http://10.0.0.2:8080/v1"
+            label = "节点2"
+            api_key = "sk-bbb"
+            wire_api = "responses"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.model_endpoints.len(), 2);
+        assert_eq!(config.model_endpoints[0].url, "http://10.0.0.1:8080/v1");
+        assert_eq!(config.model_endpoints[0].label.as_deref(), Some("节点1"));
+        assert_eq!(config.model_endpoints[0].api_key.as_deref(), Some("sk-aaa"));
+        assert_eq!(config.model_endpoints[0].wire_api.as_deref(), Some("chat"));
+        assert_eq!(config.model_endpoints[1].url, "http://10.0.0.2:8080/v1");
+        assert_eq!(config.model_endpoints[1].wire_api.as_deref(), Some("responses"));
+    }
+
+    #[test]
+    fn apply_edit_model_endpoints() {
+        let mut config = ConfigToml::default();
+        let endpoints_json = serde_json::json!([
+            { "url": "http://10.0.0.1:8080/v1", "label": "Node A", "api_key": "sk-1", "wire_api": "chat" },
+            { "url": "http://10.0.0.2:8080/v1", "label": "Node B" },
+        ]);
+        config.apply_edit("model_endpoints", &endpoints_json);
+        assert_eq!(config.model_endpoints.len(), 2);
+        assert_eq!(config.model_endpoints[0].url, "http://10.0.0.1:8080/v1");
+        assert_eq!(config.model_endpoints[0].api_key.as_deref(), Some("sk-1"));
+        assert_eq!(config.model_endpoints[1].label.as_deref(), Some("Node B"));
+        assert!(config.model_endpoints[1].api_key.is_none());
+
+        config.apply_edit("model_endpoints", &serde_json::Value::Null);
+        assert!(config.model_endpoints.is_empty());
     }
 }

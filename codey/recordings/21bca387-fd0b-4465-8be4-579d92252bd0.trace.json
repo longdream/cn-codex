@@ -1,0 +1,103 @@
+{
+  "sessionId": "21bca387-fd0b-4465-8be4-579d92252bd0",
+  "sessionName": "recording-21bca387",
+  "startUrl": "about:blank",
+  "startedAt": "2026-06-21T07:35:41.546809700+00:00",
+  "stoppedAt": "2026-06-21T07:36:28.046589700+00:00",
+  "events": [
+    {
+      "type": "click",
+      "timestamp": 1782027350473,
+      "url": "https://www.baidu.com/",
+      "selector": "#chat-textarea",
+      "selectorCandidates": [
+        "#chat-textarea",
+        "[placeholder=\"马宁获外国球迷称赞\"]",
+        "textarea.chat-input-textarea.chat-input-scroll-style"
+      ],
+      "tagName": "textarea",
+      "value": null,
+      "screenshot": null
+    },
+    {
+      "type": "type",
+      "timestamp": 1782027352994,
+      "url": "https://www.baidu.com/",
+      "selector": "#chat-textarea",
+      "selectorCandidates": [
+        "#chat-textarea",
+        "[placeholder=\"马宁获外国球迷称赞\"]",
+        "textarea.chat-input-textarea.chat-input-scroll-style"
+      ],
+      "tagName": "textarea",
+      "value": "tieq",
+      "screenshot": null
+    },
+    {
+      "type": "type",
+      "timestamp": 1782027353917,
+      "url": "https://www.baidu.com/",
+      "selector": "#chat-textarea",
+      "selectorCandidates": [
+        "#chat-textarea",
+        "[placeholder=\"马宁获外国球迷称赞\"]",
+        "textarea.chat-input-textarea.chat-input-scroll-style"
+      ],
+      "tagName": "textarea",
+      "value": "",
+      "screenshot": null
+    },
+    {
+      "type": "type",
+      "timestamp": 1782027356480,
+      "url": "https://www.baidu.com/",
+      "selector": "#chat-textarea",
+      "selectorCandidates": [
+        "#chat-textarea",
+        "[placeholder=\"马宁获外国球迷称赞\"]",
+        "textarea.chat-input-textarea.chat-input-scroll-style"
+      ],
+      "tagName": "textarea",
+      "value": "tieq",
+      "screenshot": null
+    },
+    {
+      "type": "type",
+      "timestamp": 1782027358242,
+      "url": "https://www.baidu.com/s?ie=utf-8&f=8&rsv_bp=1&rsv_idx=1&tn=baidu&wd=%E9%93%81%E6%8B%B3%E6%95%99%E8%82%B2&fenlei=256&rsv_pq=0xf450c4d001340b83&rsv_t=00869gkR6f0rRIEraVNrseGs3dF36e9%2F6cbi7yQdoTLuYIgjCeYG1237Tohr&rqlang=en&rsv_enter=1&rsv_dl=tb_enter&rsv_sug3=19&rsv_sug1=19&rsv_sug7=100&rsv_btype=i&inputT=5927&rsv_sug4=7572",
+      "selector": "#chat-textarea",
+      "selectorCandidates": [
+        "#chat-textarea",
+        "[placeholder=\"马宁获外国球迷称赞\"]",
+        "textarea.chat-input-textarea.chat-input-scroll-style"
+      ],
+      "tagName": "textarea",
+      "value": "铁拳教育",
+      "screenshot": null
+    },
+    {
+      "type": "click",
+      "timestamp": 1782027363347,
+      "url": "https://wappass.baidu.com/static/captcha/tuxing_v2.html?&logid=7235631464193218090&ak=c27bbc89afca0463650ac9bde68ebe06&backurl=https%3A%2F%2Fwww.baidu.com%2Fs%3Fie%3Dutf-8%26f%3D8%26rsv_bp%3D1%26rsv_idx%3D1%26tn%3Dbaidu%26wd%3D%25E9%2593%2581%25E6%258B%25B3%25E6%2595%2599%25E8%2582%25B2%26fenlei%3D256%26rsv_pq%3D0xf450c4d001340b83%26rsv_t%3D00869gkR6f0rRIEraVNrseGs3dF36e9%252F6cbi7yQdoTLuYIgjCeYG1237Tohr%26rqlang%3Den%26rsv_enter%3D1%26rsv_dl%3Dtb_enter%26rsv_sug3%3D19%26rsv_sug1%3D19%26rsv_sug7%3D100%26rsv_btype%3Di%26inputT%3D5927%26rsv_sug4%3D7572%26rsv_jmp%3Dfail&ext=x9G9QDmMXq%2FNo87gjGO0PxV7gs1mGdcgZxOiVpOie9kYlU5PkiYt8z80Ez5p7Umpg1T9i%2F9aWxTqDk%2BHyX%2BPs5JsWPkiWzSnqQ64oXbg%2Ff6t52rlpnPbf9iBw4H6WThmSCAe1EQ3IsG%2BFn2u6CQ8X0ggHtRENyLBvhZ9rugkPF9IIB7URDciwb4Wfa7oJDxfSCAe1EQ3IsG%2BFn2u6CQ8X0ggHtRENyLBvhZ9rugkPF8P1bZKAkfSHmTZ4WzOQW5I&signature=595a2ac2626a9e0470097d5436e521c4&timestamp=1782027358",
+      "selector": "div.passMod_slide-btn.passMod_slide-btn-loading",
+      "selectorCandidates": [
+        "div.passMod_slide-btn.passMod_slide-btn-loading"
+      ],
+      "tagName": "div",
+      "value": null,
+      "screenshot": null
+    },
+    {
+      "type": "click",
+      "timestamp": 1782027368653,
+      "url": "https://wappass.baidu.com/static/captcha/tuxing_v2.html?&logid=7235631464193218090&ak=c27bbc89afca0463650ac9bde68ebe06&backurl=https%3A%2F%2Fwww.baidu.com%2Fs%3Fie%3Dutf-8%26f%3D8%26rsv_bp%3D1%26rsv_idx%3D1%26tn%3Dbaidu%26wd%3D%25E9%2593%2581%25E6%258B%25B3%25E6%2595%2599%25E8%2582%25B2%26fenlei%3D256%26rsv_pq%3D0xf450c4d001340b83%26rsv_t%3D00869gkR6f0rRIEraVNrseGs3dF36e9%252F6cbi7yQdoTLuYIgjCeYG1237Tohr%26rqlang%3Den%26rsv_enter%3D1%26rsv_dl%3Dtb_enter%26rsv_sug3%3D19%26rsv_sug1%3D19%26rsv_sug7%3D100%26rsv_btype%3Di%26inputT%3D5927%26rsv_sug4%3D7572%26rsv_jmp%3Dfail&ext=x9G9QDmMXq%2FNo87gjGO0PxV7gs1mGdcgZxOiVpOie9kYlU5PkiYt8z80Ez5p7Umpg1T9i%2F9aWxTqDk%2BHyX%2BPs5JsWPkiWzSnqQ64oXbg%2Ff6t52rlpnPbf9iBw4H6WThmSCAe1EQ3IsG%2BFn2u6CQ8X0ggHtRENyLBvhZ9rugkPF9IIB7URDciwb4Wfa7oJDxfSCAe1EQ3IsG%2BFn2u6CQ8X0ggHtRENyLBvhZ9rugkPF8P1bZKAkfSHmTZ4WzOQW5I&signature=595a2ac2626a9e0470097d5436e521c4&timestamp=1782027358",
+      "selector": "div.passMod_slide-btn.passMod_slide-btn-loading",
+      "selectorCandidates": [
+        "div.passMod_slide-btn.passMod_slide-btn-loading"
+      ],
+      "tagName": "div",
+      "value": null,
+      "screenshot": null
+    }
+  ]
+}

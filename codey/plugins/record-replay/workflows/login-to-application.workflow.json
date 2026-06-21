@@ -1,0 +1,88 @@
+{
+  "name": "login-to-application",
+  "objective": "Log into Browser at https://example.com/login using user credentials.",
+  "triggerPhrases": [
+    "login to application",
+    "log into browser at https://example"
+  ],
+  "variables": {
+    "email_0": {
+      "type": "email",
+      "description": "email value for \"email\"",
+      "default": "user@example.com"
+    },
+    "input_1": {
+      "type": "string",
+      "description": "string value for \"password\"",
+      "default": "secret123"
+    }
+  },
+  "toolGraph": [
+    {
+      "stepId": "step_1",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "type",
+        "selector": "#email",
+        "text": "{{email_0}}",
+        "description": "Type into email",
+        "pageUrl": "https://example.com/login"
+      },
+      "dependsOn": [],
+      "verification": "Verify input field contains the expected value",
+      "fallback": "Try alternative locator: [name='email'] → Find by ARIA: role=\"textbox\" name=\"email\" → Take screenshot and ask agent to visually locate the element"
+    },
+    {
+      "stepId": "step_2",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "type",
+        "selector": "#password",
+        "text": "{{input_1}}",
+        "description": "Type into password",
+        "pageUrl": "https://example.com/login"
+      },
+      "dependsOn": [
+        "step_1"
+      ],
+      "verification": "Verify input field contains the expected value",
+      "fallback": "Try alternative locator: [name='password'] → Find by ARIA: role=\"textbox\" name=\"password\" → Take screenshot and ask agent to visually locate the element"
+    },
+    {
+      "stepId": "step_3",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "click",
+        "selector": "button[type='submit']",
+        "description": "Click on Sign In",
+        "pageUrl": "https://example.com/login"
+      },
+      "dependsOn": [
+        "step_2"
+      ],
+      "verification": "Verify expected UI change: new element appears or state updates",
+      "fallback": "Try alternative locator: .login-btn → Find by visible text: \"Sign In\" → Find by ARIA: role=\"button\" name=\"Sign In\" → Take screenshot and ask agent to visually locate the element"
+    },
+    {
+      "stepId": "step_4",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "click",
+        "selector": "form.login-form",
+        "description": "Submit form",
+        "pageUrl": "https://example.com/login"
+      },
+      "dependsOn": [
+        "step_3"
+      ],
+      "verification": "Verify form submission succeeded: look for success message, redirect, or state change",
+      "fallback": "Try alternative locator: form → Find by ARIA: role=\"form\" name=\"login-form\" → Take screenshot and ask agent to visually locate the element"
+    }
+  ],
+  "recoveryPolicy": {
+    "maxRetries": 2,
+    "fallbackStrategy": "retry_with_alternative_locator"
+  },
+  "sourceTrace": "2c284c4a-ff0c-4b57-b619-93fa2a357cf1",
+  "compiledAt": "2026-06-20T13:59:57.201Z"
+}

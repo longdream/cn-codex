@@ -1,0 +1,142 @@
+{
+  "sessionId": "4beda93d-8409-4494-b6a8-310e3ebd8170",
+  "sessionName": "百度搜索",
+  "context": {
+    "softwareName": "Browser",
+    "workingPath": "https://www.baidu.com",
+    "windowTitle": "百度一下，你就知道",
+    "url": "https://www.baidu.com",
+    "startedAt": "2026-06-20T13:42:29.236Z"
+  },
+  "events": [
+    {
+      "eventId": "bcdde134-38bb-4a47-ba73-ab0b60e1e8f2",
+      "actionType": "click",
+      "timestamp": 1781962974747,
+      "target": {
+        "locatorCandidates": [
+          "#kw",
+          "[name='wd']",
+          "input.s_ipt"
+        ],
+        "role": "textbox",
+        "name": "搜索",
+        "text": "",
+        "elementScreenshotPath": null
+      },
+      "inputValue": null,
+      "url": "https://www.baidu.com/",
+      "pageTitle": "百度一下，你就知道",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null
+      },
+      "preStateId": "state-bcdde134-38bb-4a47-ba73-ab0b60e1e8f2-pre",
+      "postStateId": "state-bcdde134-38bb-4a47-ba73-ab0b60e1e8f2-post"
+    },
+    {
+      "eventId": "62ecc3ca-5514-4f29-9c52-8d351b0909ce",
+      "actionType": "type",
+      "timestamp": 1781962982492,
+      "target": {
+        "locatorCandidates": [
+          "#kw",
+          "[name='wd']",
+          "input.s_ipt"
+        ],
+        "role": "textbox",
+        "name": "搜索",
+        "text": "",
+        "elementScreenshotPath": null
+      },
+      "inputValue": "世界杯",
+      "url": "https://www.baidu.com/",
+      "pageTitle": "百度一下，你就知道",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null
+      },
+      "preStateId": "state-62ecc3ca-5514-4f29-9c52-8d351b0909ce-pre",
+      "postStateId": "state-62ecc3ca-5514-4f29-9c52-8d351b0909ce-post"
+    },
+    {
+      "eventId": "129b45ed-6605-422e-8631-70e1e02838ef",
+      "actionType": "type",
+      "timestamp": 1781963018280,
+      "target": {
+        "locatorCandidates": [
+          "#kw",
+          "[name='wd']",
+          "input.s_ipt"
+        ],
+        "role": "textbox",
+        "name": "搜索",
+        "text": "",
+        "elementScreenshotPath": null
+      },
+      "inputValue": "世界杯",
+      "url": "https://www.baidu.com/",
+      "pageTitle": "百度一下，你就知道",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null
+      },
+      "preStateId": "state-129b45ed-6605-422e-8631-70e1e02838ef-pre",
+      "postStateId": "state-129b45ed-6605-422e-8631-70e1e02838ef-post"
+    },
+    {
+      "eventId": "4a37149e-ee4c-4a0b-b779-e98209a757da",
+      "actionType": "click",
+      "timestamp": 1781963026029,
+      "target": {
+        "locatorCandidates": [
+          "#su",
+          "[value='百度一下']",
+          "input.bg.s_btn",
+          "text=\"百度一下\""
+        ],
+        "role": "button",
+        "name": "百度一下",
+        "text": "百度一下",
+        "elementScreenshotPath": null
+      },
+      "inputValue": null,
+      "url": "https://www.baidu.com/",
+      "pageTitle": "百度一下，你就知道",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null
+      },
+      "preStateId": "state-4a37149e-ee4c-4a0b-b779-e98209a757da-pre",
+      "postStateId": "state-4a37149e-ee4c-4a0b-b779-e98209a757da-post"
+    },
+    {
+      "eventId": "3d4ec9f9-1209-4621-81cd-c4897e9a0997",
+      "actionType": "navigate",
+      "timestamp": 1781963031643,
+      "target": {
+        "locatorCandidates": [],
+        "role": "document",
+        "name": "百度搜索结果",
+        "text": "",
+        "elementScreenshotPath": null
+      },
+      "inputValue": "https://www.baidu.com/s?wd=世界杯",
+      "url": "https://www.baidu.com/s?wd=世界杯",
+      "pageTitle": "世界杯_百度搜索",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null
+      },
+      "preStateId": "state-3d4ec9f9-1209-4621-81cd-c4897e9a0997-pre",
+      "postStateId": "state-3d4ec9f9-1209-4621-81cd-c4897e9a0997-post"
+    }
+  ],
+  "recordedAt": "2026-06-20T13:43:54.928Z",
+  "eventCount": 5
+}

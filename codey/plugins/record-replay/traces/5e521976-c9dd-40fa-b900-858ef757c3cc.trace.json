@@ -1,0 +1,43 @@
+{
+  "sessionId": "5e521976-c9dd-40fa-b900-858ef757c3cc",
+  "sessionName": "chinese-test",
+  "context": {
+    "softwareName": "Browser",
+    "workingPath": "https://baidu.com",
+    "windowTitle": "Baidu",
+    "url": "https://baidu.com",
+    "startedAt": "2026-06-20T12:29:43.841Z"
+  },
+  "events": [
+    {
+      "eventId": "cb6df97b-30ef-412b-92ce-f57441708bb8",
+      "actionType": "click",
+      "timestamp": 1781958583843,
+      "target": {
+        "locatorCandidates": [
+          "#btn"
+        ],
+        "role": "button",
+        "name": "search",
+        "text": "Search",
+        "elementScreenshotPath": null
+      },
+      "inputValue": null,
+      "url": "https://baidu.com",
+      "pageTitle": "Baidu",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null,
+        "viewportMeta": {
+          "width": 1280,
+          "height": 720
+        }
+      },
+      "preStateId": "state-cb6df97b-30ef-412b-92ce-f57441708bb8-pre",
+      "postStateId": "state-cb6df97b-30ef-412b-92ce-f57441708bb8-post"
+    }
+  ],
+  "recordedAt": "2026-06-20T12:29:43.843Z",
+  "eventCount": 1
+}

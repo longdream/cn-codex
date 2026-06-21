@@ -7,10 +7,12 @@ import {
   IconX,
   IconBolt,
   IconExternalLink,
-} from "@tabler/icons-react";
-import {
+  IconChevronDown,
+  IconChevronRight,
   IconEye,
   IconEyeOff,
+  IconGripVertical,
+  IconPencil,
 } from "@tabler/icons-react";
 import {
   standaloneConfigWrite,
@@ -22,7 +24,7 @@ import {
   DEFAULT_MODEL_CONTEXT_LENGTH,
   DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
 } from "../../stores/appStore";
-import type { ProviderConfig, ProviderPreset, ProviderModel } from "../../types/provider";
+import type { ProviderConfig, ProviderPreset, ProviderModel, PoolModelEndpoint } from "../../types/provider";
 import type { ConfigEdit } from "../../types";
 
 /**
@@ -386,51 +388,59 @@ export function ProviderPanel() {
               />
             </div>
 
-            {/* API Key & Base URL */}
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <label className="settings-field-label">
-                  {intl.formatMessage({ id: "settings.provider.apiKey" })}
-                  {selectedProvider.apiKey && (
-                    <span className="ml-2 rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-1.5 py-0.5 text-[11px] text-[var(--accent-strong)]">
-                      {intl.formatMessage({ id: "settings.provider.apiKeySaved" })}
-                    </span>
-                  )}
-                </label>
-                <input
-                  type="password"
-                  value={editForm.apiKey}
-                  onChange={(e) => setEditForm((f) => ({ ...f, apiKey: e.target.value }))}
-                  placeholder={intl.formatMessage({ id: "settings.provider.apiKeyPlaceholder" })}
-                  className="app-input"
-                />
-                {/* 获取 API Key 链接 */}
-                {(() => {
-                  return selectedPreset?.signupUrl ? (
-                    <a
-                      href={selectedPreset.signupUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-[11px] text-[var(--accent-strong)] hover:underline"
-                    >
-                      <IconExternalLink size={11} stroke={2} />
-                      {intl.formatMessage({ id: "settings.provider.getApiKey" })}
-                    </a>
-                  ) : null;
-                })()}
+            {/* API Key & Base URL（local-pool 不需要顶级配置） */}
+            {selectedProvider.type !== "local-pool" && (
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="settings-field-label">
+                    {intl.formatMessage({ id: "settings.provider.apiKey" })}
+                    {selectedProvider.apiKey && (
+                      <span className="ml-2 rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-1.5 py-0.5 text-[11px] text-[var(--accent-strong)]">
+                        {intl.formatMessage({ id: "settings.provider.apiKeySaved" })}
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    type="password"
+                    value={editForm.apiKey}
+                    onChange={(e) => setEditForm((f) => ({ ...f, apiKey: e.target.value }))}
+                    placeholder={intl.formatMessage({ id: "settings.provider.apiKeyPlaceholder" })}
+                    className="app-input"
+                  />
+                  {(() => {
+                    return selectedPreset?.signupUrl ? (
+                      <a
+                        href={selectedPreset.signupUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] text-[var(--accent-strong)] hover:underline"
+                      >
+                        <IconExternalLink size={11} stroke={2} />
+                        {intl.formatMessage({ id: "settings.provider.getApiKey" })}
+                      </a>
+                    ) : null;
+                  })()}
+                </div>
+                <div className="space-y-1.5">
+                  <label className="settings-field-label">
+                    {intl.formatMessage({ id: "settings.provider.baseUrl" })}
+                  </label>
+                  <input
+                    value={editForm.baseUrl}
+                    onChange={(e) => setEditForm((f) => ({ ...f, baseUrl: e.target.value }))}
+                    placeholder={intl.formatMessage({ id: "settings.provider.baseUrlPlaceholder" })}
+                    className="app-input"
+                  />
+                </div>
               </div>
-              <div className="space-y-1.5">
-                <label className="settings-field-label">
-                  {intl.formatMessage({ id: "settings.provider.baseUrl" })}
-                </label>
-                <input
-                  value={editForm.baseUrl}
-                  onChange={(e) => setEditForm((f) => ({ ...f, baseUrl: e.target.value }))}
-                  placeholder={intl.formatMessage({ id: "settings.provider.baseUrlPlaceholder" })}
-                  className="app-input"
-                />
+            )}
+            {selectedProvider.type === "local-pool" && (
+              <div className="rounded-[var(--radius-md)] border border-[var(--accent-border)] bg-[var(--accent-soft)]/30 px-4 py-3">
+                <p className="text-xs text-[var(--text-muted)]">
+                  {intl.formatMessage({ id: "settings.pool.localPoolDesc" })}
+                </p>
               </div>
-            </div>
+            )}
 
             {/* Wire API 格式选择 */}
             <div className="space-y-1.5">
@@ -466,6 +476,7 @@ export function ProviderPanel() {
                     key={model.id}
                     model={model}
                     providerId={selectedProvider.id}
+                    isPoolProvider={selectedProvider.type === "local-pool"}
                     onRemove={() => handleRemoveModel(model.id)}
                   />
                 ))}
@@ -621,6 +632,7 @@ export function ProviderPanel() {
                 </div>
               </div>
             ))}
+
           </div>
         </div>
       )}
@@ -631,10 +643,12 @@ export function ProviderPanel() {
 function ModelRow({
   model,
   providerId,
+  isPoolProvider,
   onRemove,
 }: {
   model: ProviderModel;
   providerId: string;
+  isPoolProvider?: boolean;
   onRemove: () => void;
 }) {
   const intl = useIntl();
@@ -646,6 +660,14 @@ function ModelRow({
   const [maxTokensValue, setMaxTokensValue] = useState(
     String(model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS),
   );
+  const [showEndpoints, setShowEndpoints] = useState(false);
+  const [newEndpointUrl, setNewEndpointUrl] = useState("");
+  const [newEndpointLabel, setNewEndpointLabel] = useState("");
+  const [newEndpointApiKey, setNewEndpointApiKey] = useState("");
+  const [newEndpointWireApi, setNewEndpointWireApi] = useState("");
+  const [editingEpId, setEditingEpId] = useState<string | null>(null);
+  const [editEpForm, setEditEpForm] = useState({ url: "", label: "", apiKey: "", wireApi: "" });
+  const activeEndpointIndex = useAppStore((s) => s.activeEndpointIndex);
 
   const handleToggleVision = useCallback(() => {
     useAppStore.getState().updateProviderModel(providerId, model.id, {
@@ -673,102 +695,424 @@ function ModelRow({
     setEditingContextLength(false);
   }, [providerId, model.id, contextLengthValue]);
 
+  const endpoints = model.endpoints ?? [];
+
+  const handleAddEndpoint = useCallback(() => {
+    const url = newEndpointUrl.trim();
+    if (!url) return;
+    const ep: PoolModelEndpoint = {
+      id: crypto.randomUUID(),
+      url,
+      label: newEndpointLabel.trim(),
+      enabled: true,
+      ...(newEndpointApiKey.trim() ? { apiKey: newEndpointApiKey.trim() } : {}),
+      ...(newEndpointWireApi ? { wireApi: newEndpointWireApi } : {}),
+    };
+    const updated = [...endpoints, ep];
+    useAppStore.getState().updateProviderModel(providerId, model.id, { endpoints: updated });
+    setNewEndpointUrl("");
+    setNewEndpointLabel("");
+    setNewEndpointApiKey("");
+    setNewEndpointWireApi("");
+  }, [providerId, model.id, endpoints, newEndpointUrl, newEndpointLabel, newEndpointApiKey, newEndpointWireApi]);
+
+  const handleRemoveEndpoint = useCallback((epId: string) => {
+    const updated = endpoints.filter((ep) => ep.id !== epId);
+    useAppStore.getState().updateProviderModel(providerId, model.id, { endpoints: updated });
+  }, [providerId, model.id, endpoints]);
+
+  const handleToggleEndpoint = useCallback((epId: string) => {
+    const updated = endpoints.map((ep) =>
+      ep.id === epId ? { ...ep, enabled: !ep.enabled } : ep,
+    );
+    useAppStore.getState().updateProviderModel(providerId, model.id, { endpoints: updated });
+  }, [providerId, model.id, endpoints]);
+
+  const handleMoveEndpoint = useCallback((epId: string, direction: -1 | 1) => {
+    const idx = endpoints.findIndex((ep) => ep.id === epId);
+    if (idx < 0) return;
+    const targetIdx = idx + direction;
+    if (targetIdx < 0 || targetIdx >= endpoints.length) return;
+    const updated = [...endpoints];
+    [updated[idx], updated[targetIdx]] = [updated[targetIdx], updated[idx]];
+    useAppStore.getState().updateProviderModel(providerId, model.id, { endpoints: updated });
+  }, [providerId, model.id, endpoints]);
+
+  const handleStartEditEndpoint = useCallback((ep: PoolModelEndpoint) => {
+    setEditingEpId(ep.id);
+    setEditEpForm({ url: ep.url, label: ep.label, apiKey: ep.apiKey ?? "", wireApi: ep.wireApi ?? "" });
+  }, []);
+
+  const handleSaveEditEndpoint = useCallback(() => {
+    if (!editingEpId) return;
+    const updated = endpoints.map((ep) =>
+      ep.id === editingEpId
+        ? { ...ep, url: editEpForm.url, label: editEpForm.label, apiKey: editEpForm.apiKey || undefined, wireApi: editEpForm.wireApi || undefined }
+        : ep,
+    );
+    useAppStore.getState().updateProviderModel(providerId, model.id, { endpoints: updated });
+    setEditingEpId(null);
+  }, [providerId, model.id, endpoints, editingEpId, editEpForm]);
+
+  const handleCancelEditEndpoint = useCallback(() => {
+    setEditingEpId(null);
+  }, []);
+
   return (
-    <div className="flex items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] px-3 py-1.5">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-medium text-[var(--text-strong)]">{model.label}</span>
-          <span className="break-all font-mono text-[11px] text-[var(--text-faint)]">{model.id}</span>
-        </div>
-        <div className="mt-0.5 flex items-center gap-2">
-          {editingContextLength ? (
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                min={1}
-                value={contextLengthValue}
-                onChange={(e) => setContextLengthValue(e.target.value)}
-                onBlur={handleSaveContextLength}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSaveContextLength();
-                  if (e.key === "Escape") setEditingContextLength(false);
-                }}
-                className="app-input w-24 text-[11px]"
-                autoFocus
-              />
-              <span className="text-[10px] text-[var(--text-faint)]">ctx</span>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setContextLengthValue(String(model.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH));
-                setEditingContextLength(true);
-                setEditingMaxTokens(false);
-              }}
-              className="text-[11px] text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
-              title={intl.formatMessage({ id: "settings.provider.contextLengthHint" })}
-            >
-              {(model.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH).toLocaleString()} ctx
-            </button>
-          )}
-          {editingMaxTokens ? (
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                min={1}
-                value={maxTokensValue}
-                onChange={(e) => setMaxTokensValue(e.target.value)}
-                onBlur={handleSaveMaxOutputTokens}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSaveMaxOutputTokens();
-                  if (e.key === "Escape") setEditingMaxTokens(false);
-                }}
-                className="app-input w-24 text-[11px]"
-                autoFocus
-              />
-              <span className="text-[10px] text-[var(--text-faint)]">max</span>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setMaxTokensValue(String(model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS));
-                setEditingMaxTokens(true);
-                setEditingContextLength(false);
-              }}
-              className="text-[11px] text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
-              title={intl.formatMessage({ id: "settings.provider.maxOutputTokensHint" })}
-            >
-              {(model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS).toLocaleString()} max
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={handleToggleVision}
-            className={`flex items-center gap-0.5 rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] transition-colors ${
-              model.supportsVision
-                ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-                : "text-[var(--text-faint)] hover:text-[var(--text-muted)]"
-            }`}
-            title={intl.formatMessage({ id: "settings.provider.supportsVisionHint" })}
-          >
-            {model.supportsVision ? (
-              <IconEye size={11} stroke={1.8} />
-            ) : (
-              <IconEyeOff size={11} stroke={1.8} />
+    <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)]">
+      <div className="flex items-center justify-between gap-2 px-3 py-1.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            {isPoolProvider && (
+              <button
+                type="button"
+                onClick={() => setShowEndpoints(!showEndpoints)}
+                className="shrink-0 text-[var(--text-faint)] transition-colors hover:text-[var(--text-muted)]"
+              >
+                {showEndpoints ? <IconChevronDown size={12} stroke={2} /> : <IconChevronRight size={12} stroke={2} />}
+              </button>
             )}
-            Vision
-          </button>
+            <span className="text-xs font-medium text-[var(--text-strong)]">{model.label}</span>
+            <span className="break-all font-mono text-[11px] text-[var(--text-faint)]">{model.id}</span>
+            {isPoolProvider && (
+              <span className="text-[10px] text-[var(--text-faint)]">
+                ({endpoints.filter((ep) => ep.enabled).length}/{endpoints.length} {intl.formatMessage({ id: "settings.pool.endpoints" })})
+              </span>
+            )}
+          </div>
+          <div className="mt-0.5 flex items-center gap-2">
+            {editingContextLength ? (
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={1}
+                  value={contextLengthValue}
+                  onChange={(e) => setContextLengthValue(e.target.value)}
+                  onBlur={handleSaveContextLength}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveContextLength();
+                    if (e.key === "Escape") setEditingContextLength(false);
+                  }}
+                  className="app-input w-24 text-[11px]"
+                  autoFocus
+                />
+                <span className="text-[10px] text-[var(--text-faint)]">ctx</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setContextLengthValue(String(model.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH));
+                  setEditingContextLength(true);
+                  setEditingMaxTokens(false);
+                }}
+                className="text-[11px] text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
+                title={intl.formatMessage({ id: "settings.provider.contextLengthHint" })}
+              >
+                {(model.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH).toLocaleString()} ctx
+              </button>
+            )}
+            {editingMaxTokens ? (
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={1}
+                  value={maxTokensValue}
+                  onChange={(e) => setMaxTokensValue(e.target.value)}
+                  onBlur={handleSaveMaxOutputTokens}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveMaxOutputTokens();
+                    if (e.key === "Escape") setEditingMaxTokens(false);
+                  }}
+                  className="app-input w-24 text-[11px]"
+                  autoFocus
+                />
+                <span className="text-[10px] text-[var(--text-faint)]">max</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setMaxTokensValue(String(model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS));
+                  setEditingMaxTokens(true);
+                  setEditingContextLength(false);
+                }}
+                className="text-[11px] text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
+                title={intl.formatMessage({ id: "settings.provider.maxOutputTokensHint" })}
+              >
+                {(model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS).toLocaleString()} max
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleToggleVision}
+              className={`flex items-center gap-0.5 rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[11px] transition-colors ${
+                model.supportsVision
+                  ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                  : "text-[var(--text-faint)] hover:text-[var(--text-muted)]"
+              }`}
+              title={intl.formatMessage({ id: "settings.provider.supportsVisionHint" })}
+            >
+              {model.supportsVision ? (
+                <IconEye size={11} stroke={1.8} />
+              ) : (
+                <IconEyeOff size={11} stroke={1.8} />
+              )}
+              Vision
+            </button>
+          </div>
         </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-faint)] transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+        >
+          <IconX size={12} stroke={2} />
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={onRemove}
-        className="shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-faint)] transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
-      >
-        <IconX size={12} stroke={2} />
-      </button>
+
+      {/* 端点列表（仅 local-pool） */}
+      {isPoolProvider && showEndpoints && (
+        <div className="border-t border-[var(--border-subtle)] px-3 py-2">
+          <div className="space-y-1">
+            {endpoints.length === 0 && (
+              <p className="text-[11px] text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "settings.pool.noEndpoints" })}
+              </p>
+            )}
+            {endpoints.map((ep, idx) => {
+              const isActive = activeEndpointIndex === idx;
+              const isEditing = editingEpId === ep.id;
+              return (
+                <div
+                  key={ep.id}
+                  className={`rounded-[var(--radius-sm)] border text-[11px] ${
+                    isActive
+                      ? "border-green-500/50 bg-[var(--surface-panel)]"
+                      : ep.enabled
+                        ? "border-[var(--border-subtle)] bg-[var(--surface-panel)]"
+                        : "border-[var(--border-subtle)] bg-[var(--surface-contrast)]/50 opacity-60"
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 px-2 py-1">
+                    {/* 绿点指示器 */}
+                    <span
+                      className={`h-2 w-2 shrink-0 rounded-full transition-colors ${
+                        isActive ? "bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.6)]" : "bg-transparent"
+                      }`}
+                      title={isActive ? intl.formatMessage({ id: "settings.pool.activeEndpoint" }) : ""}
+                    />
+                    <IconGripVertical size={10} stroke={1.5} className="shrink-0 cursor-grab text-[var(--text-faint)]" />
+                    <span className="shrink-0 w-4 text-center font-mono text-[10px] text-[var(--text-faint)]">{idx + 1}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[var(--text-base)]" title={ep.url}>{ep.url}</span>
+                    {ep.label && (
+                      <span className="shrink-0 text-[var(--text-faint)]">{ep.label}</span>
+                    )}
+                    {ep.wireApi && (
+                      <span className="shrink-0 rounded bg-[var(--surface-contrast)] px-1 py-0.5 font-mono text-[10px] text-[var(--text-faint)]">
+                        {ep.wireApi}
+                      </span>
+                    )}
+                    {ep.apiKey && (
+                      <span className="shrink-0 text-[10px] text-[var(--accent-strong)]">Key</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleToggleEndpoint(ep.id)}
+                      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                        ep.enabled
+                          ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                          : "bg-[var(--surface-contrast)] text-[var(--text-faint)]"
+                      }`}
+                    >
+                      {ep.enabled
+                        ? intl.formatMessage({ id: "settings.pool.endpointEnabled" })
+                        : intl.formatMessage({ id: "settings.pool.endpointDisabled" })}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleStartEditEndpoint(ep)}
+                      className="shrink-0 rounded p-0.5 text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
+                      title={intl.formatMessage({ id: "settings.pool.editEndpoint" })}
+                    >
+                      <IconPencil size={10} stroke={2} />
+                    </button>
+                    <div className="flex shrink-0 gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => handleMoveEndpoint(ep.id, -1)}
+                        disabled={idx === 0}
+                        className="rounded p-0.5 text-[var(--text-faint)] transition-colors hover:text-[var(--text-muted)] disabled:opacity-30"
+                        title="Move up"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 2L1 7h8z" /></svg>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleMoveEndpoint(ep.id, 1)}
+                        disabled={idx === endpoints.length - 1}
+                        className="rounded p-0.5 text-[var(--text-faint)] transition-colors hover:text-[var(--text-muted)] disabled:opacity-30"
+                        title="Move down"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 8L1 3h8z" /></svg>
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveEndpoint(ep.id)}
+                      className="shrink-0 rounded p-0.5 text-[var(--text-faint)] transition-colors hover:text-[var(--danger)]"
+                    >
+                      <IconX size={10} stroke={2} />
+                    </button>
+                  </div>
+                  {/* 编辑模式 */}
+                  {isEditing && (
+                    <div className="border-t border-[var(--border-subtle)] px-2 py-2">
+                      <div className="grid grid-cols-[1fr_auto] gap-x-1.5 gap-y-1.5">
+                        <div className="space-y-0.5">
+                          <label className="text-[10px] text-[var(--text-faint)]">
+                            {intl.formatMessage({ id: "settings.pool.endpointUrl" })}
+                          </label>
+                          <input
+                            value={editEpForm.url}
+                            onChange={(e) => setEditEpForm((f) => ({ ...f, url: e.target.value }))}
+                            className="app-input w-full text-[11px]"
+                          />
+                        </div>
+                        <div className="space-y-0.5">
+                          <label className="text-[10px] text-[var(--text-faint)]">
+                            {intl.formatMessage({ id: "settings.pool.endpointLabel" })}
+                          </label>
+                          <input
+                            value={editEpForm.label}
+                            onChange={(e) => setEditEpForm((f) => ({ ...f, label: e.target.value }))}
+                            className="app-input w-24 text-[11px]"
+                          />
+                        </div>
+                        <div className="space-y-0.5">
+                          <label className="text-[10px] text-[var(--text-faint)]">
+                            {intl.formatMessage({ id: "settings.pool.endpointApiKey" })}
+                          </label>
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            value={editEpForm.apiKey}
+                            onChange={(e) => setEditEpForm((f) => ({ ...f, apiKey: e.target.value }))}
+                            className="app-input w-full text-[11px]"
+                          />
+                        </div>
+                        <div className="space-y-0.5">
+                          <label className="text-[10px] text-[var(--text-faint)]">Wire API</label>
+                          <select
+                            value={editEpForm.wireApi}
+                            onChange={(e) => setEditEpForm((f) => ({ ...f, wireApi: e.target.value }))}
+                            className="app-input w-24 text-[11px]"
+                          >
+                            <option value="">{intl.formatMessage({ id: "settings.pool.wireApiDefault" })}</option>
+                            <option value="chat">Chat</option>
+                            <option value="responses">Responses</option>
+                            <option value="anthropic">Anthropic</option>
+                            <option value="gemini">Gemini</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleCancelEditEndpoint}
+                          className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-contrast)]"
+                        >
+                          {intl.formatMessage({ id: "settings.pool.cancelEdit" })}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveEditEndpoint}
+                          disabled={!editEpForm.url.trim()}
+                          className="rounded-[var(--radius-sm)] bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent)] hover:text-white disabled:opacity-40"
+                        >
+                          {intl.formatMessage({ id: "settings.pool.saveEndpoint" })}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-3 rounded-[var(--radius-sm)] border border-dashed border-[var(--border-subtle)] p-2.5">
+            <p className="mb-2 text-[11px] font-medium text-[var(--text-muted)]">
+              {intl.formatMessage({ id: "settings.pool.addEndpoint" })}
+            </p>
+            <div className="grid grid-cols-[1fr_auto] gap-x-1.5 gap-y-1.5">
+              <div className="space-y-0.5">
+                <label className="text-[10px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "settings.pool.endpointUrl" })}
+                </label>
+                <input
+                  value={newEndpointUrl}
+                  onChange={(e) => setNewEndpointUrl(e.target.value)}
+                  placeholder={intl.formatMessage({ id: "settings.pool.endpointUrlPlaceholder" })}
+                  className="app-input w-full text-[11px]"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddEndpoint(); }}
+                />
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-[10px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "settings.pool.endpointLabel" })}
+                </label>
+                <input
+                  value={newEndpointLabel}
+                  onChange={(e) => setNewEndpointLabel(e.target.value)}
+                  placeholder={intl.formatMessage({ id: "settings.pool.endpointLabelPlaceholder" })}
+                  className="app-input w-24 text-[11px]"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddEndpoint(); }}
+                />
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-[10px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "settings.pool.endpointApiKey" })}
+                </label>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={newEndpointApiKey}
+                  onChange={(e) => setNewEndpointApiKey(e.target.value)}
+                  placeholder={intl.formatMessage({ id: "settings.pool.endpointApiKeyPlaceholder" })}
+                  className="app-input w-full text-[11px]"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddEndpoint(); }}
+                />
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-[10px] text-[var(--text-faint)]">
+                  Wire API
+                </label>
+                <select
+                  value={newEndpointWireApi}
+                  onChange={(e) => setNewEndpointWireApi(e.target.value)}
+                  className="app-input w-24 text-[11px]"
+                >
+                  <option value="">{intl.formatMessage({ id: "settings.pool.wireApiDefault" })}</option>
+                  <option value="chat">Chat</option>
+                  <option value="responses">Responses</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="gemini">Gemini</option>
+                </select>
+              </div>
+            </div>
+            <div className="mt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={handleAddEndpoint}
+                disabled={!newEndpointUrl.trim()}
+                className="flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--accent-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent)] hover:text-white disabled:opacity-40"
+              >
+                <IconPlus size={11} stroke={2} />
+                {intl.formatMessage({ id: "settings.pool.addEndpoint" })}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

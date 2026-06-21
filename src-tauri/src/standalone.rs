@@ -97,6 +97,24 @@ pub async fn standalone_thread_list(state: State<'_, AppState>) -> AppResult<ser
     Ok(serde_json::json!({ "data": list }))
 }
 
+/// Read-only peek at a thread's goal without switching the active thread.
+#[tauri::command]
+pub async fn standalone_thread_peek_goal(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> AppResult<serde_json::Value> {
+    let thread = state
+        .thread_store
+        .get_thread(&thread_id)
+        .await
+        .ok_or_else(|| AppError::Custom(format!("Thread not found: {thread_id}")))?;
+    let goal_val = match thread.goal {
+        Some(ref goal) => serde_json::to_value(goal).unwrap_or(serde_json::Value::Null),
+        None => serde_json::Value::Null,
+    };
+    Ok(serde_json::json!({ "goal": goal_val }))
+}
+
 #[tauri::command]
 pub async fn standalone_thread_read(
     state: State<'_, AppState>,
@@ -318,6 +336,148 @@ pub async fn standalone_turn_interrupt(state: State<'_, AppState>) -> AppResult<
         current_thread_id
     );
     Ok(serde_json::json!({ "status": "interrupted" }))
+}
+
+/// Proxy an LLM chat-completion call through the backend to avoid webview
+/// gateway/CORS restrictions. Completely independent of the agent engine and
+/// thread state.
+#[tauri::command]
+pub async fn fortune_llm_call(
+    base_url: String,
+    api_key: String,
+    model: String,
+    wire_api: String,
+    prompt: String,
+) -> AppResult<String> {
+    info!(
+        "[fortune_llm_call] base_url={base_url}, model={model}, wire_api={wire_api}, prompt_len={}",
+        prompt.len()
+    );
+
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| AppError::Custom(format!("Failed to create HTTP client: {e}")))?;
+
+    if wire_api == "anthropic" {
+        let url = {
+            let base = base_url.trim_end_matches('/');
+            if base.ends_with("/messages") {
+                base.to_string()
+            } else {
+                format!("{base}/messages")
+            }
+        };
+        info!("[fortune_llm_call] Anthropic POST {url}");
+        let resp = http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&serde_json::json!({
+                "model": model,
+                "max_tokens": 2048,
+                "messages": [{ "role": "user", "content": prompt }],
+            }))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("[fortune_llm_call] Anthropic request failed: {e}");
+                AppError::Custom(format!("Anthropic request failed: {e}"))
+            })?;
+
+        let status = resp.status();
+        info!("[fortune_llm_call] Anthropic response status: {status}");
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!("[fortune_llm_call] Anthropic error {status}: {body}");
+            return Err(AppError::Custom(format!("Anthropic API error {status}: {body}")));
+        }
+
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Custom(format!("Failed to parse Anthropic response: {e}")))?;
+        let text = data
+            .pointer("/content/0/text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        info!("[fortune_llm_call] Anthropic response len={}", text.len());
+        return Ok(text);
+    }
+
+    // OpenAI-compatible
+    let url = {
+        let base = base_url.trim_end_matches('/');
+        if base.ends_with("/chat/completions") {
+            base.to_string()
+        } else {
+            format!("{base}/chat/completions")
+        }
+    };
+    info!("[fortune_llm_call] OpenAI-compat POST {url}");
+
+    let mut req = http
+        .post(&url)
+        .header("Content-Type", "application/json");
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    let resp = req
+        .json(&serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "system", "content": "你是一位精通中国传统玄学的大师，擅长奇门遁甲和紫微斗数。请用严谨的方式进行推演。" },
+                { "role": "user", "content": prompt },
+            ],
+            "temperature": 0.7,
+            "max_tokens": 2048,
+        }))
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("[fortune_llm_call] LLM request failed: {e}");
+            AppError::Custom(format!("LLM request failed: {e}"))
+        })?;
+
+    let status = resp.status();
+    info!("[fortune_llm_call] OpenAI-compat response status: {status}");
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        tracing::error!("[fortune_llm_call] LLM error {status}: {body}");
+        return Err(AppError::Custom(format!("LLM API error {status}: {body}")));
+    }
+
+    let raw_body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::Custom(format!("Failed to read LLM response body: {e}")))?;
+    let data: serde_json::Value = serde_json::from_str(&raw_body)
+        .map_err(|e| AppError::Custom(format!("Failed to parse LLM response JSON: {e}")))?;
+
+    let message = data.pointer("/choices/0/message");
+    let content = message
+        .and_then(|m| m.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let reasoning = message
+        .and_then(|m| m.get("reasoning_content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let text = if !content.is_empty() {
+        content.to_string()
+    } else if !reasoning.is_empty() {
+        info!("[fortune_llm_call] content empty, falling back to reasoning_content (len={})", reasoning.len());
+        reasoning.to_string()
+    } else {
+        String::new()
+    };
+    info!("[fortune_llm_call] OpenAI-compat response len={}", text.len());
+    Ok(text)
 }
 
 fn parse_goal_status(value: Option<&str>) -> AppResult<Option<ThreadGoalStatus>> {

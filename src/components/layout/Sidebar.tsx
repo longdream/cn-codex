@@ -346,7 +346,7 @@ function ProjectGroup({
   locale: string;
 }) {
   const intl = useIntl();
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuPosition | null>(null);
 

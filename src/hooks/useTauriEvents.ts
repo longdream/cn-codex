@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useIntl, type IntlShape } from "react-intl";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fileReviewGet } from "../api/fileReview";
+import { standaloneConfigWrite } from "../api";
 import {
   createRunSummaryMessage,
   useAppStore,
@@ -523,7 +524,7 @@ export function useTauriEvents() {
             displayLabel: toolDisplayLabel(c.name, c.arguments),
           }));
 
-          const browserCall = e.payload.calls.find((c) => c.name === "browser_run");
+          const browserCall = e.payload.calls.find((c) => c.name === "browser_run" || c.name === "web_search");
           if (browserCall) {
             // 自动打开右面板并切到 browser tab
             useAppStore.getState().setRightPanelTab("browser");
@@ -542,6 +543,8 @@ export function useTauriEvents() {
                 status: "running",
               });
             }
+            useAppStore.getState().setBrowserActive(true);
+            useAppStore.getState().triggerBrowserSync();
           }
 
           store.addMessage({
@@ -819,6 +822,14 @@ export function useTauriEvents() {
           if (store.selectedRobotId === e.payload.robotId) {
             store.setSelectedRobotId(null);
           }
+        }),
+
+        listen<{ index: number }>("active-endpoint-index", (e) => {
+          const idx = e.payload.index;
+          useAppStore.setState({ activeEndpointIndex: idx });
+          standaloneConfigWrite([
+            { keyPath: "active_endpoint_index", value: idx, mergeStrategy: "replace" },
+          ]).catch((err) => console.error("Failed to persist active_endpoint_index:", err));
         }),
       ];
 

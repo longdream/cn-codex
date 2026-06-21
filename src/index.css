@@ -944,6 +944,25 @@ textarea:focus {
   box-shadow: none;
 }
 
+.chat-queue-list {
+  animation: chat-queue-slide-in 0.15s ease-out;
+}
+
+.chat-queue-item {
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+@keyframes chat-queue-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 960px) {
   .app-workbench {
     flex-direction: column;
@@ -1024,4 +1043,219 @@ code,
     "SFMono-Regular",
     Consolas,
     monospace;
+}
+
+/* ─── Fortune Bubble ─── */
+
+@keyframes bubbleSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.fortune-bubble {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 30;
+  width: 340px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  backdrop-filter: blur(16px);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.35),
+    0 0 1px rgba(255, 255, 255, 0.06) inset;
+  animation: bubbleSlideIn 0.4s ease-out;
+}
+
+[data-theme="light"] .fortune-bubble {
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.12),
+    0 0 1px rgba(0, 0, 0, 0.06) inset;
+}
+
+/* ─── Fortune Detail Modal ─── */
+
+.fortune-detail-modal {
+  width: 100%;
+  max-width: 720px;
+  max-height: 85vh;
+  overflow-y: auto;
+  border-radius: 16px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="light"] .fortune-detail-modal {
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.15);
+}
+
+.fortune-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 8px;
+  border-radius: 10px;
+  border: 1px solid;
+}
+
+.fortune-detail-content {
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border-subtle);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-base);
+}
+
+.fortune-detail-content h1,
+.fortune-detail-content h2,
+.fortune-detail-content h3,
+.fortune-detail-content h4 {
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-top: 12px;
+  margin-bottom: 6px;
+}
+
+.fortune-detail-content h3 {
+  font-size: 14px;
+}
+
+.fortune-detail-content p {
+  margin-bottom: 8px;
+}
+
+.fortune-detail-content ul,
+.fortune-detail-content ol {
+  padding-left: 20px;
+  margin-bottom: 8px;
+}
+
+.fortune-detail-content li {
+  margin-bottom: 4px;
+}
+
+.fortune-detail-content strong {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.fortune-detail-content em {
+  color: var(--accent);
+}
+
+/* ===== Recording Toggle ===== */
+.recording-toggle {
+  position: fixed;
+  top: 48px;
+  right: 16px;
+  z-index: 9999;
+  background: var(--bg-secondary, #1e1e2e);
+  border: 1px solid var(--border, #333);
+  border-radius: 12px;
+  padding: 12px 16px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  min-width: 200px;
+  font-size: 13px;
+}
+
+.recording-toggle-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recording-toggle-label {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+}
+
+.recording-toggle-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recording-toggle-timer {
+  font-variant-numeric: tabular-nums;
+}
+
+.recording-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.recording-dot-idle {
+  background: #666;
+}
+
+.recording-dot-active {
+  background: #ef4444;
+  animation: recording-pulse 1s ease-in-out infinite;
+}
+
+.recording-dot-processing {
+  background: #f59e0b;
+  animation: recording-pulse 0.6s ease-in-out infinite;
+}
+
+.recording-dot-done {
+  background: #22c55e;
+}
+
+@keyframes recording-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.recording-toggle-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: opacity 0.15s;
+}
+
+.recording-toggle-btn:hover {
+  opacity: 0.85;
+}
+
+.recording-toggle-btn-start {
+  background: #ef4444;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recording-toggle-btn-stop {
+  background: #dc2626;
+  color: #fff;
+}
+
+.recording-toggle-btn-dismiss {
+  background: transparent;
+  color: var(--text-secondary, #888);
+  border: 1px solid var(--border, #333);
+}
+
+.recording-toggle-error {
+  font-size: 12px;
+  color: #ef4444;
+  word-break: break-word;
 }

@@ -1,0 +1,72 @@
+{
+  "name": "complete-a-multi-step-workflow",
+  "objective": "Perform 5 actions (click, type, navigate) across 2 page(s) in Browser.",
+  "triggerPhrases": [
+    "complete a multi-step workflow",
+    "perform 5 actions (click"
+  ],
+  "variables": {
+    "input_0": {
+      "type": "string",
+      "description": "string value for \"搜索\"",
+      "default": "世界杯"
+    },
+    "url_1": {
+      "type": "url",
+      "description": "url value for \"百度搜索结果\"",
+      "default": "https://www.baidu.com/s?wd=世界杯"
+    }
+  },
+  "toolGraph": [
+    {
+      "stepId": "step_1",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "type",
+        "selector": "#kw",
+        "text": "{{input_0}}",
+        "description": "Type into 搜索",
+        "pageUrl": "https://www.baidu.com/"
+      },
+      "dependsOn": [],
+      "verification": "Verify input field contains the expected value",
+      "fallback": "Try alternative locator: [name='wd'] → Find by ARIA: role=\"textbox\" name=\"搜索\" → Take screenshot and ask agent to visually locate the element"
+    },
+    {
+      "stepId": "step_2",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "click",
+        "selector": "#su",
+        "description": "Click on 百度一下",
+        "pageUrl": "https://www.baidu.com/"
+      },
+      "dependsOn": [
+        "step_1"
+      ],
+      "verification": "Verify navigation occurred to new page",
+      "fallback": "Try alternative locator: [value='百度一下'] → Find by visible text: \"百度一下\" → Find by ARIA: role=\"button\" name=\"百度一下\" → Take screenshot and ask agent to visually locate the element"
+    },
+    {
+      "stepId": "step_3",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "navigate",
+        "url": "{{url_1}}",
+        "description": "Navigate to page",
+        "pageUrl": "https://www.baidu.com/s?wd=世界杯"
+      },
+      "dependsOn": [
+        "step_2"
+      ],
+      "verification": "Verify page URL matches expected destination or page title updates",
+      "fallback": "Find by ARIA: role=\"document\" name=\"百度搜索结果\" → Take screenshot and ask agent to visually locate the element"
+    }
+  ],
+  "recoveryPolicy": {
+    "maxRetries": 2,
+    "fallbackStrategy": "retry_with_alternative_locator"
+  },
+  "sourceTrace": "4beda93d-8409-4494-b6a8-310e3ebd8170",
+  "compiledAt": "2026-06-20T13:43:59.601Z"
+}

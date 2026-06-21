@@ -1,0 +1,4 @@
+interface:
+  display_name: "complete-a-multi-step-workflow"
+  short_description: "Perform 5 actions (click, type, navigate) across 2 page(s) in Browser."
+  default_prompt: "complete a multi-step workflow"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Record & Replay"
+  short_description: "Record browser operations in external Chrome, generate reusable skills for replay"
+  default_prompt: "录制我的浏览器操作，生成可复用的 skill"

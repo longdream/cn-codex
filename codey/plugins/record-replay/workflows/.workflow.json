@@ -1,0 +1,46 @@
+{
+  "name": "",
+  "objective": "打开百度首页，在搜索框中输入关键词，然后点击\"百度一下\"按钮执行搜索，获取搜索结果页面。",
+  "triggerPhrases": [
+    "百度搜索关键词",
+    "打开百度首页，在搜索框中输入关键词，然后点击\"百度一下\"按钮执行搜索，获取搜索结果页面。"
+  ],
+  "variables": {},
+  "toolGraph": [
+    {
+      "stepId": "step_1",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "type",
+        "selector": "#kw",
+        "text": "天气",
+        "description": "Type into 搜索",
+        "pageUrl": "https://www.baidu.com"
+      },
+      "dependsOn": [],
+      "verification": "Verify input field contains the expected value",
+      "fallback": "Try alternative locator: [name='wd'] → Find by ARIA: role=\"textbox\" name=\"搜索\" → Take screenshot and ask agent to visually locate the element"
+    },
+    {
+      "stepId": "step_2",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "click",
+        "selector": "#su",
+        "description": "Click on 百度一下",
+        "pageUrl": "https://www.baidu.com"
+      },
+      "dependsOn": [
+        "step_1"
+      ],
+      "verification": "Verify click had expected effect (element state changed)",
+      "fallback": "Try alternative locator: [value='百度一下'] → Find by visible text: \"百度一下\" → Find by ARIA: role=\"button\" name=\"百度一下\" → Take screenshot and ask agent to visually locate the element"
+    }
+  ],
+  "recoveryPolicy": {
+    "maxRetries": 2,
+    "fallbackStrategy": "retry_with_alternative_locator"
+  },
+  "sourceTrace": "f8b747aa-55f0-43bc-9b07-e13ce0d87d86",
+  "compiledAt": "2026-06-20T10:23:59.637Z"
+}

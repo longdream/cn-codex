@@ -1,0 +1,4 @@
+interface:
+  display_name: "login-to-application"
+  short_description: "Log into Browser at https://example.com/login using user credentials."
+  default_prompt: "login to application"

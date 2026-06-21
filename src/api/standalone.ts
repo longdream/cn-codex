@@ -52,6 +52,12 @@ export async function threadArchive(threadId: string): Promise<{ status: string 
   return invoke("thread_archive", { params: { threadId } });
 }
 
+export async function standaloneThreadPeekGoal(
+  threadId: string,
+): Promise<{ goal: ThreadGoal | null }> {
+  return invoke("standalone_thread_peek_goal", { threadId });
+}
+
 export async function standaloneThreadRead(threadId: string): Promise<{
   thread: {
     id: string;

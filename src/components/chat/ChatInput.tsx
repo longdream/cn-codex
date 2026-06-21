@@ -6,6 +6,7 @@ import {
   IconFile,
   IconFolder,
   IconPaperclip,
+  IconPlayerSkipForward,
   IconPlugConnected,
   IconPlus,
   IconRobot,
@@ -21,6 +22,7 @@ import {
   useAppStore,
   type ChatMode,
   type ChatSendOptions,
+  type QueuedMessage,
 } from "../../stores/appStore";
 import {
   SlashCommandPanel,
@@ -137,6 +139,7 @@ interface ChatInputProps {
     options?: ChatSendExtendedOptions,
   ) => void;
   onInterrupt?: () => void;
+  onJumpQueue?: (id: string) => void;
   isStreaming: boolean;
   disabled: boolean;
   mode: ChatMode;
@@ -161,6 +164,7 @@ export function resolveSelectedRobotId(
 export function ChatInput({
   onSend,
   onInterrupt,
+  onJumpQueue,
   isStreaming,
   disabled,
   mode,
@@ -192,6 +196,8 @@ export function ChatInput({
   const robotCreateMode = useAppStore((s) => s.robotCreateMode);
   const setSelectedRobotId = useAppStore((s) => s.setSelectedRobotId);
   const setRobotCreateMode = useAppStore((s) => s.setRobotCreateMode);
+  const pendingMessageQueue = useAppStore((s) => s.pendingMessageQueue);
+  const removeQueuedMessage = useAppStore((s) => s.removeQueuedMessage);
   // 目标模式运行态：只在 goal + active 时视为“整体执行中”。
   // 聊天模式不受该状态影响。
   const goalRunning = mode === "goal" && currentGoal?.status === "active";
@@ -520,11 +526,31 @@ export function ChatInput({
   }, [activateRobotModifyMode, mode, onSend, resetComposerAfterSubmit, selectedRobotId]);
 
   const handleSubmit = useCallback(() => {
-    // 仅目标模式在 active 时禁止提交；聊天模式行为保持不变。
-    if (isStreaming || goalRunning) return;
+    if (goalRunning) return;
     const trimmed = text.trim();
     if ((!trimmed && attachedFiles.length === 0) || disabled) return;
     const filesToSend = attachedFiles;
+
+    // AI 回复中时，将消息加入排队队列而非直接发送
+    if (isStreaming) {
+      const queuedMsg: QueuedMessage = {
+        id: crypto.randomUUID(),
+        text: trimmed,
+        mode,
+        attachments: [...filesToSend],
+        options: robotModifyMode && selectedRobotId
+          ? { robotModifyMode: true, robotId: selectedRobotId }
+          : selectedRobotId
+            ? { robotId: selectedRobotId }
+            : robotCreateMode
+              ? { robotCreateMode: true }
+              : undefined,
+        timestamp: Date.now(),
+      };
+      useAppStore.getState().enqueueMessage(queuedMsg);
+      resetComposerAfterSubmit();
+      return;
+    }
 
     if (handleModifyRobotCommandSubmit(trimmed, filesToSend)) {
       return;
@@ -592,6 +618,7 @@ export function ChatInput({
     onGoalCommand,
     onSend,
     resetComposerAfterSubmit,
+    robotCreateMode,
     robotModifyMode,
     selectedRobotId,
     text,
@@ -615,7 +642,7 @@ export function ChatInput({
     (event: React.KeyboardEvent) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (!isStreaming && !goalRunning) {
+        if (!goalRunning) {
           handleSubmit();
         }
       }
@@ -625,7 +652,7 @@ export function ChatInput({
         setShowRobotMenu(false);
       }
     },
-    [goalRunning, handleSubmit, isStreaming],
+    [goalRunning, handleSubmit],
   );
 
   const handleChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -864,6 +891,7 @@ export function ChatInput({
       {showModelMenu && (
         <div className="absolute bottom-full left-0 right-0 z-20 mx-auto max-w-[1180px] px-4 pb-2 sm:px-8">
           <div className="rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] shadow-lg">
+            {/* 资源池模型列表 */}
             {/* 供应商模型列表 */}
             {providerModels.length > 0 && (
               <>
@@ -937,6 +965,47 @@ export function ChatInput({
       )}
 
       <div className="mx-auto max-w-[1180px]">
+        {/* 排队消息列表 */}
+        {pendingMessageQueue.length > 0 && (
+          <div className="chat-queue-list mb-1.5 space-y-1">
+            {pendingMessageQueue.map((qm, idx) => (
+              <div
+                key={qm.id}
+                className={`chat-queue-item flex items-center gap-2 rounded-[var(--radius-md)] border px-3 py-1.5 ${
+                  idx === 0
+                    ? "border-[var(--accent-border)] bg-[var(--accent-soft)]"
+                    : "border-[var(--chat-line)] bg-[var(--chat-chip)]"
+                }`}
+              >
+                {idx === 0 && (
+                  <span className="flex-shrink-0 rounded-full bg-[var(--accent)] px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none text-white">
+                    {intl.formatMessage({ id: "chat.queueNext" })}
+                  </span>
+                )}
+                <span className="min-w-0 flex-1 truncate text-[12px] text-[var(--chat-prose)]">
+                  {qm.text.length > 60 ? `${qm.text.slice(0, 60)}...` : qm.text}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onJumpQueue?.(qm.id)}
+                  className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent)] transition-colors hover:bg-[var(--accent)] hover:text-white"
+                  title={intl.formatMessage({ id: "chat.queueJump" })}
+                >
+                  <IconPlayerSkipForward size={10} stroke={2.5} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeQueuedMessage(qm.id)}
+                  className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-[var(--chat-faint)] transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                  title={intl.formatMessage({ id: "chat.queueRemove" })}
+                >
+                  <IconX size={10} stroke={2.5} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="chat-composer-shell px-4 pb-3 pt-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           {isGeneralMode ? (
@@ -1121,20 +1190,22 @@ export function ChatInput({
             onInput={handleInput}
             onPaste={handlePaste}
             placeholder={intl.formatMessage({
-              id: isStreaming || goalRunning
+              id: goalRunning
                 ? "chat.aiResponding"
-                : robotModifyMode
-                  ? "chat.robot.modifyPlaceholder"
-                  : robotCreateMode
-                    ? "chat.robot.placeholder"
-                    : "chat.inputPlaceholder",
+                : isStreaming
+                  ? "chat.queuePlaceholder"
+                  : robotModifyMode
+                    ? "chat.robot.modifyPlaceholder"
+                    : robotCreateMode
+                      ? "chat.robot.placeholder"
+                      : "chat.inputPlaceholder",
             })}
             disabled={disabled}
             rows={2}
             className="chat-composer-input max-h-[200px] min-h-[78px] w-full flex-1 resize-none bg-transparent py-2 text-[13px] leading-relaxed text-[var(--chat-prose)] placeholder:text-[var(--chat-faint)] outline-none disabled:opacity-50"
           />
 
-          {isStreaming || goalRunning ? (
+          {(isStreaming || goalRunning) && !text.trim() ? (
             <button
               type="button"
               onClick={onInterrupt}

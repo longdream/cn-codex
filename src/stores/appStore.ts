@@ -128,6 +128,20 @@ export interface ModelEntry {
   supportsVision: boolean;
 }
 
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  mode: ChatMode;
+  attachments: AttachedFile[];
+  options?: {
+    goalBudgetTokens?: number;
+    robotId?: string;
+    robotCreateMode?: boolean;
+    robotModifyMode?: boolean;
+  };
+  timestamp: number;
+}
+
 export type RightPanelTab = "browser" | "project" | "terminal" | "git";
 export type SidebarTab = "chats" | "projects";
 
@@ -591,6 +605,7 @@ function normalizeProviderModel(
     supportsVision: Boolean(model.supportsVision),
     contextLength: normalizeContextLength(model.contextLength),
     maxOutputTokens: normalizeModelMaxOutputTokens(model.maxOutputTokens, fallbackMaxOutputTokens),
+    ...(model.endpoints ? { endpoints: model.endpoints } : {}),
   };
 }
 
@@ -718,6 +733,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultModels: [{ id: "local-model", label: "Local Model", supportsVision: false, contextLength: 128000 }],
   },
   {
+    type: "local-pool", name: "provider.preset.localPool", category: "local",
+    defaultBaseUrl: "", defaultWireApi: "chat", requiresOpenAIAuth: false,
+    defaultModels: [],
+  },
+  {
     type: "custom", name: "provider.preset.custom", category: "other",
     defaultBaseUrl: "", defaultWireApi: "chat", requiresOpenAIAuth: false,
     defaultModels: [],
@@ -769,6 +789,7 @@ function saveActiveModelId(id: string | null) {
     void appStateDelete(ACTIVE_MODEL_KEY);
   }
 }
+
 
 function saveProjects(projects: Project[]) {
   void appStateSet(PROJECTS_KEY, JSON.stringify(projects));
@@ -823,11 +844,15 @@ interface AppState {
   providers: ProviderConfig[];
   /** 当前激活供应商的 ID */
   activeProviderId: string | null;
+  /** 当前正在使用的资源池端点索引 */
+  activeEndpointIndex: number | null;
 
   /** 输入框附件列表 */
   attachedFiles: AttachedFile[];
   /** 由外部面板注入到输入框的待插入文本（例如代码片段） */
   pendingComposerInsert: string | null;
+  /** AI 回复期间排队等待发送的消息队列 */
+  pendingMessageQueue: QueuedMessage[];
   /** apply_patch 的“写盘前审阅”会话，按 callId 建索引。 */
   pendingFileReviews: Record<string, PendingFileReview>;
 
@@ -850,6 +875,8 @@ interface AppState {
   browserPanelUrl: string | null;
   browserPanelTitle: string | null;
   browserPanelStatus: "idle" | "running" | "success" | "failed";
+  browserSyncTrigger: number;
+  browserActive: boolean;
   autoApprove: boolean;
   sidebarTab: SidebarTab;
 
@@ -892,6 +919,12 @@ interface AppState {
   clearAttachedFiles: () => void;
   queueComposerInsert: (text: string) => void;
   consumeComposerInsert: () => string | null;
+
+  /** 消息排队：在 AI 回复期间将消息加入待发送队列 */
+  enqueueMessage: (msg: QueuedMessage) => void;
+  dequeueMessage: () => QueuedMessage | null;
+  removeQueuedMessage: (id: string) => void;
+  clearMessageQueue: () => void;
 
   userHomeDir: string | null;
   setUserHomeDir: (dir: string) => void;
@@ -952,6 +985,8 @@ interface AppState {
     title: string | null;
     status: "idle" | "running" | "success" | "failed";
   }>) => void;
+  triggerBrowserSync: () => void;
+  setBrowserActive: (v: boolean) => void;
   createThread: () => Promise<string | null>;
   loadThreads: () => Promise<void>;
   loadThread: (threadId: string) => Promise<void>;
@@ -967,8 +1002,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeModelId: null,
   providers: [],
   activeProviderId: null,
+  activeEndpointIndex: null,
   attachedFiles: [],
   pendingComposerInsert: null,
+  pendingMessageQueue: [],
   pendingFileReviews: {},
   workspaceCwd: null,
   configDir: null,
@@ -1000,6 +1037,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   browserPanelUrl: null,
   browserPanelTitle: null,
   browserPanelStatus: "idle",
+  browserSyncTrigger: 0,
+  browserActive: false,
 
   setInitialized: (v) => set({ initialized: v }),
   setInitError: (err) => set({ initError: err }),
@@ -1015,6 +1054,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedRobotId: null,
       robotCreateMode: false,
       pendingComposerInsert: null,
+      pendingMessageQueue: [],
       pendingFileReviews: {},
     });
   },
@@ -1027,6 +1067,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       isStreaming: false,
       currentGoal: null,
       pendingComposerInsert: null,
+      pendingMessageQueue: [],
       pendingFileReviews: {},
     });
   },
@@ -1044,7 +1085,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     const modelName = entry?.model ?? id;
     set({ activeModelId: id, currentModel: modelName });
     if (modelName) {
-      const { model } = resolveProviderModelByEntry(state.providers, entry, modelName);
+      const { model, provider: matchedProvider } = resolveProviderModelByEntry(state.providers, entry, modelName);
+
+      const modelEndpoints = matchedProvider?.type === "local-pool" && model?.endpoints?.length
+        ? model.endpoints
+            .filter((ep) => ep.enabled)
+            .map((ep) => ({
+              url: ep.url,
+              label: ep.label || undefined,
+              api_key: ep.apiKey || undefined,
+              wire_api: ep.wireApi || undefined,
+            }))
+        : [];
+
+      set({ activeEndpointIndex: modelEndpoints.length > 0 ? 0 : null });
+
       const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
         { keyPath: "model", value: modelName, mergeStrategy: "replace" },
         {
@@ -1052,12 +1107,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           value: modelContextLengthOrDefault(model),
           mergeStrategy: "replace",
         },
+        {
+          keyPath: "max_output_tokens",
+          value: modelMaxOutputTokensOrDefault(model),
+          mergeStrategy: "replace",
+        },
+        { keyPath: "model_endpoints", value: modelEndpoints, mergeStrategy: "replace" },
+        { keyPath: "active_endpoint_index", value: modelEndpoints.length > 0 ? 0 : null, mergeStrategy: "replace" },
       ];
-      edits.push({
-        keyPath: "max_output_tokens",
-        value: modelMaxOutputTokensOrDefault(model),
-        mergeStrategy: "replace",
-      });
       standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync model to config:", err));
     }
   },
@@ -1111,6 +1168,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       isStreaming: false,
       currentTurnId: null,
       currentGoal: null,
+      pendingMessageQueue: [],
     });
   },
 
@@ -1127,6 +1185,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentTurnId: null,
       currentGoal: null,
       chatMode: "chat",
+      pendingMessageQueue: [],
     });
   },
 
@@ -1192,6 +1251,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         : undefined;
       const selectedModel = provider.models.find((model) => model.id === preferredModelId)
         ?? provider.models[0];
+      const modelEndpoints = provider.type === "local-pool" && selectedModel?.endpoints?.length
+        ? selectedModel.endpoints
+            .filter((ep) => ep.enabled)
+            .map((ep) => ({
+              url: ep.url,
+              label: ep.label || undefined,
+              api_key: ep.apiKey || undefined,
+              wire_api: ep.wireApi || undefined,
+            }))
+        : [];
+
+      set({ activeEndpointIndex: modelEndpoints.length > 0 ? 0 : null });
+
       const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
         { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
         { keyPath: "model", value: selectedModel?.id ?? "", mergeStrategy: "replace" },
@@ -1206,6 +1278,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           value: modelMaxOutputTokensOrDefault(selectedModel),
           mergeStrategy: "replace",
         },
+        { keyPath: "model_endpoints", value: modelEndpoints, mergeStrategy: "replace" },
+        { keyPath: "active_endpoint_index", value: modelEndpoints.length > 0 ? 0 : null, mergeStrategy: "replace" },
       ];
       standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync provider config:", err));
     }
@@ -1357,6 +1431,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     return current;
   },
+
+  enqueueMessage: (msg) =>
+    set((s) => ({ pendingMessageQueue: [...s.pendingMessageQueue, msg] })),
+  dequeueMessage: () => {
+    const queue = get().pendingMessageQueue;
+    if (queue.length === 0) return null;
+    const [first, ...rest] = queue;
+    set({ pendingMessageQueue: rest });
+    return first;
+  },
+  removeQueuedMessage: (id) =>
+    set((s) => ({
+      pendingMessageQueue: s.pendingMessageQueue.filter((m) => m.id !== id),
+    })),
+  clearMessageQueue: () => set({ pendingMessageQueue: [] }),
 
   setThreads: (threads) => set({ threads }),
   addThread: (thread) => {
@@ -1662,6 +1751,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(state.title !== undefined ? { browserPanelTitle: state.title } : {}),
       ...(state.status !== undefined ? { browserPanelStatus: state.status } : {}),
     }),
+  triggerBrowserSync: () =>
+    set((s) => ({ browserSyncTrigger: s.browserSyncTrigger + 1 })),
+  setBrowserActive: (v) => set({ browserActive: v }),
 
   createThread: async () => {
     try {
@@ -1677,6 +1769,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           isStreaming: false,
           currentTurnId: null,
           currentGoal: null,
+          pendingMessageQueue: [],
           pendingFileReviews: {},
           ...(isGeneral ? { chatMode: "chat" as ChatMode } : {}),
         });
@@ -1747,6 +1840,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamingText: "",
         isStreaming: false,
         currentGoal: normalizeThreadGoal(rawThread?.goal),
+        pendingMessageQueue: [],
         pendingFileReviews: {},
       });
       if (rawThread?.id) {
@@ -1774,6 +1868,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamingText: "",
         isStreaming: false,
         currentGoal: null,
+        pendingMessageQueue: [],
         pendingFileReviews: {},
       });
     }

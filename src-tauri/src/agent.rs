@@ -246,13 +246,52 @@ impl AgentEngine {
             None
         };
 
-        let base_url = provider.resolve_base_url().ok_or_else(|| {
-            AppError::Custom(format!(
-                "No base URL for provider '{provider_id}'. Configure it in settings."
-            ))
-        })?;
-        let api_key = provider.resolve_api_key().unwrap_or_default();
-        let wire_api = provider.wire_api.as_deref().unwrap_or("chat").to_string();
+        // 端点池支持：当 model_endpoints 非空时，用端点池覆盖 base_url
+        let pool_endpoints = &config.model_endpoints;
+        let is_pool = !pool_endpoints.is_empty();
+        let pool_resolver = if is_pool {
+            let initial_idx = config.active_endpoint_index.unwrap_or(0);
+            Some(crate::local_pool::PoolResolver::with_initial_index(initial_idx))
+        } else {
+            None
+        };
+        let pool_key = if is_pool {
+            Some(format!("{provider_id}:{model}"))
+        } else {
+            None
+        };
+
+        let provider_wire_api = provider.wire_api.as_deref().unwrap_or("chat").to_string();
+
+        let (mut base_url, mut api_key, mut wire_api, mut pool_endpoint_index) = if is_pool {
+            let pk = pool_key.as_deref().unwrap_or("");
+            let pr = pool_resolver.as_ref().unwrap();
+            let ep = pr.resolve_endpoint(pk, pool_endpoints).ok_or_else(|| {
+                AppError::Custom(
+                    "资源池没有可用端点，请添加至少一个端点。".to_string(),
+                )
+            })?;
+            info!(
+                "Pool '{pk}': using endpoint {} ({})",
+                ep.endpoint_index, ep.url
+            );
+            emit_and_broadcast(
+                app_handle,
+                "active-endpoint-index",
+                serde_json::json!({ "index": ep.endpoint_index }),
+            );
+            let ep_api_key = ep.api_key.clone().unwrap_or_default();
+            let ep_wire_api = ep.wire_api.clone().unwrap_or_else(|| provider_wire_api.clone());
+            (ep.url, ep_api_key, ep_wire_api, Some(ep.endpoint_index))
+        } else {
+            let url = provider.resolve_base_url().ok_or_else(|| {
+                AppError::Custom(format!(
+                    "No base URL for provider '{provider_id}'. Configure it in settings."
+                ))
+            })?;
+            let key = provider.resolve_api_key().unwrap_or_default();
+            (url, key, provider_wire_api.clone(), None)
+        };
 
         // Pre-turn compaction: 在 start_turn 之前执行，避免 replace_messages 破坏当前 turn
         let pre_turn_tokens = self.thread_store.get_thread_total_tokens(thread_id).await;
@@ -1151,6 +1190,44 @@ impl AgentEngine {
                             }
                         }
                         Err(e) => {
+                            // 资源池故障转移：标记当前端点失败，尝试切换到下一个
+                            if let (Some(pk), Some(pr), Some(ep_idx)) = (
+                                &pool_key,
+                                &pool_resolver,
+                                pool_endpoint_index,
+                            ) {
+                                pr.mark_failed(pk, ep_idx);
+                                if let Some(next_ep) =
+                                    pr.resolve_endpoint(pk, pool_endpoints)
+                                {
+                                    warn!(
+                                        "Pool '{pk}': endpoint {ep_idx} failed ({e}), switching to endpoint {} ({})",
+                                        next_ep.endpoint_index, next_ep.url
+                                    );
+                                    base_url = next_ep.url;
+                                    api_key = next_ep.api_key.clone().unwrap_or_default();
+                                    wire_api = next_ep.wire_api.clone().unwrap_or_else(|| provider_wire_api.clone());
+                                    pool_endpoint_index = Some(next_ep.endpoint_index);
+                                    emit_and_broadcast(
+                                        app_handle,
+                                        "pool-endpoint-switched",
+                                        serde_json::json!({
+                                            "threadId": thread_id,
+                                            "poolKey": pk,
+                                            "failedEndpoint": ep_idx,
+                                            "newEndpoint": next_ep.endpoint_index,
+                                            "activeEndpointIndex": next_ep.endpoint_index,
+                                            "reason": e.to_string(),
+                                        }),
+                                    );
+                                    emit_and_broadcast(
+                                        app_handle,
+                                        "active-endpoint-index",
+                                        serde_json::json!({ "index": next_ep.endpoint_index }),
+                                    );
+                                    continue;
+                                }
+                            }
                             error!("Iteration {iteration}: LLM request failed: {e}");
                             emit_and_broadcast(
                                 app_handle,
@@ -1536,8 +1613,29 @@ impl AgentEngine {
         let skills_instructions = self.render_available_skills_prompt();
         let apps_instructions = self.render_plugin_apps_prompt();
         let web_tool_instructions = if config.web_search_enabled() {
-            "             - web_search: Search the web for current information.\n\
-             - web_fetch: Fetch a web page URL and return readable text.\n"
+            "             - web_search: 搜索互联网获取最新信息，返回标题、URL 和摘要。\n\
+             - web_fetch: 读取指定 URL 的网页内容，返回可读文本。\n\
+             \n\
+             ## 网页搜索使用指南\n\
+             \n\
+             使用策略：\n\
+             - 先用 web_search 搜索关键词，从结果中选择最相关的 URL，再用 web_fetch 获取详情。\n\
+             - 每次搜索后立即分析返回的摘要内容。如果摘要已经包含了足够回答用户问题的信息，直接回复用户，不要继续搜索或 fetch。\n\
+             - 同一问题最多搜索 3 次（使用不同关键词）。3 次后仍不充分，就用已有信息总结回复，并告知用户信息可能不完整。\n\
+             - 不要重复 fetch 返回错误或空内容的 URL。\n\
+             - 中文问题使用中文关键词搜索，英文问题使用英文关键词。\n\
+             - 可以在一次搜索中使用精确的关键词组合提高效率，而不是反复搜索模糊的词。\n\
+             \n\
+             决策边界（何时必须搜索）：\n\
+             - 用户明确要求搜索、查找、验证信息时，必须搜索。\n\
+             - 信息可能已变化时必须搜索：新闻、价格、法规、体育比分、软件版本、发布日期、时间表等。\n\
+             - 不确定事实准确性时，偏向搜索验证而非凭记忆回答。\n\
+             - 涉及高风险领域（医疗、法律、金融）时应搜索验证。\n\
+             - 引用了特定页面、论文、网站但你没有其内容时，应使用 web_fetch 获取。\n\
+             \n\
+             引用规则：\n\
+             - 回复中附上信息来源的 URL 链接。\n\
+             - 不要大段逐字复制网页内容，用自己的话总结。引用原文不超过 50 字。\n"
         } else {
             ""
         };

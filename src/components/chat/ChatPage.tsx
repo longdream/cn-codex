@@ -250,6 +250,51 @@ export function ChatPage() {
     }
   }, [addSystemMessage, intl]);
 
+  // 排队消息自动发送：当 isStreaming 从 true 变为 false 时，自动取出队首消息发送
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    if (wasStreamingRef.current && !isStreaming) {
+      const store = useAppStore.getState();
+      const next = store.dequeueMessage();
+      if (next) {
+        handleSend(next.text, next.mode, next.attachments, next.options);
+      }
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming, handleSend]);
+
+  const handleJumpQueue = useCallback(async (messageId: string) => {
+    const store = useAppStore.getState();
+    const queue = store.pendingMessageQueue;
+    const target = queue.find((m) => m.id === messageId);
+    if (!target) return;
+
+    store.removeQueuedMessage(messageId);
+
+    if (store.isStreaming) {
+      store.markRunningToolCallsInterrupted(intl.formatMessage({ id: "chat.toolInterrupted" }));
+      const partialText = store.streamingText;
+      if (partialText) {
+        store.addMessage({
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: `${partialText}\n\n_(${intl.formatMessage({ id: "chat.interrupted" })})_`,
+          timestamp: Date.now(),
+        });
+        store.clearStreamingText();
+      }
+      store.setStreaming(false);
+      store.setCurrentTurnId(null);
+      standaloneTurnInterrupt().catch((err) => {
+        console.error("Failed to interrupt turn:", err);
+      });
+    }
+
+    // 跳过 wasStreamingRef 的自动触发，直接手动发送目标消息
+    wasStreamingRef.current = false;
+    handleSend(target.text, target.mode, target.attachments, target.options);
+  }, [handleSend, intl]);
+
   // 注意：所有 Hook 必须在任何条件 return 之前声明，避免项目切换时触发 Hook 顺序错误。
   const [copyDone, setCopyDone] = useState(false);
 
@@ -379,6 +424,7 @@ export function ChatPage() {
       <ChatInput
         onSend={handleSend}
         onInterrupt={handleInterrupt}
+        onJumpQueue={handleJumpQueue}
         isStreaming={isStreaming}
         disabled={!initialized || !hasProject}
         mode={effectiveMode}

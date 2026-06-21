@@ -1,0 +1,30 @@
+{
+  "name": "百度搜索关键词",
+  "objective": "Navigate to https://baidu.com through a series of clicks.",
+  "triggerPhrases": [
+    "百度搜索关键词",
+    "navigate to https://baidu"
+  ],
+  "variables": {},
+  "toolGraph": [
+    {
+      "stepId": "step_1",
+      "toolName": "browser_run",
+      "argsTemplate": {
+        "action": "click",
+        "selector": "#btn",
+        "description": "Click on Search",
+        "pageUrl": "https://baidu.com"
+      },
+      "dependsOn": [],
+      "verification": "Verify click had expected effect (element state changed)",
+      "fallback": "Find by visible text: \"Search\" → Find by ARIA: role=\"button\" name=\"search\" → Take screenshot and ask agent to visually locate the element"
+    }
+  ],
+  "recoveryPolicy": {
+    "maxRetries": 2,
+    "fallbackStrategy": "retry_with_alternative_locator"
+  },
+  "sourceTrace": "5e521976-c9dd-40fa-b900-858ef757c3cc",
+  "compiledAt": "2026-06-20T12:29:43.849Z"
+}

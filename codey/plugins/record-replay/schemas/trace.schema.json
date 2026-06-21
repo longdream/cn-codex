@@ -1,0 +1,98 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "record-replay/trace.schema.json",
+  "title": "RecordReplayTrace",
+  "description": "Schema for a recorded trace file produced by the Record & Replay plugin",
+  "type": "object",
+  "required": ["sessionId", "sessionName", "context", "events", "recordedAt", "eventCount"],
+  "properties": {
+    "sessionId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sessionName": {
+      "type": "string"
+    },
+    "context": {
+      "$ref": "#/definitions/SessionContext"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ActionEvent"
+      }
+    },
+    "recordedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "eventCount": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "definitions": {
+    "SessionContext": {
+      "type": "object",
+      "required": ["softwareName", "windowTitle", "workingPath", "startedAt"],
+      "properties": {
+        "softwareName": { "type": "string" },
+        "windowTitle": { "type": "string" },
+        "processName": { "type": "string" },
+        "workingPath": { "type": "string" },
+        "url": { "type": "string", "format": "uri" },
+        "startedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ActionEvent": {
+      "type": "object",
+      "required": ["eventId", "actionType", "timestamp", "target", "preStateId", "postStateId", "screenshotEvidence"],
+      "properties": {
+        "eventId": { "type": "string", "format": "uuid" },
+        "actionType": {
+          "type": "string",
+          "enum": ["click", "type", "navigate", "select", "submit", "scroll", "upload"]
+        },
+        "timestamp": { "type": "integer" },
+        "target": { "$ref": "#/definitions/ElementEvidence" },
+        "inputValue": { "type": ["string", "null"] },
+        "url": { "type": "string" },
+        "pageTitle": { "type": "string" },
+        "preStateId": { "type": "string" },
+        "postStateId": { "type": "string" },
+        "screenshotEvidence": { "$ref": "#/definitions/ScreenshotEvidence" }
+      }
+    },
+    "ElementEvidence": {
+      "type": "object",
+      "required": ["locatorCandidates", "role", "name", "text"],
+      "properties": {
+        "locatorCandidates": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "role": { "type": "string" },
+        "name": { "type": "string" },
+        "text": { "type": "string" },
+        "elementScreenshotPath": { "type": "string" }
+      }
+    },
+    "ScreenshotEvidence": {
+      "type": "object",
+      "required": ["viewportMeta"],
+      "properties": {
+        "beforeShotPath": { "type": ["string", "null"] },
+        "actionShotPath": { "type": ["string", "null"] },
+        "afterShotPath": { "type": ["string", "null"] },
+        "viewportMeta": {
+          "type": "object",
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          }
+        }
+      }
+    }
+  }
+}

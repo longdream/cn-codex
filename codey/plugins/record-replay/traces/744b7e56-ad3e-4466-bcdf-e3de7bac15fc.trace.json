@@ -1,0 +1,134 @@
+{
+  "sessionId": "744b7e56-ad3e-4466-bcdf-e3de7bac15fc",
+  "sessionName": "test-login-flow",
+  "context": {
+    "softwareName": "Browser",
+    "workingPath": "https://example.com/login",
+    "windowTitle": "Login - Example App",
+    "url": "https://example.com/login",
+    "startedAt": "2026-06-20T12:28:22.310Z"
+  },
+  "events": [
+    {
+      "eventId": "cb4d06fa-5fb6-4492-a76a-690afd7deafb",
+      "actionType": "type",
+      "timestamp": 1781958502312,
+      "target": {
+        "locatorCandidates": [
+          "#email",
+          "[name='email']",
+          "input.email-field"
+        ],
+        "role": "textbox",
+        "name": "email",
+        "text": "",
+        "elementScreenshotPath": null
+      },
+      "inputValue": "user@example.com",
+      "url": "https://example.com/login",
+      "pageTitle": "Login - Example App",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null,
+        "viewportMeta": {
+          "width": 1280,
+          "height": 720
+        }
+      },
+      "preStateId": "state-cb4d06fa-5fb6-4492-a76a-690afd7deafb-pre",
+      "postStateId": "state-cb4d06fa-5fb6-4492-a76a-690afd7deafb-post"
+    },
+    {
+      "eventId": "f9707961-7574-478b-8fde-ec3e37cde838",
+      "actionType": "type",
+      "timestamp": 1781958502312,
+      "target": {
+        "locatorCandidates": [
+          "#password",
+          "[name='password']",
+          "input.password-field"
+        ],
+        "role": "textbox",
+        "name": "password",
+        "text": "",
+        "elementScreenshotPath": null
+      },
+      "inputValue": "secret123",
+      "url": "https://example.com/login",
+      "pageTitle": "Login - Example App",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null,
+        "viewportMeta": {
+          "width": 1280,
+          "height": 720
+        }
+      },
+      "preStateId": "state-f9707961-7574-478b-8fde-ec3e37cde838-pre",
+      "postStateId": "state-f9707961-7574-478b-8fde-ec3e37cde838-post"
+    },
+    {
+      "eventId": "aee29916-70cc-4331-8f7d-f1de67af6984",
+      "actionType": "click",
+      "timestamp": 1781958502312,
+      "target": {
+        "locatorCandidates": [
+          "button[type='submit']",
+          ".login-btn",
+          "button.primary"
+        ],
+        "role": "button",
+        "name": "Sign In",
+        "text": "Sign In",
+        "elementScreenshotPath": null
+      },
+      "inputValue": null,
+      "url": "https://example.com/login",
+      "pageTitle": "Login - Example App",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null,
+        "viewportMeta": {
+          "width": 1280,
+          "height": 720
+        }
+      },
+      "preStateId": "state-aee29916-70cc-4331-8f7d-f1de67af6984-pre",
+      "postStateId": "state-aee29916-70cc-4331-8f7d-f1de67af6984-post"
+    },
+    {
+      "eventId": "56faab79-1049-4d2d-9479-e8bdecefa958",
+      "actionType": "submit",
+      "timestamp": 1781958502312,
+      "target": {
+        "locatorCandidates": [
+          "form.login-form",
+          "form"
+        ],
+        "role": "form",
+        "name": "login-form",
+        "text": "",
+        "elementScreenshotPath": null
+      },
+      "inputValue": null,
+      "url": "https://example.com/login",
+      "pageTitle": "Login - Example App",
+      "screenshotEvidence": {
+        "beforeShotPath": null,
+        "actionShotPath": null,
+        "afterShotPath": null,
+        "viewportMeta": {
+          "width": 1280,
+          "height": 720
+        }
+      },
+      "preStateId": "state-56faab79-1049-4d2d-9479-e8bdecefa958-pre",
+      "postStateId": "state-56faab79-1049-4d2d-9479-e8bdecefa958-post"
+    }
+  ],
+  "recordedAt": "2026-06-20T12:28:22.312Z",
+  "eventCount": 4
+}

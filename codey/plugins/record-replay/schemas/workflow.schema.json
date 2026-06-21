@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "record-replay/workflow.schema.json",
+  "title": "AgentSkillWorkflow",
+  "description": "Schema for a compiled workflow (tool graph) produced by the Record & Replay plugin",
+  "type": "object",
+  "required": ["name", "objective", "triggerPhrases", "variables", "toolGraph", "recoveryPolicy", "sourceTrace", "compiledAt"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "URL-safe slug identifier"
+    },
+    "objective": {
+      "type": "string",
+      "description": "High-level goal description"
+    },
+    "triggerPhrases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Natural language phrases that should trigger this skill"
+    },
+    "variables": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/WorkflowVariable"
+      }
+    },
+    "toolGraph": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ToolGraphStep"
+      }
+    },
+    "recoveryPolicy": {
+      "$ref": "#/definitions/RecoveryPolicy"
+    },
+    "sourceTrace": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Session ID of the source recording"
+    },
+    "compiledAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "definitions": {
+    "WorkflowVariable": {
+      "type": "object",
+      "required": ["type", "description"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["date", "email", "url", "filepath", "string", "number"]
+        },
+        "description": { "type": "string" },
+        "default": { "type": "string" }
+      }
+    },
+    "ToolGraphStep": {
+      "type": "object",
+      "required": ["stepId", "toolName", "argsTemplate", "dependsOn", "verification", "fallback"],
+      "properties": {
+        "stepId": { "type": "string" },
+        "toolName": { "type": "string" },
+        "argsTemplate": {
+          "type": "object",
+          "description": "Parameterized arguments; values may contain {{variable}} placeholders"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Step IDs that must complete before this step"
+        },
+        "verification": {
+          "type": "string",
+          "description": "How to verify this step succeeded"
+        },
+        "fallback": {
+          "type": "string",
+          "description": "What to do if step fails"
+        }
+      }
+    },
+    "RecoveryPolicy": {
+      "type": "object",
+      "required": ["maxRetries", "fallbackStrategy"],
+      "properties": {
+        "maxRetries": { "type": "integer", "minimum": 0 },
+        "fallbackStrategy": {
+          "type": "string",
+          "enum": ["retry_with_alternative_locator", "screenshot_and_relocate", "ask_user"]
+        }
+      }
+    }
+  }
+}

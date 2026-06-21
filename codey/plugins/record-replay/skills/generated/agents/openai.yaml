@@ -1,0 +1,4 @@
+interface:
+  display_name: ""
+  short_description: "打开百度首页，在搜索框中输入关键词，然后点击\"百度一下\"按钮执行搜索，获取搜索结果页面。"
+  default_prompt: "百度搜索关键词"

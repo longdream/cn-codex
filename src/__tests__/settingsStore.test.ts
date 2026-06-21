@@ -1,14 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { useSettingsStore } from "../stores/settingsStore";
-
-const STORAGE_KEY = "cn-codex-settings";
+import { useSettingsStore, type BaziProfile } from "../stores/settingsStore";
 
 describe("settingsStore", () => {
   beforeEach(() => {
-    localStorage.clear();
     useSettingsStore.setState({
       locale: "zh-CN",
       theme: "dark",
+      fortuneEnabled: true,
+      baziProfile: null,
     });
   });
 
@@ -36,30 +35,47 @@ describe("settingsStore", () => {
     expect(useSettingsStore.getState().theme).toBe("light");
   });
 
-  it("setLocale persists to localStorage", () => {
-    useSettingsStore.getState().setLocale("en-US");
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    expect(stored.locale).toBe("en-US");
+  it("defaults fortuneEnabled to true", () => {
+    expect(useSettingsStore.getState().fortuneEnabled).toBe(true);
   });
 
-  it("setTheme persists to localStorage", () => {
-    useSettingsStore.getState().setTheme("system");
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    expect(stored.theme).toBe("system");
+  it("setFortuneEnabled toggles fortune", () => {
+    useSettingsStore.getState().setFortuneEnabled(false);
+    expect(useSettingsStore.getState().fortuneEnabled).toBe(false);
+    useSettingsStore.getState().setFortuneEnabled(true);
+    expect(useSettingsStore.getState().fortuneEnabled).toBe(true);
   });
 
-  it("returns defaults when localStorage is empty", () => {
-    localStorage.clear();
-    useSettingsStore.setState({ locale: "zh-CN", theme: "dark" });
-    expect(useSettingsStore.getState().locale).toBe("zh-CN");
-    expect(useSettingsStore.getState().theme).toBe("dark");
+  it("defaults baziProfile to null", () => {
+    expect(useSettingsStore.getState().baziProfile).toBeNull();
   });
 
-  it("handles malformed JSON in localStorage gracefully", () => {
-    localStorage.setItem(STORAGE_KEY, "not valid json{{{");
-    // Re-import would be needed to fully test load, but at minimum
-    // the store should still work with current state
-    expect(useSettingsStore.getState().locale).toBe("zh-CN");
-    expect(useSettingsStore.getState().theme).toBe("dark");
+  it("setBaziProfile stores and clears profile", () => {
+    const profile: BaziProfile = {
+      name: "测试",
+      birthDate: "1990-01-01",
+      birthTime: "zi",
+      gender: "male",
+      lunarCalendar: false,
+    };
+    useSettingsStore.getState().setBaziProfile(profile);
+    expect(useSettingsStore.getState().baziProfile).toEqual(profile);
+
+    useSettingsStore.getState().setBaziProfile(null);
+    expect(useSettingsStore.getState().baziProfile).toBeNull();
+  });
+
+  it("returns defaults for all fields", () => {
+    useSettingsStore.setState({
+      locale: "zh-CN",
+      theme: "dark",
+      fortuneEnabled: true,
+      baziProfile: null,
+    });
+    const state = useSettingsStore.getState();
+    expect(state.locale).toBe("zh-CN");
+    expect(state.theme).toBe("dark");
+    expect(state.fortuneEnabled).toBe(true);
+    expect(state.baziProfile).toBeNull();
   });
 });

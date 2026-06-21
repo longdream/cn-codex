@@ -2,7 +2,7 @@ import { IconExternalLink, IconX } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
-import { useSettingsStore } from "../../stores/settingsStore";
+import { useSettingsStore, type BaziProfile } from "../../stores/settingsStore";
 import { ProviderPanel } from "./ProviderPanel";
 import { IntegrationPanel } from "./IntegrationPanel";
 import { PluginsPanel } from "./PluginsPanel";
@@ -12,7 +12,6 @@ import { RobotsPanel } from "./RobotsPanel";
 import { UsageDashboard } from "./UsageDashboard";
 import { ExperiencePanel } from "./ExperiencePanel";
 import { KnowledgePanel } from "./KnowledgePanel";
-
 interface SettingsPanelProps {
   onClose: () => void;
 }
@@ -37,6 +36,33 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [rulesLoaded, setRulesLoaded] = useState(false);
   const [rulesSaving, setRulesSaving] = useState(false);
   const [rulesSaved, setRulesSaved] = useState(false);
+
+  const fortuneEnabled = useSettingsStore((state) => state.fortuneEnabled);
+  const setFortuneEnabled = useSettingsStore((state) => state.setFortuneEnabled);
+  const baziProfile = useSettingsStore((state) => state.baziProfile);
+  const setBaziProfile = useSettingsStore((state) => state.setBaziProfile);
+  const triggerFortuneRefresh = useSettingsStore((state) => state.triggerFortuneRefresh);
+  const [baziDraft, setBaziDraft] = useState<BaziProfile>({
+    name: "",
+    birthDate: "",
+    birthTime: "",
+    gender: "male" as const,
+    lunarCalendar: false,
+    occupation: "",
+    industry: "",
+  });
+  const [baziSaved, setBaziSaved] = useState(false);
+
+  useEffect(() => {
+    if (baziProfile) {
+      setBaziDraft({ ...baziProfile });
+    }
+  }, [baziProfile]);
+
+  const shichenOptions = [
+    "zi", "chou", "yin", "mao", "chen", "si",
+    "wu", "wei", "shen", "you", "xu", "hai",
+  ] as const;
 
   // relay 地址规范化（去空白与末尾 `/`），避免配置被保存成 `http://host:8080/`
   // 后续在拼接 `/m/...` 时出现 `//m/...`。
@@ -371,6 +397,199 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     {intl.formatMessage({ id: "settings.smartbrain.toggle.description" })}
                   </p>
                 </section>
+
+                <section className="settings-card space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                      {intl.formatMessage({ id: "settings.fortune" })}
+                    </h4>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => setFortuneEnabled(!fortuneEnabled)}
+                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                          fortuneEnabled ? "bg-[var(--accent)]" : "bg-[var(--border-subtle)]"
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+                            fortuneEnabled ? "translate-x-[18px]" : "translate-x-[3px]"
+                          }`}
+                        />
+                      </button>
+                      <span className="text-xs text-[var(--text-muted)]">
+                        {fortuneEnabled
+                          ? intl.formatMessage({ id: "settings.fortune.enabled" })
+                          : intl.formatMessage({ id: "settings.fortune.disabled" })}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "settings.fortune.description" })}
+                  </p>
+                  {fortuneEnabled && (
+                    <button
+                      onClick={triggerFortuneRefresh}
+                      className="flex items-center gap-1.5 rounded-lg bg-white/5 px-3 py-1.5 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-white/10"
+                    >
+                      {intl.formatMessage({ id: "settings.fortune.refresh" })}
+                    </button>
+                  )}
+                </section>
+
+                {fortuneEnabled && (
+                  <section className="settings-card space-y-3">
+                    <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                      {intl.formatMessage({ id: "settings.fortune.bazi" })}
+                    </h4>
+                    <p className="text-xs text-[var(--text-faint)]">
+                      {intl.formatMessage({ id: "settings.fortune.baziHint" })}
+                    </p>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[var(--text-faint)]">
+                          {intl.formatMessage({ id: "settings.fortune.name" })}
+                        </label>
+                        <input
+                          type="text"
+                          value={baziDraft.name}
+                          onChange={(e) => setBaziDraft((d) => ({ ...d, name: e.target.value }))}
+                          placeholder={intl.formatMessage({ id: "settings.fortune.namePlaceholder" })}
+                          className="app-input w-full"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[var(--text-faint)]">
+                          {intl.formatMessage({ id: "settings.fortune.birthDate" })}
+                        </label>
+                        <input
+                          type="date"
+                          value={baziDraft.birthDate}
+                          onChange={(e) => setBaziDraft((d) => ({ ...d, birthDate: e.target.value }))}
+                          className="app-input w-full"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[var(--text-faint)]">
+                          {intl.formatMessage({ id: "settings.fortune.birthTime" })}
+                        </label>
+                        <select
+                          value={baziDraft.birthTime}
+                          onChange={(e) => setBaziDraft((d) => ({ ...d, birthTime: e.target.value }))}
+                          className="app-select w-full"
+                        >
+                          <option value="">{intl.formatMessage({ id: "settings.fortune.birthTimePlaceholder" })}</option>
+                          {shichenOptions.map((sc) => (
+                            <option key={sc} value={sc}>
+                              {intl.formatMessage({ id: `settings.fortune.shichen.${sc}` })}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[var(--text-faint)]">
+                          {intl.formatMessage({ id: "settings.fortune.gender" })}
+                        </label>
+                        <div className="flex items-center gap-4 pt-1">
+                          <label className="flex items-center gap-1.5 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="bazi-gender"
+                              checked={baziDraft.gender === "male"}
+                              onChange={() => setBaziDraft((d) => ({ ...d, gender: "male" }))}
+                              className="accent-[var(--accent)]"
+                            />
+                            <span className="text-xs text-[var(--text-muted)]">
+                              {intl.formatMessage({ id: "settings.fortune.gender.male" })}
+                            </span>
+                          </label>
+                          <label className="flex items-center gap-1.5 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="bazi-gender"
+                              checked={baziDraft.gender === "female"}
+                              onChange={() => setBaziDraft((d) => ({ ...d, gender: "female" }))}
+                              className="accent-[var(--accent)]"
+                            />
+                            <span className="text-xs text-[var(--text-muted)]">
+                              {intl.formatMessage({ id: "settings.fortune.gender.female" })}
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[var(--text-faint)]">
+                          {intl.formatMessage({ id: "settings.fortune.occupation" })}
+                        </label>
+                        <input
+                          type="text"
+                          value={baziDraft.occupation ?? ""}
+                          onChange={(e) => setBaziDraft((d) => ({ ...d, occupation: e.target.value }))}
+                          placeholder={intl.formatMessage({ id: "settings.fortune.occupationPlaceholder" })}
+                          className="app-input w-full"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[var(--text-faint)]">
+                          {intl.formatMessage({ id: "settings.fortune.industry" })}
+                        </label>
+                        <input
+                          type="text"
+                          value={baziDraft.industry ?? ""}
+                          onChange={(e) => setBaziDraft((d) => ({ ...d, industry: e.target.value }))}
+                          placeholder={intl.formatMessage({ id: "settings.fortune.industryPlaceholder" })}
+                          className="app-input w-full"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={baziDraft.lunarCalendar}
+                          onChange={(e) => setBaziDraft((d) => ({ ...d, lunarCalendar: e.target.checked }))}
+                          className="accent-[var(--accent)]"
+                        />
+                        <span className="text-xs text-[var(--text-muted)]">
+                          {intl.formatMessage({ id: "settings.fortune.lunarCalendar" })}
+                        </span>
+                      </label>
+                      <span className="text-[11px] text-[var(--text-faint)]">
+                        {intl.formatMessage({ id: "settings.fortune.lunarHint" })}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => {
+                          setBaziProfile({ ...baziDraft });
+                          setBaziSaved(true);
+                          setTimeout(() => setBaziSaved(false), 2000);
+                        }}
+                        disabled={!baziDraft.name && !baziDraft.birthDate && !baziDraft.birthTime && !baziDraft.occupation?.trim() && !baziDraft.industry?.trim()}
+                        className="rounded-lg bg-[var(--accent-strong)] px-4 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+                      >
+                        {intl.formatMessage({ id: "settings.fortune.save" })}
+                      </button>
+                      {baziProfile && (
+                        <button
+                          onClick={() => {
+                            setBaziProfile(null);
+                            setBaziDraft({ name: "", birthDate: "", birthTime: "", gender: "male", lunarCalendar: false, occupation: "", industry: "" });
+                          }}
+                          className="app-button-secondary text-xs"
+                        >
+                          {intl.formatMessage({ id: "settings.fortune.clear" })}
+                        </button>
+                      )}
+                      {baziSaved && (
+                        <span className="text-xs text-green-500">
+                          {intl.formatMessage({ id: "settings.fortune.saved" })}
+                        </span>
+                      )}
+                    </div>
+                  </section>
+                )}
 
                 <section className="settings-card space-y-3">
                   <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">

@@ -4,6 +4,7 @@ export * from "./fileReview";
 export * from "./git";
 export * from "./hook";
 export * from "./plugin";
+export * from "./recording";
 export * from "./skill";
 export * from "./standalone";
 export * from "./window";

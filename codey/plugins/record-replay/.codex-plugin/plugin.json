@@ -1,0 +1,35 @@
+{
+  "name": "record-replay",
+  "version": "0.1.0",
+  "description": "Record & Replay skill generator.\n\nAliases: @record-replay, @rr, record, replay, skill recorder.\n\nUse Record & Replay when the user asks to record a workflow, capture a process, create a reusable skill from a demonstration, or replay a previously recorded skill.\n\nThis plugin launches an external Chrome browser, records user actions via CDP, and generates reusable skills that can be replayed via browser_run.",
+  "author": {
+    "name": "CN-Codex"
+  },
+  "license": "MIT",
+  "keywords": [
+    "record",
+    "replay",
+    "rpa",
+    "skill",
+    "automation",
+    "workflow",
+    "macro"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Record & Replay",
+    "shortDescription": "Record a workflow once, replay it as an Agent Skill forever",
+    "longDescription": "Record & Replay launches an external Chrome/Edge browser, lets you demonstrate a workflow while recording your actions via Chrome DevTools Protocol, then uses AI to generate reusable skills. Skills can be replayed by the agent through CDP to automate the same workflow.",
+    "developerName": "CN-Codex",
+    "category": "Automation",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Record my workflow and turn it into a reusable skill"
+    ],
+    "brandColor": "#E53935"
+  }
+}

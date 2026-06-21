@@ -88,6 +88,8 @@ pub struct AppState {
     /// - Diff 窗初始化时读取该值，保证单实例复用与首帧可见；
     /// - 关闭 Diff 窗后清空，避免后续复用时误读旧内容。
     pub runsummary_diff_payload: Arc<RwLock<Option<RunSummaryDiffPayload>>>,
+    pub external_browser: Arc<crate::external_browser::ExternalBrowser>,
+    pub recorder: Arc<crate::recording::Recorder>,
 }
 
 fn canonicalize_or_keep(path: PathBuf) -> PathBuf {
@@ -263,6 +265,8 @@ impl AppState {
             file_review_sessions: Arc::new(RwLock::new(HashMap::new())),
             document_detail_active_path: Arc::new(RwLock::new(None)),
             runsummary_diff_payload: Arc::new(RwLock::new(None)),
+            external_browser: Arc::new(crate::external_browser::ExternalBrowser::new()),
+            recorder: Arc::new(crate::recording::Recorder::new()),
         }
     }
 }
