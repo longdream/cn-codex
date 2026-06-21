@@ -87,6 +87,9 @@
             <li><a href="#smartbrain">SmartBrain 知识库</a></li>
             <li><a href="#rules">用户 / 项目规则</a></li>
             <li><a href="#subagents">子代理引擎</a></li>
+            <li><a href="#recording">操作录制与回放</a></li>
+            <li><a href="#web-search">智能网页搜索</a></li>
+            <li><a href="#local-pool">本地资源池</a></li>
           </ul>
         </div>
         <div class="docs-nav-section">
@@ -135,7 +138,7 @@
           <p>核心能力：</p>
           <ul>
             <li>支持 12+ 种 LLM 供应商（OpenAI、Anthropic、Google、DeepSeek、火山引擎、通义千问、智谱、Moonshot、硅基流动、百川、Ollama、LM Studio 等）</li>
-            <li>40+ 内置工具（文件、Shell、浏览器、子代理、记忆、MCP、图像等）</li>
+            <li>40+ 内置工具（文件、Shell、浏览器、子代理、记忆、MCP、图像、网页搜索等）</li>
             <li>项目级工作区管理，每个项目拥有独立的对话上下文</li>
             <li>Goal 目标模式，AI 自主多步执行任务</li>
             <li>可扩展的插件、技能、Hooks 和机器人系统</li>
@@ -143,6 +146,9 @@
             <li>SmartBrain 经验知识库：基于 LLM Wiki 模式，AI 自动提取经验、编译知识、BM25 搜索</li>
             <li>用户规则和项目规则：Markdown 格式，自动注入系统提示词，AI 可在对话中读写</li>
             <li>子代理引擎：复杂任务自动拆分并行执行</li>
+            <li>操作录制与回放：通过 CDP 协议录制浏览器操作，生成可回放工作流</li>
+            <li>智能网页搜索：DuckDuckGo + Bing 双引擎，内置防循环策略</li>
+            <li>本地资源池：多端点管理、活跃端点检测、智能故障转移</li>
             <li>44 个内置技能，7 大插件</li>
           </ul>
         </section>
@@ -725,6 +731,138 @@
             <li><strong>超时控制</strong> — 可配置子代理超时时间</li>
             <li><strong>Hook 集成</strong> — <code>on-subagent-stop</code> 事件钩子在子代理完成时触发</li>
           </ul>
+        </section>
+
+        <!-- ============ 操作录制与回放 ============ -->
+        <section id="recording" class="docs-section">
+          <h2>操作录制与回放</h2>
+          <p>CN-Codex 支持通过外部浏览器的 CDP（Chrome DevTools Protocol）协议录制用户操作，并生成可回放的工作流。</p>
+
+          <h3>工作原理</h3>
+          <ol>
+            <li>CN-Codex 自动检测本地安装的 <strong>Chrome</strong>（优先）或 <strong>Edge</strong> 浏览器</li>
+            <li>以远程调试模式启动浏览器（<code>--remote-debugging-port</code>）</li>
+            <li>通过 CDP WebSocket 连接建立双向通信</li>
+            <li>注入录制脚本，使用 <code>Runtime.addBinding</code> 实时推送事件到 Rust 后端</li>
+          </ol>
+
+          <h3>使用方法</h3>
+          <ol>
+            <li>在聊天界面顶部找到 <strong>录制按钮</strong>（红色圆点图标）</li>
+            <li>点击 <strong>开始录制</strong>，系统会自动启动外部浏览器</li>
+            <li>在浏览器中正常操作（点击、输入、导航等），所有操作会被实时捕获</li>
+            <li>完成后点击 <strong>停止录制</strong>，系统显示录制的操作数量</li>
+            <li>录制结果自动保存为工作流 JSON 文件，可在后续对话中引用和回放</li>
+          </ol>
+
+          <h3>录制的事件类型</h3>
+          <table class="docs-table">
+            <thead>
+              <tr><th>事件类型</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>click</td><td>鼠标点击（记录坐标和目标元素选择器）</td></tr>
+              <tr><td>input</td><td>文本输入（记录目标元素和输入值）</td></tr>
+              <tr><td>navigation</td><td>页面导航（记录目标 URL）</td></tr>
+              <tr><td>scroll</td><td>页面滚动（记录滚动位置）</td></tr>
+            </tbody>
+          </table>
+
+          <div class="tip-card">
+            <div class="tip-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z"/>
+              </svg>
+            </div>
+            <div>
+              <strong>浏览器优先级</strong>
+              <p>系统会优先检测 Chrome 的安装路径（包括系统级和用户级安装），如果未找到 Chrome 则使用 Edge。录制功能需要浏览器支持 CDP 远程调试协议。</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ 智能网页搜索 ============ -->
+        <section id="web-search" class="docs-section">
+          <h2>智能网页搜索</h2>
+          <p>CN-Codex 内置网页搜索引擎，AI 可自主搜索互联网获取实时信息。搜索策略参照 OpenAI Codex 的设计，内置防循环机制。</p>
+
+          <h3>搜索引擎架构</h3>
+          <p>采用多层降级策略，确保搜索成功率：</p>
+          <ol>
+            <li><strong>DuckDuckGo Instant Answer API</strong> — 首选，无需浏览器，直接 HTTP 请求</li>
+            <li><strong>Bing 浏览器搜索</strong>（cn.bing.com）— API 失败时的第一备选，通过内嵌 WebView 抓取搜索结果</li>
+            <li><strong>DuckDuckGo 浏览器搜索</strong> — 第二备选</li>
+          </ol>
+
+          <h3>防循环策略</h3>
+          <p>系统提示词中内置以下规则防止 AI 无限搜索：</p>
+          <ul>
+            <li>每次搜索后 <strong>立即分析结果</strong>，如果摘要已包含答案，直接回复</li>
+            <li>同一问题 <strong>最多搜索 3 次</strong>（使用不同关键词），3 次后总结已有信息回复</li>
+            <li>不重复访问返回错误或空内容的 URL</li>
+            <li>中文问题自动使用中文关键词搜索</li>
+          </ul>
+
+          <h3>搜索工具</h3>
+          <table class="docs-table">
+            <tbody>
+              <tr><td><code>web_search</code></td><td>搜索互联网，返回标题、URL、摘要列表</td></tr>
+              <tr><td><code>web_fetch</code></td><td>抓取指定 URL 的网页内容，转为可读文本</td></tr>
+            </tbody>
+          </table>
+
+          <div class="info-card">
+            <div class="info-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+              </svg>
+            </div>
+            <div>
+              <strong>启用网页搜索</strong>
+              <p>在 <code>codey/config.toml</code> 中设置 <code>web_search = "live"</code> 启用实时搜索。设为 <code>"disabled"</code> 可关闭。</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ 本地资源池 ============ -->
+        <section id="local-pool" class="docs-section">
+          <h2>本地资源池</h2>
+          <p>本地资源池允许为同一供应商配置多个 API 端点，系统自动选择活跃端点，实现智能故障转移。</p>
+
+          <h3>使用场景</h3>
+          <ul>
+            <li>同一供应商有多个 API 密钥或端点需要轮换</li>
+            <li>部分端点不稳定（频繁 502、超时），需要自动切换到可用端点</li>
+            <li>需要在不同端点之间做负载均衡</li>
+          </ul>
+
+          <h3>配置方式</h3>
+          <p>在设置面板 → <strong>模型提供商</strong> 中，选择供应商类型为 <strong>本地资源池（local-pool）</strong>：</p>
+          <ul>
+            <li>添加多个端点，每个端点包含 Base URL 和 API Key</li>
+            <li>为每个端点标记 <strong>活跃</strong> 或 <strong>非活跃</strong> 状态</li>
+            <li>系统自动使用当前标记为活跃的端点进行 API 调用</li>
+          </ul>
+
+          <h3>端点选择逻辑</h3>
+          <ol>
+            <li>检查供应商是否为 <code>local-pool</code> 类型</li>
+            <li>从该供应商的端点列表中筛选当前 <strong>活跃端点</strong></li>
+            <li>使用活跃端点的 Base URL 和 API Key 发起请求</li>
+            <li>如果请求失败，可在设置中手动切换到其他端点</li>
+          </ol>
+
+          <div class="tip-card">
+            <div class="tip-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z"/>
+              </svg>
+            </div>
+            <div>
+              <strong>运势功能</strong>
+              <p>每日运势查询功能会自动使用本地资源池中活跃的端点来调用 LLM。如果没有配置本地资源池，则使用默认的供应商配置。</p>
+            </div>
+          </div>
         </section>
 
         <!-- ============ 配置文件 ============ -->
@@ -1350,10 +1488,13 @@ relay_server_url = "http://你的服务器IP:8080"</code></pre>
             </tbody>
           </table>
 
-          <h3>浏览器</h3>
+          <h3>浏览器与录制</h3>
           <table class="docs-table">
             <tbody>
               <tr><td><code>browser_run</code></td><td>运行浏览器自动化（goto / click / fill / screenshot / eval 等操作）</td></tr>
+              <tr><td><code>start_recording</code></td><td>启动外部浏览器并开始 CDP 操作录制</td></tr>
+              <tr><td><code>stop_recording</code></td><td>停止录制并生成工作流 JSON</td></tr>
+              <tr><td><code>launch_browser</code></td><td>启动外部 Chrome/Edge 浏览器（远程调试模式）</td></tr>
             </tbody>
           </table>
 
@@ -1395,8 +1536,8 @@ relay_server_url = "http://你的服务器IP:8080"</code></pre>
               <tr><td><code>tool_search</code></td><td>搜索可用工具</td></tr>
               <tr><td><code>view_image</code></td><td>查看图像文件</td></tr>
               <tr><td><code>image_generate</code></td><td>AI 生成图像</td></tr>
-              <tr><td><code>web_search</code></td><td>联网搜索</td></tr>
-              <tr><td><code>web_fetch</code></td><td>抓取网页内容</td></tr>
+              <tr><td><code>web_search</code></td><td>智能网页搜索（DuckDuckGo API + Bing 双引擎，内置防循环）</td></tr>
+              <tr><td><code>web_fetch</code></td><td>抓取指定 URL 的网页内容，转为可读文本</td></tr>
               <tr><td><code>request_user_input</code></td><td>向用户提问</td></tr>
               <tr><td><code>request_permissions</code></td><td>请求额外权限</td></tr>
               <tr><td><code>robot_save</code></td><td>保存/创建机器人</td></tr>

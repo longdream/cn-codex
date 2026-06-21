@@ -45,13 +45,13 @@
   <!-- 英雄区域 -->
   <header class="hero">
     <div class="container hero-content">
-      <div class="hero-badge">开源 · 手机控制 · 机器人自动化 · 全栈开发 · LLM Wiki</div>
+      <div class="hero-badge">开源 · 手机控制 · 机器人自动化 · 操作录制 · 智能搜索 · LLM Wiki</div>
       <h1 class="hero-title">
         <span class="gradient-text">AI 驱动的</span>
         <br>全栈编程工作台
       </h1>
       <p class="hero-subtitle">
-        手机扫码远程控制 AI · 机器人自动化工作流 · SmartBrain 经验知识库 · 44 个技能 · 40+ 工具 · 7 大插件<br>
+        手机扫码远程控制 AI · 机器人自动化工作流 · 操作录制与回放 · 智能网页搜索 · SmartBrain 经验知识库 · 44 个技能 · 40+ 工具<br>
         已在 DeepSeek v4 Flash 模型下完成全栈项目开发、测试的完整验证
       </p>
       <div class="hero-actions">
@@ -157,6 +157,33 @@
           </div>
           <h3 class="feature-title">用户 / 项目规则</h3>
           <p class="feature-desc">Markdown 格式的全局用户规则和项目级规则，自动注入系统提示词。AI 对话中可直接读写项目规则，精准控制 AI 行为。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C6.05 2 1 7.05 1 13s5.05 11 11 11 11-5.05 11-11S17.95 2 12 2zm-1 15H9V9h2v8zm4 0h-2V9h2v8z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">操作录制与回放</h3>
+          <p class="feature-desc">自动检测并启动外部 Chrome 浏览器，通过 CDP 协议实时录制用户的点击、输入、导航操作。录制序列自动转换为可编辑工作流 JSON，支持智能回放。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">智能网页搜索</h3>
+          <p class="feature-desc">DuckDuckGo API + Bing 浏览器搜索双引擎，内置防循环策略（同一问题最多搜索 3 次）。中文问题自动使用中文关键词，搜索后立即分析结果避免无限循环。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM17 12c0-2.76-2.24-5-5-5s-5 2.24-5 5 2.24 5 5 5 5-2.24 5-5zm-5 3c-1.65 0-3-1.35-3-3s1.35-3 3-3 3 1.35 3 3-1.35 3-3 3z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">本地资源池</h3>
+          <p class="feature-desc">为同一供应商配置多个 API 端点，自动检测活跃端点、智能故障转移，避免 502 错误。每日运势查询使用资源池的活跃端点调用 LLM。</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">
@@ -364,9 +391,9 @@
             浏览器自动化
           </h3>
           <ul class="tool-list">
-            <li>内嵌 WebView + CDP</li>
+            <li>内嵌 WebView + 外部 Chrome CDP</li>
             <li>导航、点击、填写、截图</li>
-            <li>无需 Playwright 安装</li>
+            <li>操作录制与工作流回放</li>
             <li>控制台日志捕获</li>
           </ul>
         </div>
@@ -406,10 +433,10 @@
             网络与媒体
           </h3>
           <ul class="tool-list">
-            <li><code>web_search</code> / <code>web_fetch</code></li>
+            <li><code>web_search</code> 双引擎 + 防循环</li>
+            <li><code>web_fetch</code> 网页内容抓取</li>
             <li><code>view_image</code> / <code>image_generate</code></li>
             <li>文档解析 (PDF/DOCX/PPTX/XLSX)</li>
-            <li>图片预览与附件管理</li>
           </ul>
         </div>
       </div>
