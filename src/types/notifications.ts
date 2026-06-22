@@ -78,6 +78,26 @@ export interface DocumentDetailInsertSnippet {
   snippet?: string;
 }
 
+export interface FortuneDetailStartedNotification {
+  requestId: string;
+}
+
+export interface FortuneDetailDeltaNotification {
+  requestId: string;
+  delta: string;
+}
+
+export interface FortuneDetailCompletedNotification {
+  requestId: string;
+  text: string;
+  finishReason?: string;
+}
+
+export interface FortuneDetailErrorNotification {
+  requestId: string;
+  message: string;
+}
+
 export interface ThreadStartedNotification {
   thread: {
     id: string;
@@ -134,6 +154,10 @@ export type ServerEventName =
   | "file-review-ready"
   | "file-review-updated"
   | "document-detail-insert-snippet"
+  | "fortune-detail-started"
+  | "fortune-detail-delta"
+  | "fortune-detail-completed"
+  | "fortune-detail-error"
   | "reasoning-text-delta"
   | "reasoning-summary-delta"
   | "plan-delta"

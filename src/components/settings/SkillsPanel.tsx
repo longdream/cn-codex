@@ -41,6 +41,7 @@ const CATEGORIES: SkillCategory[] = [
       "create-plan",
       "codebase-migrate",
       "deploy-pipeline",
+      "find-skills",
       "remote-tests",
       "skill-creator",
       "mcp-builder",

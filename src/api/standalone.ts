@@ -179,3 +179,18 @@ export async function standaloneChat(
 export async function standaloneTurnInterrupt(): Promise<{ status: string }> {
   return invoke("standalone_turn_interrupt");
 }
+
+export interface FortuneDetailStreamStartParams {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  wireApi: string;
+  prompt: string;
+  requestId?: string;
+}
+
+export async function fortuneDetailStreamStart(
+  params: FortuneDetailStreamStartParams,
+): Promise<{ requestId: string }> {
+  return invoke("fortune_detail_stream_start", { ...params });
+}

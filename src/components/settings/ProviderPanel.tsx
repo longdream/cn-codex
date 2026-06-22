@@ -155,6 +155,15 @@ export function ProviderPanel() {
       setFeedback({ kind: "error", text: intl.formatMessage({ id: "settings.provider.unsavedModel" }) });
       return;
     }
+    if (selectedProvider.type === "local-pool") {
+      const hasEnabledEndpoint = selectedProvider.models.some((model) =>
+        (model.endpoints ?? []).some((endpoint) => endpoint.enabled && endpoint.url.trim().length > 0),
+      );
+      if (!hasEnabledEndpoint) {
+        setFeedback({ kind: "error", text: intl.formatMessage({ id: "settings.pool.endpointRequired" }) });
+        return;
+      }
+    }
 
     setSaving(true);
     setFeedback(null);

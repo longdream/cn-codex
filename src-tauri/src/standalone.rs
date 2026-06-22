@@ -1,7 +1,10 @@
-use tauri::{AppHandle, State};
+use futures_util::StreamExt;
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::RwLock;
 use tracing::info;
 
+use crate::adapter;
+use crate::adapter::types::{InternalMessage, StreamEvent, text_content};
 use crate::agent::UserAttachment;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -17,6 +20,372 @@ impl StandaloneState {
             active: RwLock::new(false),
         }
     }
+}
+
+const FORTUNE_SYSTEM_PROMPT: &str = "你是一位精通中国传统玄学的大师，擅长奇门遁甲和紫微斗数。请用严谨的方式进行推演。只输出有效 JSON 对象，不要输出推理过程。";
+
+fn build_openai_fortune_payload(
+    model: &str,
+    prompt: &str,
+    with_json_mode: bool,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": FORTUNE_SYSTEM_PROMPT },
+            { "role": "user", "content": prompt },
+        ],
+        "temperature": 0.2,
+        "max_tokens": 4096,
+    });
+    if with_json_mode {
+        payload["response_format"] = serde_json::json!({ "type": "json_object" });
+    }
+    payload
+}
+
+fn looks_like_json_mode_unsupported(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    (lower.contains("response_format") && lower.contains("unsupported"))
+        || (lower.contains("unknown parameter") && lower.contains("response_format"))
+        || lower.contains("invalid parameter: response_format")
+        || lower.contains("response_format.type")
+}
+
+fn extract_openai_message_content_text(message: Option<&serde_json::Value>) -> String {
+    let Some(message) = message else {
+        return String::new();
+    };
+    let Some(content) = message.get("content") else {
+        return String::new();
+    };
+    match content {
+        serde_json::Value::String(text) => text.trim().to_string(),
+        serde_json::Value::Array(items) => {
+            let mut parts: Vec<String> = Vec::new();
+            for item in items {
+                if let Some(text) = item.as_str() {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed.to_string());
+                    }
+                    continue;
+                }
+                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed.to_string());
+                    }
+                    continue;
+                }
+                if let Some(text) = item.get("content").and_then(|v| v.as_str()) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed.to_string());
+                    }
+                }
+            }
+            parts.join("\n")
+        }
+        serde_json::Value::Object(map) => map
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+fn emit_fortune_detail_event(
+    app_handle: &AppHandle,
+    event_name: &str,
+    payload: serde_json::Value,
+) {
+    if let Err(err) = app_handle.emit(event_name, payload.clone()) {
+        tracing::warn!("[fortune_detail_stream] failed to emit {event_name}: {err}");
+    }
+    crate::mobile_server::broadcast(event_name, payload);
+}
+
+fn extract_non_streaming_fortune_text(raw_body: &str) -> AppResult<String> {
+    let fallback_text = raw_body.trim().to_string();
+    let parsed: serde_json::Value = match serde_json::from_str(raw_body) {
+        Ok(value) => value,
+        Err(_) => {
+            if fallback_text.is_empty() {
+                return Err(AppError::Custom(
+                    "Fortune detail response is empty".to_string(),
+                ));
+            }
+            return Ok(fallback_text);
+        }
+    };
+
+    let openai_content = extract_openai_message_content_text(parsed.pointer("/choices/0/message"));
+    if !openai_content.trim().is_empty() {
+        return Ok(openai_content);
+    }
+
+    if let Some(text) = parsed.pointer("/content/0/text").and_then(|v| v.as_str()) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Some(text) = parsed.get("output_text").and_then(|v| v.as_str()) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Some(text) = parsed.pointer("/output/0/content/0/text").and_then(|v| v.as_str()) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Some(parts) = parsed.pointer("/candidates/0/content/parts").and_then(|v| v.as_array()) {
+        let merged = parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !merged.is_empty() {
+            return Ok(merged);
+        }
+    }
+
+    if let Some(text) = parsed.get("text").and_then(|v| v.as_str()) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if !fallback_text.is_empty() {
+        return Ok(fallback_text);
+    }
+
+    Err(AppError::Custom(
+        "Fortune detail response does not contain readable text".to_string(),
+    ))
+}
+
+fn process_fortune_stream_line(
+    line: &str,
+    adapter: &dyn adapter::ProviderAdapter,
+    app_handle: &AppHandle,
+    request_id: &str,
+    full_text: &mut String,
+    finish_reason: &mut Option<String>,
+) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    if adapter.is_stream_done(trimmed) {
+        if finish_reason.is_none() {
+            *finish_reason = Some("stop".to_string());
+        }
+        return;
+    }
+
+    for event in adapter.parse_stream_line(trimmed) {
+        match event {
+            StreamEvent::TextDelta(delta) => {
+                if delta.is_empty() {
+                    continue;
+                }
+                full_text.push_str(&delta);
+                emit_fortune_detail_event(
+                    app_handle,
+                    "fortune-detail-delta",
+                    serde_json::json!({
+                        "requestId": request_id,
+                        "delta": delta,
+                    }),
+                );
+            }
+            StreamEvent::Done {
+                finish_reason: reason,
+            } => {
+                *finish_reason = reason.or(finish_reason.take());
+            }
+            StreamEvent::ToolCallDelta { .. } | StreamEvent::Usage(_) => {
+                // Fortune detail stream only consumes text deltas.
+            }
+        }
+    }
+}
+
+async fn run_fortune_detail_stream(
+    app_handle: &AppHandle,
+    request_id: &str,
+    base_url: String,
+    api_key: String,
+    model: String,
+    wire_api: String,
+    prompt: String,
+) -> AppResult<()> {
+    info!(
+        "[fortune_detail_stream] request_id={request_id}, base_url={base_url}, model={model}, wire_api={wire_api}, prompt_len={}",
+        prompt.len()
+    );
+
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| AppError::Custom(format!("Failed to create HTTP client: {e}")))?;
+
+    let adapter = adapter::get_adapter(&wire_api);
+    let url = adapter.build_url(&base_url, &model);
+    let headers = adapter.build_headers(&api_key);
+    let messages = vec![
+        InternalMessage {
+            role: "system".to_string(),
+            content: text_content(FORTUNE_SYSTEM_PROMPT),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+        InternalMessage {
+            role: "user".to_string(),
+            content: text_content(prompt),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    ];
+    let body = adapter.build_body(&model, &messages, None, Some(6144));
+
+    let response = http
+        .post(&url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AppError::Custom(format!("Fortune detail request failed: {e}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::Custom(format!(
+            "Fortune detail API error {status}: {body}"
+        )));
+    }
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    info!("[fortune_detail_stream] response content-type: {content_type}");
+
+    if content_type.contains("application/json") && !content_type.contains("stream") {
+        let raw_body = response
+            .text()
+            .await
+            .map_err(|e| AppError::Custom(format!("Failed to read fortune detail body: {e}")))?;
+        let text = extract_non_streaming_fortune_text(&raw_body)?;
+        if text.trim().is_empty() {
+            return Err(AppError::Custom(
+                "Fortune detail response is empty".to_string(),
+            ));
+        }
+        emit_fortune_detail_event(
+            app_handle,
+            "fortune-detail-delta",
+            serde_json::json!({
+                "requestId": request_id,
+                "delta": text.clone(),
+            }),
+        );
+        emit_fortune_detail_event(
+            app_handle,
+            "fortune-detail-completed",
+            serde_json::json!({
+                "requestId": request_id,
+                "text": text,
+                "finishReason": "stop",
+            }),
+        );
+        return Ok(());
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut full_text = String::new();
+    let mut finish_reason: Option<String> = None;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(value) => value,
+            Err(err) => {
+                if full_text.trim().is_empty() {
+                    return Err(AppError::Custom(format!(
+                        "Fortune detail stream read failed: {err}"
+                    )));
+                }
+                tracing::warn!(
+                    "[fortune_detail_stream] request_id={request_id} read error after partial output: {err}"
+                );
+                if finish_reason.is_none() {
+                    finish_reason = Some("stream_error".to_string());
+                }
+                break;
+            }
+        };
+
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(line_end) = buffer.find('\n') {
+            let line = buffer[..line_end].to_string();
+            buffer = buffer[line_end + 1..].to_string();
+            process_fortune_stream_line(
+                &line,
+                adapter.as_ref(),
+                app_handle,
+                request_id,
+                &mut full_text,
+                &mut finish_reason,
+            );
+        }
+    }
+
+    if !buffer.trim().is_empty() {
+        process_fortune_stream_line(
+            &buffer,
+            adapter.as_ref(),
+            app_handle,
+            request_id,
+            &mut full_text,
+            &mut finish_reason,
+        );
+    }
+
+    if full_text.trim().is_empty() {
+        return Err(AppError::Custom(
+            "Fortune detail stream returned empty content".to_string(),
+        ));
+    }
+
+    emit_fortune_detail_event(
+        app_handle,
+        "fortune-detail-completed",
+        serde_json::json!({
+            "requestId": request_id,
+            "text": full_text,
+            "finishReason": finish_reason.unwrap_or_else(|| "stop".to_string()),
+        }),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -419,23 +788,13 @@ pub async fn fortune_llm_call(
     };
     info!("[fortune_llm_call] OpenAI-compat POST {url}");
 
-    let mut req = http
-        .post(&url)
-        .header("Content-Type", "application/json");
+    let mut req = http.post(&url).header("Content-Type", "application/json");
     if !api_key.is_empty() {
         req = req.header("Authorization", format!("Bearer {api_key}"));
     }
-
-    let resp = req
-        .json(&serde_json::json!({
-            "model": model,
-            "messages": [
-                { "role": "system", "content": "你是一位精通中国传统玄学的大师，擅长奇门遁甲和紫微斗数。请用严谨的方式进行推演。" },
-                { "role": "user", "content": prompt },
-            ],
-            "temperature": 0.7,
-            "max_tokens": 2048,
-        }))
+    let payload_with_json_mode = build_openai_fortune_payload(&model, &prompt, true);
+    let mut resp = req
+        .json(&payload_with_json_mode)
         .send()
         .await
         .map_err(|e| {
@@ -443,12 +802,47 @@ pub async fn fortune_llm_call(
             AppError::Custom(format!("LLM request failed: {e}"))
         })?;
 
-    let status = resp.status();
+    let mut used_json_mode = true;
+    let mut status = resp.status();
     info!("[fortune_llm_call] OpenAI-compat response status: {status}");
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        tracing::error!("[fortune_llm_call] LLM error {status}: {body}");
-        return Err(AppError::Custom(format!("LLM API error {status}: {body}")));
+        if looks_like_json_mode_unsupported(&body) {
+            info!("[fortune_llm_call] response_format unsupported, retrying without json mode");
+            used_json_mode = false;
+            let mut retry_req = http.post(&url).header("Content-Type", "application/json");
+            if !api_key.is_empty() {
+                retry_req = retry_req.header("Authorization", format!("Bearer {api_key}"));
+            }
+            let payload_without_json_mode =
+                build_openai_fortune_payload(&model, &prompt, false);
+            resp = retry_req
+                .json(&payload_without_json_mode)
+                .send()
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        "[fortune_llm_call] LLM request failed after json mode fallback: {e}"
+                    );
+                    AppError::Custom(format!("LLM request failed after fallback: {e}"))
+                })?;
+            status = resp.status();
+            info!(
+                "[fortune_llm_call] OpenAI-compat fallback response status: {status}"
+            );
+            if !status.is_success() {
+                let fallback_body = resp.text().await.unwrap_or_default();
+                tracing::error!(
+                    "[fortune_llm_call] LLM fallback error {status}: {fallback_body}"
+                );
+                return Err(AppError::Custom(format!(
+                    "LLM API error {status}: {fallback_body}"
+                )));
+            }
+        } else {
+            tracing::error!("[fortune_llm_call] LLM error {status}: {body}");
+            return Err(AppError::Custom(format!("LLM API error {status}: {body}")));
+        }
     }
 
     let raw_body = resp
@@ -459,25 +853,89 @@ pub async fn fortune_llm_call(
         .map_err(|e| AppError::Custom(format!("Failed to parse LLM response JSON: {e}")))?;
 
     let message = data.pointer("/choices/0/message");
-    let content = message
-        .and_then(|m| m.get("content"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let reasoning = message
+    let content = extract_openai_message_content_text(message);
+    let reasoning_len = message
         .and_then(|m| m.get("reasoning_content"))
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .map(|text| text.len())
+        .unwrap_or(0);
 
-    let text = if !content.is_empty() {
-        content.to_string()
-    } else if !reasoning.is_empty() {
-        info!("[fortune_llm_call] content empty, falling back to reasoning_content (len={})", reasoning.len());
-        reasoning.to_string()
-    } else {
-        String::new()
-    };
-    info!("[fortune_llm_call] OpenAI-compat response len={}", text.len());
-    Ok(text)
+    if content.trim().is_empty() {
+        let finish_reason = data
+            .pointer("/choices/0/finish_reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        tracing::error!(
+            "[fortune_llm_call] Empty assistant content. finish_reason={finish_reason}, reasoning_len={reasoning_len}"
+        );
+        return Err(AppError::Custom(format!(
+            "LLM returned empty assistant content (finish_reason={finish_reason})"
+        )));
+    }
+
+    info!(
+        "[fortune_llm_call] OpenAI-compat response len={}, json_mode={used_json_mode}, reasoning_len={reasoning_len}",
+        content.len()
+    );
+    Ok(content)
+}
+
+#[tauri::command]
+pub async fn fortune_detail_stream_start(
+    app_handle: AppHandle,
+    base_url: String,
+    api_key: String,
+    model: String,
+    wire_api: String,
+    prompt: String,
+    request_id: Option<String>,
+) -> AppResult<serde_json::Value> {
+    let request_id = request_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let app_handle_for_task = app_handle.clone();
+    let request_id_for_task = request_id.clone();
+    tokio::spawn(async move {
+        emit_fortune_detail_event(
+            &app_handle_for_task,
+            "fortune-detail-started",
+            serde_json::json!({
+                "requestId": request_id_for_task.clone(),
+            }),
+        );
+        if let Err(err) = run_fortune_detail_stream(
+            &app_handle_for_task,
+            &request_id_for_task,
+            base_url,
+            api_key,
+            model,
+            wire_api,
+            prompt,
+        )
+        .await
+        {
+            let message = err.to_string();
+            tracing::error!(
+                "[fortune_detail_stream] request_id={} failed: {}",
+                request_id_for_task,
+                message
+            );
+            emit_fortune_detail_event(
+                &app_handle_for_task,
+                "fortune-detail-error",
+                serde_json::json!({
+                    "requestId": request_id_for_task,
+                    "message": message,
+                }),
+            );
+        }
+    });
+
+    Ok(serde_json::json!({
+        "requestId": request_id,
+    }))
 }
 
 fn parse_goal_status(value: Option<&str>) -> AppResult<Option<ThreadGoalStatus>> {

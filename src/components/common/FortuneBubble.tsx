@@ -16,7 +16,7 @@ import { useIntl } from "react-intl";
 import { useAppStore } from "../../stores/appStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { standaloneThreadPeekGoal } from "../../api/standalone";
-import { fetchDailyFortune, type FortuneResult } from "../../utils/fortune";
+import { fetchDailyFortuneSummary, type FortuneSummary } from "../../utils/fortune";
 import { FortuneDetailModal } from "./FortuneDetailModal";
 
 type BubbleMode = "task" | "fortune" | "loading" | "error";
@@ -53,10 +53,43 @@ export function FortuneBubble() {
   const [visible, setVisible] = useState(false);
   const [mode, setMode] = useState<BubbleMode>("loading");
   const [unfinishedTask, setUnfinishedTask] = useState<UnfinishedTask | null>(null);
-  const [fortune, setFortune] = useState<FortuneResult | null>(null);
+  const [fortune, setFortune] = useState<FortuneSummary | null>(null);
   const [showDetail, setShowDetail] = useState(false);
   const checkedRef = useRef(false);
   const lastRefreshTrigger = useRef(0);
+
+  const findUnfinishedTask = useCallback(async (): Promise<UnfinishedTask | null> => {
+    const sortedThreads = [...threads]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 5);
+    if (sortedThreads.length === 0) {
+      return null;
+    }
+    const checks = await Promise.allSettled(
+      sortedThreads.map(async (thread) => {
+        const result = await standaloneThreadPeekGoal(thread.id);
+        return {
+          thread,
+          goal: result?.goal,
+        };
+      }),
+    );
+
+    for (const check of checks) {
+      if (check.status !== "fulfilled") {
+        continue;
+      }
+      const { thread, goal } = check.value;
+      if (goal && goal.status !== "complete") {
+        return {
+          threadId: thread.id,
+          objective: goal.objective ?? "",
+        };
+      }
+    }
+
+    return null;
+  }, [threads]);
 
   const checkAndLoad = useCallback(async () => {
     if (checkedRef.current) return;
@@ -64,47 +97,35 @@ export function FortuneBubble() {
 
     if (!fortuneEnabled) return;
 
-    try {
-      const sortedThreads = [...threads].sort((a, b) => b.updatedAt - a.updatedAt);
-      for (const t of sortedThreads.slice(0, 5)) {
-        try {
-          const result = await standaloneThreadPeekGoal(t.id);
-          const goal = result?.goal;
-          if (goal && goal.status !== "complete") {
-            setUnfinishedTask({ threadId: t.id, objective: goal.objective });
-            setMode("task");
-            setVisible(true);
-            return;
-          }
-        } catch {
-          // skip unreadable threads
-        }
-      }
-    } catch {
-      // skip goal check on error
-    }
-
     setMode("loading");
     setVisible(true);
 
-    try {
-      const result = await fetchDailyFortune(baziProfile);
-      setFortune(result);
+    const [taskResult, fortuneResult] = await Promise.allSettled([
+      findUnfinishedTask(),
+      fetchDailyFortuneSummary(baziProfile),
+    ]);
+
+    if (taskResult.status === "fulfilled" && taskResult.value) {
+      setUnfinishedTask(taskResult.value);
+      setMode("task");
+      return;
+    }
+    if (taskResult.status === "rejected") {
+      console.error("[FortuneBubble] goal check failed:", taskResult.reason);
+    }
+
+    if (fortuneResult.status === "fulfilled") {
+      setFortune(fortuneResult.value);
       setMode("fortune");
-    } catch (err) {
-      console.error("[FortuneBubble] fetchDailyFortune failed:", err);
+    } else {
+      console.error("[FortuneBubble] fetchDailyFortuneSummary failed:", fortuneResult.reason);
       setMode("error");
     }
-  }, [fortuneEnabled, threads, baziProfile]);
+  }, [fortuneEnabled, baziProfile, findUnfinishedTask]);
 
   useEffect(() => {
     if (!initialized || dismissed || !fortuneEnabled) return;
-
-    const timer = setTimeout(() => {
-      checkAndLoad();
-    }, 1500);
-
-    return () => clearTimeout(timer);
+    void checkAndLoad();
   }, [initialized, dismissed, fortuneEnabled, checkAndLoad]);
 
   useEffect(() => {
@@ -117,11 +138,11 @@ export function FortuneBubble() {
 
     (async () => {
       try {
-        const result = await fetchDailyFortune(baziProfile, /*forceRefresh*/ true);
+        const result = await fetchDailyFortuneSummary(baziProfile, /*forceRefresh*/ true);
         setFortune(result);
         setMode("fortune");
       } catch (err) {
-        console.error("[FortuneBubble] refresh fetchDailyFortune failed:", err);
+        console.error("[FortuneBubble] refresh fetchDailyFortuneSummary failed:", err);
         setMode("error");
       }
     })();
@@ -131,11 +152,11 @@ export function FortuneBubble() {
     console.log("[FortuneBubble] retry clicked");
     setMode("loading");
     try {
-      const result = await fetchDailyFortune(baziProfile);
+      const result = await fetchDailyFortuneSummary(baziProfile);
       setFortune(result);
       setMode("fortune");
     } catch (err) {
-      console.error("[FortuneBubble] retry fetchDailyFortune failed:", err);
+      console.error("[FortuneBubble] retry fetchDailyFortuneSummary failed:", err);
       setMode("error");
     }
   }, [baziProfile]);
@@ -255,18 +276,7 @@ export function FortuneBubble() {
               </div>
             </div>
 
-            {fortune.ziweiDetail && (
-              <div className="flex items-center gap-1.5 border-t border-white/5 pt-1.5">
-                <span className="text-[10px] text-[var(--accent)]">
-                  {intl.formatMessage({ id: "fortune.bubble.ziwei" })}
-                </span>
-                <span className="text-[10px] text-[var(--text-muted)]">
-                  {fortune.summary}
-                </span>
-              </div>
-            )}
-
-            {!fortune.ziweiDetail && fortune.summary && (
+            {fortune.summary && (
               <p className="border-t border-white/5 pt-1.5 text-[10px] text-[var(--text-muted)]">
                 {fortune.summary}
               </p>
@@ -285,7 +295,8 @@ export function FortuneBubble() {
 
       {showDetail && fortune && (
         <FortuneDetailModal
-          fortune={fortune}
+          summary={fortune}
+          baziProfile={baziProfile}
           onClose={() => setShowDetail(false)}
         />
       )}

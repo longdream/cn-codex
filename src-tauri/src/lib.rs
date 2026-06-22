@@ -209,6 +209,7 @@ pub fn run() {
             standalone::standalone_thread_peek_goal,
             standalone::standalone_thread_read,
             standalone::fortune_llm_call,
+            standalone::fortune_detail_stream_start,
             standalone::standalone_thread_goal_set,
             standalone::standalone_thread_goal_status,
             standalone::standalone_thread_goal_edit,

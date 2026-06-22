@@ -1,19 +1,62 @@
 import { invoke } from "@tauri-apps/api/core";
+import { jsonrepair } from "jsonrepair";
 import { appStateGet, appStateSet } from "../api/app_state";
 import { useAppStore } from "../stores/appStore";
 import type { BaziProfile } from "../stores/settingsStore";
+import type { ModelEntry } from "../stores/appStore";
+import type { ProviderConfig, ProviderModel } from "../types/provider";
 
-export interface FortuneResult {
+export interface FortuneSummary {
   date: string;
   overall: string;
   direction: string;
   bestAction: string;
   environment: string;
   summary: string;
+}
+
+export interface FortuneDetail {
   qimenDetail: string;
   ziweiDetail?: string;
   advice: string;
 }
+
+export type FortuneResult = FortuneSummary & FortuneDetail;
+
+interface FortuneLlmResolvedConfig {
+  baseUrl: string;
+  apiKey: string;
+  modelName: string;
+  wireApi: string;
+}
+
+export interface ResolveFortuneLlmConfigInput {
+  provider: ProviderConfig | null;
+  activeModel: ModelEntry | null;
+  currentModel: string | null;
+  activeEndpointIndex: number | null;
+}
+
+interface FortuneDetailStreamStartResult {
+  requestId: string;
+}
+
+interface StartFortuneDetailStreamOptions {
+  requestId?: string;
+}
+
+const REQUIRED_SUMMARY_FIELDS = [
+  "overall",
+  "direction",
+  "bestAction",
+  "environment",
+  "summary",
+];
+
+const REQUIRED_DETAIL_FIELDS = [
+  "qimenDetail",
+  "advice",
+] as const;
 
 function localDateStr(d: Date = new Date()): string {
   const y = d.getFullYear();
@@ -22,18 +65,20 @@ function localDateStr(d: Date = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
-function todayKey(baziProfile?: BaziProfile | null): string {
+function summaryCacheKey(baziProfile?: BaziProfile | null): string {
   const date = localDateStr();
   if (baziProfile) {
     const parts = [baziProfile.birthDate, baziProfile.birthTime, baziProfile.gender];
     if (baziProfile.occupation) parts.push(baziProfile.occupation);
     if (baziProfile.industry) parts.push(baziProfile.industry);
-    return `fortune_${date}_${parts.join("_")}`;
+    return `fortune_summary_${date}_${parts.join("_")}`;
   }
-  return `fortune_${date}`;
+  return `fortune_summary_${date}`;
 }
 
-function buildPrompt(baziProfile?: BaziProfile | null): string {
+function buildSummaryPrompt(
+  baziProfile?: BaziProfile | null,
+): string {
   const now = new Date();
   const dateStr = now.toLocaleDateString("zh-CN", {
     year: "numeric",
@@ -49,7 +94,7 @@ function buildPrompt(baziProfile?: BaziProfile | null): string {
   const hasOccupation = baziProfile?.occupation?.trim();
   const hasIndustry = baziProfile?.industry?.trim();
 
-  let prompt = `你是一位精通奇门遁甲的玄学大师。请根据以下时间信息进行奇门遁甲时盘推演。
+  let prompt = `你是一位精通奇门遁甲的玄学大师。请根据以下时间信息做“今日简版运势”推演。
 
 当前时间：${dateStr} ${timeStr}`;
 
@@ -57,17 +102,17 @@ function buildPrompt(baziProfile?: BaziProfile | null): string {
     prompt += `\n`;
     if (hasOccupation) prompt += `\n用户职业：${baziProfile!.occupation!.trim()}`;
     if (hasIndustry) prompt += `\n用户行业：${baziProfile!.industry!.trim()}`;
-    prompt += `\n请结合用户的职业和行业特点，在奇门遁甲分析时给出针对性的建议。`;
+    prompt += `\n请结合职业和行业特征给出更贴合的简版结论。`;
   }
 
   prompt += `
 
-请你根据当前时间排出奇门遁甲时盘，分析以下维度：
-
-1. **今日整体**：判断当前时局是「顺势」「阻滞」还是「风险高」
-2. **有利方位**：分析哪个方位（如东南、正北、西南等）最为有利
-3. **最佳行为**：判断当前最容易成功的行为类型，从「沟通」「行动」「交易」「等待」中选择
-4. **做事环境**：判断当前环境是否有利于推进事务，给出「有利」「中性」或「不利」`;
+请只给简版结果，不要生成长文详解。请分析以下维度：
+- 今日整体：顺势 / 阻滞 / 风险高（三选一）
+- 有利方位：如 东南、正北、西南
+- 最佳行为：沟通 / 行动 / 交易 / 等待（四选一）
+- 做事环境：有利 / 中性 / 不利（三选一）
+- 一句话摘要：15字以内`;
 
   if (baziProfile) {
     const calendarType = baziProfile.lunarCalendar ? "农历" : "公历";
@@ -88,7 +133,10 @@ function buildPrompt(baziProfile?: BaziProfile | null): string {
 
   prompt += `
 
-请严格按照以下 JSON 格式返回结果，不要包含任何其他文字、代码块标记或 markdown 格式，只返回纯 JSON：
+请严格返回纯 JSON 对象，不要返回代码块和解释：
+- 仅返回一个 JSON 对象
+- 不要输出推理过程
+- 字符串值内部不要出现英文双引号
 
 {
   "date": "${localDateStr(now)}",
@@ -96,62 +144,282 @@ function buildPrompt(baziProfile?: BaziProfile | null): string {
   "direction": "有利方位，如 东南",
   "bestAction": "沟通 或 行动 或 交易 或 等待",
   "environment": "有利 或 中性 或 不利",
-  "summary": "一句话概括今日运势（15字以内）",
-  "qimenDetail": "奇门遁甲详细分析（包含值符、值使、九星、八门等盘面解读，使用 Markdown 格式，200-400字）"${baziProfile ? ',\n  "ziweiDetail": "紫微斗数流日运势详细分析（包含命宫流日走势等，使用 Markdown 格式，200-300字）"' : ""},
-  "advice": "综合建议，包含今日宜忌和注意事项（Markdown 格式，100-200字）"
+  "summary": "一句话概括今日运势（15字以内）"
 }`;
 
   return prompt;
 }
 
-function parseFortuneResponse(text: string): FortuneResult | null {
+export function buildFortuneDetailPrompt(
+  summary: FortuneSummary,
+  baziProfile?: BaziProfile | null,
+): string {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "long",
+  });
+  const timeStr = now.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  const hasOccupation = baziProfile?.occupation?.trim();
+  const hasIndustry = baziProfile?.industry?.trim();
+
+  let prompt = `你是一位精通奇门遁甲与紫微斗数的玄学大师。请基于已给出的简版结果，生成“详情长文”。
+
+当前时间：${dateStr} ${timeStr}
+简版结论：
+- 今日整体：${summary.overall}
+- 有利方位：${summary.direction}
+- 最佳行为：${summary.bestAction}
+- 做事环境：${summary.environment}
+- 摘要：${summary.summary}`;
+
+  if (baziProfile) {
+    const calendarType = baziProfile.lunarCalendar ? "农历" : "公历";
+    const genderStr = baziProfile.gender === "male" ? "男" : "女";
+    prompt += `
+
+用户画像：
+- 姓名：${baziProfile.name}
+- 出生日期（${calendarType}）：${baziProfile.birthDate}
+- 出生时辰：${baziProfile.birthTime}
+- 性别：${genderStr}`;
+    if (hasOccupation) prompt += `\n- 职业：${baziProfile.occupation!.trim()}`;
+    if (hasIndustry) prompt += `\n- 行业：${baziProfile.industry!.trim()}`;
+  }
+
+  prompt += `
+
+请严格返回纯 JSON 对象（不要输出代码块/解释/推理过程）：
+- 输出内容不要使用 Markdown 表格
+- 字符串值内部不要出现英文双引号
+- 若无紫微内容可省略 ziweiDetail 字段
+
+{
+  "qimenDetail": "奇门遁甲详解，180-320字，短段落",
+  "ziweiDetail": "紫微斗数详解，120-260字，短段落（可选）",
+  "advice": "综合建议与宜忌，80-180字"
+}`;
+
+  return prompt;
+}
+
+function normalizeFortuneRawText(text: string): string {
+  const trimmed = text.replace(/^\uFEFF/, "").trim();
+  const wholeFenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (wholeFenced?.[1]) {
+    return wholeFenced[1].trim();
+  }
+  const fencedSegment = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fencedSegment?.[1]) {
+    return fencedSegment[1].trim();
+  }
+  return trimmed;
+}
+
+function extractJsonLikeSegment(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) {
+    return null;
+  }
+  const end = text.lastIndexOf("}");
+  if (end < start) {
+    return text.slice(start).trim();
+  }
+  return text.slice(start, end + 1).trim();
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function parseJsonObjectFromRawText(text: string): Record<string, unknown> | null {
   try {
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (!parsed.overall || !parsed.direction || !parsed.bestAction || !parsed.environment) {
+    const normalized = normalizeFortuneRawText(text);
+    const jsonLike = extractJsonLikeSegment(normalized);
+    if (!jsonLike) {
       return null;
     }
-    return parsed as FortuneResult;
+    const repaired = jsonrepair(jsonLike);
+    const parsed = JSON.parse(repaired) as unknown;
+    return toRecord(parsed);
   } catch {
     return null;
   }
 }
 
-async function callLlmDirect(prompt: string): Promise<string> {
-  const store = useAppStore.getState();
-  const provider = store.getActiveProvider();
-  const model = store.getActiveModel();
+function hasRequiredStringFields(value: Record<string, unknown>, fields: readonly string[]): boolean {
+  return fields.every((field) => {
+    const candidate = value[field];
+    return typeof candidate === "string" && candidate.trim().length > 0;
+  });
+}
 
-  console.log("[fortune] provider:", provider?.name, "baseUrl:", provider?.baseUrl, "wireApi:", provider?.wireApi);
-  console.log("[fortune] model id:", model?.id, "model name:", model?.model);
+function normalizeFortuneSummary(value: Record<string, unknown>): FortuneSummary {
+  return {
+    date: typeof value.date === "string" && value.date.trim()
+      ? value.date.trim()
+      : localDateStr(),
+    overall: String(value.overall ?? "").trim(),
+    direction: String(value.direction ?? "").trim(),
+    bestAction: String(value.bestAction ?? "").trim(),
+    environment: String(value.environment ?? "").trim(),
+    summary: String(value.summary ?? "").trim(),
+  };
+}
 
-  if (!provider) throw new Error("No active provider configured");
-  if (!model) throw new Error("No active model configured");
+function normalizeFortuneDetail(value: Record<string, unknown>): FortuneDetail {
+  return {
+    qimenDetail: String(value.qimenDetail ?? "").trim(),
+    ziweiDetail: typeof value.ziweiDetail === "string" && value.ziweiDetail.trim()
+      ? value.ziweiDetail.trim()
+      : undefined,
+    advice: String(value.advice ?? "").trim(),
+  };
+}
 
-  const modelName = model.model || model.id;
+function parseCachedFortuneSummary(raw: string): FortuneSummary | null {
+  try {
+    const parsed = toRecord(JSON.parse(raw));
+    if (!parsed || !hasRequiredStringFields(parsed, REQUIRED_SUMMARY_FIELDS)) {
+      return null;
+    }
+    return normalizeFortuneSummary(parsed);
+  } catch {
+    return null;
+  }
+}
 
-  let baseUrl = provider.baseUrl;
-  let apiKey = provider.apiKey;
+function parseFortuneSummaryResponse(text: string): FortuneSummary | null {
+  const parsed = parseJsonObjectFromRawText(text);
+  if (!parsed || !hasRequiredStringFields(parsed, REQUIRED_SUMMARY_FIELDS)) {
+    return null;
+  }
+  return normalizeFortuneSummary(parsed);
+}
 
-  if (provider.type === "local-pool" && model) {
-    const providerModel = provider.models.find(
-      (m) => m.id === model.model,
-    );
-    const enabled = providerModel?.endpoints?.filter((ep) => ep.enabled) ?? [];
-    const idx = store.activeEndpointIndex ?? 0;
-    if (enabled.length > 0) {
-      const ep = enabled[Math.min(idx, enabled.length - 1)];
-      baseUrl = ep.url;
-      if (ep.apiKey) apiKey = ep.apiKey;
+export function parseFortuneDetailResponse(text: string): FortuneDetail | null {
+  const parsed = parseJsonObjectFromRawText(text);
+  if (!parsed || !hasRequiredStringFields(parsed, REQUIRED_DETAIL_FIELDS)) {
+    return null;
+  }
+  return normalizeFortuneDetail(parsed);
+}
+
+export function parseFortuneSummaryResponseForTest(text: string): FortuneSummary | null {
+  return parseFortuneSummaryResponse(text);
+}
+
+export function parseFortuneDetailResponseForTest(text: string): FortuneDetail | null {
+  return parseFortuneDetailResponse(text);
+}
+
+function resolveProviderModel(
+  provider: ProviderConfig,
+  activeModel: ModelEntry | null,
+  currentModel: string | null,
+): ProviderModel | null {
+  const preferredModelId = activeModel
+    && (activeModel.provider === provider.id || activeModel.provider === provider.type)
+    ? activeModel.model
+    : null;
+  if (preferredModelId) {
+    const matched = provider.models.find((model) => model.id === preferredModelId);
+    if (matched) {
+      return matched;
     }
   }
 
-  const params = {
-    baseUrl,
-    apiKey,
-    model: modelName,
+  if (currentModel) {
+    const matchedCurrent = provider.models.find((model) => model.id === currentModel);
+    if (matchedCurrent) {
+      return matchedCurrent;
+    }
+  }
+
+  return provider.models[0] ?? null;
+}
+
+export function resolveFortuneLlmConfig(input: ResolveFortuneLlmConfigInput): FortuneLlmResolvedConfig {
+  const {
+    provider,
+    activeModel,
+    currentModel,
+    activeEndpointIndex,
+  } = input;
+
+  if (!provider) {
+    throw new Error("No active provider configured");
+  }
+
+  const selectedModel = resolveProviderModel(provider, activeModel, currentModel);
+  if (!selectedModel) {
+    throw new Error("No model configured for active provider");
+  }
+
+  if (provider.type === "local-pool") {
+    const enabledEndpoints = selectedModel.endpoints?.filter((ep) => ep.enabled) ?? [];
+    if (enabledEndpoints.length === 0) {
+      throw new Error(`No enabled endpoint configured for local-pool model: ${selectedModel.id}`);
+    }
+
+    const endpointIndex = Math.max(0, Math.floor(activeEndpointIndex ?? 0));
+    const endpoint = enabledEndpoints[Math.min(endpointIndex, enabledEndpoints.length - 1)];
+    const endpointUrl = endpoint.url.trim();
+    if (!endpointUrl) {
+      throw new Error(`Endpoint URL is empty for local-pool model: ${selectedModel.id}`);
+    }
+
+    return {
+      baseUrl: endpointUrl,
+      apiKey: endpoint.apiKey ?? "",
+      modelName: selectedModel.id,
+      wireApi: endpoint.wireApi ?? provider.wireApi ?? "chat",
+    };
+  }
+
+  const providerUrl = provider.baseUrl.trim();
+  if (!providerUrl) {
+    throw new Error(`No base URL configured for provider: ${provider.id}`);
+  }
+
+  return {
+    baseUrl: providerUrl,
+    apiKey: provider.apiKey ?? "",
+    modelName: selectedModel.id,
     wireApi: provider.wireApi || "chat",
+  };
+}
+
+async function callLlmDirect(prompt: string): Promise<string> {
+  const store = useAppStore.getState();
+  const provider = store.getActiveProvider();
+  const activeModel = store.getActiveModel();
+  const currentModel = store.currentModel;
+
+  console.log("[fortune] provider:", provider?.name, "baseUrl:", provider?.baseUrl, "wireApi:", provider?.wireApi);
+  console.log("[fortune] active model id:", activeModel?.id, "model name:", activeModel?.model, "currentModel:", currentModel);
+
+  const resolved = resolveFortuneLlmConfig({
+    provider,
+    activeModel,
+    currentModel,
+    activeEndpointIndex: store.activeEndpointIndex,
+  });
+
+  const params = {
+    baseUrl: resolved.baseUrl,
+    apiKey: resolved.apiKey,
+    model: resolved.modelName,
+    wireApi: resolved.wireApi,
     prompt,
   };
   console.log("[fortune] invoking fortune_llm_call with baseUrl:", params.baseUrl, "model:", params.model, "wireApi:", params.wireApi);
@@ -166,35 +434,62 @@ async function callLlmDirect(prompt: string): Promise<string> {
   }
 }
 
-export async function fetchDailyFortune(
+export async function fetchDailyFortuneSummary(
   baziProfile?: BaziProfile | null,
   forceRefresh = false,
-): Promise<FortuneResult> {
-  const cacheKey = todayKey(baziProfile);
+): Promise<FortuneSummary> {
+  const cacheKey = summaryCacheKey(baziProfile);
   if (!forceRefresh) {
     try {
       const cached = await appStateGet(cacheKey);
       if (cached) {
-        const parsed = JSON.parse(cached) as FortuneResult;
-        if (parsed.overall && parsed.direction) return parsed;
+        const parsed = parseCachedFortuneSummary(cached);
+        if (parsed) return parsed;
       }
     } catch {
       // cache miss
     }
   }
 
-  const prompt = buildPrompt(baziProfile);
+  const prompt = buildSummaryPrompt(baziProfile);
   console.log("[fortune] prompt length:", prompt.length);
   const responseText = await callLlmDirect(prompt);
   console.log("[fortune] raw response:", responseText?.slice(0, 300));
-  const result = parseFortuneResponse(responseText);
-
+  const result = parseFortuneSummaryResponse(responseText);
   if (!result) {
-    console.error("[fortune] Failed to parse fortune response. Full text:", responseText);
-    throw new Error("Failed to parse fortune response from LLM");
+    console.error("[fortune] Failed to parse fortune summary response. Full text:", responseText);
+    throw new Error("Failed to parse fortune summary response from LLM");
   }
 
-  console.log("[fortune] parsed result:", JSON.stringify(result).slice(0, 200));
+  console.log("[fortune] parsed summary:", JSON.stringify(result).slice(0, 200));
   await appStateSet(cacheKey, JSON.stringify(result)).catch(() => {});
   return result;
+}
+
+export async function startFortuneDetailStream(
+  summary: FortuneSummary,
+  baziProfile?: BaziProfile | null,
+  options?: StartFortuneDetailStreamOptions,
+): Promise<FortuneDetailStreamStartResult> {
+  const store = useAppStore.getState();
+  const provider = store.getActiveProvider();
+  const activeModel = store.getActiveModel();
+  const currentModel = store.currentModel;
+
+  const resolved = resolveFortuneLlmConfig({
+    provider,
+    activeModel,
+    currentModel,
+    activeEndpointIndex: store.activeEndpointIndex,
+  });
+
+  const prompt = buildFortuneDetailPrompt(summary, baziProfile);
+  return invoke<FortuneDetailStreamStartResult>("fortune_detail_stream_start", {
+    baseUrl: resolved.baseUrl,
+    apiKey: resolved.apiKey,
+    model: resolved.modelName,
+    wireApi: resolved.wireApi,
+    prompt,
+    requestId: options?.requestId,
+  });
 }
