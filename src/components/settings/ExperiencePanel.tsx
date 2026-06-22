@@ -9,6 +9,8 @@ interface ExperienceEntry {
   usage_count: number;
   last_used_at: number | null;
   summary_slug: string | null;
+  title: string | null;
+  summary: string | null;
   categories: string[];
 }
 
@@ -132,9 +134,16 @@ export function ExperiencePanel() {
                     onClick={() => handleExpandExperience(exp.thread_id)}
                   >
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent)]" />
-                    <span className="flex-1 truncate text-xs font-medium text-[var(--text-strong)]">
-                      {exp.summary_slug ?? exp.thread_id}
-                    </span>
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="truncate text-xs font-medium text-[var(--text-strong)]">
+                        {exp.title ?? exp.summary_slug ?? exp.thread_id}
+                      </span>
+                      {exp.summary && (
+                        <span className="truncate text-[10px] text-[var(--text-muted)]">
+                          {exp.summary}
+                        </span>
+                      )}
+                    </div>
                     <span className="shrink-0 text-[10px] text-[var(--text-faint)]">
                       {formatDate(exp.extracted_at)}
                     </span>

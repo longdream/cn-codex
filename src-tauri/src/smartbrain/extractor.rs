@@ -121,6 +121,8 @@ pub async fn run_extraction(
                     usage_count: 0,
                     last_used_at: None,
                     summary_slug: parsed.slug,
+                    title: parsed.title,
+                    summary: parsed.summary,
                     categories: parsed.categories,
                 };
                 index.upsert_entry(entry);
@@ -138,6 +140,8 @@ pub async fn run_extraction(
                     usage_count: 0,
                     last_used_at: None,
                     summary_slug: None,
+                    title: None,
+                    summary: None,
                     categories: vec![],
                 };
                 index.upsert_entry(entry);

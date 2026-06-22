@@ -17,6 +17,7 @@ pub async fn smartbrain_list_experiences(
     let entries: Vec<serde_json::Value> = index
         .entries
         .iter()
+        .filter(|e| e.title.is_some() || e.summary_slug.is_some())
         .map(|e| {
             serde_json::json!({
                 "thread_id": e.thread_id,
@@ -24,6 +25,8 @@ pub async fn smartbrain_list_experiences(
                 "usage_count": e.usage_count,
                 "last_used_at": e.last_used_at,
                 "summary_slug": e.summary_slug,
+                "title": e.title,
+                "summary": e.summary,
                 "categories": e.categories,
             })
         })

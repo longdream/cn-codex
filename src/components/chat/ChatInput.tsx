@@ -526,13 +526,12 @@ export function ChatInput({
   }, [activateRobotModifyMode, mode, onSend, resetComposerAfterSubmit, selectedRobotId]);
 
   const handleSubmit = useCallback(() => {
-    if (goalRunning) return;
     const trimmed = text.trim();
     if ((!trimmed && attachedFiles.length === 0) || disabled) return;
     const filesToSend = attachedFiles;
 
-    // AI 回复中时，将消息加入排队队列而非直接发送
-    if (isStreaming) {
+    // AI 回复中或目标运行中时，将消息加入排队队列而非直接发送
+    if (isStreaming || goalRunning) {
       const queuedMsg: QueuedMessage = {
         id: crypto.randomUUID(),
         text: trimmed,
@@ -642,9 +641,7 @@ export function ChatInput({
     (event: React.KeyboardEvent) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (!goalRunning) {
-          handleSubmit();
-        }
+        handleSubmit();
       }
       if (event.key === "Escape") {
         setShowSlash(false);
@@ -1190,15 +1187,13 @@ export function ChatInput({
             onInput={handleInput}
             onPaste={handlePaste}
             placeholder={intl.formatMessage({
-              id: goalRunning
-                ? "chat.aiResponding"
-                : isStreaming
-                  ? "chat.queuePlaceholder"
-                  : robotModifyMode
-                    ? "chat.robot.modifyPlaceholder"
-                    : robotCreateMode
-                      ? "chat.robot.placeholder"
-                      : "chat.inputPlaceholder",
+              id: (isStreaming || goalRunning)
+                ? "chat.queuePlaceholder"
+                : robotModifyMode
+                  ? "chat.robot.modifyPlaceholder"
+                  : robotCreateMode
+                    ? "chat.robot.placeholder"
+                    : "chat.inputPlaceholder",
             })}
             disabled={disabled}
             rows={2}

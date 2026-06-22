@@ -51,7 +51,7 @@ export function ChatPage() {
         actualMode = "robot-modify" as ChatMode;
       }
       const goalRunning = actualMode === "goal" && state.currentGoal?.status === "active";
-      if (goalRunning) return;
+      if (goalRunning && state.isStreaming) return;
       const displayText = formatUserMessageDisplay(text, attachments);
 
       let threadId = currentThreadId;

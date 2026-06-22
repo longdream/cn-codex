@@ -10,6 +10,46 @@ import { usageGetStats, usageGetDaily, usageGetByModel } from "../../api/usage";
 /** 时间范围选项 */
 type TimeRange = "7d" | "30d" | "all";
 
+function rangeToDays(range: TimeRange): number {
+  return range === "7d" ? 7 : range === "30d" ? 30 : 365;
+}
+
+/** 生成完整日期序列，将后端稀疏数据填充为连续每天 */
+function fillDailyData(data: DailyUsage[], days: number): DailyUsage[] {
+  const map = new Map(data.map((d) => [d.date, d]));
+  const result: DailyUsage[] = [];
+  const now = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    const dateStr = d.toISOString().slice(0, 10);
+    result.push(
+      map.get(dateStr) ?? {
+        date: dateStr,
+        requests: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+      },
+    );
+  }
+  return result;
+}
+
+/** 根据天数范围决定 X 轴标签间隔 */
+function labelInterval(days: number): number {
+  if (days <= 7) return 1;
+  if (days <= 30) return 5;
+  return 30;
+}
+
+/** 格式化日期为短标签 MM/DD */
+function formatDateLabel(dateStr: string): string {
+  const [, m, d] = dateStr.split("-");
+  return `${m}/${d}`;
+}
+
 export function UsageDashboard() {
   const intl = useIntl();
   const [timeRange, setTimeRange] = useState<TimeRange>("30d");
@@ -30,14 +70,14 @@ export function UsageDashboard() {
     setLoading(true);
     try {
       const since = getSinceTimestamp(timeRange);
-      const days = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 365;
+      const days = rangeToDays(timeRange);
       const [statsData, dailyData, modelData] = await Promise.all([
         usageGetStats(since),
         usageGetDaily(days),
         usageGetByModel(since),
       ]);
       setStats(statsData);
-      setDailyUsage(dailyData);
+      setDailyUsage(fillDailyData(dailyData, days));
       setModelUsage(modelData);
     } catch (e) {
       console.error("Failed to load usage data:", e);
@@ -132,35 +172,77 @@ export function UsageDashboard() {
           <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             {intl.formatMessage({ id: "usage.dailyTrend" })}
           </h4>
-          <div className="relative pt-14">
-            <div className="flex items-end gap-1" style={{ minHeight: "80px" }}>
-              {dailyUsage.map((day) => {
-                const maxTokens = Math.max(...dailyUsage.map((d) => d.totalTokens), 1);
-                const height = Math.max((day.totalTokens / maxTokens) * 60, 2);
-                return (
-                  <div
-                    key={day.date}
-                    className="group relative flex flex-col items-center"
-                    style={{ flex: "1 1 0" }}
-                  >
-                    {/* tooltip */}
-                    <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--surface-elevated)] px-2 py-1 text-[11px] shadow-lg group-hover:block">
-                      <div className="font-medium text-[var(--text-strong)]">{day.date}</div>
-                      <div className="text-[var(--text-muted)]">
-                        {formatNumber(day.totalTokens)} tokens
+          {(() => {
+            const maxTokens = Math.max(...dailyUsage.map((d) => d.totalTokens), 1);
+            const barHeight = 80;
+            const days = rangeToDays(timeRange);
+            const interval = labelInterval(days);
+            return (
+              <div className="relative pt-10">
+                <div
+                  className="flex items-end"
+                  style={{ height: `${barHeight}px`, gap: days <= 7 ? "4px" : "1px" }}
+                >
+                  {dailyUsage.map((day) => {
+                    const hasData = day.totalTokens > 0;
+                    const h = hasData
+                      ? Math.max((day.totalTokens / maxTokens) * barHeight, 4)
+                      : 2;
+                    return (
+                      <div
+                        key={day.date}
+                        className="group relative flex flex-col items-center"
+                        style={{ flex: "1 1 0", minWidth: 0 }}
+                      >
+                        {/* tooltip */}
+                        <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden -translate-x-1/2 whitespace-nowrap rounded-md bg-[var(--surface-elevated)] px-2 py-1 text-[11px] shadow-lg group-hover:block">
+                          <div className="font-medium text-[var(--text-strong)]">
+                            {day.date}
+                          </div>
+                          <div className="text-[var(--text-muted)]">
+                            {formatNumber(day.totalTokens)} tokens
+                          </div>
+                          <div className="text-[var(--text-muted)]">
+                            {formatCost(day.costUsd)}
+                          </div>
+                        </div>
+                        {/* bar */}
+                        <div
+                          className={`w-full rounded-t transition-opacity ${
+                            hasData
+                              ? "bg-[var(--accent)] opacity-70 hover:opacity-100"
+                              : "bg-[var(--text-faint)] opacity-20"
+                          }`}
+                          style={{ height: `${h}px`, minWidth: "2px" }}
+                        />
                       </div>
-                      <div className="text-[var(--text-muted)]">{formatCost(day.costUsd)}</div>
-                    </div>
-                    {/* bar */}
-                    <div
-                      className="w-full min-w-[4px] rounded-t bg-[var(--accent)] opacity-70 transition-opacity hover:opacity-100"
-                      style={{ height: `${height}px` }}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+                    );
+                  })}
+                </div>
+                {/* X 轴线 */}
+                <div className="h-px w-full bg-[var(--border)]" />
+                {/* X 轴日期标签 */}
+                <div className="flex" style={{ gap: days <= 7 ? "4px" : "1px" }}>
+                  {dailyUsage.map((day, idx) => {
+                    const show = idx % interval === 0 || idx === dailyUsage.length - 1;
+                    return (
+                      <div
+                        key={day.date}
+                        className="overflow-hidden text-center"
+                        style={{ flex: "1 1 0", minWidth: 0 }}
+                      >
+                        {show && (
+                          <span className="mt-1 block truncate text-[10px] text-[var(--text-faint)]">
+                            {formatDateLabel(day.date)}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
         </section>
       )}
 

@@ -26,6 +26,12 @@ A comma-separated list of category tags for this experience (e.g., debugging, re
 ## Summary Slug
 A short kebab-case identifier for this experience (e.g., fix-react-hydration-mismatch, setup-docker-compose).
 
+## Title
+A short, human-readable title (10-30 characters) describing the core lesson or knowledge point. Write in the same language as the session.
+
+## Summary
+A 1-2 sentence summary explaining what error was corrected, what knowledge was learned, or what guidance was given. Write in the same language as the session.
+
 Rules:
 - Be concise: each item should be 1-3 sentences.
 - Focus on REUSABLE knowledge, not session-specific details.
@@ -182,6 +188,14 @@ pub fn parse_extraction_output(output: &str) -> Option<ParsedExtraction> {
         .map(|s| s.trim().trim_matches('`').to_string())
         .filter(|s| !s.is_empty());
 
+    let title = extract_section(output, "## Title")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let summary = extract_section(output, "## Summary")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let categories = extract_section(output, "## Categories")
         .map(|s| {
             s.split(',')
@@ -194,6 +208,8 @@ pub fn parse_extraction_output(output: &str) -> Option<ParsedExtraction> {
     Some(ParsedExtraction {
         full_text: output.to_string(),
         slug,
+        title,
+        summary,
         categories,
     })
 }
@@ -233,6 +249,8 @@ pub fn parse_knowledge_organize_output(output: &str) -> (String, Option<serde_js
 pub struct ParsedExtraction {
     pub full_text: String,
     pub slug: Option<String>,
+    pub title: Option<String>,
+    pub summary: Option<String>,
     pub categories: Vec<String>,
 }
 

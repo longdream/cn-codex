@@ -15,6 +15,10 @@ pub struct ExperienceEntry {
     #[serde(default)]
     pub summary_slug: Option<String>,
     #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
     pub categories: Vec<String>,
 }
 
@@ -86,6 +90,8 @@ impl ExperienceIndex {
             existing.extracted_at = entry.extracted_at;
             existing.source_updated_at = entry.source_updated_at;
             existing.summary_slug = entry.summary_slug;
+            existing.title = entry.title;
+            existing.summary = entry.summary;
             existing.categories = entry.categories;
         } else {
             self.entries.push(entry);
