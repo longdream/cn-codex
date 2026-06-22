@@ -12,23 +12,11 @@ pub fn workflows_dir(workspace_config_dir: &Path) -> PathBuf {
     workspace_config_dir.join("workflows")
 }
 
-/// Variable types supported in workflow templates.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum VariableType {
-    String,
-    Number,
-    Url,
-    Filepath,
-    Date,
-    Boolean,
-}
-
 /// A single variable declaration in a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowVariable {
     #[serde(rename = "type")]
-    pub var_type: VariableType,
+    pub var_type: String,
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
