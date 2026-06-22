@@ -8,7 +8,9 @@ import type {
   FortuneDetailStartedNotification,
 } from "../types/notifications";
 import {
+  getCachedFortuneDetail,
   parseFortuneDetailResponse,
+  setCachedFortuneDetail,
   startFortuneDetailStream,
   type FortuneDetail,
   type FortuneSummary,
@@ -35,6 +37,7 @@ export const INITIAL_FORTUNE_DETAIL_STREAM_STATE: FortuneDetailStreamState = {
 type FortuneDetailStreamAction =
   | { type: "request:start"; requestId: string }
   | { type: "request:failed"; message: string }
+  | { type: "cache:hit"; detail: FortuneDetail }
   | { type: "event:started"; payload: FortuneDetailStartedNotification }
   | { type: "event:delta"; payload: FortuneDetailDeltaNotification }
   | { type: "event:completed"; payload: FortuneDetailCompletedNotification }
@@ -66,6 +69,14 @@ export function reduceFortuneDetailStreamState(
         ...state,
         status: "error",
         error: action.message,
+      };
+    case "cache:hit":
+      return {
+        requestId: null,
+        status: "completed",
+        streamedText: "",
+        detail: action.detail,
+        error: null,
       };
     case "event:started":
       if (!isMatchedRequest(state, action.payload.requestId)) {
@@ -236,6 +247,12 @@ export function useFortuneDetailStream({
     if (!summary) {
       return;
     }
+    const cachedDetail = await getCachedFortuneDetail(summary, baziProfile);
+    if (cachedDetail) {
+      dispatch({ type: "cache:hit", detail: cachedDetail });
+      return;
+    }
+
     const requestId = generateFortuneRequestId();
     dispatch({ type: "request:start", requestId });
     try {
@@ -247,6 +264,18 @@ export function useFortuneDetailStream({
       });
     }
   }, [summary, baziProfile, dispatch]);
+
+  useEffect(() => {
+    if (
+      state.status !== "completed"
+      || !state.detail
+      || !state.requestId
+      || !summary
+    ) {
+      return;
+    }
+    void setCachedFortuneDetail(summary, state.detail, baziProfile).catch(() => {});
+  }, [state.status, state.detail, state.requestId, summary, baziProfile]);
 
   useEffect(() => {
     if (!autoStart || !summary) {

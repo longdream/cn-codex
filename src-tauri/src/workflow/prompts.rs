@@ -18,6 +18,7 @@ const EXTRACTION_SYSTEM_PROMPT: &str = r#"你是一个 Workflow 提取专家。�
    - expectedOutput: 期望输出描述
    - tokenBudget: 预估该节点消耗的 token 数
 8. totalEstimatedTokens: 整个 workflow 预估总 token 数
+9. createdAt: 可选，ISO 时间字符串；如未提供由系统自动回填
 
 提取原则：
 - 只提取有意义的操作步骤，忽略纯聊天/确认/闲聊
@@ -32,6 +33,7 @@ JSON 格式示例：
   "name": "setup-react-project",
   "title": "初始化 React 项目",
   "description": "创建新的 React 项目并配置基本开发环境",
+  "createdAt": "2026-06-22T00:00:00Z",
   "triggerPhrases": ["创建 React 项目", "初始化前端项目", "新建 React 应用"],
   "variables": {
     "projectName": { "type": "string", "description": "项目名称", "default": "my-app" }
@@ -153,4 +155,49 @@ fn extract_json_block(raw: &str) -> &str {
         return trimmed;
     }
     trimmed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_extraction_output;
+
+    #[test]
+    fn parse_extraction_output_accepts_missing_created_at() {
+        let raw = r#"{
+  "name": "workflow-a",
+  "title": "测试流程",
+  "description": "用于测试 createdAt 缺失",
+  "nodes": [
+    {
+      "nodeId": "step_1",
+      "objective": "执行第一步",
+      "tools": ["shell"]
+    }
+  ]
+}"#;
+
+        let parsed = parse_extraction_output(raw).expect("should parse without createdAt");
+        assert_eq!(parsed.name, "workflow-a");
+        assert_eq!(parsed.created_at, "");
+        assert_eq!(parsed.nodes.len(), 1);
+    }
+
+    #[test]
+    fn parse_extraction_output_accepts_fenced_json_without_created_at() {
+        let raw = r#"
+提取结果如下：
+```json
+{
+  "name": "workflow-b",
+  "title": "围栏测试",
+  "description": "fenced json 解析",
+  "nodes": []
+}
+```
+"#;
+
+        let parsed = parse_extraction_output(raw).expect("should parse fenced json");
+        assert_eq!(parsed.name, "workflow-b");
+        assert_eq!(parsed.created_at, "");
+    }
 }

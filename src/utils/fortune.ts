@@ -22,6 +22,7 @@ export interface FortuneDetail {
 }
 
 export type FortuneResult = FortuneSummary & FortuneDetail;
+export const FORTUNE_DETAIL_CACHE_TTL_MS = 60 * 60 * 1000;
 
 interface FortuneLlmResolvedConfig {
   baseUrl: string;
@@ -43,6 +44,11 @@ interface FortuneDetailStreamStartResult {
 
 interface StartFortuneDetailStreamOptions {
   requestId?: string;
+}
+
+interface FortuneDetailCachePayload {
+  cachedAt: number;
+  detail: FortuneDetail;
 }
 
 const REQUIRED_SUMMARY_FIELDS = [
@@ -74,6 +80,46 @@ function summaryCacheKey(baziProfile?: BaziProfile | null): string {
     return `fortune_summary_${date}_${parts.join("_")}`;
   }
   return `fortune_summary_${date}`;
+}
+
+function simpleHash(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function profileSignature(baziProfile?: BaziProfile | null): string {
+  if (!baziProfile) {
+    return "none";
+  }
+  return [
+    baziProfile.name ?? "",
+    baziProfile.birthDate ?? "",
+    baziProfile.birthTime ?? "",
+    baziProfile.gender ?? "",
+    baziProfile.lunarCalendar ? "lunar" : "solar",
+    baziProfile.occupation ?? "",
+    baziProfile.industry ?? "",
+  ].join("|");
+}
+
+function detailCacheKey(
+  summary: FortuneSummary,
+  baziProfile?: BaziProfile | null,
+): string {
+  const signature = [
+    summary.date,
+    summary.overall,
+    summary.direction,
+    summary.bestAction,
+    summary.environment,
+    summary.summary,
+    profileSignature(baziProfile),
+  ].join("|");
+  return `fortune_detail_${summary.date}_${simpleHash(signature)}`;
 }
 
 function buildSummaryPrompt(
@@ -298,6 +344,30 @@ function parseCachedFortuneSummary(raw: string): FortuneSummary | null {
   }
 }
 
+function parseCachedFortuneDetail(raw: string, now = Date.now()): FortuneDetail | null {
+  try {
+    const payload = toRecord(JSON.parse(raw));
+    if (!payload) {
+      return null;
+    }
+    const cachedAt = Number(payload.cachedAt);
+    if (!Number.isFinite(cachedAt) || cachedAt <= 0) {
+      return null;
+    }
+    if (now - cachedAt > FORTUNE_DETAIL_CACHE_TTL_MS) {
+      return null;
+    }
+
+    const detailObj = toRecord(payload.detail);
+    if (!detailObj || !hasRequiredStringFields(detailObj, REQUIRED_DETAIL_FIELDS)) {
+      return null;
+    }
+    return normalizeFortuneDetail(detailObj);
+  } catch {
+    return null;
+  }
+}
+
 function parseFortuneSummaryResponse(text: string): FortuneSummary | null {
   const parsed = parseJsonObjectFromRawText(text);
   if (!parsed || !hasRequiredStringFields(parsed, REQUIRED_SUMMARY_FIELDS)) {
@@ -320,6 +390,37 @@ export function parseFortuneSummaryResponseForTest(text: string): FortuneSummary
 
 export function parseFortuneDetailResponseForTest(text: string): FortuneDetail | null {
   return parseFortuneDetailResponse(text);
+}
+
+export async function getCachedFortuneDetail(
+  summary: FortuneSummary,
+  baziProfile?: BaziProfile | null,
+  now = Date.now(),
+): Promise<FortuneDetail | null> {
+  const cacheKey = detailCacheKey(summary, baziProfile);
+  try {
+    const cached = await appStateGet(cacheKey);
+    if (!cached) {
+      return null;
+    }
+    return parseCachedFortuneDetail(cached, now);
+  } catch {
+    return null;
+  }
+}
+
+export async function setCachedFortuneDetail(
+  summary: FortuneSummary,
+  detail: FortuneDetail,
+  baziProfile?: BaziProfile | null,
+  cachedAt = Date.now(),
+): Promise<void> {
+  const cacheKey = detailCacheKey(summary, baziProfile);
+  const payload: FortuneDetailCachePayload = {
+    cachedAt,
+    detail,
+  };
+  await appStateSet(cacheKey, JSON.stringify(payload));
 }
 
 function resolveProviderModel(
