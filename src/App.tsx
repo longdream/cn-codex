@@ -8,8 +8,10 @@ import {
 import { getUserHomeDir } from "./api/window";
 import { ChatPage } from "./components/chat/ChatPage";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
+import { AppBackground } from "./components/common/AppBackground";
 import { RightPanel } from "./components/layout/RightPanel";
 import { Sidebar } from "./components/layout/Sidebar";
+import { StatusBar } from "./components/layout/StatusBar";
 import { TitleBar } from "./components/layout/TitleBar";
 import { ApprovalModal } from "./components/approval/ApprovalModal";
 import { FortuneBubble } from "./components/common/FortuneBubble";
@@ -389,37 +391,41 @@ function App() {
       >
         <AppContent />
         <div className="app-frame">
-          <TitleBar />
-          <div className="app-workbench">
-            <Sidebar />
-            <div
-              role="separator"
-              aria-label="Resize sidebar"
-              aria-orientation="vertical"
-              className="app-resizer app-resizer-left"
-              onPointerDown={startResize("left")}
-              onPointerMove={handleResizerPointerMove}
-              onPointerUp={handleResizerPointerUp}
-              onPointerCancel={handleResizerPointerCancel}
-            />
-            <div className="app-main">
-              <ChatPage />
+          <AppBackground />
+          <div className="app-shell-content">
+            <TitleBar />
+            <div className="app-workbench">
+              <Sidebar />
+              <div
+                role="separator"
+                aria-label="Resize sidebar"
+                aria-orientation="vertical"
+                className="app-resizer app-resizer-left"
+                onPointerDown={startResize("left")}
+                onPointerMove={handleResizerPointerMove}
+                onPointerUp={handleResizerPointerUp}
+                onPointerCancel={handleResizerPointerCancel}
+              />
+              <div className="app-main">
+                <ChatPage />
+              </div>
+              {rightPanelVisible && (
+                <>
+                  <div
+                    role="separator"
+                    aria-label="Resize right panel"
+                    aria-orientation="vertical"
+                    className="app-resizer app-resizer-right"
+                    onPointerDown={startResize("right")}
+                    onPointerMove={handleResizerPointerMove}
+                    onPointerUp={handleResizerPointerUp}
+                    onPointerCancel={handleResizerPointerCancel}
+                  />
+                  <RightPanel />
+                </>
+              )}
             </div>
-            {rightPanelVisible && (
-              <>
-                <div
-                  role="separator"
-                  aria-label="Resize right panel"
-                  aria-orientation="vertical"
-                  className="app-resizer app-resizer-right"
-                  onPointerDown={startResize("right")}
-                  onPointerMove={handleResizerPointerMove}
-                  onPointerUp={handleResizerPointerUp}
-                  onPointerCancel={handleResizerPointerCancel}
-                />
-                <RightPanel />
-              </>
-            )}
+            <StatusBar />
           </div>
         </div>
         {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}

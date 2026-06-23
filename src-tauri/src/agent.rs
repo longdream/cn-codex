@@ -1528,6 +1528,7 @@ impl AgentEngine {
             let thread_store = self.thread_store.clone();
             let workspace_config_dir = self.cwd.join("codey");
             let thread_id_owned = thread_id.to_string();
+            let app_handle_for_extraction = app_handle.clone();
             tokio::spawn(async move {
                 let sb_config = config_clone.smartbrain_config();
                 if !sb_config.is_active() || !sb_config.auto_extract {
@@ -1550,11 +1551,13 @@ impl AgentEngine {
                     return;
                 }
 
-                crate::smartbrain::extractor::run_extraction(
+                crate::smartbrain::extractor::run_extraction_for_thread(
                     &http,
                     &config_clone,
                     &thread_store,
                     &experiences_dir,
+                    &thread_id_owned,
+                    Some(&app_handle_for_extraction),
                 )
                 .await;
             });

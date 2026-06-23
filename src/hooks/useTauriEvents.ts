@@ -36,6 +36,17 @@ interface TurnEventPayload {
   };
 }
 
+interface SmartbrainExtractionStartedPayload {
+  source?: string;
+  total?: number;
+}
+
+interface SmartbrainExtractionProgressPayload {
+  source?: string;
+  current?: number;
+  total?: number;
+}
+
 function toTimestamp(value?: number | null): number | undefined {
   if (!value) return undefined;
   return value > 10_000_000_000 ? value : value * 1000;
@@ -717,6 +728,52 @@ export function useTauriEvents() {
         listen<{ threadId: string }>("compaction-started", () => {}),
 
         listen<{ threadId: string; summaryLength: number }>("context-compacted", () => {}),
+
+        listen<SmartbrainExtractionStartedPayload>(
+          "smartbrain-extraction-started",
+          (e) => {
+            const total = Number(e.payload.total ?? 0);
+            useAppStore.getState().setSmartbrainExtractionStatus({
+              running: true,
+              label: typeof e.payload.source === "string" ? e.payload.source : null,
+              progress: total > 0 ? { current: 0, total } : null,
+            });
+          },
+        ),
+
+        listen<SmartbrainExtractionProgressPayload>(
+          "smartbrain-extraction-progress",
+          (e) => {
+            const current = Number(e.payload.current ?? 0);
+            const total = Number(e.payload.total ?? 0);
+            useAppStore.getState().setSmartbrainExtractionStatus({
+              running: true,
+              label: typeof e.payload.source === "string" ? e.payload.source : null,
+              progress: total > 0
+                ? {
+                  current: Math.max(0, current),
+                  total: Math.max(1, total),
+                }
+                : null,
+            });
+          },
+        ),
+
+        listen("smartbrain-extraction-completed", () => {
+          useAppStore.getState().setSmartbrainExtractionStatus({
+            running: false,
+            label: null,
+            progress: null,
+          });
+        }),
+
+        listen("smartbrain-extraction-failed", () => {
+          useAppStore.getState().setSmartbrainExtractionStatus({
+            running: false,
+            label: null,
+            progress: null,
+          });
+        }),
 
         listen<{ error?: { message?: string }; message?: string; threadId?: string }>(
           "server-error",

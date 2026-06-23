@@ -60,6 +60,8 @@ impl ModelProviderInfo {
 pub struct SmartBrainConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub extraction_start_at: Option<i64>,
     // Experience sub-settings
     #[serde(default = "default_true")]
     pub auto_extract: bool,
@@ -297,6 +299,17 @@ fn builtin_providers() -> HashMap<String, ModelProviderInfo> {
         },
     );
     map.insert(
+        "rightcode".to_string(),
+        ModelProviderInfo {
+            name: Some("RightCode".to_string()),
+            base_url: Some("https://right.codes/codex/v1".to_string()),
+            env_key: Some("RIGHTCODE_API_KEY".to_string()),
+            wire_api: Some("chat".to_string()),
+            requires_openai_auth: Some(false),
+            ..Default::default()
+        },
+    );
+    map.insert(
         "baichuan".to_string(),
         ModelProviderInfo {
             name: Some("Baichuan".to_string()),
@@ -340,6 +353,7 @@ const RESERVED_PROVIDER_IDS: &[&str] = &[
     "zhipu",
     "moonshot",
     "siliconflow",
+    "rightcode",
     "baichuan",
     "ollama",
     "lmstudio",
@@ -393,7 +407,7 @@ impl ConfigToml {
         Ok(())
     }
 
-    pub fn apply_edit(&mut self, key_path: &str, value: &serde_json::Value) {
+    pub fn apply_edit(&mut self, key_path: &str, value: &serde_json::Value) -> AppResult<()> {
         match key_path {
             "model" => self.model = value.as_str().map(String::from),
             "model_provider" => self.model_provider = value.as_str().map(String::from),
@@ -419,11 +433,20 @@ impl ConfigToml {
                     .get_or_insert_with(SmartBrainConfig::default);
                 sb.enabled = enabled;
             }
+            "smartbrain.extraction_start_at" => {
+                let sb = self
+                    .smartbrain
+                    .get_or_insert_with(SmartBrainConfig::default);
+                sb.extraction_start_at = value.as_i64();
+            }
             other if other.starts_with("model_providers.") => {
                 let provider_key = &other["model_providers.".len()..];
                 if let Ok(info) = serde_json::from_value::<ModelProviderInfo>(value.clone()) {
                     self.model_providers.insert(provider_key.to_string(), info);
                 }
+            }
+            other if other.starts_with("mcp_servers.") => {
+                self.apply_mcp_server_edit(other, value)?;
             }
             "model_endpoints" => {
                 if value.is_null() || value.is_array() && value.as_array().is_some_and(|a| a.is_empty()) {
@@ -437,6 +460,58 @@ impl ConfigToml {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn apply_mcp_server_edit(&mut self, key_path: &str, value: &serde_json::Value) -> AppResult<()> {
+        let server_name = key_path["mcp_servers.".len()..].trim();
+        if server_name.is_empty() {
+            return Err(AppError::Custom(format!(
+                "Invalid MCP key path '{key_path}'"
+            )));
+        }
+
+        if value.is_null() {
+            self.mcp_servers.remove(server_name);
+            return Ok(());
+        }
+
+        if !value.is_object() {
+            return Err(AppError::Custom(format!(
+                "MCP server '{server_name}' config must be an object"
+            )));
+        }
+
+        let table: toml::Table = serde_json::from_value(value.clone()).map_err(|error| {
+            AppError::Custom(format!(
+                "Invalid MCP server '{server_name}' config: {error}"
+            ))
+        })?;
+
+        let has_command = table
+            .get("command")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|command| !command.trim().is_empty());
+        let has_url = table
+            .get("url")
+            .or_else(|| table.get("server_url"))
+            .and_then(toml::Value::as_str)
+            .is_some_and(|url| !url.trim().is_empty());
+        if !has_command && !has_url {
+            return Err(AppError::Custom(format!(
+                "Invalid MCP server '{server_name}' config: expected non-empty 'command' or 'url'"
+            )));
+        }
+
+        let toml_value = toml::Value::Table(table);
+        if parse_mcp_server(server_name, &toml_value).is_none() {
+            return Err(AppError::Custom(format!(
+                "Invalid MCP server '{server_name}' config: expected a valid stdio command or HTTP(S) url"
+            )));
+        }
+
+        self.mcp_servers.insert(server_name.to_string(), toml_value);
+        Ok(())
     }
 
     pub fn resolve_provider(&self) -> (String, ModelProviderInfo) {
@@ -630,7 +705,7 @@ impl ConfigManager {
     pub fn write(&self, edits: &[(String, serde_json::Value)]) -> AppResult<ConfigToml> {
         let mut config = self.read()?;
         for (key, value) in edits {
-            config.apply_edit(key, value);
+            config.apply_edit(key, value)?;
         }
         config.save(&self.config_path)?;
         Ok(config)
@@ -748,14 +823,70 @@ mod tests {
             { "url": "http://10.0.0.1:8080/v1", "label": "Node A", "api_key": "sk-1", "wire_api": "chat" },
             { "url": "http://10.0.0.2:8080/v1", "label": "Node B" },
         ]);
-        config.apply_edit("model_endpoints", &endpoints_json);
+        config
+            .apply_edit("model_endpoints", &endpoints_json)
+            .expect("apply model_endpoints");
         assert_eq!(config.model_endpoints.len(), 2);
         assert_eq!(config.model_endpoints[0].url, "http://10.0.0.1:8080/v1");
         assert_eq!(config.model_endpoints[0].api_key.as_deref(), Some("sk-1"));
         assert_eq!(config.model_endpoints[1].label.as_deref(), Some("Node B"));
         assert!(config.model_endpoints[1].api_key.is_none());
 
-        config.apply_edit("model_endpoints", &serde_json::Value::Null);
+        config
+            .apply_edit("model_endpoints", &serde_json::Value::Null)
+            .expect("clear model_endpoints");
         assert!(config.model_endpoints.is_empty());
+    }
+
+    #[test]
+    fn apply_edit_mcp_server_upsert_and_delete() {
+        let mut config = ConfigToml::default();
+        let server = serde_json::json!({
+            "command": "npx",
+            "args": ["-y", "@playwright/mcp@latest"],
+            "disabled": false
+        });
+
+        config
+            .apply_edit("mcp_servers.playwright", &server)
+            .expect("upsert MCP server");
+        assert!(config.mcp_servers.contains_key("playwright"));
+
+        let resolved = config.resolved_mcp_servers();
+        let playwright = resolved
+            .get("playwright")
+            .expect("playwright should be resolved");
+        assert_eq!(playwright.command, "npx");
+        assert_eq!(playwright.args, vec!["-y", "@playwright/mcp@latest"]);
+        assert!(!playwright.disabled);
+
+        config
+            .apply_edit("mcp_servers.playwright", &serde_json::Value::Null)
+            .expect("delete MCP server");
+        assert!(!config.mcp_servers.contains_key("playwright"));
+    }
+
+    #[test]
+    fn apply_edit_mcp_server_rejects_invalid_payload() {
+        let mut config = ConfigToml::default();
+
+        let err = config
+            .apply_edit("mcp_servers.playwright", &serde_json::json!("invalid"))
+            .expect_err("string payload should be rejected");
+        assert!(
+            err.to_string().contains("must be an object"),
+            "unexpected error: {err}"
+        );
+
+        let err = config
+            .apply_edit(
+                "mcp_servers.playwright",
+                &serde_json::json!({ "args": ["-y", "@playwright/mcp@latest"] }),
+            )
+            .expect_err("payload without command/url should be rejected");
+        assert!(
+            err.to_string().contains("expected non-empty 'command' or 'url'"),
+            "unexpected error: {err}"
+        );
     }
 }

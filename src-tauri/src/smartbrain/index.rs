@@ -127,6 +127,14 @@ impl ExperienceIndex {
         entries
     }
 
+    /// Return the priority score for a specific experience thread.
+    pub fn priority_score(&self, thread_id: &str) -> Option<f64> {
+        self.entries
+            .iter()
+            .find(|e| e.thread_id == thread_id)
+            .map(ranking_score)
+    }
+
     pub fn prune_expired(&mut self, max_unused_days: i64) {
         let now = now_secs();
         let cutoff = now - (max_unused_days * 86400);

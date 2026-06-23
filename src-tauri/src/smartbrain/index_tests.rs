@@ -20,6 +20,8 @@ fn upsert_and_lookup() {
         usage_count: 0,
         last_used_at: None,
         summary_slug: Some("test".to_string()),
+        title: None,
+        summary: None,
         categories: vec!["debug".to_string()],
     });
     assert!(idx.has_entry("t1"));
@@ -32,6 +34,8 @@ fn upsert_and_lookup() {
         usage_count: 0,
         last_used_at: None,
         summary_slug: Some("updated".to_string()),
+        title: None,
+        summary: None,
         categories: vec![],
     });
     assert_eq!(idx.entries.len(), 1);
@@ -49,6 +53,8 @@ fn record_usage_increments_count() {
         usage_count: 0,
         last_used_at: None,
         summary_slug: None,
+        title: None,
+        summary: None,
         categories: vec![],
     });
 
@@ -73,6 +79,8 @@ fn stale_detection() {
         usage_count: 0,
         last_used_at: None,
         summary_slug: None,
+        title: None,
+        summary: None,
         categories: vec![],
     });
 
@@ -92,6 +100,8 @@ fn enforce_capacity_keeps_top_entries() {
             usage_count: i as u32,
             last_used_at: None,
             summary_slug: None,
+            title: None,
+            summary: None,
             categories: vec![],
         });
     }
@@ -110,6 +120,8 @@ fn ranked_entries_orders_by_usage_and_recency() {
         usage_count: 0,
         last_used_at: None,
         summary_slug: None,
+        title: None,
+        summary: None,
         categories: vec![],
     });
     idx.upsert_entry(ExperienceEntry {
@@ -119,6 +131,8 @@ fn ranked_entries_orders_by_usage_and_recency() {
         usage_count: 10,
         last_used_at: Some(300),
         summary_slug: None,
+        title: None,
+        summary: None,
         categories: vec![],
     });
 
@@ -141,6 +155,8 @@ fn save_and_load_roundtrip() {
         usage_count: 5,
         last_used_at: Some(456),
         summary_slug: Some("slug".to_string()),
+        title: None,
+        summary: None,
         categories: vec!["a".to_string(), "b".to_string()],
     });
     idx.last_consolidated_at = Some(789);
@@ -163,6 +179,8 @@ fn remove_entry_works() {
         usage_count: 0,
         last_used_at: None,
         summary_slug: None,
+        title: None,
+        summary: None,
         categories: vec![],
     });
     assert!(idx.remove_entry("t1"));

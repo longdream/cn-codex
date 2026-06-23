@@ -1,7 +1,11 @@
-import { IconDownload, IconFolderOpen, IconTrash } from "@tabler/icons-react";
+import { IconDownload, IconFolderOpen, IconLoader2, IconTrash } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
-import { standaloneConfigRead, standaloneConfigWrite } from "../../api";
+import {
+  standaloneConfigRead,
+  standaloneConfigWrite,
+  standaloneMcpEnablePlaywright,
+} from "../../api";
 import { revealInExplorer } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
 
@@ -9,6 +13,7 @@ interface McpServerInfo {
   name: string;
   command?: string;
   args?: string[];
+  disabled?: boolean;
 }
 
 interface WorkspacePathCard {
@@ -47,6 +52,11 @@ export function IntegrationPanel() {
   const [mcpJsonText, setMcpJsonText] = useState("");
   const [mcpJsonError, setMcpJsonError] = useState<string | null>(null);
   const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpDeleteTarget, setMcpDeleteTarget] = useState<string | null>(null);
+  const [mcpDeleting, setMcpDeleting] = useState(false);
+  const [playwrightEnabling, setPlaywrightEnabling] = useState(false);
+  const [playwrightStatus, setPlaywrightStatus] = useState<string | null>(null);
+  const [playwrightError, setPlaywrightError] = useState<string | null>(null);
 
   const displayConfigDir = normalizeWindowsVerbatimPath(configDir);
   const displayConfigPath = normalizeWindowsVerbatimPath(configPath);
@@ -87,6 +97,9 @@ export function IntegrationPanel() {
     },
   ];
 
+  const playwrightServer = servers.find((server) => server.name === "playwright");
+  const playwrightEnabled = Boolean(playwrightServer && !playwrightServer.disabled);
+
   const load = useCallback(async () => {
     try {
       const resp = await standaloneConfigRead();
@@ -95,11 +108,14 @@ export function IntegrationPanel() {
         string,
         Record<string, unknown>
       >;
-      const parsed: McpServerInfo[] = Object.entries(mcpServers).map(([name, val]) => ({
-        name,
-        command: (val.command as string) ?? "",
-        args: (val.args as string[]) ?? [],
-      }));
+      const parsed: McpServerInfo[] = Object.entries(mcpServers)
+        .map(([name, val]) => ({
+          name,
+          command: (val.command as string) ?? "",
+          args: (val.args as string[]) ?? [],
+          disabled: Boolean(val.disabled),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
       setServers(parsed);
     } catch {
       setServers([]);
@@ -146,21 +162,51 @@ export function IntegrationPanel() {
     }
   };
 
-  const handleMcpDelete = async (name: string) => {
-    const confirmed = window.confirm(
-      intl.formatMessage(
-        { id: "settings.integration.mcpDeleteConfirm" },
-        { name },
-      ),
-    );
-    if (!confirmed) return;
+  const handleMcpDelete = (name: string) => {
+    setMcpDeleteTarget(name);
+    setMcpJsonError(null);
+  };
+
+  const handleConfirmMcpDelete = async () => {
+    if (!mcpDeleteTarget || mcpDeleting) return;
+    setMcpDeleting(true);
     try {
       await standaloneConfigWrite([
-        { keyPath: `mcp_servers.${name}`, value: null },
+        { keyPath: `mcp_servers.${mcpDeleteTarget}`, value: null },
       ]);
+      setMcpDeleteTarget(null);
       await load();
     } catch (err) {
       console.error("Failed to delete MCP server:", err);
+      setMcpJsonError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMcpDeleting(false);
+    }
+  };
+
+  const handleEnablePlaywright = async () => {
+    if (playwrightEnabling) return;
+    setPlaywrightEnabling(true);
+    setPlaywrightStatus(null);
+    setPlaywrightError(null);
+    setMcpJsonError(null);
+    try {
+      const result = await standaloneMcpEnablePlaywright();
+      await load();
+      if (result.installStatus === "succeeded") {
+        setPlaywrightStatus(
+          intl.formatMessage({ id: "settings.integration.playwright.enableSuccess" }),
+        );
+      } else {
+        setPlaywrightStatus(
+          intl.formatMessage({ id: "settings.integration.playwright.enablePartial" }),
+        );
+        setPlaywrightError(result.error ?? null);
+      }
+    } catch (err) {
+      setPlaywrightError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPlaywrightEnabling(false);
     }
   };
 
@@ -235,6 +281,48 @@ export function IntegrationPanel() {
           </button>
         </div>
 
+        <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/82 px-4 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 space-y-1">
+              <p className="text-[13px] font-semibold text-[var(--text-strong)]">
+                {intl.formatMessage({ id: "settings.integration.playwright.title" })}
+              </p>
+              <p className="text-xs text-[var(--text-muted)]">
+                {intl.formatMessage({ id: "settings.integration.playwright.description" })}
+              </p>
+              <p className="break-all font-mono text-[11px] text-[var(--text-faint)]">
+                npx -y @playwright/mcp@latest
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleEnablePlaywright}
+              disabled={playwrightEnabling || playwrightEnabled}
+              className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 py-1.5 text-xs font-medium text-[var(--accent-strong)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-60"
+            >
+              {playwrightEnabling && <IconLoader2 size={13} stroke={1.8} className="animate-spin" />}
+              {intl.formatMessage({
+                id: playwrightEnabled
+                  ? "settings.integration.playwright.enabled"
+                  : playwrightEnabling
+                    ? "settings.integration.playwright.enabling"
+                    : "settings.integration.playwright.enable",
+              })}
+            </button>
+          </div>
+        </div>
+
+        {playwrightStatus && (
+          <p className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/72 px-3 py-2 text-xs text-[var(--text-muted)]">
+            {playwrightStatus}
+          </p>
+        )}
+        {playwrightError && (
+          <p className="break-words rounded-2xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {playwrightError}
+          </p>
+        )}
+
         {mcpJsonOpen && (
           <div className="rounded-2xl border border-[var(--accent-border)] bg-[var(--surface-contrast)]/82 px-4 py-4 space-y-3">
             <p className="text-xs text-[var(--text-muted)]">
@@ -289,8 +377,14 @@ export function IntegrationPanel() {
                     <span className="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[11px] text-[var(--accent-strong)]">
                       MCP
                     </span>
+                    {server.disabled && (
+                      <span className="rounded-full bg-[var(--surface-soft)] px-2 py-1 text-[11px] text-[var(--text-faint)]">
+                        {intl.formatMessage({ id: "settings.integration.mcpDisabled" })}
+                      </span>
+                    )}
                     <button
                       onClick={() => handleMcpDelete(server.name)}
+                      disabled={mcpDeleting}
                       className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-red-500/10 hover:text-red-400"
                       title={intl.formatMessage({ id: "common.delete" })}
                     >
@@ -306,6 +400,51 @@ export function IntegrationPanel() {
           </div>
         )}
       </section>
+
+      {mcpDeleteTarget && (
+        <div
+          className="fixed bottom-0 left-0 right-0 top-8 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+          onClick={() => {
+            if (mcpDeleting) return;
+            setMcpDeleteTarget(null);
+          }}
+        >
+          <div
+            className="w-full max-w-[460px] rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-5 shadow-[var(--shadow-strong)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-sm font-semibold text-[var(--text-strong)]">
+              {intl.formatMessage({ id: "settings.integration.mcpDeleteTitle" })}
+            </h3>
+            <p className="mt-2 text-xs text-[var(--text-muted)]">
+              {intl.formatMessage(
+                { id: "settings.integration.mcpDeleteConfirm" },
+                { name: mcpDeleteTarget },
+              )}
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-3 py-1.5 text-xs text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)]"
+                onClick={() => setMcpDeleteTarget(null)}
+                disabled={mcpDeleting}
+              >
+                {intl.formatMessage({ id: "common.cancel" })}
+              </button>
+              <button
+                type="button"
+                className="rounded-[var(--radius-sm)] border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+                onClick={() => void handleConfirmMcpDelete()}
+                disabled={mcpDeleting}
+              >
+                {mcpDeleting
+                  ? intl.formatMessage({ id: "settings.integration.mcpDeleting" })
+                  : intl.formatMessage({ id: "common.confirm" })}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

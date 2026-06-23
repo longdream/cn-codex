@@ -2328,7 +2328,9 @@ impl ToolExecutor {
             }));
         }
 
-        if crate::smartbrain::bm25_index_path(&self.workspace_config_dir).exists() {
+        if self.smartbrain_is_active()
+            && crate::smartbrain::bm25_index_path(&self.workspace_config_dir).exists()
+        {
             tools.push(serde_json::json!({
                 "type": "function",
                 "function": {
@@ -5902,6 +5904,20 @@ impl ToolExecutor {
             return Ok(msg);
         }
 
+        if !self.smartbrain_is_active() {
+            let msg = "SmartBrain is disabled. Enable it in Settings to use smartbrain_search."
+                .to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_search",
+                -1,
+                &msg,
+            );
+            return Ok(msg);
+        }
+
         let top_k = args.top_k.unwrap_or(5).clamp(1, 20);
         let bm25_path = crate::smartbrain::bm25_index_path(&self.workspace_config_dir);
         let results = crate::smartbrain::search::unified_search(&bm25_path, query, top_k);
@@ -7638,6 +7654,13 @@ impl ToolExecutor {
 
     fn memories_dir(&self) -> PathBuf {
         self.workspace_config_dir.join("memories")
+    }
+
+    fn smartbrain_is_active(&self) -> bool {
+        let config_path = self.workspace_config_dir.join("config.toml");
+        crate::config_system::ConfigToml::load(&config_path)
+            .map(|config| config.smartbrain_config().is_active())
+            .unwrap_or(false)
     }
 
     fn resolve_memory_path(&self, path: &str) -> Result<PathBuf, String> {
@@ -13399,6 +13422,44 @@ mod tests {
         assert!(enabled_names.contains(&"close_agent"));
         assert!(enabled_names.contains(&"close_exec_session"));
         assert!(enabled_names.contains(&"mcp_status"));
+    }
+
+    #[test]
+    fn smartbrain_search_tool_is_only_exposed_when_smartbrain_is_active() {
+        let temp_dir = tempfile::tempdir().expect("should create temp dir");
+        let root = temp_dir.path().join("workspace");
+        let config_dir = root.join("codey");
+        let memories_dir = config_dir.join("memories");
+        std::fs::create_dir_all(&memories_dir).expect("should create memories dir");
+        std::fs::write(memories_dir.join("smartbrain_index.json"), "{}")
+            .expect("should create bm25 index file");
+
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[smartbrain]\nenabled = false\n",
+        )
+        .expect("should write config");
+
+        let executor = ToolExecutor::with_workspace_config_dir(root.clone(), config_dir.clone());
+        let disabled_tools = executor.tool_specs(false);
+        let disabled_names: Vec<_> = disabled_tools
+            .iter()
+            .filter_map(|tool| tool.get("function")?.get("name")?.as_str())
+            .collect();
+        assert!(!disabled_names.contains(&"smartbrain_search"));
+
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[smartbrain]\nenabled = true\n",
+        )
+        .expect("should update config");
+
+        let enabled_tools = executor.tool_specs(false);
+        let enabled_names: Vec<_> = enabled_tools
+            .iter()
+            .filter_map(|tool| tool.get("function")?.get("name")?.as_str())
+            .collect();
+        assert!(enabled_names.contains(&"smartbrain_search"));
     }
 
     #[test]

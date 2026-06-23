@@ -1,3 +1,6 @@
+use std::process::Stdio;
+use std::time::Duration;
+
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::RwLock;
@@ -23,6 +26,83 @@ impl StandaloneState {
 }
 
 const FORTUNE_SYSTEM_PROMPT: &str = "你是一位精通中国传统玄学的大师，擅长奇门遁甲和紫微斗数。请用严谨的方式进行推演。只输出有效 JSON 对象，不要输出推理过程。";
+const PLAYWRIGHT_MCP_SERVER_NAME: &str = "playwright";
+const PLAYWRIGHT_MCP_PACKAGE: &str = "@playwright/mcp@latest";
+const PLAYWRIGHT_MCP_WARMUP_TIMEOUT_SECS: u64 = 180;
+
+fn playwright_mcp_config_value() -> serde_json::Value {
+    serde_json::json!({
+        "command": "npx",
+        "args": ["-y", PLAYWRIGHT_MCP_PACKAGE],
+        "disabled": false
+    })
+}
+
+fn trim_and_truncate(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= max_chars {
+        return trimmed.to_string();
+    }
+    format!("{}...", chars[..max_chars].iter().collect::<String>())
+}
+
+async fn warmup_playwright_mcp_install() -> Result<String, String> {
+    let mut command = tokio::process::Command::new("npx");
+    command
+        .arg("-y")
+        .arg(PLAYWRIGHT_MCP_PACKAGE)
+        .arg("--help")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = tokio::time::timeout(
+        Duration::from_secs(PLAYWRIGHT_MCP_WARMUP_TIMEOUT_SECS),
+        command.output(),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "Playwright MCP warmup timed out after {} seconds",
+            PLAYWRIGHT_MCP_WARMUP_TIMEOUT_SECS
+        )
+    })?
+    .map_err(|error| format!("Failed to run npx for Playwright MCP warmup: {error}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = if !stdout.trim().is_empty() {
+        trim_and_truncate(&stdout, 600)
+    } else {
+        trim_and_truncate(&stderr, 600)
+    };
+
+    if output.status.success() {
+        Ok(if detail.is_empty() {
+            "Playwright MCP warmup completed.".to_string()
+        } else {
+            detail
+        })
+    } else {
+        let exit_desc = output
+            .status
+            .code()
+            .map(|code| format!("exit code {code}"))
+            .unwrap_or_else(|| "terminated by signal".to_string());
+        Err(format!(
+            "Playwright MCP warmup failed ({exit_desc}). {}",
+            if detail.is_empty() {
+                "No output from npx command.".to_string()
+            } else {
+                detail
+            }
+        ))
+    }
+}
 
 fn build_openai_fortune_payload(
     model: &str,
@@ -424,6 +504,90 @@ pub async fn standalone_config_write(
     Ok(serde_json::json!({
         "status": "ok",
         "filePath": state.config_path.to_string_lossy(),
+    }))
+}
+
+#[tauri::command]
+pub async fn standalone_mcp_enable_playwright(
+    state: State<'_, AppState>,
+) -> AppResult<serde_json::Value> {
+    let edits = vec![(
+        format!("mcp_servers.{PLAYWRIGHT_MCP_SERVER_NAME}"),
+        playwright_mcp_config_value(),
+    )];
+    state.config_manager.write(&edits)?;
+
+    let install_result = warmup_playwright_mcp_install().await;
+    let (install_status, detail, error) = match install_result {
+        Ok(detail) => ("succeeded", Some(detail), None),
+        Err(error) => ("failed", None, Some(error)),
+    };
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "filePath": state.config_path.to_string_lossy(),
+        "serverName": PLAYWRIGHT_MCP_SERVER_NAME,
+        "configured": true,
+        "installStarted": true,
+        "installStatus": install_status,
+        "detail": detail,
+        "error": error,
+    }))
+}
+
+#[tauri::command]
+pub async fn standalone_smartbrain_enable(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    extract_all_history: bool,
+) -> AppResult<serde_json::Value> {
+    let extraction_start_at = if extract_all_history {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(crate::smartbrain::index::now_secs())
+    };
+
+    let edits = vec![
+        ("smartbrain.enabled".to_string(), serde_json::json!(true)),
+        (
+            "smartbrain.extraction_start_at".to_string(),
+            extraction_start_at.clone(),
+        ),
+    ];
+    let updated_config = state.config_manager.write(&edits)?;
+
+    if extract_all_history {
+        let thread_store = state.thread_store.clone();
+        let workspace_config_dir = state.workspace_config_dir.clone();
+        let config_for_task = updated_config.clone();
+        let app_handle_for_task = app_handle.clone();
+        tokio::spawn(async move {
+            let experiences_dir = crate::smartbrain::experiences_dir(&workspace_config_dir);
+            let _ = std::fs::create_dir_all(experiences_dir.join("raw"));
+
+            let http = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .read_timeout(std::time::Duration::from_secs(300))
+                .build()
+                .unwrap_or_default();
+
+            crate::smartbrain::extractor::run_extraction_backfill(
+                &http,
+                &config_for_task,
+                &thread_store,
+                &experiences_dir,
+                Some(&app_handle_for_task),
+            )
+            .await;
+        });
+    }
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "filePath": state.config_path.to_string_lossy(),
+        "enabled": true,
+        "extractAllHistory": extract_all_history,
+        "extractionStartAt": extraction_start_at,
     }))
 }
 
@@ -962,7 +1126,9 @@ fn parse_goal_status(value: Option<&str>) -> AppResult<Option<ThreadGoalStatus>>
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_robot_id_for_run_turn;
+    use serde_json::json;
+
+    use super::{playwright_mcp_config_value, resolve_robot_id_for_run_turn};
 
     #[test]
     fn resolve_robot_id_for_run_turn_enables_in_goal_and_robot_modify_modes() {
@@ -982,6 +1148,17 @@ mod tests {
         assert_eq!(
             resolve_robot_id_for_run_turn(Some("robot-modify"), Some("robot-a")),
             Some("robot-a")
+        );
+    }
+
+    #[test]
+    fn playwright_mcp_config_value_uses_expected_defaults() {
+        let value = playwright_mcp_config_value();
+        assert_eq!(value.get("command").and_then(|v| v.as_str()), Some("npx"));
+        assert_eq!(value.get("disabled").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            value.get("args").and_then(|v| v.as_array()),
+            Some(&vec![json!("-y"), json!("@playwright/mcp@latest")])
         );
     }
 }

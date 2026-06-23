@@ -4,7 +4,7 @@ use crate::thread_store::ThreadMessage;
 const MAX_TRANSCRIPT_CHARS: usize = 60_000;
 
 pub const EXTRACTION_SYSTEM_PROMPT: &str = "\
-You are an experience extraction system. Analyze the following session transcript between a user and an AI coding assistant. Extract durable knowledge that would be valuable in future sessions.
+You are an experience extraction system. Analyze the following session transcript between a user and an AI coding assistant. Extract only long-term, stable experience that will remain useful in future sessions when SmartBrain is enabled.
 
 Output a structured markdown document with these sections (omit empty sections):
 
@@ -30,11 +30,13 @@ A short kebab-case identifier for this experience (e.g., fix-react-hydration-mis
 A short, human-readable title (10-30 characters) describing the core lesson or knowledge point. Write in the same language as the session.
 
 ## Summary
-A 1-2 sentence summary explaining what error was corrected, what knowledge was learned, or what guidance was given. Write in the same language as the session.
+A 1-2 sentence durable summary of the reusable experience. This is long-term memory, not a recap of this specific session timeline. Write in the same language as the session.
 
 Rules:
 - Be concise: each item should be 1-3 sentences.
-- Focus on REUSABLE knowledge, not session-specific details.
+- Focus on reusable knowledge that can stand alone in a future session.
+- Do NOT output recent-chat summaries, progress reports, next-step plans, or temporary task states.
+- Do NOT include one-off conversation details that are not reusable.
 - Skip trivial interactions (greetings, simple Q&A with no lasting value).
 - If the session has no extractable experience, output exactly: NO_EXPERIENCE_FOUND";
 
@@ -91,6 +93,9 @@ pub fn build_extraction_messages(history: &[ThreadMessage]) -> Vec<(String, Stri
     let mut transcript = String::new();
     for msg in history {
         if msg.role == "system" {
+            continue;
+        }
+        if msg.role == "user" && crate::compaction::is_summary_message(&msg.content) {
             continue;
         }
         let role_label = match msg.role.as_str() {
@@ -296,9 +301,48 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
+    fn test_message(role: &str, content: &str) -> ThreadMessage {
+        ThreadMessage {
+            id: format!("{role}-message"),
+            role: role.to_string(),
+            content: content.to_string(),
+            timestamp: 0,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+        }
+    }
+
     #[test]
     fn parse_extraction_no_experience() {
         assert!(parse_extraction_output("NO_EXPERIENCE_FOUND").is_none());
+    }
+
+    #[test]
+    fn build_extraction_messages_filters_compaction_summary_user_message() {
+        let summary_message = format!(
+            "{}\n{}",
+            crate::compaction::SUMMARY_PREFIX,
+            "summarized progress that should not become durable memory"
+        );
+        let history = vec![
+            test_message("user", "Please fix the build error."),
+            test_message("assistant", "I will inspect cargo errors."),
+            test_message("user", &summary_message),
+            test_message("tool", "cargo check failed: unresolved import"),
+        ];
+
+        let messages = build_extraction_messages(&history);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].0, "system");
+        assert_eq!(messages[1].0, "user");
+        assert!(messages[1].1.contains("USER: Please fix the build error."));
+        assert!(messages[1].1.contains("ASSISTANT: I will inspect cargo errors."));
+        assert!(messages[1]
+            .1
+            .contains("TOOL_RESULT: cargo check failed: unresolved import"));
+        assert!(!messages[1].1.contains("summarized progress"));
+        assert!(!messages[1].1.contains(crate::compaction::SUMMARY_PREFIX));
     }
 
     #[test]

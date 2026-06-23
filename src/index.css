@@ -167,6 +167,43 @@ textarea {
   color: var(--text-base);
 }
 
+.app-shell-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.app-background-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.app-background-image {
+  position: absolute;
+  inset: -24px;
+  width: calc(100% + 48px);
+  height: calc(100% + 48px);
+  object-fit: cover;
+  object-position: center;
+  transform: scale(1.06);
+  transform-origin: center;
+  filter: blur(18px) saturate(1.08) brightness(0.72);
+}
+
+.app-background-mask {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.06), transparent 55%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.38), rgba(0, 0, 0, 0.52));
+}
+
 .app-workbench {
   position: relative;
   z-index: 1;

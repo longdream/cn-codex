@@ -1,4 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+vi.mock("../api/app_state", () => ({
+  appStateGet: vi.fn(async () => null),
+  appStateSet: vi.fn(async () => undefined),
+}));
+
 import { useSettingsStore, type BaziProfile } from "../stores/settingsStore";
 
 describe("settingsStore", () => {
@@ -7,6 +13,7 @@ describe("settingsStore", () => {
       locale: "zh-CN",
       theme: "dark",
       fortuneEnabled: true,
+      backgroundImagePath: null,
       baziProfile: null,
     });
   });
@@ -46,6 +53,19 @@ describe("settingsStore", () => {
     expect(useSettingsStore.getState().fortuneEnabled).toBe(true);
   });
 
+  it("defaults backgroundImagePath to null", () => {
+    expect(useSettingsStore.getState().backgroundImagePath).toBeNull();
+  });
+
+  it("setBackgroundImagePath stores and clears path", () => {
+    const imagePath = "C:\\images\\wallpaper.jpg";
+    useSettingsStore.getState().setBackgroundImagePath(imagePath);
+    expect(useSettingsStore.getState().backgroundImagePath).toBe(imagePath);
+
+    useSettingsStore.getState().setBackgroundImagePath(null);
+    expect(useSettingsStore.getState().backgroundImagePath).toBeNull();
+  });
+
   it("defaults baziProfile to null", () => {
     expect(useSettingsStore.getState().baziProfile).toBeNull();
   });
@@ -70,12 +90,14 @@ describe("settingsStore", () => {
       locale: "zh-CN",
       theme: "dark",
       fortuneEnabled: true,
+      backgroundImagePath: null,
       baziProfile: null,
     });
     const state = useSettingsStore.getState();
     expect(state.locale).toBe("zh-CN");
     expect(state.theme).toBe("dark");
     expect(state.fortuneEnabled).toBe(true);
+    expect(state.backgroundImagePath).toBeNull();
     expect(state.baziProfile).toBeNull();
   });
 });

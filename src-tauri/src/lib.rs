@@ -81,6 +81,7 @@ pub fn run() {
                 let workspace_config_dir = sb_state.workspace_config_dir.clone();
                 let config_manager = sb_state.config_manager.clone();
                 let thread_store = sb_state.thread_store.clone();
+                let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     thread_store.preload_threads().await;
 
@@ -106,11 +107,12 @@ pub fn run() {
                         .build()
                         .unwrap_or_default();
 
-                    smartbrain::extractor::run_extraction(
+                    smartbrain::extractor::run_extraction_backfill(
                         &http,
                         &config,
                         &thread_store,
                         &experiences_dir,
+                        Some(&app_handle),
                     )
                     .await;
 
@@ -204,6 +206,8 @@ pub fn run() {
             standalone::standalone_init,
             standalone::standalone_config_read,
             standalone::standalone_config_write,
+            standalone::standalone_mcp_enable_playwright,
+            standalone::standalone_smartbrain_enable,
             standalone::standalone_thread_create,
             standalone::standalone_thread_list,
             standalone::standalone_thread_peek_goal,

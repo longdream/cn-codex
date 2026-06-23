@@ -31,6 +31,21 @@ export async function standaloneConfigWrite(
   return invoke("standalone_config_write", { edits });
 }
 
+export interface PlaywrightMcpEnableResult {
+  status: string;
+  filePath: string;
+  serverName: string;
+  configured: boolean;
+  installStarted: boolean;
+  installStatus: "succeeded" | "failed";
+  detail?: string | null;
+  error?: string | null;
+}
+
+export async function standaloneMcpEnablePlaywright(): Promise<PlaywrightMcpEnableResult> {
+  return invoke("standalone_mcp_enable_playwright");
+}
+
 export async function standaloneThreadCreate(): Promise<{
   thread: { id: string };
 }> {

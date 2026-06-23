@@ -1,7 +1,8 @@
-import { IconExternalLink, IconX } from "@tabler/icons-react";
+import { IconBrain, IconExternalLink, IconLoader2, IconX } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore, type BaziProfile } from "../../stores/settingsStore";
 import { ProviderPanel } from "./ProviderPanel";
 import { IntegrationPanel } from "./IntegrationPanel";
@@ -19,6 +20,12 @@ interface SettingsPanelProps {
 
 type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "workflows" | "hooks" | "experience" | "knowledge" | "rules";
 
+function displayFileName(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || path;
+}
+
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const intl = useIntl();
   const locale = useSettingsStore((state) => state.locale);
@@ -33,6 +40,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [relaySaving, setRelaySaving] = useState(false);
   const [smartbrainEnabled, setSmartbrainEnabled] = useState(false);
   const [smartbrainLoading, setSmartbrainLoading] = useState(false);
+  const [smartbrainEnableModalOpen, setSmartbrainEnableModalOpen] = useState(false);
   const [rulesContent, setRulesContent] = useState("");
   const [rulesLoaded, setRulesLoaded] = useState(false);
   const [rulesSaving, setRulesSaving] = useState(false);
@@ -40,6 +48,8 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const fortuneEnabled = useSettingsStore((state) => state.fortuneEnabled);
   const setFortuneEnabled = useSettingsStore((state) => state.setFortuneEnabled);
+  const backgroundImagePath = useSettingsStore((state) => state.backgroundImagePath);
+  const setBackgroundImagePath = useSettingsStore((state) => state.setBackgroundImagePath);
   const baziProfile = useSettingsStore((state) => state.baziProfile);
   const setBaziProfile = useSettingsStore((state) => state.setBaziProfile);
   const triggerFortuneRefresh = useSettingsStore((state) => state.triggerFortuneRefresh);
@@ -108,11 +118,35 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     }
   }, [webServerEnabled, webServerLoading]);
 
+  const enableSmartbrain = useCallback(
+    async (extractAllHistory: boolean) => {
+      if (smartbrainLoading) return;
+      setSmartbrainLoading(true);
+      try {
+        await invoke("standalone_smartbrain_enable", {
+          extractAllHistory,
+        });
+        setSmartbrainEnabled(true);
+        setSmartbrainEnableModalOpen(false);
+      } catch (err) {
+        console.error("SmartBrain toggle failed:", err);
+      } finally {
+        setSmartbrainLoading(false);
+      }
+    },
+    [smartbrainLoading],
+  );
+
   const handleSmartbrainToggle = useCallback(async () => {
     if (smartbrainLoading) return;
+    const newValue = !smartbrainEnabled;
+    if (newValue) {
+      setSmartbrainEnableModalOpen(true);
+      return;
+    }
+
     setSmartbrainLoading(true);
     try {
-      const newValue = !smartbrainEnabled;
       await invoke("standalone_config_write", {
         edits: [{ keyPath: "smartbrain.enabled", value: newValue }],
       });
@@ -146,6 +180,28 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       setRulesSaving(false);
     }
   }, [rulesContent]);
+
+  const handleBackgroundSelect = useCallback(async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [
+          {
+            name: intl.formatMessage({ id: "settings.background.fileFilter" }),
+            extensions: ["png", "jpg", "jpeg", "webp", "gif"],
+          },
+        ],
+      });
+      if (typeof selected === "string") {
+        const trimmed = selected.trim();
+        if (trimmed) {
+          setBackgroundImagePath(trimmed);
+        }
+      }
+    } catch (error) {
+      console.error("Select background image failed:", error);
+    }
+  }, [intl, setBackgroundImagePath]);
 
   const tabs: Array<{ id: SettingsTab; label: string; detail: string }> = [
     {
@@ -288,6 +344,42 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                         </span>
                       </button>
                     ))}
+                  </div>
+                </section>
+
+                <section className="settings-card space-y-3">
+                  <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                    {intl.formatMessage({ id: "settings.background" })}
+                  </h4>
+                  <p className="text-xs text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "settings.background.description" })}
+                  </p>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    {intl.formatMessage({ id: "settings.background.current" })}{" "}
+                    <span className="font-mono text-[11px] text-[var(--text-base)]">
+                      {backgroundImagePath
+                        ? displayFileName(backgroundImagePath)
+                        : intl.formatMessage({ id: "settings.background.none" })}
+                    </span>
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleBackgroundSelect()}
+                      className="app-button-secondary text-xs"
+                    >
+                      {backgroundImagePath
+                        ? intl.formatMessage({ id: "settings.background.change" })
+                        : intl.formatMessage({ id: "settings.background.upload" })}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBackgroundImagePath(null)}
+                      disabled={!backgroundImagePath}
+                      className="app-button-secondary text-xs disabled:opacity-50"
+                    >
+                      {intl.formatMessage({ id: "settings.background.clear" })}
+                    </button>
                   </div>
                 </section>
 
@@ -672,6 +764,74 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           </div>
         </section>
       </div>
+
+      {smartbrainEnableModalOpen && (
+        <div className="fixed bottom-0 left-0 right-0 top-8 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
+          <div className="app-shell-panel w-full max-w-[560px] overflow-hidden">
+            <div className="flex items-center gap-3 border-b border-[var(--border-subtle)] px-5 py-4">
+              <div className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-soft)] text-[var(--accent)]">
+                <IconBrain size={16} stroke={1.9} />
+              </div>
+              <div>
+                <h4 className="text-sm font-semibold text-[var(--text-strong)]">
+                  {intl.formatMessage({ id: "settings.smartbrain.enableModal.title" })}
+                </h4>
+                <p className="text-[11px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "settings.smartbrain.enableModal.subtitle" })}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!smartbrainLoading) setSmartbrainEnableModalOpen(false);
+                }}
+                disabled={smartbrainLoading}
+                className="ml-auto icon-button"
+                aria-label={intl.formatMessage({ id: "common.close" })}
+              >
+                <IconX size={15} stroke={1.9} />
+              </button>
+            </div>
+
+            <div className="space-y-3 px-5 py-4">
+              <p className="text-xs leading-6 text-[var(--text-muted)]">
+                {intl.formatMessage({ id: "settings.smartbrain.enableModal.description" })}
+              </p>
+              <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] px-3 py-2 text-[11px] text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "settings.smartbrain.enableModal.note" })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-[var(--border-subtle)] px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setSmartbrainEnableModalOpen(false)}
+                disabled={smartbrainLoading}
+                className="app-button-secondary text-xs"
+              >
+                {intl.formatMessage({ id: "common.cancel" })}
+              </button>
+              <button
+                type="button"
+                onClick={() => void enableSmartbrain(false)}
+                disabled={smartbrainLoading}
+                className="app-button-secondary flex items-center gap-1.5 text-xs"
+              >
+                {smartbrainLoading && <IconLoader2 size={12} className="animate-spin" />}
+                {intl.formatMessage({ id: "settings.smartbrain.enableModal.futureOnly" })}
+              </button>
+              <button
+                type="button"
+                onClick={() => void enableSmartbrain(true)}
+                disabled={smartbrainLoading}
+                className="rounded-lg bg-[var(--accent-strong)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+              >
+                {intl.formatMessage({ id: "settings.smartbrain.enableModal.extractAll" })}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

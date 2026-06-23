@@ -1,4 +1,4 @@
-import { IconCpu, IconFolder, IconPlugConnected, IconRefresh } from "@tabler/icons-react";
+import { IconCpu, IconFolder, IconLoader2, IconPlugConnected, IconRefresh } from "@tabler/icons-react";
 import { useIntl } from "react-intl";
 import { useAppStore } from "../../stores/appStore";
 
@@ -15,6 +15,8 @@ export function StatusBar() {
   const currentModel = useAppStore((state) => state.currentModel);
   const configDir = useAppStore((state) => state.configDir);
   const workspaceCwd = useAppStore((state) => state.workspaceCwd);
+  const smartbrainExtractionRunning = useAppStore((state) => state.smartbrainExtractionRunning);
+  const smartbrainExtractionProgress = useAppStore((state) => state.smartbrainExtractionProgress);
   const defaultProvider = intl.formatMessage({ id: "app.defaultProvider" });
   const workspaceName = workspaceCwd ? getLeafName(workspaceCwd) : null;
 
@@ -29,6 +31,19 @@ export function StatusBar() {
     : initError
       ? intl.formatMessage({ id: "status.initFailed" })
       : intl.formatMessage({ id: "status.initializing" });
+
+  const extractionLabel = smartbrainExtractionProgress
+    ? intl.formatMessage(
+      { id: "status.smartbrain.extractingProgress" },
+      {
+        current: Math.min(
+          smartbrainExtractionProgress.total,
+          Math.max(0, smartbrainExtractionProgress.current),
+        ),
+        total: smartbrainExtractionProgress.total,
+      },
+    )
+    : intl.formatMessage({ id: "status.smartbrain.extracting" });
 
   return (
     <div className="flex items-center justify-between border-t border-[var(--border-subtle)] bg-[var(--surface-panel)] px-4 py-1.5 text-[11px]">
@@ -56,6 +71,13 @@ export function StatusBar() {
           <IconCpu size={12} stroke={1.8} />
           {currentModel ?? defaultProvider}
         </span>
+
+        {smartbrainExtractionRunning && (
+          <span className="flex items-center gap-1.5 text-[var(--text-faint)]">
+            <IconLoader2 size={12} stroke={1.8} className="animate-spin" />
+            {extractionLabel}
+          </span>
+        )}
 
         {configDir && (
           <span className="flex items-center gap-1.5 text-[var(--text-faint)]">

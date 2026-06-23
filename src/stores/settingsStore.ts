@@ -17,6 +17,7 @@ interface PersistedSettings {
   locale: string;
   theme: string;
   fortuneEnabled: boolean;
+  backgroundImagePath: string | null;
   baziProfile: BaziProfile | null;
 }
 
@@ -29,6 +30,7 @@ function getPersistedSnapshot(s: SettingsState): PersistedSettings {
     locale: s.locale,
     theme: s.theme,
     fortuneEnabled: s.fortuneEnabled,
+    backgroundImagePath: s.backgroundImagePath,
     baziProfile: s.baziProfile,
   };
 }
@@ -37,11 +39,13 @@ interface SettingsState {
   locale: string;
   theme: "dark" | "light" | "system";
   fortuneEnabled: boolean;
+  backgroundImagePath: string | null;
   baziProfile: BaziProfile | null;
   fortuneRefreshTrigger: number;
   setLocale: (locale: string) => void;
   setTheme: (theme: "dark" | "light" | "system") => void;
   setFortuneEnabled: (enabled: boolean) => void;
+  setBackgroundImagePath: (path: string | null) => void;
   setBaziProfile: (profile: BaziProfile | null) => void;
   triggerFortuneRefresh: () => void;
 }
@@ -50,6 +54,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   locale: "zh-CN",
   theme: "dark",
   fortuneEnabled: true,
+  backgroundImagePath: null,
   baziProfile: null,
   fortuneRefreshTrigger: 0,
   setLocale: (locale) => {
@@ -63,6 +68,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setFortuneEnabled: (fortuneEnabled) => {
     set({ fortuneEnabled });
     persist(getPersistedSnapshot({ ...get(), fortuneEnabled }));
+  },
+  setBackgroundImagePath: (backgroundImagePath) => {
+    set({ backgroundImagePath });
+    persist(getPersistedSnapshot({ ...get(), backgroundImagePath }));
   },
   setBaziProfile: (baziProfile) => {
     set({ baziProfile });
@@ -86,6 +95,10 @@ export async function initSettingsFromDb(): Promise<void> {
         locale: parsed.locale ?? "zh-CN",
         theme: parsed.theme ?? "dark",
         fortuneEnabled: parsed.fortuneEnabled ?? true,
+        backgroundImagePath:
+          typeof parsed.backgroundImagePath === "string"
+            ? parsed.backgroundImagePath
+            : null,
         baziProfile: parsed.baziProfile ?? null,
       });
     }

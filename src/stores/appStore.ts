@@ -144,6 +144,10 @@ export interface QueuedMessage {
 
 export type RightPanelTab = "browser" | "project" | "terminal" | "git";
 export type SidebarTab = "chats" | "projects";
+export interface SmartbrainExtractionProgress {
+  current: number;
+  total: number;
+}
 
 // 左侧栏宽度边界：保持目录可读，并避免过宽挤占聊天区。
 export const SIDEBAR_WIDTH_MIN = 220;
@@ -715,6 +719,12 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultModels: [{ id: "deepseek-ai/DeepSeek-V3", label: "DeepSeek V3", supportsVision: false, contextLength: 128000 }],
   },
   {
+    type: "rightcode", name: "provider.preset.rightcode", category: "china",
+    defaultBaseUrl: "https://right.codes/codex/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
+    signupUrl: "https://www.right.codes/",
+    defaultModels: [{ id: "gpt-5.2", label: "GPT-5.2", supportsVision: false, contextLength: 128000 }],
+  },
+  {
     type: "baichuan", name: "provider.preset.baichuan", category: "china",
     defaultBaseUrl: "https://api.baichuan-ai.com/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://platform.baichuan-ai.com/console/apikey",
@@ -875,6 +885,9 @@ interface AppState {
   browserPanelUrl: string | null;
   browserPanelTitle: string | null;
   browserPanelStatus: "idle" | "running" | "success" | "failed";
+  smartbrainExtractionRunning: boolean;
+  smartbrainExtractionLabel: string | null;
+  smartbrainExtractionProgress: SmartbrainExtractionProgress | null;
   browserSyncTrigger: number;
   browserActive: boolean;
   autoApprove: boolean;
@@ -984,6 +997,11 @@ interface AppState {
   setSelectedRobotId: (id: string | null) => void;
   setRobotCreateMode: (v: boolean) => void;
   setWorkflowExtractThreadId: (id: string | null) => void;
+  setSmartbrainExtractionStatus: (state: Partial<{
+    running: boolean;
+    label: string | null;
+    progress: SmartbrainExtractionProgress | null;
+  }>) => void;
   setBrowserPanelState: (state: Partial<{
     url: string | null;
     title: string | null;
@@ -1042,6 +1060,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   browserPanelUrl: null,
   browserPanelTitle: null,
   browserPanelStatus: "idle",
+  smartbrainExtractionRunning: false,
+  smartbrainExtractionLabel: null,
+  smartbrainExtractionProgress: null,
   browserSyncTrigger: 0,
   browserActive: false,
 
@@ -1740,6 +1761,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   setWorkflowExtractThreadId: (id) => {
     set({ workflowExtractThreadId: id });
   },
+  setSmartbrainExtractionStatus: (state) =>
+    set({
+      ...(state.running !== undefined
+        ? { smartbrainExtractionRunning: state.running }
+        : {}),
+      ...(state.label !== undefined
+        ? { smartbrainExtractionLabel: state.label }
+        : {}),
+      ...(state.progress !== undefined
+        ? { smartbrainExtractionProgress: state.progress }
+        : {}),
+    }),
   setRightPanelVisible: (v) => set({ rightPanelVisible: v }),
   toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
   setRightPanelTab: (tab) => set({ rightPanelTab: tab, rightPanelVisible: true }),
