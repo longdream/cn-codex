@@ -129,8 +129,16 @@ pub fn regenerate_root_index_md(workspace_config_dir: &Path) {
     let _ = std::fs::create_dir_all(&mdir);
 
     let entries = vec![
-        ("knowledge/".to_string(), "Knowledge Base".to_string(), Some("Ingested documents and reference material".to_string())),
-        ("experiences/".to_string(), "Experiences".to_string(), Some("Learned patterns from past sessions".to_string())),
+        (
+            "knowledge/".to_string(),
+            "Knowledge Base".to_string(),
+            Some("Ingested documents and reference material".to_string()),
+        ),
+        (
+            "experiences/".to_string(),
+            "Experiences".to_string(),
+            Some("Learned patterns from past sessions".to_string()),
+        ),
     ];
 
     let content = okf::generate_index_md("Memory Bundle", &entries, Some("0.1"));

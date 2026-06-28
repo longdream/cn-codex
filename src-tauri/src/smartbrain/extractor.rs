@@ -313,7 +313,11 @@ fn find_eligible_threads(
         .collect()
 }
 
-fn thread_is_eligible(thread: &StoredThread, index: &ExperienceIndex, config: &SmartBrainConfig) -> bool {
+fn thread_is_eligible(
+    thread: &StoredThread,
+    index: &ExperienceIndex,
+    config: &SmartBrainConfig,
+) -> bool {
     let msg_count = thread.all_messages().len();
     if msg_count < config.min_session_messages {
         return false;

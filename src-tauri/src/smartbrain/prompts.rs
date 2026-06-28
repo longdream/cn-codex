@@ -337,10 +337,16 @@ mod tests {
         assert_eq!(messages[0].0, "system");
         assert_eq!(messages[1].0, "user");
         assert!(messages[1].1.contains("USER: Please fix the build error."));
-        assert!(messages[1].1.contains("ASSISTANT: I will inspect cargo errors."));
-        assert!(messages[1]
-            .1
-            .contains("TOOL_RESULT: cargo check failed: unresolved import"));
+        assert!(
+            messages[1]
+                .1
+                .contains("ASSISTANT: I will inspect cargo errors.")
+        );
+        assert!(
+            messages[1]
+                .1
+                .contains("TOOL_RESULT: cargo check failed: unresolved import")
+        );
         assert!(!messages[1].1.contains("summarized progress"));
         assert!(!messages[1].1.contains(crate::compaction::SUMMARY_PREFIX));
     }

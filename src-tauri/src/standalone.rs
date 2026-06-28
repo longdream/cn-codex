@@ -176,11 +176,7 @@ fn extract_openai_message_content_text(message: Option<&serde_json::Value>) -> S
     }
 }
 
-fn emit_fortune_detail_event(
-    app_handle: &AppHandle,
-    event_name: &str,
-    payload: serde_json::Value,
-) {
+fn emit_fortune_detail_event(app_handle: &AppHandle, event_name: &str, payload: serde_json::Value) {
     if let Err(err) = app_handle.emit(event_name, payload.clone()) {
         tracing::warn!("[fortune_detail_stream] failed to emit {event_name}: {err}");
     }
@@ -220,14 +216,20 @@ fn extract_non_streaming_fortune_text(raw_body: &str) -> AppResult<String> {
         }
     }
 
-    if let Some(text) = parsed.pointer("/output/0/content/0/text").and_then(|v| v.as_str()) {
+    if let Some(text) = parsed
+        .pointer("/output/0/content/0/text")
+        .and_then(|v| v.as_str())
+    {
         let trimmed = text.trim();
         if !trimmed.is_empty() {
             return Ok(trimmed.to_string());
         }
     }
 
-    if let Some(parts) = parsed.pointer("/candidates/0/content/parts").and_then(|v| v.as_array()) {
+    if let Some(parts) = parsed
+        .pointer("/candidates/0/content/parts")
+        .and_then(|v| v.as_array())
+    {
         let merged = parts
             .iter()
             .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
@@ -871,6 +873,44 @@ pub async fn standalone_turn_interrupt(state: State<'_, AppState>) -> AppResult<
     Ok(serde_json::json!({ "status": "interrupted" }))
 }
 
+#[tauri::command]
+pub async fn standalone_plan_open(path: String) -> AppResult<serde_json::Value> {
+    info!("Opening plan file: {path}");
+    let plan_path = std::path::Path::new(&path);
+    if !plan_path.exists() {
+        return Err(AppError::Custom(format!("Plan file not found: {path}")));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.replace('/', "\\")])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| AppError::Custom(format!("Failed to open plan file: {e}")))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| AppError::Custom(format!("Failed to open plan file: {e}")))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| AppError::Custom(format!("Failed to open plan file: {e}")))?;
+    }
+
+    Ok(serde_json::json!({ "status": "ok" }))
+}
+
 /// Proxy an LLM chat-completion call through the backend to avoid webview
 /// gateway/CORS restrictions. Completely independent of the agent engine and
 /// thread state.
@@ -925,7 +965,9 @@ pub async fn fortune_llm_call(
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             tracing::error!("[fortune_llm_call] Anthropic error {status}: {body}");
-            return Err(AppError::Custom(format!("Anthropic API error {status}: {body}")));
+            return Err(AppError::Custom(format!(
+                "Anthropic API error {status}: {body}"
+            )));
         }
 
         let data: serde_json::Value = resp
@@ -978,8 +1020,7 @@ pub async fn fortune_llm_call(
             if !api_key.is_empty() {
                 retry_req = retry_req.header("Authorization", format!("Bearer {api_key}"));
             }
-            let payload_without_json_mode =
-                build_openai_fortune_payload(&model, &prompt, false);
+            let payload_without_json_mode = build_openai_fortune_payload(&model, &prompt, false);
             resp = retry_req
                 .json(&payload_without_json_mode)
                 .send()
@@ -991,14 +1032,10 @@ pub async fn fortune_llm_call(
                     AppError::Custom(format!("LLM request failed after fallback: {e}"))
                 })?;
             status = resp.status();
-            info!(
-                "[fortune_llm_call] OpenAI-compat fallback response status: {status}"
-            );
+            info!("[fortune_llm_call] OpenAI-compat fallback response status: {status}");
             if !status.is_success() {
                 let fallback_body = resp.text().await.unwrap_or_default();
-                tracing::error!(
-                    "[fortune_llm_call] LLM fallback error {status}: {fallback_body}"
-                );
+                tracing::error!("[fortune_llm_call] LLM fallback error {status}: {fallback_body}");
                 return Err(AppError::Custom(format!(
                     "LLM API error {status}: {fallback_body}"
                 )));

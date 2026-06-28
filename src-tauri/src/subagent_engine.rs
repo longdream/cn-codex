@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use futures_util::StreamExt;
@@ -72,8 +72,13 @@ struct ToolCallInfo {
 }
 
 enum CompletionResult {
-    Message { text: String },
-    ToolCalls { calls: Vec<ToolCallRequest>, preceding_text: String },
+    Message {
+        text: String,
+    },
+    ToolCalls {
+        calls: Vec<ToolCallRequest>,
+        preceding_text: String,
+    },
 }
 
 #[derive(Default)]
@@ -93,7 +98,10 @@ pub fn spawn_subagent(
     app_handle: AppHandle,
     thread_id: String,
     subagent_id: String,
-) -> (SubagentHandle, tokio::sync::oneshot::Receiver<SubagentResult>) {
+) -> (
+    SubagentHandle,
+    tokio::sync::oneshot::Receiver<SubagentResult>,
+) {
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let (input_tx, input_rx) = mpsc::channel::<String>(16);
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -235,7 +243,10 @@ async fn run_subagent_loop(
                 // Message without tool calls means the subagent is done
                 break;
             }
-            Ok(CompletionResult::ToolCalls { calls, preceding_text }) => {
+            Ok(CompletionResult::ToolCalls {
+                calls,
+                preceding_text,
+            }) => {
                 info!(
                     "[subagent:{subagent_id}] iteration {iteration}: {} tool calls",
                     calls.len()
@@ -368,7 +379,12 @@ async fn stream_completion_internal(
     let url = adapter.build_url(&config.base_url, &config.model);
     let headers = adapter.build_headers(&config.api_key);
     let tools_slice = tools.as_deref();
-    let body = adapter.build_body(&config.model, &messages, tools_slice, config.max_output_tokens);
+    let body = adapter.build_body(
+        &config.model,
+        &messages,
+        tools_slice,
+        config.max_output_tokens,
+    );
 
     let response = http
         .post(&url)

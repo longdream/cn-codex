@@ -54,9 +54,7 @@ JSON 格式示例：
 ```"#;
 
 /// Build messages for the LLM extraction call.
-pub fn build_extraction_messages(
-    history: &[ThreadMessage],
-) -> Vec<(String, String)> {
+pub fn build_extraction_messages(history: &[ThreadMessage]) -> Vec<(String, String)> {
     let mut messages = Vec::new();
     messages.push(("system".to_string(), EXTRACTION_SYSTEM_PROMPT.to_string()));
 
@@ -87,10 +85,7 @@ fn summarize_thread_for_extraction(history: &[ThreadMessage]) -> String {
                 }
                 for tc in tool_calls {
                     let args_preview = truncate_str(&tc.arguments, 300);
-                    summary.push_str(&format!(
-                        "  工具: {} | 参数: {}\n",
-                        tc.name, args_preview,
-                    ));
+                    summary.push_str(&format!("  工具: {} | 参数: {}\n", tc.name, args_preview,));
                 }
                 summary.push('\n');
                 continue;

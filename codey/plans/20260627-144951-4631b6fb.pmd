@@ -1,0 +1,96 @@
+# CN-Codex 炫酷企业官网 — 完整实施计划
+
+## 设计读解
+采用 **Stripe 企业专业风格 × 赛博朋克炫酷视觉 (Neo-Stripe)**，深色主题 + 品牌紫色渐变 + 毛玻璃 + 粒子/3D动效。面向技术决策者和开发者，传递前沿、炫酷、技术驱动的品牌调性。
+
+---
+
+## 步骤概览
+
+### 步骤 1：清空旧文件并创建增强版 DESIGN.md
+- **目标**：删除旧的 `index.html`，保留并增强 `DESIGN.md`
+- **操作**：
+  - 删除 `index.html`
+  - 增强 `DESIGN.md`：新增 **GSAP 滚动驱动动画**规范、**WebGL Shader 背景**规范、**交互式 3D 架构模型**规范、**品牌故事与口号**（"Code Smarter, Build Faster"）、**CN-Codex 核心差异化关键词**（本地优先、插件化、MCP 协议、多 Agent、SmartBrain）
+- **文件**：`DESIGN.md`
+
+### 步骤 2：创建全新的 index.html（单页企业官网）
+页面从零重构，比现有版本更炫酷。包含以下核心区块：
+
+| 区块 | 内容 |
+|------|------|
+| **导航栏** | 固定顶部毛玻璃，Logo + 链接（特性/架构/定价/为什么）+ CTA 按钮，移动端 hamburger |
+| **Hero** | 全屏 Three.js 粒子星系（品牌紫+白渐变）→ 左: 标题 + CTA → 右: 交互式编码终端（打字机效果） |
+| **品牌数据** | 3 个动态计数器（50K+ 开发者 / 1.2M+ 分析/天 / 99.8% 可用性）有 SVG 圆圈进度 |
+| **核心特性** | 6 个毛玻璃卡片网格（MCP 协议 / 插件系统 / 多 Agent / SmartBrain / 安全审计 / 本地优先），hover 3D 倾斜 + 边框扫描线 |
+| **实时演示** | 全宽交互式终端，展示 CN-Codex 的实际编码辅助场景，多行代码动态输入+高亮 |
+| **架构图** | 交互式 SVG 架构图（MCP → Plugin → Codey → SmartBrain），节点 hover 弹出详情，数据流光点动画 |
+| **为什么 CN-Codex** | 3 个对比卡片（vs Copilot / vs Cursor / vs 传统 IDE），用数据说话 |
+| **定价** | 3 列定价卡片（Starter 免费 / Pro ¥59/月 / Enterprise 定制），推荐标签 + 脉冲边框 |
+| **用户评价** | 3 个开发者评价卡片，带头像、评分、引用文字，轮播或网格 |
+| **CTA** | 渐变背景 + 大标题 + 双按钮 + 安全提示 |
+| **页脚** | 4 列网格（品牌 / 产品 / 资源 / 法律）+ 社交链接 |
+
+### 步骤 3：CSS 实现（内联于 index.html）
+- 完整 CSS Token 系统（引用 DESIGN.md 变量）
+- 毛玻璃卡片（glassmorphism）带渐变边框（`::before` mask）
+- 3D 倾斜卡片 hover 效果（`transform-style: preserve-3d` + `perspective`）
+- 扫描线动画（`@keyframes scanLine`）
+- GSAP ScrollTrigger 入场动画
+- 完整响应式断点（桌面 1200px / 平板 768px / 手机 <768px）
+- `prefers-reduced-motion` 完全禁用非必要动画
+
+### 步骤 4：JavaScript 实现（内联于 index.html）
+| 模块 | 技术 | 说明 |
+|------|------|------|
+| 粒子系统 | Three.js (CDN) | 2000 粒子球体，鼠标视差，颜色渐变紫→白，移动端禁用 |
+| 编码终端 | 原生 JS | macOS 红绿灯 + 打字机效果 + 语法高亮 + 循环 5 条命令 |
+| 数字计数器 | GSAP | ScrollTrigger + 从 0 递增动画 |
+| 滚入动画 | GSAP ScrollTrigger | 所有 `.animate-on-scroll` 元素交错淡入 |
+| 3D 卡片倾斜 | 原生 JS + `mousemove` | 卡片跟随鼠标 3D 倾斜效果 |
+| 架构图 | SVG + JS | 数据流光点 `requestAnimationFrame`，节点 hover tooltip |
+| 移动端菜单 | 原生 JS | hamburger toggle + 滑动菜单 |
+
+### 步骤 5：验证与测试
+- 使用 `python -m http.server` 启动本地服务器
+- 使用 `browser_run` 进行视觉验证
+  - 检查页面加载无 JS 错误
+  - 验证 Three.js 粒子渲染
+  - 验证终端打字机效果
+  - 验证卡片 hover 3D 效果
+  - 验证响应式布局
+  - 验证滚动动画
+  - 验证 `prefers-reduced-motion` 降级
+
+---
+
+## 需要修改的文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `index.html` | **删除并重建** | 全新单页企业官网，约 500-800 行 HTML + 300-500 行 CSS + 400-600 行 JS |
+| `DESIGN.md` | **增强** | 添加新规范（GSAP、3D 卡片、品牌口号等） |
+
+## 潜在风险与缓解
+
+| 风险 | 缓解 |
+|------|------|
+| Three.js CDN 加载失败 | 降级到 CSS 渐变背景，不影响内容可访问性 |
+| GSAP CDN 加载失败 | 降级到 Intersection Observer API（原生 JS 备选） |
+| 移动端性能（粒子+GSAP） | 移动端禁用 Three.js，减少 GSAP 动画数量 |
+| `backdrop-filter` 浏览器不支持 | `@supports` 回退到非毛玻璃背景 |
+| `prefers-reduced-motion` | 完全禁用动画，保留静态内容 |
+
+## 测试策略
+1. **视觉验证**：`browser_run` 截图每个主要区块
+2. **交互验证**：hover、click、scroll 交互
+3. **响应式验证**：调整浏览器窗口宽度
+4. **JS 错误检查**：浏览器控制台检查
+5. **CDN 降级测试**：模拟 CDN 加载失败场景
+
+---
+
+## 预计文件规格
+- `index.html`：大约 **1300-1600 行**（含内联 CSS + JS）
+- `DESIGN.md`：大约 **250-300 行**
+- 文件大小：约 **55-70 KB**

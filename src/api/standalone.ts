@@ -88,7 +88,7 @@ export async function standaloneThreadRead(threadId: string): Promise<{
       }>;
       startedAt?: number;
       completedAt?: number;
-      mode?: "chat" | "goal";
+      mode?: "chat" | "plan" | "goal";
       durationMs?: number;
       changedFiles?: Array<{ path: string; action: string }>;
       changedFileSnapshots?: Array<{
@@ -175,7 +175,7 @@ export async function standaloneChat(
   threadId: string,
   message: string,
   cwd?: string,
-  mode?: "chat" | "goal" | "robot-create" | "robot-modify",
+  mode?: "chat" | "plan" | "goal" | "robot-create" | "robot-modify",
   attachments?: AttachedFile[],
   goalBudgetTokens?: number,
   robotId?: string,
@@ -193,6 +193,10 @@ export async function standaloneChat(
 
 export async function standaloneTurnInterrupt(): Promise<{ status: string }> {
   return invoke("standalone_turn_interrupt");
+}
+
+export async function standalonePlanOpen(path: string): Promise<{ status: string }> {
+  return invoke("standalone_plan_open", { path });
 }
 
 export interface FortuneDetailStreamStartParams {

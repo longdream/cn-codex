@@ -1,0 +1,163 @@
+
+# 炫酷 CN-Codex 企业官网 — 实施计划
+
+## 设计定位
+
+**风格**: Neo-Stripe（保留现有 `DESIGN.md` 设计系统）  
+**调性**: 深色炫酷、粒子星系、毛玻璃、霓虹光效、交互式动效  
+**内容**: 全面展示 CN-Codex 四大核心能力 — MCP 插件系统、Codey Agents、SmartBrain 知识记忆、多模型调度  
+**形式**: 单页 `index.html`，内联 CSS + 内联 JS + CDN 依赖
+
+---
+
+## 页面结构（10 个模块）
+
+| 模块 | 内容 | 视觉亮点 |
+|------|------|---------|
+| **① 导航 Nav** | Logo + 4 链接 + CTA | 毛玻璃 fixed + 滚动加深 + 移动端抽屉菜单 |
+| **② Hero 全屏** | 标题 + 副标题 + 双 CTA + 交互终端 | Three.js 粒子星系 + 鼠标视差 + 打字终端 |
+| **③ 数据统计** | 4 个大数字（插件数/用户数/代理数/星星数） | 计数动画 + 毛玻璃统计条 |
+| **④ 功能特性** | 6 个毛玻璃卡片（MCP/Agent/SmartBrain/多模型/多语言/安全） | 渐变边框 + hover 扫描线 + 交错入场 |
+| **⑤ MCP 插件生态** | 动态插件卡片网格 + 插件市场模拟 | 卡片呼吸发光 + 分类标签切换 |
+| **⑥ 交互式架构图** | MCP Server → Plugin System → Codey → SmartBrain 流程图 | SVG 动画 + 流动光点 + hover tooltip |
+| **⑦ 编码终端演示** | 实时命令行演示核心功能 | 打字效果 + 语法高亮 + 清屏循环 |
+| **⑧ SmartBrain 知识图谱** | 环形知识节点可视化 | Canvas/Three.js 力导向图 + 节点脉冲 |
+| **⑨ 定价方案** | 3 档（免费/专业/企业）+ 月/年切换 | 推荐卡片脉冲发光 + hover 上移 |
+| **⑩ FAQ + CTA + 页脚** | 手风琴 FAQ + 双按钮 CTA + 4 列页脚 | 毛玻璃手风琴 + 社交图标 |
+
+---
+
+## 增强炫酷度的关键创新
+
+### 相比现有版本的升级点
+
+| 方面 | 当前版本 | 新版增强 |
+|------|---------|---------|
+| **Hero 粒子** | 2000 粒子 + 连线 | 3000 粒子 + 双色渐变 + 鼠标拖尾效果 |
+| **背景装饰** | 无 | 动态网格线 + 浮动光球 + 径向渐变光晕 |
+| **终端演示** | 简单打字 | 多场景脚本 + 命令完成提示音效模拟 |
+| **SmartBrain** | 无 | 环形力导向知识图谱（Canvas 绘制） |
+| **MCP 插件展示** | 静态文本 | 动态卡片网格 + 分类筛选（安装/搜索/管理等） |
+| **架构图** | SVG 光点流动 | 增强版 SVG + 数据流脉冲动画 + 节点展开详情 |
+| **统计数字** | 简单计数器 | 带图标 + 后缀动画 + 滚动触发交错 |
+| **滚动动效** | 基础 fadeInUp | 视差分层 + 渐变色背景随滚动变化 |
+| **加载动画** | 无 | 页面加载时的粒子 Logo 动画 |
+| **微交互** | 有限 | 按钮水波纹 + 卡片倾斜跟随鼠标 + 链接下划线动画 |
+
+### 技术栈增强
+
+```javascript
+// 核心依赖（均 CDN defer 加载）
+- Three.js (r152+)      → 粒子星系 + 背景特效
+- Font Awesome 6        → 图标系统
+- Google Fonts (Inter + JetBrains Mono) → 字体
+- Canvas 原生绘制       → SmartBrain 知识图谱（无额外依赖）
+- IntersectionObserver  → 滚动触发动画
+- requestAnimationFrame → 所有高性能动画
+```
+
+---
+
+## 实施步骤（分 8 步执行）
+
+### Step 1 — 清理旧文件
+- 删除现有的 `index.html`
+- 保留 `DESIGN.md` 不动
+
+### Step 2 — 编写 HTML 骨架
+- 语义化结构：`<nav>` → `<section#hero>` → `<section#stats>` → `<section#features>` → `<section#plugins>` → `<section#architecture>` → `<section#terminal>` → `<section#smartbrain>` → `<section#pricing>` → `<section#faq>` → `<section#cta>` → `<footer>`
+- 每个 section 添加 `data-animate` 属性供 JS 识别
+
+### Step 3 — 编写 CSS Token 系统 + 基础样式
+- 从 `DESIGN.md` 复制所有 CSS 变量
+- Reset + 容器 + 网格 + section 通用样式
+- 所有关键帧动画（fadeInUp, scaleIn, pulseGlow, scanLine 等）
+- `.glass-card` 毛玻璃 + 渐变边框
+
+### Step 4 — 编写模块样式
+- 导航固定 + blur + 滚动效果 + 移动端 hamburger
+- Hero 全屏布局 + 粒子 canvas 定位 + 终端样式
+- 统计数字大号 mono 字体
+- 功能特性 3 列网格卡片
+- MCP 插件弹性网格 + 分类标签
+- 架构图 SVG 响应式
+- 终端模拟器样式
+- SmartBrain 知识图谱 canvas
+- 定价 3 列卡片卷
+- FAQ 手风琴样式
+- CTA 大区块样式
+- 页脚 4 列网格
+
+### Step 5 — 编写 JavaScript 核心功能
+1. **粒子系统** (`initParticles`) — Three.js 场景、粒子纹理、鼠标视差、`prefers-reduced-motion` 检测
+2. **导航交互** (`initNavigation`) — 滚动深度效果、hamburger 切换、平滑滚动
+3. **滚动动画** (`initScrollAnimations`) — IntersectionObserver 驱动
+4. **计数器** (`initCounters`) — requestAnimationFrame easeOutExpo
+5. **MCP 插件筛选** (`initPluginFilter`) — 分类标签切换 + 卡片动画
+6. **终端打字** (`initTerminal`) — 多脚本场景 + 自动循环
+7. **SmartBrain 知识图谱** (`initSmartBrain`) — Canvas 力导向图绘制
+8. **架构图动画** (`initArchAnimation`) — SVG 光点流动 + hover tooltip
+9. **FAQ 手风琴** (`initFaq`) — 折叠/展开 + aria 属性
+10. **定价切换** (`initPricingToggle`) — 月/年切换 + 价格更新
+11. **按钮水波纹** (`initRippleEffect`) — 点击波纹扩散
+12. **卡片鼠标跟随** (`initCardTilt`) — 3D 倾斜效果
+13. **窗口大小变化** (`onResize`) — 动态调整 Three.js + Canvas
+
+### Step 6 — 编写响应式降级
+- `<768px`: 禁用粒子 → CSS 渐变背景，4 列→1 列，简化终端，hamburger 菜单
+- `768-1023px`: 800 粒子，2 列网格，简化架构图
+- `prefers-reduced-motion`: 禁用所有动画
+
+### Step 7 — 无障碍 + 性能优化
+- 语义化 HTML + aria 属性
+- `:focus-visible` 轮廓
+- 所有图标 `aria-hidden="true"`
+- Three.js `defer` 加载不阻塞渲染
+- 字体 `display=swap` + preconnect
+
+### Step 8 — 验证与测试
+- 用 Python HTTP 服务器启动（`python -m http.server 8080`）
+- 浏览器截图验证视觉效果
+- 检查所有交互功能正常
+- 确认移动端响应式表现
+
+---
+
+## 关键文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `D:\5060ti16G\DESIGN.md` | 保持不动 | 设计系统已完善 |
+| `D:\5060ti16G\index.html` | **新建** | 单文件完整网站（预计 ~500KB/6000+ 行）|
+| `D:\5060ti16G\screenshot.png` | 可选 | 验证截图 |
+
+---
+
+## 潜在风险与应对
+
+| 风险 | 应对策略 |
+|------|---------|
+| Three.js CDN 加载失败 | `try-catch` 包裹，失败则用 CSS 渐变背景替代 |
+| `backdrop-filter` 不支持 | `@supports` 回退到实色背景 |
+| 文件过大（>5000 行） | CSS 变量复用 + 模块化 JS 函数 + 适当压缩注释 |
+| 移动端性能问题 | 动态降低粒子数 + 禁用 Canvas 知识图谱 |
+| `prefers-reduced-motion` | 全站动画检测该媒体查询并禁用 |
+| SmartBrain 力导向图性能 | 限制节点数（≤12）+ requestAnimationFrame 节流 |
+
+---
+
+## 上线检查清单
+
+- [ ] 所有链接正常（导航、CTA、社交图标）
+- [ ] 所有 section 滚动触发动画生效
+- [ ] 粒子背景流畅（2000 粒子 ≥30fps）
+- [ ] 终端打字循环正常工作
+- [ ] SmartBrain 知识图谱节点可交互
+- [ ] MCP 插件分类筛选动画流畅
+- [ ] 定价月/年切换正确更新价格
+- [ ] FAQ 折叠/展开正常
+- [ ] 移动端 hamburger 菜单可用
+- [ ] 键盘 Tab 导航可达所有交互元素
+- [ ] 页面加载无 JS 报错
+- [ ] 响应式断点 3 级均正常显示
+

@@ -3345,8 +3345,9 @@ impl ToolExecutor {
             content: Option<String>,
         }
 
-        let args: Args = serde_json::from_str(arguments)
-            .map_err(|e| crate::error::AppError::Custom(format!("Invalid edit_project_rules args: {e}")))?;
+        let args: Args = serde_json::from_str(arguments).map_err(|e| {
+            crate::error::AppError::Custom(format!("Invalid edit_project_rules args: {e}"))
+        })?;
 
         let rules_path = self.cwd.join(".rule.md");
 
@@ -3361,26 +3362,58 @@ impl ToolExecutor {
                 } else {
                     content
                 };
-                self.emit_tool_end(app_handle, thread_id, call_id, "edit_project_rules", 0, &result);
+                self.emit_tool_end(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "edit_project_rules",
+                    0,
+                    &result,
+                );
                 Ok(result)
             }
             "write" => {
                 let content = args.content.unwrap_or_default();
-                self.emit_tool_start(app_handle, thread_id, call_id, "edit_project_rules", "write");
+                self.emit_tool_start(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "edit_project_rules",
+                    "write",
+                );
                 match tokio::fs::write(&rules_path, &content).await {
                     Ok(()) => {
-                        let msg = format!("Successfully wrote project rules ({} bytes) to .rule.md", content.len());
-                        self.emit_tool_end(app_handle, thread_id, call_id, "edit_project_rules", 0, &msg);
+                        let msg = format!(
+                            "Successfully wrote project rules ({} bytes) to .rule.md",
+                            content.len()
+                        );
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "edit_project_rules",
+                            0,
+                            &msg,
+                        );
                         Ok(msg)
                     }
                     Err(e) => {
                         let msg = format!("Error writing .rule.md: {e}");
-                        self.emit_tool_end(app_handle, thread_id, call_id, "edit_project_rules", -1, &msg);
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "edit_project_rules",
+                            -1,
+                            &msg,
+                        );
                         Ok(msg)
                     }
                 }
             }
-            other => Ok(format!("Unknown action for edit_project_rules: {other}. Use 'read' or 'write'.")),
+            other => Ok(format!(
+                "Unknown action for edit_project_rules: {other}. Use 'read' or 'write'."
+            )),
         }
     }
 
@@ -4244,9 +4277,7 @@ impl ToolExecutor {
                 match state.external_browser.launch(&http, None, None).await {
                     Ok(endpoint) => {
                         // Also show the recording toggle
-                        app_handle
-                            .emit("recording-toggle-visibility", true)
-                            .ok();
+                        app_handle.emit("recording-toggle-visibility", true).ok();
                         serde_json::json!({
                             "ok": true,
                             "cdpEndpoint": endpoint,
@@ -4254,15 +4285,11 @@ impl ToolExecutor {
                         })
                         .to_string()
                     }
-                    Err(e) => {
-                        serde_json::json!({ "ok": false, "error": e }).to_string()
-                    }
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
                 }
             }
             "show_toggle" => {
-                app_handle
-                    .emit("recording-toggle-visibility", true)
-                    .ok();
+                app_handle.emit("recording-toggle-visibility", true).ok();
                 serde_json::json!({
                     "ok": true,
                     "message": "Recording toggle is now visible in the UI."
@@ -4270,9 +4297,7 @@ impl ToolExecutor {
                 .to_string()
             }
             "hide_toggle" => {
-                app_handle
-                    .emit("recording-toggle-visibility", false)
-                    .ok();
+                app_handle.emit("recording-toggle-visibility", false).ok();
                 serde_json::json!({
                     "ok": true,
                     "message": "Recording toggle hidden."
@@ -4311,33 +4336,25 @@ impl ToolExecutor {
                     .join(format!("{session_id}.trace.json"));
                 match tokio::fs::read_to_string(&trace_path).await {
                     Ok(content) => content,
-                    Err(e) => {
-                        serde_json::json!({
-                            "ok": false,
-                            "error": format!("Failed to read trace: {e}")
-                        })
-                        .to_string()
-                    }
+                    Err(e) => serde_json::json!({
+                        "ok": false,
+                        "error": format!("Failed to read trace: {e}")
+                    })
+                    .to_string(),
                 }
             }
             "list_traces" => {
                 let recordings_dir = self.workspace_config_dir.join("recordings");
                 match crate::recording::Recorder::list_traces(&recordings_dir).await {
-                    Ok(traces) => {
-                        serde_json::json!({ "ok": true, "traces": traces }).to_string()
-                    }
-                    Err(e) => {
-                        serde_json::json!({ "ok": false, "error": e }).to_string()
-                    }
+                    Ok(traces) => serde_json::json!({ "ok": true, "traces": traces }).to_string(),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
                 }
             }
-            other => {
-                serde_json::json!({
-                    "ok": false,
-                    "error": format!("Unknown recording_control action: {other}")
-                })
-                .to_string()
-            }
+            other => serde_json::json!({
+                "ok": false,
+                "error": format!("Unknown recording_control action: {other}")
+            })
+            .to_string(),
         };
 
         self.emit_tool_end(
@@ -4398,7 +4415,11 @@ impl ToolExecutor {
         let started_at_ms = now_millis();
 
         let provider_config = self.subagent_provider_config.lock().await.clone();
-        let model = args.model.as_deref().unwrap_or(&provider_config.model).to_string();
+        let model = args
+            .model
+            .as_deref()
+            .unwrap_or(&provider_config.model)
+            .to_string();
         let system_prompt = format!(
             "{}\n\nYou are a sub-agent with role: {}. Your working directory is: {}",
             provider_config.system_prompt_prefix,
@@ -4442,14 +4463,12 @@ impl ToolExecutor {
             max_output_tokens: provider_config.max_output_tokens,
         };
 
-        let tool_executor_for_subagent = Arc::new(
-            tokio::sync::RwLock::new(
-                ToolExecutor::with_workspace_config_dir(
-                    subagent_config.cwd.clone(),
-                    self.workspace_config_dir.clone(),
-                ),
+        let tool_executor_for_subagent = Arc::new(tokio::sync::RwLock::new(
+            ToolExecutor::with_workspace_config_dir(
+                subagent_config.cwd.clone(),
+                self.workspace_config_dir.clone(),
             ),
-        );
+        ));
 
         let (handle, result_rx) = crate::subagent_engine::spawn_subagent(
             subagent_config,
@@ -4460,7 +4479,10 @@ impl ToolExecutor {
             id.clone(),
         );
 
-        self.subagent_handles.lock().await.insert(id.clone(), handle);
+        self.subagent_handles
+            .lock()
+            .await
+            .insert(id.clone(), handle);
 
         let (output, exit_code) = if wait {
             let result =
@@ -4489,9 +4511,12 @@ impl ToolExecutor {
                     crate::subagent_engine::SubagentStatus::Failed { error } => {
                         ("failed", None, Some(error), Some(1))
                     }
-                    crate::subagent_engine::SubagentStatus::TimedOut => {
-                        ("timed_out", None, Some("Subagent timed out".to_string()), Some(124))
-                    }
+                    crate::subagent_engine::SubagentStatus::TimedOut => (
+                        "timed_out",
+                        None,
+                        Some("Subagent timed out".to_string()),
+                        Some(124),
+                    ),
                     crate::subagent_engine::SubagentStatus::Cancelled => {
                         ("closed", None, None, None)
                     }
@@ -4717,11 +4742,20 @@ impl ToolExecutor {
                     if record.status == "running" {
                         let msg = format!("Subagent {target} is already running");
                         self.emit_tool_end(
-                            app_handle, thread_id, call_id, "resume_agent", -1, &msg,
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "resume_agent",
+                            -1,
+                            &msg,
                         );
                         return Ok(msg);
                     }
-                    (record.status.clone(), record.prompt.clone(), record.cwd.clone())
+                    (
+                        record.status.clone(),
+                        record.prompt.clone(),
+                        record.cwd.clone(),
+                    )
                 }
             }
         };
@@ -4761,11 +4795,9 @@ impl ToolExecutor {
         }
         persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
 
-        let tool_executor_for_subagent = Arc::new(
-            tokio::sync::RwLock::new(
-                ToolExecutor::with_workspace_config_dir(cwd, self.workspace_config_dir.clone()),
-            ),
-        );
+        let tool_executor_for_subagent = Arc::new(tokio::sync::RwLock::new(
+            ToolExecutor::with_workspace_config_dir(cwd, self.workspace_config_dir.clone()),
+        ));
 
         let (handle, result_rx) = crate::subagent_engine::spawn_subagent(
             subagent_config,
@@ -4776,7 +4808,10 @@ impl ToolExecutor {
             target.clone(),
         );
 
-        self.subagent_handles.lock().await.insert(target.clone(), handle);
+        self.subagent_handles
+            .lock()
+            .await
+            .insert(target.clone(), handle);
 
         // Spawn background updater
         let subagents_clone = self.subagents.clone();
@@ -4792,9 +4827,12 @@ impl ToolExecutor {
                     crate::subagent_engine::SubagentStatus::Failed { error } => {
                         ("failed", None, Some(error), Some(1))
                     }
-                    crate::subagent_engine::SubagentStatus::TimedOut => {
-                        ("timed_out", None, Some("Subagent timed out".to_string()), Some(124))
-                    }
+                    crate::subagent_engine::SubagentStatus::TimedOut => (
+                        "timed_out",
+                        None,
+                        Some("Subagent timed out".to_string()),
+                        Some(124),
+                    ),
                     crate::subagent_engine::SubagentStatus::Cancelled => {
                         ("closed", None, None, None)
                     }
@@ -7503,7 +7541,12 @@ impl ToolExecutor {
         });
 
         let bing_output = self
-            .exec_browser_run(&browser_args_bing.to_string(), call_id, app_handle, thread_id)
+            .exec_browser_run(
+                &browser_args_bing.to_string(),
+                call_id,
+                app_handle,
+                thread_id,
+            )
             .await;
 
         if let Ok(ref raw) = bing_output {

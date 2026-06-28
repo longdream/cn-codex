@@ -204,7 +204,10 @@ impl BM25Index {
         let filtered_docs: Vec<&IndexedDocument> = if filter.is_empty() {
             self.documents.iter().collect()
         } else {
-            self.documents.iter().filter(|d| filter.matches(d)).collect()
+            self.documents
+                .iter()
+                .filter(|d| filter.matches(d))
+                .collect()
         };
 
         if filtered_docs.is_empty() {

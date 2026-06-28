@@ -129,9 +129,7 @@ pub async fn recording_show_toggle(app_handle: AppHandle, visible: bool) -> AppR
 
 /// List saved recording traces.
 #[tauri::command]
-pub async fn recording_list_traces(
-    state: State<'_, AppState>,
-) -> AppResult<Vec<TraceListEntry>> {
+pub async fn recording_list_traces(state: State<'_, AppState>) -> AppResult<Vec<TraceListEntry>> {
     let recordings_dir = state.workspace_config_dir.join("recordings");
     if !recordings_dir.exists() {
         return Ok(Vec::new());

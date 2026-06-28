@@ -14,7 +14,7 @@ import type { ProviderConfig, ProviderPreset, ProviderModel, AttachedFile } from
 
 export const GENERAL_PROJECT_ID = "__general__";
 
-export type ChatMode = "chat" | "goal";
+export type ChatMode = "chat" | "plan" | "goal";
 export type GoalStatus = ThreadGoalStatus;
 export type ThreadGoal = ApiThreadGoal;
 
@@ -95,6 +95,11 @@ export interface ToolCallItem {
   patchProgress?: PatchProgressChange[];
 }
 
+export interface PlanFile {
+  path: string;
+  content: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -104,6 +109,7 @@ export interface ChatMessage {
   commandStatus?: string;
   fileChanges?: { path: string; action: string }[];
   runSummary?: RunSummary;
+  planFile?: PlanFile;
 }
 
 export interface ThreadSummary {
@@ -366,7 +372,7 @@ function normalizeRunSummary(turn: RawTurn): RunSummary | null {
 
   return {
     turnId: turn.id,
-    mode: turn.mode === "goal" ? "goal" : "chat",
+    mode: turn.mode === "goal" ? "goal" : turn.mode === "plan" ? "plan" : "chat",
     cwd: turn.cwd ?? undefined,
     startedAt: turn.startedAt ? toMillis(turn.startedAt) : undefined,
     completedAt: turn.completedAt ? toMillis(turn.completedAt) : undefined,
@@ -876,6 +882,7 @@ interface AppState {
   streamingLabel: string;
   isStreaming: boolean;
   chatMode: ChatMode;
+  latestPlanContent: string | null;
   currentGoal: ThreadGoal | null;
   showSettings: boolean;
   rightPanelVisible: boolean;
@@ -985,6 +992,7 @@ interface AppState {
   setStreaming: (v: boolean) => void;
   setStreamingLabel: (label: string) => void;
   setChatMode: (mode: ChatMode) => void;
+  setLatestPlanContent: (content: string | null) => void;
   setCurrentGoal: (goal: ThreadGoal | null) => void;
   setShowSettings: (v: boolean) => void;
   setRightPanelVisible: (v: boolean) => void;
@@ -1046,6 +1054,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   streamingLabel: "",
   isStreaming: false,
   chatMode: "chat",
+  latestPlanContent: null,
   currentGoal: null,
   showSettings: false,
   autoApprove: false,
@@ -1211,6 +1220,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentTurnId: null,
       currentGoal: null,
       chatMode: "chat",
+      latestPlanContent: null,
       pendingMessageQueue: [],
     });
   },
@@ -1739,6 +1749,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setStreaming: (v) => set(v ? { isStreaming: true } : { isStreaming: false, streamingLabel: "" }),
   setStreamingLabel: (label) => set({ streamingLabel: label }),
   setChatMode: (mode) => set({ chatMode: mode }),
+  setLatestPlanContent: (content) => set({ latestPlanContent: content }),
   setCurrentGoal: (goal) => set({ currentGoal: normalizeThreadGoal(goal) }),
   setShowSettings: (v) => set({ showSettings: v }),
   setAutoApprove: (v) => {
@@ -1810,6 +1821,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           isStreaming: false,
           currentTurnId: null,
           currentGoal: null,
+          latestPlanContent: null,
           pendingMessageQueue: [],
           pendingFileReviews: {},
           ...(isGeneral ? { chatMode: "chat" as ChatMode } : {}),

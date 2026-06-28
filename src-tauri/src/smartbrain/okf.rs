@@ -246,7 +246,10 @@ Some body text here.
         let doc = parse_document(content).unwrap();
         assert_eq!(doc.frontmatter.concept_type, "Knowledge");
         assert_eq!(doc.frontmatter.title.as_deref(), Some("Test Doc"));
-        assert_eq!(doc.frontmatter.description.as_deref(), Some("A test document"));
+        assert_eq!(
+            doc.frontmatter.description.as_deref(),
+            Some("A test document")
+        );
         assert_eq!(doc.frontmatter.tags, vec!["rust", "testing"]);
         assert!(doc.body.contains("# Content"));
         assert!(doc.body.contains("Some body text here."));
@@ -283,7 +286,11 @@ Some body text here.
     #[test]
     fn generate_index_md_with_version() {
         let entries = vec![
-            ("docs/test.md".into(), "Test Doc".into(), Some("A test".into())),
+            (
+                "docs/test.md".into(),
+                "Test Doc".into(),
+                Some("A test".into()),
+            ),
             ("docs/other.md".into(), "Other".into(), None),
         ];
         let result = generate_index_md("Knowledge Base", &entries, Some("0.1"));

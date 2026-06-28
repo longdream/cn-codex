@@ -37,15 +37,17 @@ import type { ChatMessage, RunSummary, ToolCallItem } from "../../stores/appStor
 import { useAppStore } from "../../stores/appStore";
 import { formatDuration } from "../../utils/formatDuration";
 import { CodeBlock } from "./CodeBlock";
+import { PlanCard } from "./PlanCard";
 
 interface MessageListProps {
   messages: ChatMessage[];
   streamingText: string;
   streamingLabel: string;
   isStreaming: boolean;
+  onExecutePlan?: (planContent: string) => void;
 }
 
-export function MessageList({ messages, streamingText, streamingLabel, isStreaming }: MessageListProps) {
+export function MessageList({ messages, streamingText, streamingLabel, isStreaming, onExecutePlan }: MessageListProps) {
   const intl = useIntl();
   const initialized = useAppStore((state) => state.initialized);
   const initError = useAppStore((state) => state.initError);
@@ -105,6 +107,7 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
             message={message}
             messageIndex={index}
             sourceMessages={messages}
+            onExecutePlan={onExecutePlan}
           />
         ))}
 
@@ -144,11 +147,22 @@ function MessageRow({
   message,
   messageIndex,
   sourceMessages,
+  onExecutePlan,
 }: {
   message: ChatMessage;
   messageIndex: number;
   sourceMessages: ChatMessage[];
+  onExecutePlan?: (planContent: string) => void;
 }) {
+  if (message.planFile) {
+    return (
+      <PlanCard
+        planFile={message.planFile}
+        onExecute={(content) => onExecutePlan?.(content)}
+      />
+    );
+  }
+
   if (message.runSummary) {
     return (
       <RunSummaryCard

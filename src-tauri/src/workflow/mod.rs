@@ -144,7 +144,7 @@ pub fn delete_workflow(workspace_config_dir: &Path, name: &str) -> Result<(), St
 mod tests {
     use std::collections::HashMap;
 
-    use super::{load_workflow, save_workflow, workflows_dir, WorkflowDef, WorkflowNode};
+    use super::{WorkflowDef, WorkflowNode, load_workflow, save_workflow, workflows_dir};
 
     fn sample_workflow(created_at: &str) -> WorkflowDef {
         WorkflowDef {

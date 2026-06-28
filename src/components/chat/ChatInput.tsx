@@ -2,6 +2,7 @@ import {
   IconArrowUp,
   IconBrain,
   IconChevronDown,
+  IconClipboardList,
   IconCpu,
   IconFile,
   IconFolder,
@@ -370,6 +371,12 @@ export function ChatInput({
     if (goalCommand) {
       goalCommand.action = () => {
         setMode("goal");
+      };
+    }
+    const planCommand = defaults.find((command) => command.name === "plan");
+    if (planCommand) {
+      planCommand.action = () => {
+        setMode("plan");
       };
     }
     const skillCommand = defaults.find((command) => command.name === "skill");
@@ -870,10 +877,13 @@ export function ChatInput({
           commands={slashPanelCommands}
           onSelect={(command) => {
             command.action();
-            if (command.name === "plan" || command.name === "help" || command.name === "compact") {
+            if (command.name === "help" || command.name === "compact") {
               if (!goalRunning) {
                 onSend(`/${command.name}`, mode, []);
               }
+              setText("");
+            }
+            if (command.name === "plan") {
               setText("");
             }
             if (command.closeOnSelect !== false) {
@@ -1024,6 +1034,19 @@ export function ChatInput({
               }`}
             >
               {intl.formatMessage({ id: "chat.mode.chat" })}
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === "plan"}
+              onClick={() => setMode("plan")}
+              className={`flex h-6 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition-colors ${
+                mode === "plan"
+                  ? "bg-[var(--chat-card-solid)] text-[var(--chat-prose)] shadow-[var(--shadow-soft)]"
+                  : "text-[var(--chat-muted)] hover:text-[var(--chat-prose)]"
+              }`}
+            >
+              <IconClipboardList size={13} stroke={1.8} />
+              {intl.formatMessage({ id: "chat.mode.plan" })}
             </button>
             <button
               type="button"

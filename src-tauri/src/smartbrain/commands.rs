@@ -44,21 +44,20 @@ pub async fn smartbrain_read_experience(
     let raw_path = experiences_dir.join("raw").join(format!("{thread_id}.md"));
 
     let raw_content = std::fs::read_to_string(&raw_path).unwrap_or_default();
-    let (content, frontmatter) =
-        if let Some(doc) = super::okf::parse_document(&raw_content) {
-            (
-                doc.body,
-                serde_json::json!({
-                    "type": doc.frontmatter.concept_type,
-                    "title": doc.frontmatter.title,
-                    "description": doc.frontmatter.description,
-                    "tags": doc.frontmatter.tags,
-                    "timestamp": doc.frontmatter.timestamp,
-                }),
-            )
-        } else {
-            (raw_content, serde_json::Value::Null)
-        };
+    let (content, frontmatter) = if let Some(doc) = super::okf::parse_document(&raw_content) {
+        (
+            doc.body,
+            serde_json::json!({
+                "type": doc.frontmatter.concept_type,
+                "title": doc.frontmatter.title,
+                "description": doc.frontmatter.description,
+                "tags": doc.frontmatter.tags,
+                "timestamp": doc.frontmatter.timestamp,
+            }),
+        )
+    } else {
+        (raw_content, serde_json::Value::Null)
+    };
 
     Ok(serde_json::json!({
         "thread_id": thread_id,
@@ -122,21 +121,20 @@ pub async fn smartbrain_read_knowledge(
     let doc_path = knowledge_dir.join("docs").join(format!("{doc_id}.md"));
 
     let raw_content = std::fs::read_to_string(&doc_path).unwrap_or_default();
-    let (content, frontmatter) =
-        if let Some(doc) = super::okf::parse_document(&raw_content) {
-            (
-                doc.body,
-                serde_json::json!({
-                    "type": doc.frontmatter.concept_type,
-                    "title": doc.frontmatter.title,
-                    "description": doc.frontmatter.description,
-                    "tags": doc.frontmatter.tags,
-                    "timestamp": doc.frontmatter.timestamp,
-                }),
-            )
-        } else {
-            (raw_content, serde_json::Value::Null)
-        };
+    let (content, frontmatter) = if let Some(doc) = super::okf::parse_document(&raw_content) {
+        (
+            doc.body,
+            serde_json::json!({
+                "type": doc.frontmatter.concept_type,
+                "title": doc.frontmatter.title,
+                "description": doc.frontmatter.description,
+                "tags": doc.frontmatter.tags,
+                "timestamp": doc.frontmatter.timestamp,
+            }),
+        )
+    } else {
+        (raw_content, serde_json::Value::Null)
+    };
 
     Ok(serde_json::json!({
         "doc_id": doc_id,
@@ -221,12 +219,7 @@ pub async fn smartbrain_search(
             timestamp_after: None,
             timestamp_before: None,
         };
-        super::search::unified_search_with_filter(
-            &bm25_path,
-            &query,
-            top_k.unwrap_or(10),
-            filter,
-        )
+        super::search::unified_search_with_filter(&bm25_path, &query, top_k.unwrap_or(10), filter)
     } else {
         super::search::unified_search(&bm25_path, &query, top_k.unwrap_or(10))
     };
@@ -243,9 +236,7 @@ pub async fn smartbrain_rebuild_index(state: State<'_, AppState>) -> AppResult<s
 
 /// Migrate existing non-OKF markdown files to OKF format by adding frontmatter.
 #[tauri::command]
-pub async fn smartbrain_migrate_to_okf(
-    state: State<'_, AppState>,
-) -> AppResult<serde_json::Value> {
+pub async fn smartbrain_migrate_to_okf(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
     use super::okf::{self, OkfDocument, OkfFrontmatter};
 
     let knowledge_dir = super::knowledge_dir(&state.workspace_config_dir);

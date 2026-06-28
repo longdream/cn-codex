@@ -355,6 +355,15 @@ export function ChatPage() {
   const effectiveMode = isGeneralMode ? "chat" : chatMode;
   const showEmpty = messages.length === 0 && !isStreaming;
 
+  const handleExecutePlan = useCallback(
+    (planContent: string) => {
+      useAppStore.getState().setChatMode("goal");
+      const prefix = "请根据以下计划执行实施：\n\n";
+      handleSend(`${prefix}${planContent}`, "goal");
+    },
+    [handleSend],
+  );
+
   const handleAddProject = useCallback(async () => {
     try {
       const selected = await open({ directory: true, multiple: false });
@@ -417,6 +426,7 @@ export function ChatPage() {
             streamingText={streamingText}
             streamingLabel={streamingLabel}
             isStreaming={isStreaming}
+            onExecutePlan={handleExecutePlan}
           />
         </>
       )}

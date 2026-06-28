@@ -1,0 +1,91 @@
+# CN-Codex 炫酷企业网站实施计划
+
+## 概述
+基于已有的完整 `DESIGN.md`（Neo-Stripe 风格：Stripe 企业规范 × 赛博朋克视觉），创建单文件 `index.html`（内联 CSS + JS + CDN 依赖），实现一个炫酷的 CN-Codex 企业官网。
+
+## 实施步骤
+
+### Step 1: 保留 DESIGN.md，编写 index.html
+`index.html` 已是空文件，无需额外清理。`DESIGN.md` 保持原样作为设计源。
+
+### Step 2: 构建 HTML 框架
+- **字体预加载**: Google Fonts（Inter + JetBrains Mono）
+- **CSS 变量**: 从 DESIGN.md 复制所有 Token 系统（色彩、排版、间距、圆角、阴影、动效）
+- **语义化结构**: `<nav>`, `<section>`, `<article>`, `<header>`, `<footer>`, `<main>`
+- **响应式视口**: `<meta name="viewport">` + CSS 断点
+
+### Step 3: 实现各页面模块
+
+| # | 模块 | 关键特性 | 文件位置 |
+|---|------|---------|---------|
+| 1 | **导航栏 NAV** | fixed top, blur 毛玻璃, 渐变底部边框, hamburger 移动端菜单, 滚动加深背景 | `index.html`（内联）|
+| 2 | **Hero 区域** | 全屏 Three.js 粒子星系背景, 大号标题, 副标题, 双 CTA 按钮, 终端打字效果 | `index.html`（内联）|
+| 3 | **特性网格 FEATURES** | 3列（响应式降级）, 毛玻璃卡片, 渐变伪边框, hover 扫描线动画, 每卡片含图标+标题+描述 | `index.html`（内联）|
+| 4 | **交互式架构图 ARCHITECTURE** | SVG 4节点（MCP Server→Plugin System→Codey Agents→SmartBrain）, 渐变连线, 流动光点, 节点 hover tooltip, 移动端降级为列表 | `index.html`（内联）|
+| 5 | **统计数字 STATS** | 4列大号数字, 等宽字体, 品牌色, requestAnimationFrame 计数动画（easeOutExpo, 2s）, IntersectionObserver 触发 | `index.html`（内联）|
+| 6 | **编码终端 TERMINAL** | 毛玻璃终端窗口, 逐字打字效果, 语法高亮（品牌配色）, 光标闪烁, 循环演示 CN-Codex 配置示例 | `index.html`（内联）|
+| 7 | **定价方案 PRICING** | 3列, 毛玻璃卡片, 月/年切换, "最受欢迎"推荐标签（脉冲发光边框）, 功能列表勾号/叉号 | `index.html`（内联）|
+| 8 | **FAQ 手风琴** | 居中最大 800px, 毛玻璃项, 品牌色展开/收起图标, max-height 过渡动画 | `index.html`（内联）|
+| 9 | **底部 CTA 区块** | 大号标题 + 渐变 CTA 按钮, 装饰性浮动光点背景 | `index.html`（内联）|
+| 10 | **页脚 FOOTER** | 4列（响应式降级）, Logo+描述, 链接列表, 社交图标, 版权信息, 顶部毛玻璃分割线 | `index.html`（内联）|
+
+### Step 4: 实现关键交互与动画
+
+- **Three.js 粒子星系**: 2000 粒子（桌面）/ 800（平板）/ 禁用（移动端）, 鼠标视差效果, 粒子间连线
+- **IntersectionObserver 滚动驱动动画**: 所有 section 在可见时触发 fadeInUp/scaleIn 入场
+- **计数动画**: requestAnimationFrame + easeOutExpo
+- **终端打字机**: 逐字输出配置代码, 随机间隔, 清屏循环
+- **导航滚动监听**: scrollY > 50 加深背景
+- **FAQ 展开/收起**: 点击切换 max-height
+- **定价月/年切换**: 价格数字更新 + 小动画
+- **`prefers-reduced-motion`**: 尊重用户偏好，禁用非必要动画
+
+### Step 5: 响应式降级
+
+| 断点 | 关键变化 |
+|------|---------|
+| ≥1024px | 完整体验：2000粒子+连线, 4行终端, 交互式SVG, 3列网格, 完整导航 |
+| 768-1023px | 800粒子（无连线）, 4行终端, 2列网格, 轻量视差 |
+| <768px | 无Three.js（CSS渐变背景替代）, 3行终端精简版, 特性/定价1列, 架构图列表展示, Hamburger菜单 |
+
+### Step 6: 无障碍与性能
+
+- 语义化 HTML + aria 属性
+- `:focus-visible` 轮廓
+- 对比度 ≥7:1 / ≥4.5:1
+- Three.js 和 Font Awesome 使用 `defer` 懒加载
+- 所有 CSS 变量引用，零硬编码值
+
+## 关键文件清单
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `DESIGN.md` | **保留不动** | 已有完整 Neo-Stripe 设计系统，直接引用 |
+| `index.html` | **新建** | 单文件企业官网（~800-1200行，内联 CSS + JS + CDN） |
+
+## 风险与应对
+
+| 风险 | 应对 |
+|------|------|
+| Three.js CDN 加载失败 | `window.onerror` 捕获 → 隐藏 canvas → CSS radial-gradient 装饰背景 |
+| `backdrop-filter` 不支持 | `@supports not (backdrop-filter: blur())` → 实色背景备选 |
+| 动画阻塞移动端体验 | 移动端降级禁用重量级动效 + `prefers-reduced-motion` 全面支持 |
+| 字体 FOIT/FOUT | `font-display: swap` + `preconnect` dns-prefetch |
+| 单文件行数过多 | 保持内联 CSS/JS 组织清晰，节与节之间注释分隔 |
+
+## 验证策略
+
+1. 本地启动静态服务器验证：`python -m http.server 8080`（推荐，Windows 稳定）
+2. 检查点清单：
+   - [ ] 所有 CSS Token 使用 `var(--)` 引用
+   - [ ] 响应式断点正确（≥1024px / 768-1023px / <768px）
+   - [ ] 导航栏 fixed 定位 + 毛玻璃效果
+   - [ ] Three.js 粒子渲染且渲染性能良好
+   - [ ] 所有滚动入场动画正常工作
+   - [ ] 终端打字效果循环播放
+   - [ ] FAQ 展开/收起动画流畅
+   - [ ] 计数动画从 0 增长到目标值
+   - [ ] 移动端 Hamburger 菜单正常
+   - [ ] 无控制台 JS 报错
+   - [ ] 无硬编码颜色值
+</proposed_plan>

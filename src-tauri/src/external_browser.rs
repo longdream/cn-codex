@@ -86,10 +86,7 @@ impl ExternalBrowser {
 
         let mut cmd = Command::new(&browser_path);
         cmd.arg(format!("--remote-debugging-port={port}"))
-            .arg(format!(
-                "--user-data-dir={}",
-                user_data_path.display()
-            ))
+            .arg(format!("--user-data-dir={}", user_data_path.display()))
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
             .arg("--start-maximized");

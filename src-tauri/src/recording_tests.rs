@@ -47,7 +47,10 @@ fn recording_event_deserializes_from_browser_json() {
     assert_eq!(event.timestamp, 1750000000000);
     assert_eq!(event.url, "https://example.com");
     assert_eq!(event.selector, "#login-btn");
-    assert_eq!(event.selector_candidates, vec!["#login-btn", "button.login"]);
+    assert_eq!(
+        event.selector_candidates,
+        vec!["#login-btn", "button.login"]
+    );
     assert_eq!(event.tag_name, "button");
     assert!(event.value.is_none());
     assert!(event.screenshot.is_none());
@@ -126,10 +129,7 @@ fn trace_file_roundtrip() {
     assert_eq!(deserialized.events.len(), 2);
     assert_eq!(deserialized.events[0].event_type, "click");
     assert_eq!(deserialized.events[1].event_type, "type");
-    assert_eq!(
-        deserialized.events[1].value,
-        Some("hello".to_string())
-    );
+    assert_eq!(deserialized.events[1].value, Some("hello".to_string()));
 }
 
 #[test]
@@ -244,18 +244,16 @@ async fn list_traces_reads_valid_trace_files() {
         start_url: "https://example.com".to_string(),
         started_at: "2026-06-21T10:00:00Z".to_string(),
         stopped_at: "2026-06-21T10:05:00Z".to_string(),
-        events: vec![
-            RecordingEvent {
-                event_type: "click".to_string(),
-                timestamp: 1000,
-                url: "https://example.com".to_string(),
-                selector: "#btn".to_string(),
-                selector_candidates: vec!["#btn".to_string()],
-                tag_name: "button".to_string(),
-                value: None,
-                screenshot: None,
-            },
-        ],
+        events: vec![RecordingEvent {
+            event_type: "click".to_string(),
+            timestamp: 1000,
+            url: "https://example.com".to_string(),
+            selector: "#btn".to_string(),
+            selector_candidates: vec!["#btn".to_string()],
+            tag_name: "button".to_string(),
+            value: None,
+            screenshot: None,
+        }],
     };
 
     let path = temp_dir.path().join("test-123.trace.json");

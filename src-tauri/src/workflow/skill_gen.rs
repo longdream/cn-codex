@@ -40,7 +40,10 @@ pub fn generate_skill_md(def: &WorkflowDef) -> String {
                 .as_ref()
                 .map(|d| format!(" (默认: {d})"))
                 .unwrap_or_default();
-            out.push_str(&format!("- `{{{{{name}}}}}`: {}{default_str}\n", var.description));
+            out.push_str(&format!(
+                "- `{{{{{name}}}}}`: {}{default_str}\n",
+                var.description
+            ));
         }
         out.push_str("\n");
     }

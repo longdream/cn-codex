@@ -1,0 +1,135 @@
+# 🚀 CN-Codex 炫酷企业网站 — 重建计划
+
+## 总体思路
+
+遵循 `awesome-design-md` 工作流的严格四步法：
+1. **确定风格源** → Neo-Stripe（Stripe 企业规范 × 赛博朋克视觉震撼）
+2. **完善 DESIGN.md** → 全面升级设计 Token 体系
+3. **构建 index.html** → 严格遵循 Token 实现，注重视觉冲击与交互细节
+4. **一致性验证** → 确保所有组件使用同一 Token 语言
+
+---
+
+## 实施步骤
+
+### 步骤 1：清空现有内容
+- 删除 `DESIGN.md`
+- 删除 `index.html`
+
+### 步骤 2：创建升级版 DESIGN.md
+
+在原有设计系统基础上，**强化以下维度**：
+
+| 领域 | 升级方向 |
+|------|---------|
+| **色彩** | 增加 `--primary-deep` 深紫新潮色、`--glow-core` 核心发光变量、渐变色阶梯度 |
+| **排版** | 引入 `clamp()` 流体排版系统，增加 `--font-weight-*` 权重变量族 |
+| **网格系统** | 定义明确的 12 列响应式网格规则 |
+| **组件规范** | 细化定价卡片（推荐标签脉冲边框 + 发光 CTA）、FAQ 手风琴、页脚链接分组、移动端 hamburger 菜单 |
+| **微交互** | 增加滚动进度条、数字计数器粒子爆发、卡片 Hover 光晕扫描线、导航毛玻璃滚动过渡 |
+| **CSS 动画库** | 定义 `fadeInUp` / `fadeInLeft` / `fadeInRight` / `scaleIn` / `pulseGlow` / `gradientShift` 等可复用关键帧 |
+| **性能预算** | Three.js 粒子数、懒加载策略、`prefers-reduced-motion` 严格降级 |
+| **无障碍** | `:focus-visible` 轮廓规范、aria 属性清单、键盘导航顺序 |
+
+### 步骤 3：构建炫酷 index.html
+
+按照 **DESIGN.md 的所有 Token** 构建以下页面模块（从现存实现中择优+全面升级）：
+
+#### 3.1 页面结构（自上而下）
+
+| 模块 | 核心亮点 |
+|------|---------|
+| **🌌 Hero 区域** | 全屏 Three.js 粒子星系背景（2000粒子+连线+鼠标视差）+ 左侧主标题打字动画 + 右侧编码终端实时打字效果 + 双 CTA 按钮 + 底部滚动指示器 |
+| **✨ 特性网格** | 3列毛玻璃卡片（渐变伪边框），每卡含 Font Awesome 图标 + 标题 + 描述 + Hover 扫描线动画 + 交错入场 |
+| **🏗️ 架构图区** | 交互式 SVG 从左到右展示 MCP Server → Plugin System → Codey Agents → SmartBrain，节点毛玻璃+渐变边框，Hover 弹出 tooltip 详情 + 数据流光点沿连线运动 |
+| **📊 数据统计** | 4 个大数字（500+插件、50+工具、10000+开发者、99.9%可用率），等宽字体 + 从 0 递增计数动画 + 粒子爆发效果 |
+| **💻 实时编码终端** | macOS 红绿灯窗口 + 多行代码打字循环（命令语法高亮：关键字紫、字符串绿、注释粉、数字琥珀） |
+| **💎 定价方案** | 3 列定价卡片（免费/专业/企业），推荐卡片脉冲发光边框 + CTA 按钮霓虹光效 + hover 动画 |
+| **❓ FAQ 手风琴** | 毛玻璃背景，点击展开/收起，平滑高度过渡动画，品牌色高亮激活项 |
+| **📝 CTA 区块** | 大号标题 + 渐变按钮 + 背景浮动装饰圆，引导注册/下载 |
+| **🔻 页脚** | 4 列链接 + 社交图标 + 版权信息，毛玻璃顶部分割线 |
+
+#### 3.2 交互特效清单
+
+| 特效 | 实现方式 | 适用模块 |
+|------|---------|---------|
+| 粒子星系 | Three.js（CDN 懒加载） | Hero |
+| 打字机效果 | 原生 JS 逐字渲染 + 光标闪烁 | 标题 + 终端 |
+| 滚动入场动画 | IntersectionObserver | 所有模块 |
+| 数字递增计数 | requestAnimationFrame + easeOutExpo | 统计数据 |
+| 卡片 Hover 扫描线 | CSS `background` 动画 | 特性卡片 |
+| 价格推荐脉冲边框 | CSS `@keyframes pulseBorder` | 定价卡片 |
+| FAQ 展开/收起 | JS 切换 `max-height` + `opacity` | FAQ |
+| 导航滚动变色 | scroll 事件监听 | 导航栏 |
+| 架构图连线光点 | SVG `<circle>` + JS 沿 path 运动 | 架构图 |
+| 视差滚动背景 | scroll 事件比例映射 | Hero + 装饰层 |
+| 主题色渐变背景 | CSS `@keyframes gradientShift` | CTA 区块 |
+| 移动端 hamburger | JS toggle + CSS 变换动画 | 导航 |
+
+#### 3.3 响应式断点
+
+| 断点 | 调整策略 |
+|------|---------|
+| >1024px | 完整特效：3列网格、2000粒子、交互 SVG、全尺寸终端 |
+| 768-1024px | 轻度降级：2列网格、800粒子、静态 SVG、缩小终端、3列架构图 |
+| <768px | 重度降级：1列堆叠、0粒子（CSS渐变替代）、精简终端（3行代码）、架构图列表展示、hamburger 菜单 |
+
+#### 3.4 性能优化
+
+- Three.js 采用 `defer` 加载，不阻塞页面渲染
+- 移动端完全禁用 Three.js 粒子，改用 CSS `radial-gradient` 装饰
+- `IntersectionObserver` 实现懒滚动动画，非可见区域不触发
+- 所有动画尊重 `prefers-reduced-motion`
+- 图标使用 Font Awesome 6 CDN（`defer`）
+- 字体使用 `preconnect` + `swap` 策略
+
+### 步骤 4：验证一致性
+
+- ✅ 所有 CSS 值引用 `var(--token-name)`，无硬编码值
+- ✅ 同一色系、同一圆角体系贯穿全站
+- ✅ CTA 语义一致（"开始使用"统一风格）
+- ✅ 毛玻璃参数统一（`backdrop-filter: blur(16px)` + 渐变伪边框）
+- ✅ 响应式降级策略符合 DESIGN.md 规范
+- ✅ 无障碍：`focus-visible`、`aria-label`、语义化 HTML 结构
+
+---
+
+## 关键文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `DESIGN.md` | 删除 → 重建 | 升级版 Neo-Stripe 设计系统，约 300+ 行 Markdown |
+| `index.html` | 删除 → 新建 | 单页企业官网，约 800-1000 行（内联 CSS + 内联 JS + CDN） |
+
+## 风险与边界情况
+
+| 风险 | 缓解策略 |
+|------|---------|
+| Three.js CDN 加载失败 | `typeof THREE === 'undefined'` 检测，隐藏 canvas，CSS 渐变背景作为优雅降级 |
+| `backdrop-filter` 不被支持 | `@supports not` 规则提供实色背景回退 |
+| `prefers-reduced-motion` 变化 | 监听 `change` 事件动态禁用动画 |
+| 字体加载闪烁 (FOUT) | `font-display: swap` + 系统后备字体 |
+| 移动端性能 | 零粒子 + 禁用视差 + 精简动画 |
+| 浏览器兼容性 | 使用标准 CSS 特性，避免实验性属性 |
+
+## 测试策略
+
+| 测试 | 方式 |
+|------|------|
+| 视觉验证 | `python -m http.server 8080` 本地启动，浏览器打开检查 |
+| 响应式测试 | Chrome DevTools 各断点（375px / 768px / 1024px / 1440px） |
+| 特效验证 | 检查 Three.js 渲染、打字机循环、数字递增、滚动入场 |
+| 性能检查 | DevTools Performance 面板，确认无长任务/布局抖动 |
+| 无障碍检查 | 键盘 Tab 导航 + Lighthouse 无障碍审计 |
+| 降级测试 | DevTools Rendering 勾选 `prefers-reduced-motion` |
+
+---
+
+## 实施顺序
+
+1. **Step 1**: 清空 `DESIGN.md` 和 `index.html`（使用 `write_file` 清空或 `apply_patch` delete）
+2. **Step 2**: 创建升级版 `DESIGN.md`
+3. **Step 3**: 基于 DESIGN.md 构建 `index.html`
+4. **Step 4**: 启动本地服务器做视觉验证
+5. **Step 5**: 根据验证结果做微调优化
+

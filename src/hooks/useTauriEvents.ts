@@ -59,7 +59,7 @@ function runSummaryFromTurn(turn: TurnEventPayload["turn"]): RunSummary | null {
 
   return {
     turnId: turn.id,
-    mode: turn.mode === "goal" ? "goal" : "chat",
+    mode: turn.mode === "goal" ? "goal" : turn.mode === "plan" ? "plan" : "chat",
     cwd: turn.cwd,
     startedAt: toTimestamp(turn.startedAt),
     completedAt: toTimestamp(turn.completedAt),
@@ -431,6 +431,9 @@ export function useTauriEvents() {
           if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
             return;
           }
+          if (!store.isStreaming) {
+            return;
+          }
           const currentLen = store.streamingText.length;
           if (currentLen === 0) {
             store.setStreamingLabel(intl.formatMessage({ id: "streaming.generating" }));
@@ -466,14 +469,16 @@ export function useTauriEvents() {
             if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
               return;
             }
-            const text = store.streamingText;
-            if (text) {
-              store.addMessage({
-                id: crypto.randomUUID(),
-                role: "assistant",
-                content: text,
-                timestamp: Date.now(),
-              });
+            if (store.isStreaming) {
+              const text = store.streamingText;
+              if (text) {
+                store.addMessage({
+                  id: crypto.randomUUID(),
+                  role: "assistant",
+                  content: text,
+                  timestamp: Date.now(),
+                });
+              }
             }
             const summary = runSummaryFromTurn(e.payload.turn);
             if (summary) {
@@ -888,6 +893,27 @@ export function useTauriEvents() {
             { keyPath: "active_endpoint_index", value: idx, mergeStrategy: "replace" },
           ]).catch((err) => console.error("Failed to persist active_endpoint_index:", err));
         }),
+
+        listen<{ threadId: string; path: string; content: string }>(
+          "plan-generated",
+          (e) => {
+            const store = useAppStore.getState();
+            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+              return;
+            }
+            store.setLatestPlanContent(e.payload.content);
+            store.addMessage({
+              id: `plan-${crypto.randomUUID()}`,
+              role: "assistant",
+              content: "",
+              timestamp: Date.now(),
+              planFile: {
+                path: e.payload.path,
+                content: e.payload.content,
+              },
+            });
+          },
+        ),
       ];
 
       const fns = await Promise.all(listeners);

@@ -449,9 +449,13 @@ impl ConfigToml {
                 self.apply_mcp_server_edit(other, value)?;
             }
             "model_endpoints" => {
-                if value.is_null() || value.is_array() && value.as_array().is_some_and(|a| a.is_empty()) {
+                if value.is_null()
+                    || value.is_array() && value.as_array().is_some_and(|a| a.is_empty())
+                {
                     self.model_endpoints.clear();
-                } else if let Ok(endpoints) = serde_json::from_value::<Vec<ModelEndpointInfo>>(value.clone()) {
+                } else if let Ok(endpoints) =
+                    serde_json::from_value::<Vec<ModelEndpointInfo>>(value.clone())
+                {
                     self.model_endpoints = endpoints;
                 }
             }
@@ -463,7 +467,11 @@ impl ConfigToml {
         Ok(())
     }
 
-    fn apply_mcp_server_edit(&mut self, key_path: &str, value: &serde_json::Value) -> AppResult<()> {
+    fn apply_mcp_server_edit(
+        &mut self,
+        key_path: &str,
+        value: &serde_json::Value,
+    ) -> AppResult<()> {
         let server_name = key_path["mcp_servers.".len()..].trim();
         if server_name.is_empty() {
             return Err(AppError::Custom(format!(
@@ -813,7 +821,10 @@ mod tests {
         assert_eq!(config.model_endpoints[0].api_key.as_deref(), Some("sk-aaa"));
         assert_eq!(config.model_endpoints[0].wire_api.as_deref(), Some("chat"));
         assert_eq!(config.model_endpoints[1].url, "http://10.0.0.2:8080/v1");
-        assert_eq!(config.model_endpoints[1].wire_api.as_deref(), Some("responses"));
+        assert_eq!(
+            config.model_endpoints[1].wire_api.as_deref(),
+            Some("responses")
+        );
     }
 
     #[test]
@@ -885,7 +896,8 @@ mod tests {
             )
             .expect_err("payload without command/url should be rejected");
         assert!(
-            err.to_string().contains("expected non-empty 'command' or 'url'"),
+            err.to_string()
+                .contains("expected non-empty 'command' or 'url'"),
             "unexpected error: {err}"
         );
     }

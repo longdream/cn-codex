@@ -8,8 +8,8 @@ use crate::adapter::{self, types::StreamEvent};
 use crate::config_system::ConfigToml;
 use crate::thread_store::ThreadStore;
 
-use super::prompts;
 use super::WorkflowDef;
+use super::prompts;
 
 /// Extract a workflow from a completed thread.
 /// Returns the parsed WorkflowDef on success.

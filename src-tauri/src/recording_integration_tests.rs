@@ -59,9 +59,7 @@ async fn recording_lifecycle() {
     assert!(!trace.stopped_at.is_empty());
 
     // Verify trace file was saved
-    let trace_path = temp_dir
-        .path()
-        .join(format!("{session_id}.trace.json"));
+    let trace_path = temp_dir.path().join(format!("{session_id}.trace.json"));
     assert!(trace_path.exists());
     let saved: TraceFile =
         serde_json::from_str(&std::fs::read_to_string(&trace_path).unwrap()).unwrap();
@@ -197,10 +195,7 @@ async fn auto_generated_session_name() {
     }
 
     // Empty session name should auto-generate
-    let _session_id = recorder
-        .start_recording("", &browser, &http)
-        .await
-        .unwrap();
+    let _session_id = recorder.start_recording("", &browser, &http).await.unwrap();
 
     let trace = recorder
         .stop_recording(&http, temp_dir.path())

@@ -467,8 +467,7 @@ impl CdpWriter {
         loop {
             match tokio::time::timeout_at(deadline, self.response_rx.recv()).await {
                 Ok(Some(msg)) => {
-                    let Some(resp_id) = msg.get("id").and_then(serde_json::Value::as_i64)
-                    else {
+                    let Some(resp_id) = msg.get("id").and_then(serde_json::Value::as_i64) else {
                         continue;
                     };
                     if resp_id != id {
@@ -538,10 +537,7 @@ impl CdpWriter {
 /// Background task: reads all CDP WebSocket messages, routes command responses
 /// to the writer channel, and accumulates recording events from
 /// `Runtime.bindingCalled` notifications.
-async fn cdp_event_reader(
-    mut reader: CdpReader,
-    events: Arc<Mutex<Vec<RecordingEvent>>>,
-) {
+async fn cdp_event_reader(mut reader: CdpReader, events: Arc<Mutex<Vec<RecordingEvent>>>) {
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::Message;
 

@@ -210,6 +210,7 @@ impl AgentEngine {
 
         let turn_mode = match mode {
             Some("goal") => "goal",
+            Some("plan") => "plan",
             Some("robot-create") => "robot-create",
             Some("robot-modify") => "robot-modify",
             _ => "chat",
@@ -251,7 +252,9 @@ impl AgentEngine {
         let is_pool = !pool_endpoints.is_empty();
         let pool_resolver = if is_pool {
             let initial_idx = config.active_endpoint_index.unwrap_or(0);
-            Some(crate::local_pool::PoolResolver::with_initial_index(initial_idx))
+            Some(crate::local_pool::PoolResolver::with_initial_index(
+                initial_idx,
+            ))
         } else {
             None
         };
@@ -267,9 +270,7 @@ impl AgentEngine {
             let pk = pool_key.as_deref().unwrap_or("");
             let pr = pool_resolver.as_ref().unwrap();
             let ep = pr.resolve_endpoint(pk, pool_endpoints).ok_or_else(|| {
-                AppError::Custom(
-                    "资源池没有可用端点，请添加至少一个端点。".to_string(),
-                )
+                AppError::Custom("资源池没有可用端点，请添加至少一个端点。".to_string())
             })?;
             info!(
                 "Pool '{pk}': using endpoint {} ({})",
@@ -281,7 +282,10 @@ impl AgentEngine {
                 serde_json::json!({ "index": ep.endpoint_index }),
             );
             let ep_api_key = ep.api_key.clone().unwrap_or_default();
-            let ep_wire_api = ep.wire_api.clone().unwrap_or_else(|| provider_wire_api.clone());
+            let ep_wire_api = ep
+                .wire_api
+                .clone()
+                .unwrap_or_else(|| provider_wire_api.clone());
             (ep.url, ep_api_key, ep_wire_api, Some(ep.endpoint_index))
         } else {
             let url = provider.resolve_base_url().ok_or_else(|| {
@@ -425,7 +429,8 @@ impl AgentEngine {
 
         // Set provider config for internal subagents
         {
-            let system_prompt_prefix = self.build_system_prompt(config, &effective_cwd, "chat", None);
+            let system_prompt_prefix =
+                self.build_system_prompt(config, &effective_cwd, "chat", None);
             self.tool_executor
                 .read()
                 .await
@@ -459,7 +464,6 @@ impl AgentEngine {
             let _ = self.thread_store.clear_thread_robot_state(thread_id).await;
         }
 
-        let max_iterations = 25;
         let mut stop_hooks_satisfied = false;
         let mut stop_hooks_ran_for_last_stop = false;
         let mut stop_hook_continuations = 0usize;
@@ -614,12 +618,14 @@ impl AgentEngine {
                     }
                 }
 
-                for iteration in 0..max_iterations {
+                let mut iteration: u32 = 0;
+                loop {
                     if self.is_cancelled() {
                         info!("Turn {turn_id} cancelled by user at iteration {iteration}");
                         break;
                     }
                     info!("Agent loop iteration {iteration} for turn {turn_id}");
+                    iteration += 1;
 
                     let history = self.thread_store.get_thread_messages(thread_id).await;
                     let robot_overlay_prompt = if let Some(state) = robot_progress.as_ref() {
@@ -648,6 +654,31 @@ impl AgentEngine {
                                     == Some("robot_save")
                             })
                             .collect()
+                    } else if turn_mode == "plan" {
+                        const PLAN_READONLY_TOOLS: &[&str] = &[
+                            "read_file",
+                            "list_directory",
+                            "tool_search",
+                            "code_review",
+                            "memory_list",
+                            "memory_read",
+                            "memory_search",
+                            "view_image",
+                            "web_search",
+                            "web_fetch",
+                        ];
+                        self.tool_executor
+                            .write()
+                            .await
+                            .tool_specs_with_mcp(config.web_search_enabled())
+                            .await
+                            .into_iter()
+                            .filter(|spec| {
+                                spec.pointer("/function/name")
+                                    .and_then(|v| v.as_str())
+                                    .is_some_and(|name| PLAN_READONLY_TOOLS.contains(&name))
+                            })
+                            .collect()
                     } else {
                         self.tool_executor
                             .write()
@@ -655,6 +686,28 @@ impl AgentEngine {
                             .tool_specs_with_mcp(config.web_search_enabled())
                             .await
                     };
+
+                    let mut tools = tools;
+                    if turn_mode == "goal" {
+                        tools.push(serde_json::json!({
+                            "type": "function",
+                            "function": {
+                                "name": "update_goal",
+                                "description": "Update the current goal status. Call with status 'complete' only when the objective is fully achieved and no required work remains. Call with status 'blocked' only when the same blocking condition has recurred for at least three consecutive goal turns and you cannot make meaningful progress without user input.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "status": {
+                                            "type": "string",
+                                            "enum": ["complete", "blocked"],
+                                            "description": "Set to 'complete' when objective is achieved. Set to 'blocked' when truly stuck after 3+ consecutive turns."
+                                        }
+                                    },
+                                    "required": ["status"]
+                                }
+                            }
+                        }));
+                    }
 
                     let result = self
                         .stream_completion(
@@ -667,7 +720,8 @@ impl AgentEngine {
                             internal_messages,
                             if tools.is_empty() { None } else { Some(tools) },
                             config.max_output_tokens,
-                            iteration as u32,
+                            iteration,
+                            turn_mode == "plan",
                         )
                         .await;
 
@@ -675,6 +729,7 @@ impl AgentEngine {
                         Ok(CompletionResult::Message {
                             ref text,
                             ref usage,
+                            ref plan_text,
                         }) => {
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
@@ -747,6 +802,51 @@ impl AgentEngine {
                                 };
                                 self.thread_store.add_message(thread_id, msg).await?;
                             }
+
+                            let effective_plan = if turn_mode == "plan" {
+                                plan_text
+                                    .clone()
+                                    .or_else(|| extract_proposed_plan(text))
+                                    .or_else(|| {
+                                        if !cleaned_text.is_empty() && iteration > 1 {
+                                            info!(
+                                                "Plan fallback: using full text as plan ({} chars)",
+                                                cleaned_text.len()
+                                            );
+                                            Some(cleaned_text.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                            } else {
+                                plan_text.clone()
+                            };
+                            if let Some(ref plan_content) = effective_plan {
+                                let plans_dir = self.cwd.join("codey").join("plans");
+                                let _ = std::fs::create_dir_all(&plans_dir);
+                                let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                                let short_hash = &uuid::Uuid::new_v4().to_string()[..8];
+                                let file_name = format!("{ts}-{short_hash}.pmd");
+                                let plan_path = plans_dir.join(&file_name);
+                                if let Err(err) = std::fs::write(&plan_path, plan_content) {
+                                    warn!(
+                                        "Failed to write plan file {}: {err}",
+                                        plan_path.display()
+                                    );
+                                } else {
+                                    info!("Plan file written: {}", plan_path.display());
+                                    emit_and_broadcast(
+                                        app_handle,
+                                        "plan-generated",
+                                        serde_json::json!({
+                                            "threadId": thread_id,
+                                            "path": plan_path.to_string_lossy(),
+                                            "content": plan_content,
+                                        }),
+                                    );
+                                }
+                            }
+
                             let waiting_for_user_requirements = robot_progress.is_some()
                                 && !node_done_signal
                                 && assistant_is_waiting_for_user(&cleaned_text);
@@ -1051,22 +1151,35 @@ impl AgentEngine {
                                         &effective_cwd,
                                     );
                                 }
-                                let tool_result = self
-                                    .tool_executor
-                                    .read()
-                                    .await
-                                    .execute(
-                                        &call.name,
-                                        &call.arguments,
-                                        &call.id,
-                                        app_handle,
-                                        thread_id,
-                                    )
-                                    .await;
 
-                                let (mut result_content, success) = match tool_result {
-                                    Ok(output) => (output, true),
-                                    Err(e) => (format!("Tool execution error: {e}"), false),
+                                let (mut result_content, success) = if call.name == "update_goal" {
+                                    match handle_update_goal(
+                                        &self.thread_store,
+                                        thread_id,
+                                        &call.arguments,
+                                    )
+                                    .await
+                                    {
+                                        Ok(msg) => (msg, true),
+                                        Err(e) => (format!("update_goal error: {e}"), false),
+                                    }
+                                } else {
+                                    let tool_result = self
+                                        .tool_executor
+                                        .read()
+                                        .await
+                                        .execute(
+                                            &call.name,
+                                            &call.arguments,
+                                            &call.id,
+                                            app_handle,
+                                            thread_id,
+                                        )
+                                        .await;
+                                    match tool_result {
+                                        Ok(output) => (output, true),
+                                        Err(e) => (format!("Tool execution error: {e}"), false),
+                                    }
                                 };
                                 let mut has_subagent_stop_feedback = false;
                                 if success && call.name == "close_agent" {
@@ -1191,22 +1304,21 @@ impl AgentEngine {
                         }
                         Err(e) => {
                             // 资源池故障转移：标记当前端点失败，尝试切换到下一个
-                            if let (Some(pk), Some(pr), Some(ep_idx)) = (
-                                &pool_key,
-                                &pool_resolver,
-                                pool_endpoint_index,
-                            ) {
+                            if let (Some(pk), Some(pr), Some(ep_idx)) =
+                                (&pool_key, &pool_resolver, pool_endpoint_index)
+                            {
                                 pr.mark_failed(pk, ep_idx);
-                                if let Some(next_ep) =
-                                    pr.resolve_endpoint(pk, pool_endpoints)
-                                {
+                                if let Some(next_ep) = pr.resolve_endpoint(pk, pool_endpoints) {
                                     warn!(
                                         "Pool '{pk}': endpoint {ep_idx} failed ({e}), switching to endpoint {} ({})",
                                         next_ep.endpoint_index, next_ep.url
                                     );
                                     base_url = next_ep.url;
                                     api_key = next_ep.api_key.clone().unwrap_or_default();
-                                    wire_api = next_ep.wire_api.clone().unwrap_or_else(|| provider_wire_api.clone());
+                                    wire_api = next_ep
+                                        .wire_api
+                                        .clone()
+                                        .unwrap_or_else(|| provider_wire_api.clone());
                                     pool_endpoint_index = Some(next_ep.endpoint_index);
                                     emit_and_broadcast(
                                         app_handle,
@@ -1307,10 +1419,11 @@ impl AgentEngine {
                             None,
                             config.max_output_tokens,
                             u32::MAX,
+                            false,
                         )
                         .await;
                     let summary_text = match summary_result {
-                        Ok(CompletionResult::Message { text, usage }) => {
+                        Ok(CompletionResult::Message { text, usage, .. }) => {
                             llm_call_count = llm_call_count.saturating_add(1);
                             if let Some(u) = usage {
                                 add_turn_usage(&mut turn_usage, &u);
@@ -1605,7 +1718,8 @@ impl AgentEngine {
         };
 
         let project_rules_path = effective_cwd.join(".rule.md");
-        let project_rules_content = std::fs::read_to_string(&project_rules_path).unwrap_or_default();
+        let project_rules_content =
+            std::fs::read_to_string(&project_rules_path).unwrap_or_default();
         let project_rules = if !project_rules_content.trim().is_empty() {
             let truncated = &project_rules_content[..project_rules_content.len().min(4000)];
             format!("\n\n## Project Rules (from .rule.md)\n{truncated}")
@@ -1648,6 +1762,24 @@ impl AgentEngine {
              Do NOT stop after just planning or updating the plan — actually create the files, run the commands, and \
              complete the work. Prefer implementation and verification over proposals. Give concise progress updates \
              as you work, and finish with a short outcome summary that mentions verification and the important files changed."
+        } else if mode == "plan" {
+            "\n\nPlan mode is active. You are in planning-only mode. \
+             Your task is to analyze the user's request and produce a detailed implementation plan. \
+             Do NOT execute any mutating actions (no file writes, no shell commands that modify state). \
+             You MAY read files, search code, and explore the codebase to understand context. \
+             \n\nIMPORTANT: You MUST wrap your final plan inside <proposed_plan> tags. \
+             Do NOT output the plan as plain text without the tags. The system relies on these \
+             tags to extract and display the plan as a card to the user. \
+             \n\nFormat: \
+             \n<proposed_plan>\n(your plan in markdown format)\n</proposed_plan>\n\
+             \nThe plan should include: \
+             \n1. A clear title and summary of the approach \
+             \n2. Step-by-step implementation steps \
+             \n3. Key files to create or modify (with paths) \
+             \n4. Potential risks or edge cases \
+             \n5. Testing strategy \
+             \nKeep the plan concise but actionable. The user will review and optionally execute it. \
+             \nRemember: always use <proposed_plan>...</proposed_plan> tags around the plan content."
         } else {
             ""
         };
@@ -1766,6 +1898,13 @@ impl AgentEngine {
                 - Any issues encountered\n\
                 - Suggested next steps (if applicable)\n\
                 Never end silently after tool execution.\n\
+             \n\
+             FILE EDITING RULES:\n\
+             1. To create or overwrite files, use the `write_file` tool directly.\n\
+             2. To apply multi-file edits (add/update/delete/move), use the `apply_patch` tool.\n\
+             3. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
+                Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
+             4. Do not use python scripts to read or write files. Use `read_file` and `write_file`/`apply_patch` instead.\n\
              \n\
              All file paths in tool calls should be relative to the working directory unless \
              the user specifies an absolute path.\n\
@@ -2259,6 +2398,7 @@ impl AgentEngine {
         tools: Option<Vec<serde_json::Value>>,
         max_tokens: Option<i64>,
         iteration: u32,
+        plan_mode: bool,
     ) -> AppResult<CompletionResult> {
         // 根据 wire_api 选择 adapter
         let adapter = adapter::get_adapter(wire_api);
@@ -2333,6 +2473,9 @@ impl AgentEngine {
         let mut buffer = String::new();
         let mut bytes_read: usize = 0;
         let stream_start = Instant::now();
+        let mut plan_buffer = String::new();
+        let mut inside_plan_block = false;
+        let mut plan_line_buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
             if self.is_cancelled() {
@@ -2392,11 +2535,40 @@ impl AgentEngine {
                     match event {
                         StreamEvent::TextDelta(text) => {
                             full_text.push_str(&text);
-                            emit_and_broadcast(
-                                app_handle,
-                                "agent-message-delta",
-                                serde_json::json!({ "threadId": thread_id, "delta": text }),
-                            );
+                            if plan_mode {
+                                for ch in text.chars() {
+                                    plan_line_buffer.push(ch);
+                                    if ch == '\n' {
+                                        let trimmed = plan_line_buffer.trim();
+                                        if trimmed == "<proposed_plan>" {
+                                            inside_plan_block = true;
+                                            plan_line_buffer.clear();
+                                            continue;
+                                        }
+                                        if trimmed == "</proposed_plan>" {
+                                            inside_plan_block = false;
+                                            plan_line_buffer.clear();
+                                            continue;
+                                        }
+                                        if inside_plan_block {
+                                            plan_buffer.push_str(&plan_line_buffer);
+                                        } else {
+                                            emit_and_broadcast(
+                                                app_handle,
+                                                "agent-message-delta",
+                                                serde_json::json!({ "threadId": thread_id, "delta": &plan_line_buffer }),
+                                            );
+                                        }
+                                        plan_line_buffer.clear();
+                                    }
+                                }
+                            } else {
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "agent-message-delta",
+                                    serde_json::json!({ "threadId": thread_id, "delta": text }),
+                                );
+                            }
                         }
                         StreamEvent::ToolCallDelta {
                             index,
@@ -2440,6 +2612,19 @@ impl AgentEngine {
                         }
                     }
                 }
+            }
+        }
+
+        // Plan mode: flush any remaining content in plan_line_buffer
+        if plan_mode && !plan_line_buffer.is_empty() {
+            if inside_plan_block {
+                plan_buffer.push_str(&plan_line_buffer);
+            } else {
+                emit_and_broadcast(
+                    app_handle,
+                    "agent-message-delta",
+                    serde_json::json!({ "threadId": thread_id, "delta": &plan_line_buffer }),
+                );
             }
         }
 
@@ -2535,6 +2720,12 @@ impl AgentEngine {
             );
         }
 
+        let plan_text = if plan_mode && !plan_buffer.is_empty() {
+            Some(plan_buffer)
+        } else {
+            None
+        };
+
         if !valid_tool_calls.is_empty() {
             Ok(CompletionResult::ToolCalls {
                 calls: valid_tool_calls,
@@ -2545,6 +2736,7 @@ impl AgentEngine {
             Ok(CompletionResult::Message {
                 text: full_text,
                 usage: usage_info,
+                plan_text,
             })
         }
     }
@@ -2634,6 +2826,7 @@ impl AgentEngine {
             Ok(CompletionResult::Message {
                 text,
                 usage: usage_info,
+                plan_text: None,
             })
         }
     }
@@ -2645,6 +2838,20 @@ struct ToolCallAccumulator {
     id: String,
     name: String,
     arguments: String,
+}
+
+fn extract_proposed_plan(text: &str) -> Option<String> {
+    const OPEN_TAG: &str = "<proposed_plan>";
+    const CLOSE_TAG: &str = "</proposed_plan>";
+
+    let start = text.find(OPEN_TAG)?;
+    let content_start = start + OPEN_TAG.len();
+    let end = text[content_start..].find(CLOSE_TAG)?;
+    let plan = text[content_start..content_start + end].trim();
+    if plan.is_empty() {
+        return None;
+    }
+    Some(plan.to_string())
 }
 
 fn text_expresses_intent(text: &str) -> bool {
@@ -2677,6 +2884,7 @@ enum CompletionResult {
     Message {
         text: String,
         usage: Option<UsageInfo>,
+        plan_text: Option<String>,
     },
     /// 包含 tool call 的回复
     ToolCalls {
@@ -3294,6 +3502,29 @@ fn read_text_file_snapshot(cwd: &Path, path: &str) -> Option<String> {
     Some(String::from_utf8_lossy(slice).to_string())
 }
 
+async fn handle_update_goal(
+    thread_store: &ThreadStore,
+    thread_id: &str,
+    arguments: &str,
+) -> Result<String, String> {
+    let args: serde_json::Value =
+        serde_json::from_str(arguments).map_err(|e| format!("invalid arguments: {e}"))?;
+    let status_str = args
+        .get("status")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'status' parameter".to_string())?;
+    let goal_status = match status_str {
+        "complete" => ThreadGoalStatus::Complete,
+        "blocked" => ThreadGoalStatus::Blocked,
+        other => return Err(format!("unknown status: {other}")),
+    };
+    thread_store
+        .set_thread_goal_status(thread_id, goal_status)
+        .await
+        .map_err(|e| format!("failed to update goal status: {e}"))?;
+    Ok(format!("Goal status updated to '{status_str}'."))
+}
+
 fn file_changes_from_tool_call(call: &ToolCallRequest) -> Vec<FileChange> {
     match call.name.as_str() {
         "write_file" => write_file_change_from_args(&call.arguments)
@@ -3673,10 +3904,13 @@ fn build_goal_continuation_prompt(goal: &ThreadGoal) -> String {
         "Continue working toward the active thread goal.\n\n\
          <objective>\n{}\n</objective>\n\n\
          {budget_info}\n\n\
-         Keep working through the available tools until the objective is genuinely \
-         handled. Do NOT stop after just planning — actually create the files, run \
-         the commands, and complete the work. If the goal is fully achieved, provide \
-         a short completion summary.",
+         Keep working through the available tools until the objective is genuinely handled.\n\
+         If the objective is achieved and no required work remains, call update_goal with \
+         status \"complete\".\n\
+         If the same blocking condition has repeated for at least three consecutive goal turns \
+         and you cannot make progress, call update_goal with status \"blocked\".\n\
+         Do not call update_goal unless the goal is truly complete or the strict blocked \
+         threshold above is satisfied.",
         goal.objective,
     )
 }

@@ -105,10 +105,7 @@ impl PoolResolver {
 
         for offset in 0..endpoints.len() {
             let idx = (start + offset) % endpoints.len();
-            let health = state
-                .health
-                .entry(idx)
-                .or_insert_with(EndpointHealth::new);
+            let health = state.health.entry(idx).or_insert_with(EndpointHealth::new);
 
             if !health.is_healthy(RECOVERY_SECS) {
                 continue;

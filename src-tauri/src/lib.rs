@@ -4,15 +4,15 @@ pub mod browser_automation;
 pub mod commands;
 pub mod compaction;
 pub mod config_system;
-pub mod external_browser;
-pub mod local_pool;
 pub mod conversation_logger;
 pub mod document_parser;
 pub mod error;
 pub mod experience;
+pub mod external_browser;
 pub mod file_review;
 pub mod git_service;
 pub mod hook_runtime;
+pub mod local_pool;
 pub mod mobile_server;
 pub mod plugin_loader;
 pub mod protocol;
@@ -220,6 +220,7 @@ pub fn run() {
             standalone::standalone_thread_goal_clear,
             standalone::standalone_chat,
             standalone::standalone_turn_interrupt,
+            standalone::standalone_plan_open,
             // Usage tracking
             commands::usage_get_stats,
             commands::usage_get_daily,
