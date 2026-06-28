@@ -19,8 +19,7 @@ pub async fn extract_workflow_from_thread(
     thread_store: &Arc<ThreadStore>,
     thread_id: &str,
 ) -> Result<WorkflowDef, String> {
-    let (base_url, api_key, wire_api) = resolve_llm_endpoint(config)?;
-    let model = config.resolve_model();
+    let (base_url, api_key, wire_api, model) = resolve_llm_endpoint(config)?;
     if model.is_empty() {
         return Err("Workflow extraction failed: no model configured".to_string());
     }
@@ -110,7 +109,8 @@ pub async fn extract_workflow_from_thread(
 }
 
 /// Resolve LLM endpoint configuration (supports local-pool).
-fn resolve_llm_endpoint(config: &ConfigToml) -> Result<(String, String, String), String> {
+fn resolve_llm_endpoint(config: &ConfigToml) -> Result<(String, String, String, String), String> {
+    let default_model = config.resolve_model();
     if !config.model_endpoints.is_empty() {
         let idx = config.active_endpoint_index.unwrap_or(0);
         let ep = &config.model_endpoints[idx.min(config.model_endpoints.len() - 1)];
@@ -121,10 +121,18 @@ fn resolve_llm_endpoint(config: &ConfigToml) -> Result<(String, String, String),
             .or(provider.wire_api.as_deref())
             .unwrap_or("chat")
             .to_string();
+        let model = ep
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(default_model.as_str())
+            .to_string();
         Ok((
             ep.url.clone(),
             ep.api_key.clone().unwrap_or_default(),
             wire_api,
+            model,
         ))
     } else {
         let (provider_id, provider) = config.resolve_provider();
@@ -136,6 +144,6 @@ fn resolve_llm_endpoint(config: &ConfigToml) -> Result<(String, String, String),
             return Err("Workflow extraction failed: no API key configured".to_string());
         }
         let wire_api = provider.wire_api.as_deref().unwrap_or("chat").to_string();
-        Ok((url, key, wire_api))
+        Ok((url, key, wire_api, default_model))
     }
 }

@@ -14,6 +14,7 @@ pub mod git_service;
 pub mod hook_runtime;
 pub mod local_pool;
 pub mod mobile_server;
+pub mod ocr;
 pub mod plugin_loader;
 pub mod protocol;
 pub mod recording;

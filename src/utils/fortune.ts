@@ -482,7 +482,7 @@ export function resolveFortuneLlmConfig(input: ResolveFortuneLlmConfigInput): Fo
     return {
       baseUrl: endpointUrl,
       apiKey: endpoint.apiKey ?? "",
-      modelName: selectedModel.id,
+      modelName: endpoint.model.trim() || selectedModel.id,
       wireApi: endpoint.wireApi ?? provider.wireApi ?? "chat",
     };
   }

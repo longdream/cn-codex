@@ -41,10 +41,9 @@ export function ChatPage() {
       options: ChatSendExtendedOptions = {},
     ) => {
       const state = useAppStore.getState();
-      const inGeneral = state.currentProjectId === GENERAL_PROJECT_ID;
       const cwd = state.workspaceCwd || state.projectRoot || state.userHomeDir;
       if (!cwd) return;
-      let actualMode: ChatMode | "robot-create" | "robot-modify" = inGeneral ? "chat" : mode;
+      let actualMode: ChatMode | "robot-create" | "robot-modify" = mode;
       if (options.robotCreateMode) {
         actualMode = "robot-create" as ChatMode;
       } else if (options.robotModifyMode) {
@@ -104,7 +103,7 @@ export function ChatPage() {
           threadId,
           text,
           cwd,
-          actualMode as "chat" | "goal" | "robot-create" | "robot-modify",
+          actualMode as "chat" | "plan" | "goal" | "robot-create" | "robot-modify",
           attachments,
           options.goalBudgetTokens,
           options.robotId,
@@ -352,7 +351,7 @@ export function ChatPage() {
 
   const isGeneralMode = currentProjectId === GENERAL_PROJECT_ID;
   const hasProject = (!!currentProjectId && !!workspaceCwd) || isGeneralMode;
-  const effectiveMode = isGeneralMode ? "chat" : chatMode;
+  const effectiveMode = chatMode;
   const showEmpty = messages.length === 0 && !isStreaming;
 
   const handleExecutePlan = useCallback(

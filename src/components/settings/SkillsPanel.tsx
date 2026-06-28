@@ -36,6 +36,14 @@ const CATEGORIES: SkillCategory[] = [
     ids: ["browser", "browser-harness", "webapp-testing", "webview-js-injection"],
   },
   {
+    labelId: "settings.skills.category.internetResearch",
+    ids: ["agent-reach"],
+  },
+  {
+    labelId: "settings.skills.category.codingStyle",
+    ids: ["ponytail"],
+  },
+  {
     labelId: "settings.skills.category.projectTools",
     ids: [
       "create-plan",

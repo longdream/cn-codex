@@ -72,9 +72,9 @@ describe("resolveFortuneLlmConfig", () => {
 
   it("uses local-pool enabled endpoint and endpoint-level overrides", () => {
     const endpoints: PoolModelEndpoint[] = [
-      { id: "ep-disabled", url: "http://disabled/v1", label: "disabled", enabled: false, apiKey: "k-disabled", wireApi: "chat" },
-      { id: "ep-a", url: "http://10.0.0.2:8080/v1", label: "a", enabled: true, apiKey: "k-a", wireApi: "responses" },
-      { id: "ep-b", url: "http://10.0.0.3:8080/v1", label: "b", enabled: true },
+      { id: "ep-disabled", url: "http://disabled/v1", model: "qwen-disabled", label: "disabled", enabled: false, apiKey: "k-disabled", wireApi: "chat" },
+      { id: "ep-a", url: "http://10.0.0.2:8080/v1", model: "qwen-router-a", label: "a", enabled: true, apiKey: "k-a", wireApi: "responses" },
+      { id: "ep-b", url: "http://10.0.0.3:8080/v1", model: "qwen-router-b", label: "b", enabled: true },
     ];
 
     const provider = createProvider({
@@ -97,7 +97,7 @@ describe("resolveFortuneLlmConfig", () => {
     expect(resolved).toEqual({
       baseUrl: "http://10.0.0.2:8080/v1",
       apiKey: "k-a",
-      modelName: "qwen-local",
+      modelName: "qwen-router-a",
       wireApi: "responses",
     });
   });
@@ -112,8 +112,8 @@ describe("resolveFortuneLlmConfig", () => {
       wireApi: "chat",
       models: [
         createModel("qwen-local", [
-          { id: "ep-disabled-a", url: "http://10.0.0.2:8080/v1", label: "a", enabled: false },
-          { id: "ep-disabled-b", url: "http://10.0.0.3:8080/v1", label: "b", enabled: false },
+          { id: "ep-disabled-a", url: "http://10.0.0.2:8080/v1", model: "qwen-a", label: "a", enabled: false },
+          { id: "ep-disabled-b", url: "http://10.0.0.3:8080/v1", model: "qwen-b", label: "b", enabled: false },
         ]),
       ],
     });

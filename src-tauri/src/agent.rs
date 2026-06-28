@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,7 @@ use crate::hook_runtime::{
     HOOK_SUBAGENT_STOP, HOOK_USER_PROMPT_SUBMIT, HookRunResult, HookRuntime,
     first_blocking_hook_result, hook_feedback_for_model, latest_hook_updated_input,
 };
+use crate::ocr::{OcrImageInput, extract_text_from_data_urls};
 use crate::plugin_loader;
 use crate::robot_orchestrator::{
     NodeProgressResult, RobotOrchestrator, build_robot_node_completion_nudge,
@@ -87,6 +88,8 @@ struct FileChangeSnapshot {
 /// - 目的是避免 turn-completed 事件携带过大文本导致前端卡顿；
 /// - 对超限文件只截取前缀内容用于“审阅级对比”，而非完整文件恢复。
 const MAX_CHANGED_FILE_SNAPSHOT_BYTES: usize = 256 * 1024;
+const VISION_FALLBACK_KIND_MULTIMODAL: &str = "multimodal";
+const VISION_FALLBACK_KIND_LOCAL_OCR: &str = "local_ocr";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -218,12 +221,13 @@ impl AgentEngine {
         .to_string();
         let turn_started_at_ms = now_millis();
         let turn_timer = Instant::now();
-        let model = config.resolve_model();
+        let mut model = config.resolve_model();
         if model.is_empty() {
             return Err(AppError::Custom(
                 "未配置模型。请在设置中选择一个模型后再试。".to_string(),
             ));
         }
+        let pool_default_model = model.clone();
         let (provider_id, provider) = config.resolve_provider();
         let effective_cwd = override_cwd
             .map(|p| p.to_path_buf())
@@ -259,7 +263,7 @@ impl AgentEngine {
             None
         };
         let pool_key = if is_pool {
-            Some(format!("{provider_id}:{model}"))
+            Some(format!("{provider_id}:{pool_default_model}"))
         } else {
             None
         };
@@ -286,6 +290,16 @@ impl AgentEngine {
                 .wire_api
                 .clone()
                 .unwrap_or_else(|| provider_wire_api.clone());
+            if let Some(ep_model) = ep
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                model = ep_model.to_string();
+            } else {
+                model = pool_default_model.clone();
+            }
             (ep.url, ep_api_key, ep_wire_api, Some(ep.endpoint_index))
         } else {
             let url = provider.resolve_base_url().ok_or_else(|| {
@@ -296,6 +310,9 @@ impl AgentEngine {
             let key = provider.resolve_api_key().unwrap_or_default();
             (url, key, provider_wire_api.clone(), None)
         };
+        let (attachments, vision_fallback_context) = self
+            .resolve_image_context_with_fallback(config, user_input, &model, &attachments)
+            .await;
 
         // Pre-turn compaction: 在 start_turn 之前执行，避免 replace_messages 破坏当前 turn
         let pre_turn_tokens = self.thread_store.get_thread_total_tokens(thread_id).await;
@@ -350,38 +367,34 @@ impl AgentEngine {
             .await?;
 
         let user_message_id = uuid::Uuid::new_v4().to_string();
-        // 将文档附件提取的文本直接嵌入到消息 content 中进行持久化
-        let persisted_content = if attachments
-            .iter()
-            .any(|a| !a.mime_type.starts_with("image/"))
-        {
-            let mut content = user_input.to_string();
-            for attachment in &attachments {
-                if !attachment.mime_type.starts_with("image/") {
-                    match crate::document_parser::parse_document(
-                        &attachment.mime_type,
-                        &attachment.data_url,
-                    ) {
-                        Ok(extracted) => {
-                            content.push_str(&format!(
-                                "\n\n[Attachment: {}]\n{}",
-                                attachment.name, extracted
-                            ));
-                        }
-                        Err(e) => {
-                            warn!("Document parse failed for {}: {e}", attachment.name);
-                            content.push_str(&format!(
-                                "\n\n[Attachment: {} - content extraction failed]",
-                                attachment.name
-                            ));
-                        }
+        // 将文档附件提取文本，以及视觉后补结果，直接嵌入到用户消息中做持久化。
+        let mut persisted_content = user_input.to_string();
+        for attachment in &attachments {
+            if !attachment.mime_type.starts_with("image/") {
+                match crate::document_parser::parse_document(
+                    &attachment.mime_type,
+                    &attachment.data_url,
+                ) {
+                    Ok(extracted) => {
+                        persisted_content.push_str(&format!(
+                            "\n\n[Attachment: {}]\n{}",
+                            attachment.name, extracted
+                        ));
+                    }
+                    Err(e) => {
+                        warn!("Document parse failed for {}: {e}", attachment.name);
+                        persisted_content.push_str(&format!(
+                            "\n\n[Attachment: {} - content extraction failed]",
+                            attachment.name
+                        ));
                     }
                 }
             }
-            content
-        } else {
-            user_input.to_string()
-        };
+        }
+        if let Some(fallback_context) = vision_fallback_context.as_deref() {
+            persisted_content.push_str("\n\n[Vision Fallback Context]\n");
+            persisted_content.push_str(fallback_context);
+        }
         let user_msg = ThreadMessage {
             id: user_message_id.clone(),
             role: "user".to_string(),
@@ -584,12 +597,16 @@ impl AgentEngine {
 
         let mut intent_retries: u32 = 0;
         const MAX_INTENT_RETRIES: u32 = 2;
+        const MAX_RATE_LIMIT_RETRIES: u32 = 6;
         let max_goal_continuations: usize = 10;
         let mut goal_continuation_count: usize = 0;
         // 追踪最近一次 API 调用返回的 prompt_tokens（代表当前 context 实际大小），
         // 而非累加值，用于 mid-turn compaction 判断。
         let mut last_prompt_tokens: u64 = 0;
         let mut mid_turn_compacted = false;
+        let mut plan_card_emitted = false;
+        let mut rate_limit_retry_count: u32 = 0;
+        let mut terminated_by_error = false;
 
         'goal_loop: loop {
             if !prompt_hook_blocked {
@@ -664,6 +681,7 @@ impl AgentEngine {
                             "memory_read",
                             "memory_search",
                             "view_image",
+                            "ocr_image",
                             "web_search",
                             "web_fetch",
                         ];
@@ -731,6 +749,7 @@ impl AgentEngine {
                             ref usage,
                             ref plan_text,
                         }) => {
+                            rate_limit_retry_count = 0;
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
                                 "Iteration {iteration}: Message ({} chars), usage={:?}",
@@ -759,7 +778,8 @@ impl AgentEngine {
                                 );
                             }
 
-                            if !cleaned_text.is_empty()
+                            if turn_mode != "plan"
+                                && !cleaned_text.is_empty()
                                 && iteration > 0
                                 && intent_retries < MAX_INTENT_RETRIES
                                 && text_expresses_intent(&cleaned_text)
@@ -803,46 +823,43 @@ impl AgentEngine {
                                 self.thread_store.add_message(thread_id, msg).await?;
                             }
 
-                            let effective_plan = if turn_mode == "plan" {
-                                plan_text
-                                    .clone()
-                                    .or_else(|| extract_proposed_plan(text))
-                                    .or_else(|| {
-                                        if !cleaned_text.is_empty() && iteration > 1 {
-                                            info!(
-                                                "Plan fallback: using full text as plan ({} chars)",
-                                                cleaned_text.len()
-                                            );
-                                            Some(cleaned_text.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                            } else {
-                                plan_text.clone()
-                            };
+                            let effective_plan = resolve_effective_plan_content(
+                                &turn_mode,
+                                plan_text.as_deref(),
+                                text,
+                                &cleaned_text,
+                            );
                             if let Some(ref plan_content) = effective_plan {
-                                let plans_dir = self.cwd.join("codey").join("plans");
-                                let _ = std::fs::create_dir_all(&plans_dir);
-                                let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-                                let short_hash = &uuid::Uuid::new_v4().to_string()[..8];
-                                let file_name = format!("{ts}-{short_hash}.pmd");
-                                let plan_path = plans_dir.join(&file_name);
-                                if let Err(err) = std::fs::write(&plan_path, plan_content) {
-                                    warn!(
-                                        "Failed to write plan file {}: {err}",
-                                        plan_path.display()
-                                    );
+                                if turn_mode != "plan" || !plan_card_emitted {
+                                    let plans_dir = self.cwd.join("codey").join("plans");
+                                    let _ = std::fs::create_dir_all(&plans_dir);
+                                    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                                    let short_hash = &uuid::Uuid::new_v4().to_string()[..8];
+                                    let file_name = format!("{ts}-{short_hash}.pmd");
+                                    let plan_path = plans_dir.join(&file_name);
+                                    if let Err(err) = std::fs::write(&plan_path, plan_content) {
+                                        warn!(
+                                            "Failed to write plan file {}: {err}",
+                                            plan_path.display()
+                                        );
+                                    } else {
+                                        info!("Plan file written: {}", plan_path.display());
+                                        emit_and_broadcast(
+                                            app_handle,
+                                            "plan-generated",
+                                            serde_json::json!({
+                                                "threadId": thread_id,
+                                                "path": plan_path.to_string_lossy(),
+                                                "content": plan_content,
+                                            }),
+                                        );
+                                        if turn_mode == "plan" {
+                                            plan_card_emitted = true;
+                                        }
+                                    }
                                 } else {
-                                    info!("Plan file written: {}", plan_path.display());
-                                    emit_and_broadcast(
-                                        app_handle,
-                                        "plan-generated",
-                                        serde_json::json!({
-                                            "threadId": thread_id,
-                                            "path": plan_path.to_string_lossy(),
-                                            "content": plan_content,
-                                        }),
+                                    info!(
+                                        "Skipping duplicate plan-generated event for turn {turn_id}"
                                     );
                                 }
                             }
@@ -992,6 +1009,7 @@ impl AgentEngine {
                             preceding_text,
                             usage,
                         }) => {
+                            rate_limit_retry_count = 0;
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
                                 "Iteration {iteration}: ToolCalls ({}): {:?}, preceding_text={} chars, usage={:?}",
@@ -1319,6 +1337,16 @@ impl AgentEngine {
                                         .wire_api
                                         .clone()
                                         .unwrap_or_else(|| provider_wire_api.clone());
+                                    if let Some(next_model) = next_ep
+                                        .model
+                                        .as_deref()
+                                        .map(str::trim)
+                                        .filter(|value| !value.is_empty())
+                                    {
+                                        model = next_model.to_string();
+                                    } else {
+                                        model = pool_default_model.clone();
+                                    }
                                     pool_endpoint_index = Some(next_ep.endpoint_index);
                                     emit_and_broadcast(
                                         app_handle,
@@ -1340,19 +1368,56 @@ impl AgentEngine {
                                     continue;
                                 }
                             }
+                            let error_message = e.to_string();
+                            if is_retryable_rate_limit_error(&error_message)
+                                && rate_limit_retry_count < MAX_RATE_LIMIT_RETRIES
+                            {
+                                rate_limit_retry_count = rate_limit_retry_count.saturating_add(1);
+                                let retry_in_ms = rate_limit_backoff_ms(rate_limit_retry_count);
+                                warn!(
+                                    "Iteration {iteration}: rate limited, retrying in {retry_in_ms} ms ({rate_limit_retry_count}/{MAX_RATE_LIMIT_RETRIES}): {error_message}"
+                                );
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "server-error",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "message": error_message,
+                                        "retryable": true,
+                                        "retryInMs": retry_in_ms,
+                                        "attempt": rate_limit_retry_count,
+                                        "maxAttempts": MAX_RATE_LIMIT_RETRIES,
+                                    }),
+                                );
+                                tokio::time::sleep(Duration::from_millis(retry_in_ms)).await;
+                                if self.is_cancelled() {
+                                    terminated_by_error = true;
+                                    break;
+                                }
+                                continue;
+                            }
                             error!("Iteration {iteration}: LLM request failed: {e}");
                             emit_and_broadcast(
                                 app_handle,
                                 "server-error",
-                                serde_json::json!({ "threadId": thread_id, "message": e.to_string() }),
+                                serde_json::json!({
+                                    "threadId": thread_id,
+                                    "message": error_message,
+                                    "retryable": false,
+                                }),
                             );
+                            terminated_by_error = true;
                             break;
                         }
                     }
                 }
             }
 
-            if !stop_hooks_satisfied && !stop_hooks_ran_for_last_stop && !prompt_hook_blocked {
+            if !stop_hooks_satisfied
+                && !stop_hooks_ran_for_last_stop
+                && !prompt_hook_blocked
+                && !terminated_by_error
+            {
                 if let Some(progress) = robot_progress.as_ref() {
                     // 机器人强约束模式下，如果节点未完成，不允许退化为“直接总结”。
                     // 这里显式写回提示，保留下次 turn 继续当前节点的状态。
@@ -2299,6 +2364,292 @@ fn render_plugin_apps_prompt_for_config_dir(config_dir: &Path) -> String {
 }
 
 impl AgentEngine {
+    async fn resolve_image_context_with_fallback(
+        &self,
+        config: &ConfigToml,
+        user_input: &str,
+        active_model: &str,
+        attachments: &[UserAttachment],
+    ) -> (Vec<UserAttachment>, Option<String>) {
+        let has_image = attachments
+            .iter()
+            .any(|attachment| attachment.mime_type.starts_with("image/"));
+        if !has_image {
+            return (attachments.to_vec(), None);
+        }
+
+        let model_supports_vision = config.model_supports_vision.unwrap_or(true);
+        if model_supports_vision {
+            return (attachments.to_vec(), None);
+        }
+
+        let image_names = attachments
+            .iter()
+            .filter(|attachment| attachment.mime_type.starts_with("image/"))
+            .map(|attachment| attachment.name.clone())
+            .collect::<Vec<_>>();
+        let kept_attachments = attachments
+            .iter()
+            .filter(|attachment| !attachment.mime_type.starts_with("image/"))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let fallback_provider_id = config
+            .vision_fallback_provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let fallback_model = config
+            .vision_fallback_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let fallback_kind = config
+            .vision_fallback_kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                if fallback_provider_id.is_some() && fallback_model.is_some() {
+                    Some(VISION_FALLBACK_KIND_MULTIMODAL)
+                } else {
+                    None
+                }
+            });
+
+        let image_list = image_names.join(", ");
+        let no_fallback_hint = format!(
+            "当前模型（{active_model}）不支持视觉，且未配置可用的视觉后补（本地 OCR 或多模态模型）。已忽略图片附件：{image_list}。"
+        );
+
+        let image_attachments = attachments
+            .iter()
+            .filter(|attachment| attachment.mime_type.starts_with("image/"))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if matches!(fallback_kind, Some(VISION_FALLBACK_KIND_LOCAL_OCR)) {
+            let ocr_inputs = image_attachments
+                .iter()
+                .map(|attachment| OcrImageInput {
+                    name: attachment.name.clone(),
+                    mime_type: attachment.mime_type.clone(),
+                    data_url: attachment.data_url.clone(),
+                })
+                .collect::<Vec<_>>();
+            match extract_text_from_data_urls(&self.cwd, &ocr_inputs) {
+                Ok(results) if !results.is_empty() => {
+                    let rendered = results
+                        .iter()
+                        .map(|result| format!("{}:\n{}", result.name, result.text.trim()))
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    let context = format!("本地 OCR（PP-OCRv5 mobile）识图结果：\n{rendered}");
+                    return (kept_attachments, Some(context));
+                }
+                Ok(_) => {
+                    let hint = format!(
+                        "本地 OCR（PP-OCRv5 mobile）未提取到可用文本。已忽略图片附件：{image_list}。"
+                    );
+                    return (kept_attachments, Some(hint));
+                }
+                Err(err) => {
+                    warn!("Local OCR fallback failed: {err}");
+                    let hint = format!(
+                        "本地 OCR（PP-OCRv5 mobile）调用失败（{err}）。已忽略图片附件：{image_list}。"
+                    );
+                    return (kept_attachments, Some(hint));
+                }
+            }
+        }
+
+        let (Some(fallback_provider_id), Some(fallback_model)) =
+            (fallback_provider_id, fallback_model)
+        else {
+            return (kept_attachments, Some(no_fallback_hint));
+        };
+
+        let fallback_provider = config.resolve_provider_by_id(fallback_provider_id);
+        let Some(fallback_base_url) = fallback_provider.resolve_base_url() else {
+            warn!("Vision fallback skipped: provider '{fallback_provider_id}' has no base_url");
+            return (kept_attachments, Some(no_fallback_hint));
+        };
+        let fallback_api_key = fallback_provider.resolve_api_key().unwrap_or_default();
+        if fallback_api_key.is_empty() {
+            warn!("Vision fallback skipped: provider '{fallback_provider_id}' has no API key");
+            return (kept_attachments, Some(no_fallback_hint));
+        }
+        let fallback_wire_api = fallback_provider
+            .wire_api
+            .as_deref()
+            .unwrap_or("chat")
+            .to_string();
+
+        match self
+            .describe_images_with_fallback_model(
+                &fallback_base_url,
+                &fallback_api_key,
+                fallback_model,
+                &fallback_wire_api,
+                user_input,
+                active_model,
+                &image_attachments,
+                config.max_output_tokens,
+            )
+            .await
+        {
+            Ok(text) if !text.trim().is_empty() => {
+                let context = format!(
+                    "视觉后补模型 {fallback_provider_id}/{fallback_model} 识图结果：\n{}",
+                    text.trim()
+                );
+                (kept_attachments, Some(context))
+            }
+            Ok(_) => {
+                warn!(
+                    "Vision fallback returned empty text: provider={fallback_provider_id}, model={fallback_model}"
+                );
+                let hint = format!(
+                    "视觉后补模型 {fallback_provider_id}/{fallback_model} 未返回可用识图结果。已忽略图片附件：{image_list}。"
+                );
+                (kept_attachments, Some(hint))
+            }
+            Err(err) => {
+                warn!(
+                    "Vision fallback call failed: provider={fallback_provider_id}, model={fallback_model}, error={err}"
+                );
+                let hint = format!(
+                    "视觉后补模型 {fallback_provider_id}/{fallback_model} 调用失败（{err}）。已忽略图片附件：{image_list}。"
+                );
+                (kept_attachments, Some(hint))
+            }
+        }
+    }
+
+    async fn describe_images_with_fallback_model(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        model: &str,
+        wire_api: &str,
+        user_input: &str,
+        active_model: &str,
+        image_attachments: &[UserAttachment],
+        max_tokens: Option<i64>,
+    ) -> AppResult<String> {
+        let adapter = adapter::get_adapter(wire_api);
+        let url = adapter.build_url(base_url, model);
+        let headers = adapter.build_headers(api_key);
+        let image_list = image_attachments
+            .iter()
+            .enumerate()
+            .map(|(index, attachment)| format!("{}. {}", index + 1, attachment.name))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let user_prompt = format!(
+            "You are a vision parsing tool for a downstream coding model.\n\
+             Active text model: {active_model}\n\
+             User request:\n{user_input}\n\n\
+             Attached images:\n{image_list}\n\n\
+             Please analyze images and return plain text with these sections:\n\
+             1) OCR text\n2) Key visual elements\n3) Facts relevant to the user request.\n\
+             Keep it concise but actionable."
+        );
+        let messages = vec![
+            InternalMessage {
+                role: "system".to_string(),
+                content: text_content(
+                    "You convert images into reliable textual context for another LLM. \
+                     Never call tools. Return plain text only."
+                        .to_string(),
+                ),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            InternalMessage {
+                role: "user".to_string(),
+                content: Some(multimodal_user_content(&user_prompt, image_attachments)),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+        let body = adapter.build_body(model, &messages, None, max_tokens);
+
+        let response = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Custom(format!("Vision fallback HTTP request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(AppError::Custom(format!(
+                "Vision fallback API error ({status}): {body_text}"
+            )));
+        }
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if content_type.contains("application/json") && !content_type.contains("stream") {
+            let body_text = response.text().await.unwrap_or_default();
+            if let Some(parsed) = extract_non_streaming_text(&body_text) {
+                return Ok(parsed);
+            }
+            if !body_text.trim().is_empty() {
+                return Ok(body_text);
+            }
+            return Err(AppError::Custom(
+                "Vision fallback returned empty non-streaming response".to_string(),
+            ));
+        }
+
+        let mut result_text = String::new();
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk
+                .map_err(|e| AppError::Custom(format!("Vision fallback stream read error: {e}")))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(line_end) = buffer.find('\n') {
+                let line = buffer[..line_end].trim().to_string();
+                buffer = buffer[line_end + 1..].to_string();
+
+                if line.is_empty() || !line.starts_with("data: ") {
+                    continue;
+                }
+
+                let data = &line[6..];
+                if adapter.is_stream_done(data) {
+                    continue;
+                }
+
+                for event in adapter.parse_stream_line(data) {
+                    if let StreamEvent::TextDelta(delta) = event {
+                        result_text.push_str(&delta);
+                    }
+                }
+            }
+        }
+
+        if result_text.trim().is_empty() {
+            return Err(AppError::Custom(
+                "Vision fallback returned empty stream response".to_string(),
+            ));
+        }
+        Ok(result_text)
+    }
+
     /// Convert thread history into the adapter layer's unified internal message shape.
     fn build_internal_messages(
         &self,
@@ -2476,6 +2827,8 @@ impl AgentEngine {
         let mut plan_buffer = String::new();
         let mut inside_plan_block = false;
         let mut plan_line_buffer = String::new();
+        let mut protocol_state = ProtocolStreamState::default();
+        let mut dsml_tool_calls: Vec<ToolCallRequest> = Vec::new();
 
         while let Some(chunk) = stream.next().await {
             if self.is_cancelled() {
@@ -2534,9 +2887,27 @@ impl AgentEngine {
                 for event in events {
                     match event {
                         StreamEvent::TextDelta(text) => {
-                            full_text.push_str(&text);
+                            let parsed = consume_protocol_text_delta(&mut protocol_state, &text);
+                            for dsml_block in parsed.dsml_blocks {
+                                dsml_tool_calls.extend(parse_dsml_tool_calls_block(&dsml_block));
+                            }
+                            if !parsed.reasoning.is_empty() {
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "reasoning-text-delta",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "delta": parsed.reasoning,
+                                    }),
+                                );
+                            }
+
+                            if parsed.visible.is_empty() {
+                                continue;
+                            }
+                            full_text.push_str(&parsed.visible);
                             if plan_mode {
-                                for ch in text.chars() {
+                                for ch in parsed.visible.chars() {
                                     plan_line_buffer.push(ch);
                                     if ch == '\n' {
                                         let trimmed = plan_line_buffer.trim();
@@ -2566,7 +2937,7 @@ impl AgentEngine {
                                 emit_and_broadcast(
                                     app_handle,
                                     "agent-message-delta",
-                                    serde_json::json!({ "threadId": thread_id, "delta": text }),
+                                    serde_json::json!({ "threadId": thread_id, "delta": parsed.visible }),
                                 );
                             }
                         }
@@ -2615,6 +2986,58 @@ impl AgentEngine {
             }
         }
 
+        let tail = flush_protocol_stream_state(&mut protocol_state);
+        for dsml_block in tail.dsml_blocks {
+            dsml_tool_calls.extend(parse_dsml_tool_calls_block(&dsml_block));
+        }
+        if !tail.reasoning.is_empty() {
+            emit_and_broadcast(
+                app_handle,
+                "reasoning-text-delta",
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "delta": tail.reasoning,
+                }),
+            );
+        }
+        if !tail.visible.is_empty() {
+            full_text.push_str(&tail.visible);
+            if plan_mode {
+                for ch in tail.visible.chars() {
+                    plan_line_buffer.push(ch);
+                    if ch == '\n' {
+                        let trimmed = plan_line_buffer.trim();
+                        if trimmed == "<proposed_plan>" {
+                            inside_plan_block = true;
+                            plan_line_buffer.clear();
+                            continue;
+                        }
+                        if trimmed == "</proposed_plan>" {
+                            inside_plan_block = false;
+                            plan_line_buffer.clear();
+                            continue;
+                        }
+                        if inside_plan_block {
+                            plan_buffer.push_str(&plan_line_buffer);
+                        } else {
+                            emit_and_broadcast(
+                                app_handle,
+                                "agent-message-delta",
+                                serde_json::json!({ "threadId": thread_id, "delta": &plan_line_buffer }),
+                            );
+                        }
+                        plan_line_buffer.clear();
+                    }
+                }
+            } else {
+                emit_and_broadcast(
+                    app_handle,
+                    "agent-message-delta",
+                    serde_json::json!({ "threadId": thread_id, "delta": tail.visible }),
+                );
+            }
+        }
+
         // Plan mode: flush any remaining content in plan_line_buffer
         if plan_mode && !plan_line_buffer.is_empty() {
             if inside_plan_block {
@@ -2639,17 +3062,23 @@ impl AgentEngine {
                 })
                 .collect(),
         );
+        let dsml_tool_calls = normalize_tool_call_requests(dsml_tool_calls);
+        let final_tool_calls = if valid_tool_calls.is_empty() {
+            dsml_tool_calls
+        } else {
+            valid_tool_calls
+        };
 
         info!(
             "stream_completion done: wire_api={wire_api}, finish_reason={:?}, tool_calls={}, text_len={}, usage={:?}",
             finish_reason,
-            valid_tool_calls.len(),
+            final_tool_calls.len(),
             full_text.len(),
             usage_info,
         );
 
         // 如果流结束但没有任何内容也没有 finish_reason，可能是连接异常或响应格式不兼容
-        if full_text.is_empty() && valid_tool_calls.is_empty() && finish_reason.is_none() {
+        if full_text.is_empty() && final_tool_calls.is_empty() && finish_reason.is_none() {
             warn!(
                 "Stream ended with no content and no finish_reason. Buffer remainder: {:?}",
                 &buffer[..buffer.len().min(200)]
@@ -2663,10 +3092,10 @@ impl AgentEngine {
 
         // 当 API 不返回 usage 时，基于文本长度估算 token 数
         let usage_info = if usage_info.is_none()
-            && (!full_text.is_empty() || !valid_tool_calls.is_empty())
+            && (!full_text.is_empty() || !final_tool_calls.is_empty())
         {
             let completion_tokens = estimate_tokens(&full_text)
-                + valid_tool_calls
+                + final_tool_calls
                     .iter()
                     .map(|tc| estimate_tokens(&tc.arguments))
                     .sum::<u64>();
@@ -2703,7 +3132,7 @@ impl AgentEngine {
                     completion_tokens: u.completion_tokens,
                     total_tokens: u.total_tokens,
                 });
-            let tc_tuples: Vec<(String, String, String)> = valid_tool_calls
+            let tc_tuples: Vec<(String, String, String)> = final_tool_calls
                 .iter()
                 .map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone()))
                 .collect();
@@ -2726,9 +3155,9 @@ impl AgentEngine {
             None
         };
 
-        if !valid_tool_calls.is_empty() {
+        if !final_tool_calls.is_empty() {
             Ok(CompletionResult::ToolCalls {
-                calls: valid_tool_calls,
+                calls: final_tool_calls,
                 preceding_text: full_text,
                 usage: usage_info,
             })
@@ -2765,11 +3194,12 @@ impl AgentEngine {
         let choice = choices.and_then(|arr| arr.first());
 
         let message = choice.and_then(|c| c.get("message"));
-        let text = message
+        let raw_text = message
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
+            .unwrap_or("");
+        let parsed_protocol = parse_protocol_text(raw_text);
+        let text = parsed_protocol.visible;
 
         // 提取 usage
         let usage_info = json.get("usage").map(|u| UsageInfo {
@@ -2806,6 +3236,26 @@ impl AgentEngine {
                 })
                 .unwrap_or_default(),
         );
+        let dsml_tool_calls = normalize_tool_call_requests(
+            parsed_protocol
+                .dsml_blocks
+                .iter()
+                .flat_map(|block| parse_dsml_tool_calls_block(block))
+                .collect(),
+        );
+        let final_tool_calls = if tool_calls.is_empty() {
+            dsml_tool_calls
+        } else {
+            tool_calls
+        };
+
+        if !parsed_protocol.reasoning.is_empty() {
+            emit_and_broadcast(
+                app_handle,
+                "reasoning-text-delta",
+                serde_json::json!({ "threadId": thread_id, "delta": parsed_protocol.reasoning }),
+            );
+        }
 
         // 发送文本增量事件
         if !text.is_empty() {
@@ -2816,9 +3266,9 @@ impl AgentEngine {
             );
         }
 
-        if !tool_calls.is_empty() {
+        if !final_tool_calls.is_empty() {
             Ok(CompletionResult::ToolCalls {
-                calls: tool_calls,
+                calls: final_tool_calls,
                 preceding_text: text,
                 usage: usage_info,
             })
@@ -2840,6 +3290,281 @@ struct ToolCallAccumulator {
     arguments: String,
 }
 
+const THINK_OPEN_TAG: &str = "<think>";
+const THINK_CLOSE_TAG: &str = "</think>";
+const DSML_TOOL_CALLS_OPEN_TAG: &str = "<｜｜DSML｜｜tool_calls>";
+const DSML_TOOL_CALLS_CLOSE_TAG: &str = "</｜｜DSML｜｜tool_calls>";
+const DSML_INVOKE_OPEN_TAG: &str = "<｜｜DSML｜｜invoke";
+const DSML_INVOKE_CLOSE_TAG: &str = "</｜｜DSML｜｜invoke>";
+const DSML_PARAMETER_OPEN_TAG: &str = "<｜｜DSML｜｜parameter";
+const DSML_PARAMETER_CLOSE_TAG: &str = "</｜｜DSML｜｜parameter>";
+
+#[derive(Clone, Copy)]
+enum ProtocolToken {
+    ThinkOpen,
+    ThinkClose,
+    DsmlOpen,
+    DsmlClose,
+}
+
+#[derive(Default)]
+struct ProtocolStreamState {
+    inside_think: bool,
+    inside_dsml: bool,
+    pending: String,
+    dsml_buffer: String,
+}
+
+#[derive(Default)]
+struct ProtocolDeltaResult {
+    visible: String,
+    reasoning: String,
+    dsml_blocks: Vec<String>,
+}
+
+fn next_protocol_token(text: &str) -> Option<(usize, ProtocolToken)> {
+    [
+        (THINK_OPEN_TAG, ProtocolToken::ThinkOpen),
+        (THINK_CLOSE_TAG, ProtocolToken::ThinkClose),
+        (DSML_TOOL_CALLS_OPEN_TAG, ProtocolToken::DsmlOpen),
+        (DSML_TOOL_CALLS_CLOSE_TAG, ProtocolToken::DsmlClose),
+    ]
+    .iter()
+    .filter_map(|(tag, token)| text.find(tag).map(|pos| (pos, *token)))
+    .min_by_key(|(pos, _)| *pos)
+}
+
+fn split_trailing_partial_tag<'a>(text: &'a str, tags: &[&str]) -> (&'a str, &'a str) {
+    let mut best_len = 0_usize;
+    for tag in tags {
+        for (prefix_len, _) in tag.char_indices().skip(1) {
+            let prefix = &tag[..prefix_len];
+            if text.ends_with(prefix) && prefix_len > best_len {
+                best_len = prefix_len;
+            }
+        }
+    }
+    if best_len == 0 {
+        (text, "")
+    } else {
+        text.split_at(text.len().saturating_sub(best_len))
+    }
+}
+
+fn consume_protocol_text_delta(
+    state: &mut ProtocolStreamState,
+    chunk: &str,
+) -> ProtocolDeltaResult {
+    let mut result = ProtocolDeltaResult::default();
+    let mut input = String::new();
+    if !state.pending.is_empty() {
+        input.push_str(&state.pending);
+        state.pending.clear();
+    }
+    input.push_str(chunk);
+
+    let mut rest = input.as_str();
+    while !rest.is_empty() {
+        if state.inside_dsml {
+            if let Some(close_pos) = rest.find(DSML_TOOL_CALLS_CLOSE_TAG) {
+                state.dsml_buffer.push_str(&rest[..close_pos]);
+                if !state.dsml_buffer.trim().is_empty() {
+                    result
+                        .dsml_blocks
+                        .push(std::mem::take(&mut state.dsml_buffer));
+                } else {
+                    state.dsml_buffer.clear();
+                }
+                state.inside_dsml = false;
+                rest = &rest[close_pos + DSML_TOOL_CALLS_CLOSE_TAG.len()..];
+                continue;
+            }
+            let (emit, pending) = split_trailing_partial_tag(rest, &[DSML_TOOL_CALLS_CLOSE_TAG]);
+            state.dsml_buffer.push_str(emit);
+            state.pending = pending.to_string();
+            break;
+        }
+
+        if state.inside_think {
+            if let Some(close_pos) = rest.find(THINK_CLOSE_TAG) {
+                result.reasoning.push_str(&rest[..close_pos]);
+                state.inside_think = false;
+                rest = &rest[close_pos + THINK_CLOSE_TAG.len()..];
+                continue;
+            }
+            let (emit, pending) = split_trailing_partial_tag(rest, &[THINK_CLOSE_TAG]);
+            result.reasoning.push_str(emit);
+            state.pending = pending.to_string();
+            break;
+        }
+
+        if let Some((token_pos, token)) = next_protocol_token(rest) {
+            result.visible.push_str(&rest[..token_pos]);
+            rest = &rest[token_pos..];
+            match token {
+                ProtocolToken::ThinkOpen => {
+                    state.inside_think = true;
+                    rest = &rest[THINK_OPEN_TAG.len()..];
+                }
+                ProtocolToken::DsmlOpen => {
+                    state.inside_dsml = true;
+                    state.dsml_buffer.clear();
+                    rest = &rest[DSML_TOOL_CALLS_OPEN_TAG.len()..];
+                }
+                ProtocolToken::ThinkClose => {
+                    rest = &rest[THINK_CLOSE_TAG.len()..];
+                }
+                ProtocolToken::DsmlClose => {
+                    rest = &rest[DSML_TOOL_CALLS_CLOSE_TAG.len()..];
+                }
+            }
+            continue;
+        }
+
+        let (emit, pending) = split_trailing_partial_tag(
+            rest,
+            &[
+                THINK_OPEN_TAG,
+                THINK_CLOSE_TAG,
+                DSML_TOOL_CALLS_OPEN_TAG,
+                DSML_TOOL_CALLS_CLOSE_TAG,
+            ],
+        );
+        result.visible.push_str(emit);
+        state.pending = pending.to_string();
+        break;
+    }
+
+    result
+}
+
+fn flush_protocol_stream_state(state: &mut ProtocolStreamState) -> ProtocolDeltaResult {
+    let mut result = ProtocolDeltaResult::default();
+    if state.inside_dsml {
+        if !state.pending.is_empty() {
+            state.dsml_buffer.push_str(&state.pending);
+            state.pending.clear();
+        }
+        if !state.dsml_buffer.trim().is_empty() {
+            result
+                .dsml_blocks
+                .push(std::mem::take(&mut state.dsml_buffer));
+        } else {
+            state.dsml_buffer.clear();
+        }
+        state.inside_dsml = false;
+        return result;
+    }
+    if state.inside_think {
+        if !state.pending.is_empty() {
+            result.reasoning.push_str(&state.pending);
+            state.pending.clear();
+        }
+        state.inside_think = false;
+        return result;
+    }
+    if !state.pending.is_empty() {
+        result.visible.push_str(&state.pending);
+        state.pending.clear();
+    }
+    result
+}
+
+fn parse_protocol_text(text: &str) -> ProtocolDeltaResult {
+    let mut state = ProtocolStreamState::default();
+    let mut result = consume_protocol_text_delta(&mut state, text);
+    let tail = flush_protocol_stream_state(&mut state);
+    result.visible.push_str(&tail.visible);
+    result.reasoning.push_str(&tail.reasoning);
+    result.dsml_blocks.extend(tail.dsml_blocks);
+    result
+}
+
+fn extract_tag_attr(tag: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let start = tag.find(&needle)? + needle.len();
+    let value = &tag[start..];
+    let end = value.find('"')?;
+    Some(value[..end].to_string())
+}
+
+fn parse_dsml_tool_calls_block(block: &str) -> Vec<ToolCallRequest> {
+    let mut calls = Vec::new();
+    let mut rest = block;
+    let mut invoke_index = 0_u32;
+
+    while let Some(invoke_start) = rest.find(DSML_INVOKE_OPEN_TAG) {
+        rest = &rest[invoke_start..];
+        let Some(invoke_tag_end) = rest.find('>') else {
+            break;
+        };
+        let invoke_tag = &rest[..=invoke_tag_end];
+        let Some(tool_name) = extract_tag_attr(invoke_tag, "name") else {
+            rest = &rest[invoke_tag_end + 1..];
+            continue;
+        };
+
+        let invoke_body_start = invoke_tag_end + 1;
+        let Some(invoke_close_pos) = rest[invoke_body_start..].find(DSML_INVOKE_CLOSE_TAG) else {
+            break;
+        };
+        let invoke_body_end = invoke_body_start + invoke_close_pos;
+        let invoke_body = &rest[invoke_body_start..invoke_body_end];
+
+        let mut arguments = serde_json::Map::new();
+        let mut body_rest = invoke_body;
+        while let Some(parameter_start) = body_rest.find(DSML_PARAMETER_OPEN_TAG) {
+            body_rest = &body_rest[parameter_start..];
+            let Some(parameter_tag_end) = body_rest.find('>') else {
+                break;
+            };
+            let parameter_tag = &body_rest[..=parameter_tag_end];
+            let Some(parameter_name) = extract_tag_attr(parameter_tag, "name") else {
+                body_rest = &body_rest[parameter_tag_end + 1..];
+                continue;
+            };
+            let is_string_parameter = extract_tag_attr(parameter_tag, "string")
+                .map(|value| value.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            let parameter_body_start = parameter_tag_end + 1;
+            let Some(parameter_close_pos) =
+                body_rest[parameter_body_start..].find(DSML_PARAMETER_CLOSE_TAG)
+            else {
+                break;
+            };
+            let parameter_body_end = parameter_body_start + parameter_close_pos;
+            let parameter_value_text = body_rest[parameter_body_start..parameter_body_end].trim();
+            let parameter_value = if is_string_parameter {
+                serde_json::Value::String(parameter_value_text.to_string())
+            } else {
+                serde_json::from_str::<serde_json::Value>(parameter_value_text)
+                    .unwrap_or_else(|_| serde_json::Value::String(parameter_value_text.to_string()))
+            };
+            arguments.insert(parameter_name, parameter_value);
+            body_rest = &body_rest[parameter_body_end + DSML_PARAMETER_CLOSE_TAG.len()..];
+        }
+
+        invoke_index = invoke_index.saturating_add(1);
+        calls.push(ToolCallRequest {
+            id: format!("dsml_{}_{}", sanitize_tool_name(&tool_name), invoke_index),
+            name: tool_name,
+            arguments: serde_json::Value::Object(arguments).to_string(),
+        });
+        rest = &rest[invoke_body_end + DSML_INVOKE_CLOSE_TAG.len()..];
+    }
+
+    calls
+}
+
+fn non_empty_trimmed(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn extract_proposed_plan(text: &str) -> Option<String> {
     const OPEN_TAG: &str = "<proposed_plan>";
     const CLOSE_TAG: &str = "</proposed_plan>";
@@ -2847,11 +3572,39 @@ fn extract_proposed_plan(text: &str) -> Option<String> {
     let start = text.find(OPEN_TAG)?;
     let content_start = start + OPEN_TAG.len();
     let end = text[content_start..].find(CLOSE_TAG)?;
-    let plan = text[content_start..content_start + end].trim();
-    if plan.is_empty() {
-        return None;
+    non_empty_trimmed(&text[content_start..content_start + end])
+}
+
+fn resolve_effective_plan_content(
+    turn_mode: &str,
+    plan_text: Option<&str>,
+    raw_text: &str,
+    cleaned_text: &str,
+) -> Option<String> {
+    let stream_plan = plan_text.and_then(non_empty_trimmed);
+    if turn_mode != "plan" {
+        return stream_plan;
     }
-    Some(plan.to_string())
+
+    stream_plan
+        .or_else(|| extract_proposed_plan(raw_text))
+        .or_else(|| extract_proposed_plan(cleaned_text))
+        .or_else(|| non_empty_trimmed(cleaned_text))
+}
+
+fn is_retryable_rate_limit_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("too many requests")
+        || lower.contains("rate_limited")
+}
+
+fn rate_limit_backoff_ms(attempt: u32) -> u64 {
+    let normalized_attempt = attempt.max(1);
+    let shift = normalized_attempt.saturating_sub(1).min(20);
+    let multiplier = 1_u64 << shift;
+    (1_000_u64.saturating_mul(multiplier)).min(30_000)
 }
 
 fn text_expresses_intent(text: &str) -> bool {
@@ -2998,6 +3751,64 @@ fn goal_budget_limited_after(goal: Option<&ThreadGoal>, usage: &TurnUsage) -> bo
     goal.token_budget.is_some_and(|budget| {
         budget > 0 && goal.tokens_used.saturating_add(usage.total_tokens) >= budget
     })
+}
+
+fn extract_non_streaming_text(body_text: &str) -> Option<String> {
+    fn value_to_text(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            serde_json::Value::Array(items) => {
+                let mut parts = Vec::new();
+                for item in items {
+                    if let Some(text) = item
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                    {
+                        parts.push(text.to_string());
+                    } else if let Some(text) = item
+                        .get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                    {
+                        parts.push(text.to_string());
+                    }
+                }
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some(parts.join("\n"))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    let json: serde_json::Value = serde_json::from_str(body_text).ok()?;
+    let candidates = [
+        "/choices/0/message/content",
+        "/output_text",
+        "/output/0/content/0/text",
+        "/content/0/text",
+        "/candidates/0/content/parts/0/text",
+    ];
+    for pointer in candidates {
+        if let Some(value) = json.pointer(pointer) {
+            if let Some(text) = value_to_text(value) {
+                return Some(text);
+            }
+        }
+    }
+    None
 }
 
 fn multimodal_user_content(text: &str, attachments: &[UserAttachment]) -> serde_json::Value {
@@ -4097,12 +4908,124 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{thread_store::ThreadStore, tool_executor::ToolExecutor};
 
     fn status_entry(status: &str, fingerprint: Option<u64>) -> GitStatusEntry {
         GitStatusEntry {
             status: status.to_string(),
             fingerprint,
         }
+    }
+
+    #[test]
+    fn extract_proposed_plan_supports_inline_tags() {
+        let text = "intro<proposed_plan>\n# Plan\n- step 1\n</proposed_plan>tail";
+        assert_eq!(
+            extract_proposed_plan(text),
+            Some("# Plan\n- step 1".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_effective_plan_content_prefers_stream_plan_text() {
+        let resolved = resolve_effective_plan_content(
+            "plan",
+            Some("  from stream  "),
+            "<proposed_plan>from tag</proposed_plan>",
+            "fallback",
+        );
+        assert_eq!(resolved, Some("from stream".to_string()));
+    }
+
+    #[test]
+    fn resolve_effective_plan_content_uses_tagged_content() {
+        let resolved = resolve_effective_plan_content(
+            "plan",
+            None,
+            "prefix\n<proposed_plan>\n## Title\n1. one\n</proposed_plan>\nsuffix",
+            "fallback",
+        );
+        assert_eq!(resolved, Some("## Title\n1. one".to_string()));
+    }
+
+    #[test]
+    fn resolve_effective_plan_content_falls_back_to_cleaned_text_for_plan_mode() {
+        let resolved =
+            resolve_effective_plan_content("plan", None, "No tags here", "  plain markdown  ");
+        assert_eq!(resolved, Some("plain markdown".to_string()));
+    }
+
+    #[test]
+    fn resolve_effective_plan_content_keeps_non_plan_behavior() {
+        let resolved = resolve_effective_plan_content(
+            "chat",
+            None,
+            "<proposed_plan>ignored</proposed_plan>",
+            "should-not-be-plan",
+        );
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn rate_limit_backoff_ms_grows_exponentially_and_caps() {
+        assert_eq!(rate_limit_backoff_ms(1), 1_000);
+        assert_eq!(rate_limit_backoff_ms(2), 2_000);
+        assert_eq!(rate_limit_backoff_ms(3), 4_000);
+        assert_eq!(rate_limit_backoff_ms(4), 8_000);
+        assert_eq!(rate_limit_backoff_ms(5), 16_000);
+        assert_eq!(rate_limit_backoff_ms(6), 30_000);
+        assert_eq!(rate_limit_backoff_ms(10), 30_000);
+    }
+
+    #[test]
+    fn is_retryable_rate_limit_error_detects_429_and_rate_limit_text() {
+        assert!(is_retryable_rate_limit_error("LLM API error (429 Too Many Requests): overload"));
+        assert!(is_retryable_rate_limit_error("rate limit exceeded"));
+        assert!(!is_retryable_rate_limit_error("LLM API error (500): internal"));
+    }
+
+    #[test]
+    fn parse_protocol_text_extracts_think_blocks() {
+        let parsed = parse_protocol_text("前文<think>推理过程</think>后文");
+        assert_eq!(parsed.visible, "前文后文");
+        assert_eq!(parsed.reasoning, "推理过程");
+        assert!(parsed.dsml_blocks.is_empty());
+    }
+
+    #[test]
+    fn parse_protocol_text_strips_dsml_block() {
+        let parsed = parse_protocol_text(
+            "before<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name=\"request_user_input\"></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>after",
+        );
+        assert_eq!(parsed.visible, "beforeafter");
+        assert_eq!(parsed.dsml_blocks.len(), 1);
+    }
+
+    #[test]
+    fn parse_dsml_tool_calls_block_parses_parameters() {
+        let block = "<｜｜DSML｜｜invoke name=\"request_user_input\">\n<｜｜DSML｜｜parameter name=\"questions\" string=\"false\">[{\"id\":\"q1\",\"prompt\":\"继续吗?\",\"options\":[{\"id\":\"yes\",\"label\":\"继续\"}]}]</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>";
+        let calls = parse_dsml_tool_calls_block(block);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "request_user_input");
+        let arguments: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(arguments["questions"][0]["id"], "q1");
+    }
+
+    #[test]
+    fn consume_protocol_text_delta_supports_fragmented_think_tags() {
+        let mut state = ProtocolStreamState::default();
+        let mut visible = String::new();
+        let mut reasoning = String::new();
+        for chunk in ["前文<th", "ink>思", "考</thi", "nk>后文"] {
+            let parsed = consume_protocol_text_delta(&mut state, chunk);
+            visible.push_str(&parsed.visible);
+            reasoning.push_str(&parsed.reasoning);
+        }
+        let tail = flush_protocol_stream_state(&mut state);
+        visible.push_str(&tail.visible);
+        reasoning.push_str(&tail.reasoning);
+        assert_eq!(visible, "前文后文");
+        assert_eq!(reasoning, "思考");
     }
 
     #[test]
@@ -4340,6 +5263,134 @@ mod tests {
             "data:image/png;base64,abc123"
         );
         assert!(content[0]["text"].as_str().unwrap().contains("notes.txt"));
+    }
+
+    #[tokio::test]
+    async fn resolve_image_context_with_fallback_keeps_images_when_model_supports_vision() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cwd = temp_dir.path().to_path_buf();
+        let thread_store = Arc::new(ThreadStore::new(&cwd.join("codey")));
+        let tool_executor = ToolExecutor::new(cwd.clone());
+        let engine = AgentEngine::new(thread_store, tool_executor, cwd).unwrap();
+
+        let config = ConfigToml {
+            model_supports_vision: Some(true),
+            ..Default::default()
+        };
+        let attachments = vec![UserAttachment {
+            name: "image.png".to_string(),
+            mime_type: "image/png".to_string(),
+            data_url: "data:image/png;base64,abc123".to_string(),
+            size: 12,
+        }];
+
+        let (processed, fallback_context) = engine
+            .resolve_image_context_with_fallback(
+                &config,
+                "describe image",
+                "text-model",
+                &attachments,
+            )
+            .await;
+
+        assert_eq!(processed.len(), 1);
+        assert!(processed[0].mime_type.starts_with("image/"));
+        assert!(fallback_context.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_image_context_with_fallback_drops_images_without_fallback_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cwd = temp_dir.path().to_path_buf();
+        let thread_store = Arc::new(ThreadStore::new(&cwd.join("codey")));
+        let tool_executor = ToolExecutor::new(cwd.clone());
+        let engine = AgentEngine::new(thread_store, tool_executor, cwd).unwrap();
+
+        let config = ConfigToml {
+            model_supports_vision: Some(false),
+            ..Default::default()
+        };
+        let attachments = vec![
+            UserAttachment {
+                name: "image.png".to_string(),
+                mime_type: "image/png".to_string(),
+                data_url: "data:image/png;base64,abc123".to_string(),
+                size: 12,
+            },
+            UserAttachment {
+                name: "readme.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+                data_url: "data:text/plain;base64,aGVsbG8=".to_string(),
+                size: 5,
+            },
+        ];
+
+        let (processed, fallback_context) = engine
+            .resolve_image_context_with_fallback(
+                &config,
+                "describe image",
+                "text-model",
+                &attachments,
+            )
+            .await;
+
+        assert_eq!(processed.len(), 1);
+        assert!(!processed[0].mime_type.starts_with("image/"));
+        assert!(fallback_context.is_some());
+        assert!(
+            fallback_context
+                .as_deref()
+                .unwrap_or_default()
+                .contains("未配置可用的视觉后补")
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_image_context_with_local_ocr_fallback_keeps_non_image_attachments() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cwd = temp_dir.path().to_path_buf();
+        let thread_store = Arc::new(ThreadStore::new(&cwd.join("codey")));
+        let tool_executor = ToolExecutor::new(cwd.clone());
+        let engine = AgentEngine::new(thread_store, tool_executor, cwd).unwrap();
+
+        let config = ConfigToml {
+            model_supports_vision: Some(false),
+            vision_fallback_kind: Some("local_ocr".to_string()),
+            ..Default::default()
+        };
+        let attachments = vec![
+            UserAttachment {
+                name: "image.png".to_string(),
+                mime_type: "image/png".to_string(),
+                data_url: "data:image/png;base64,abc123".to_string(),
+                size: 12,
+            },
+            UserAttachment {
+                name: "notes.txt".to_string(),
+                mime_type: "text/plain".to_string(),
+                data_url: "data:text/plain;base64,aGVsbG8=".to_string(),
+                size: 5,
+            },
+        ];
+
+        let (processed, fallback_context) = engine
+            .resolve_image_context_with_fallback(
+                &config,
+                "extract text",
+                "text-model",
+                &attachments,
+            )
+            .await;
+
+        assert_eq!(processed.len(), 1);
+        assert_eq!(processed[0].mime_type, "text/plain");
+        assert!(fallback_context.is_some());
+        assert!(
+            fallback_context
+                .as_deref()
+                .unwrap_or_default()
+                .contains("本地 OCR")
+        );
     }
 
     #[test]

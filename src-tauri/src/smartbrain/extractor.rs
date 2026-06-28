@@ -119,6 +119,7 @@ async fn run_extraction_internal(
     }
 
     let (provider_id, provider) = config.resolve_provider();
+    let mut model = config.resolve_model();
     let (base_url, api_key, wire_api) = if !config.model_endpoints.is_empty() {
         let idx = config.active_endpoint_index.unwrap_or(0);
         let ep = &config.model_endpoints[idx.min(config.model_endpoints.len() - 1)];
@@ -127,6 +128,14 @@ async fn run_extraction_internal(
             .as_deref()
             .or(provider.wire_api.as_deref())
             .unwrap_or("chat");
+        if let Some(ep_model) = ep
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            model = ep_model.to_string();
+        }
         (
             ep.url.clone(),
             ep.api_key.clone().unwrap_or_default(),
@@ -148,7 +157,6 @@ async fn run_extraction_internal(
         let wire = provider.wire_api.as_deref().unwrap_or("chat").to_string();
         (url, key, wire)
     };
-    let model = config.resolve_model();
     if model.is_empty() {
         info!("Experience extraction skipped: no model configured");
         return;

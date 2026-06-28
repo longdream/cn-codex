@@ -29,10 +29,34 @@ const FORTUNE_SYSTEM_PROMPT: &str = "你是一位精通中国传统玄学的大�
 const PLAYWRIGHT_MCP_SERVER_NAME: &str = "playwright";
 const PLAYWRIGHT_MCP_PACKAGE: &str = "@playwright/mcp@latest";
 const PLAYWRIGHT_MCP_WARMUP_TIMEOUT_SECS: u64 = 180;
+#[cfg(target_os = "windows")]
+const PLAYWRIGHT_MCP_COMMAND: &str = "npx.cmd";
+#[cfg(not(target_os = "windows"))]
+const PLAYWRIGHT_MCP_COMMAND: &str = "npx";
+
+fn bundled_node_bin_dir(workspace_config_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let node_dir = workspace_config_dir.join("node");
+    if node_dir.is_dir() {
+        Some(node_dir)
+    } else {
+        None
+    }
+}
+
+fn prepend_path_value(
+    base_path: Option<std::ffi::OsString>,
+    prepend_dir: &std::path::Path,
+) -> std::ffi::OsString {
+    let mut path_entries = vec![prepend_dir.to_path_buf()];
+    if let Some(existing) = base_path {
+        path_entries.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(path_entries).unwrap_or_else(|_| prepend_dir.as_os_str().to_os_string())
+}
 
 fn playwright_mcp_config_value() -> serde_json::Value {
     serde_json::json!({
-        "command": "npx",
+        "command": PLAYWRIGHT_MCP_COMMAND,
         "args": ["-y", PLAYWRIGHT_MCP_PACKAGE],
         "disabled": false
     })
@@ -50,8 +74,16 @@ fn trim_and_truncate(text: &str, max_chars: usize) -> String {
     format!("{}...", chars[..max_chars].iter().collect::<String>())
 }
 
-async fn warmup_playwright_mcp_install() -> Result<String, String> {
-    let mut command = tokio::process::Command::new("npx");
+async fn warmup_playwright_mcp_install(
+    workspace_config_dir: &std::path::Path,
+) -> Result<String, String> {
+    let mut command = tokio::process::Command::new(PLAYWRIGHT_MCP_COMMAND);
+    if let Some(node_dir) = bundled_node_bin_dir(workspace_config_dir) {
+        let merged_path = prepend_path_value(std::env::var_os("PATH"), &node_dir);
+        command.env("PATH", &merged_path);
+        #[cfg(target_os = "windows")]
+        command.env("Path", merged_path);
+    }
     command
         .arg("-y")
         .arg(PLAYWRIGHT_MCP_PACKAGE)
@@ -71,7 +103,12 @@ async fn warmup_playwright_mcp_install() -> Result<String, String> {
             PLAYWRIGHT_MCP_WARMUP_TIMEOUT_SECS
         )
     })?
-    .map_err(|error| format!("Failed to run npx for Playwright MCP warmup: {error}"))?;
+    .map_err(|error| {
+        format!(
+            "Failed to run {} for Playwright MCP warmup: {error}",
+            PLAYWRIGHT_MCP_COMMAND
+        )
+    })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -96,7 +133,7 @@ async fn warmup_playwright_mcp_install() -> Result<String, String> {
         Err(format!(
             "Playwright MCP warmup failed ({exit_desc}). {}",
             if detail.is_empty() {
-                "No output from npx command.".to_string()
+                format!("No output from {} command.", PLAYWRIGHT_MCP_COMMAND)
             } else {
                 detail
             }
@@ -519,7 +556,7 @@ pub async fn standalone_mcp_enable_playwright(
     )];
     state.config_manager.write(&edits)?;
 
-    let install_result = warmup_playwright_mcp_install().await;
+    let install_result = warmup_playwright_mcp_install(&state.workspace_config_dir).await;
     let (install_status, detail, error) = match install_result {
         Ok(detail) => ("succeeded", Some(detail), None),
         Err(error) => ("failed", None, Some(error)),
@@ -1191,7 +1228,10 @@ mod tests {
     #[test]
     fn playwright_mcp_config_value_uses_expected_defaults() {
         let value = playwright_mcp_config_value();
-        assert_eq!(value.get("command").and_then(|v| v.as_str()), Some("npx"));
+        assert_eq!(
+            value.get("command").and_then(|v| v.as_str()),
+            Some(super::PLAYWRIGHT_MCP_COMMAND)
+        );
         assert_eq!(value.get("disabled").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(
             value.get("args").and_then(|v| v.as_array()),

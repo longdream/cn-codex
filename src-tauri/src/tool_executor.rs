@@ -1605,6 +1605,23 @@ impl ToolExecutor {
             serde_json::json!({
                 "type": "function",
                 "function": {
+                    "name": "ocr_image",
+                    "description": "Run bundled PP-OCRv5 mobile via ONNX Runtime on a local image and return extracted text.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Relative path inside the workspace, or an absolute local image path."
+                            }
+                        },
+                        "required": ["path"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
                     "name": "image_generate",
                     "description": "Generate an image through an OpenAI Images API-compatible backend, save it as a local file, and return its path, format, dimensions, and size. Requires CN_CODEX_IMAGE_API_KEY or OPENAI_API_KEY.",
                     "parameters": {
@@ -2556,6 +2573,10 @@ impl ToolExecutor {
             }
             "view_image" => {
                 self.exec_view_image(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "ocr_image" => {
+                self.exec_ocr_image(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "image_generate" => {
@@ -3848,6 +3869,61 @@ impl ToolExecutor {
             bytes.len()
         );
         self.emit_tool_end(app_handle, thread_id, call_id, "view_image", 0, &output);
+        Ok(output)
+    }
+
+    async fn exec_ocr_image(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct OcrImageArgs {
+            path: String,
+        }
+
+        let args: OcrImageArgs = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid ocr_image args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "ocr_image", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "ocr_image", -1, &msg);
+                return Ok(msg);
+            }
+        };
+        self.emit_tool_start(app_handle, thread_id, call_id, "ocr_image", &args.path);
+
+        let full_path = match resolve_view_image_path(&self.cwd, &args.path) {
+            Ok(path) => path,
+            Err(msg) => {
+                self.emit_tool_end(app_handle, thread_id, call_id, "ocr_image", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let absolute_path = full_path.canonicalize().unwrap_or(full_path.clone());
+        let output = match crate::ocr::extract_text_from_image_file(&self.cwd, &full_path) {
+            Ok(text) if !text.trim().is_empty() => format!(
+                "OCR image: {}\nAbsolute path: {}\nEngine: PP-OCRv5 mobile (ONNX Runtime)\nText:\n{}",
+                args.path,
+                absolute_path.display(),
+                text.trim()
+            ),
+            Ok(_) => format!(
+                "OCR image: {}\nAbsolute path: {}\nEngine: PP-OCRv5 mobile (ONNX Runtime)\nText:\n<empty>",
+                args.path,
+                absolute_path.display()
+            ),
+            Err(err) => {
+                let msg = format!("OCR image failed for {}: {}", absolute_path.display(), err);
+                self.emit_tool_end(app_handle, thread_id, call_id, "ocr_image", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        self.emit_tool_end(app_handle, thread_id, call_id, "ocr_image", 0, &output);
         Ok(output)
     }
 
@@ -7247,14 +7323,26 @@ impl ToolExecutor {
         &self,
         server: &McpServerConfig,
     ) -> Result<McpSession, McpRequestError> {
-        let mut command = Command::new(&server.command);
+        let program = resolve_mcp_command_for_platform(&server.command);
+        let mut command = Command::new(&program);
+        command.envs(&server.env);
+        if should_inject_bundled_node_runtime(&program) {
+            if let Some(node_dir) = bundled_node_bin_dir(&self.workspace_config_dir) {
+                let existing_path = server_env_path_override(server)
+                    .map(std::ffi::OsString::from)
+                    .or_else(|| std::env::var_os("PATH"));
+                let merged_path = prepend_path_value(existing_path, &node_dir);
+                command.env("PATH", &merged_path);
+                #[cfg(target_os = "windows")]
+                command.env("Path", merged_path);
+            }
+        }
         command
             .args(&server.args)
             .current_dir(resolve_command_cwd(&self.cwd, server.cwd.as_deref()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .envs(&server.env);
+            .stderr(Stdio::piped());
         #[cfg(windows)]
         command.no_console();
 
@@ -12097,6 +12185,62 @@ fn resolve_command_cwd(base: &Path, cwd: Option<&str>) -> PathBuf {
     PathBuf::from(windows_display_path_to_access_path(&display))
 }
 
+fn resolve_mcp_command_for_platform(command: &str) -> String {
+    let trimmed = command.trim();
+    #[cfg(target_os = "windows")]
+    {
+        if trimmed.eq_ignore_ascii_case("npx") {
+            return "npx.cmd".to_string();
+        }
+        if trimmed.eq_ignore_ascii_case("npm") {
+            return "npm.cmd".to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn bundled_node_bin_dir(workspace_config_dir: &Path) -> Option<PathBuf> {
+    let node_dir = workspace_config_dir.join("node");
+    if node_dir.is_dir() {
+        Some(node_dir)
+    } else {
+        None
+    }
+}
+
+fn prepend_path_value(
+    base_path: Option<std::ffi::OsString>,
+    prepend_dir: &Path,
+) -> std::ffi::OsString {
+    let mut path_entries = vec![prepend_dir.to_path_buf()];
+    if let Some(existing) = base_path {
+        path_entries.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(path_entries).unwrap_or_else(|_| prepend_dir.as_os_str().to_os_string())
+}
+
+fn should_inject_bundled_node_runtime(program: &str) -> bool {
+    let name = Path::new(program)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "node" | "node.exe" | "npm" | "npm.cmd" | "npx" | "npx.cmd"
+    )
+}
+
+fn server_env_path_override(server: &McpServerConfig) -> Option<&str> {
+    server.env.iter().find_map(|(key, value)| {
+        if key.eq_ignore_ascii_case("PATH") {
+            Some(value.as_str())
+        } else {
+            None
+        }
+    })
+}
+
 fn shell_command_display(command: &ShellCommandArg) -> String {
     match command {
         ShellCommandArg::Script(script) => script.trim().to_string(),
@@ -13429,6 +13573,7 @@ mod tests {
         assert!(disabled_names.contains(&"request_user_input"));
         assert!(disabled_names.contains(&"request_permissions"));
         assert!(disabled_names.contains(&"view_image"));
+        assert!(disabled_names.contains(&"ocr_image"));
         assert!(disabled_names.contains(&"image_generate"));
         assert!(disabled_names.contains(&"browser_run"));
         assert!(disabled_names.contains(&"spawn_agent"));
@@ -13457,6 +13602,7 @@ mod tests {
         assert!(enabled_names.contains(&"request_permissions"));
         assert!(enabled_names.contains(&"memory_update"));
         assert!(enabled_names.contains(&"memory_forget"));
+        assert!(enabled_names.contains(&"ocr_image"));
         assert!(enabled_names.contains(&"image_generate"));
         assert!(enabled_names.contains(&"browser_run"));
         assert!(enabled_names.contains(&"spawn_agent"));
@@ -15756,6 +15902,37 @@ index 1111111..2222222 100644
             resolve_command_cwd(Path::new("C:/workspace/app"), Some("D:/mcp")),
             PathBuf::from("D:/mcp")
         );
+    }
+
+    #[test]
+    fn resolve_mcp_command_for_platform_maps_windows_node_wrappers() {
+        if cfg!(target_os = "windows") {
+            assert_eq!(resolve_mcp_command_for_platform("npx"), "npx.cmd");
+            assert_eq!(resolve_mcp_command_for_platform("npm"), "npm.cmd");
+        } else {
+            assert_eq!(resolve_mcp_command_for_platform("npx"), "npx");
+            assert_eq!(resolve_mcp_command_for_platform("npm"), "npm");
+        }
+        assert_eq!(resolve_mcp_command_for_platform("python"), "python");
+    }
+
+    #[test]
+    fn should_inject_bundled_node_runtime_for_node_wrappers() {
+        assert!(should_inject_bundled_node_runtime("npx"));
+        assert!(should_inject_bundled_node_runtime("npx.cmd"));
+        assert!(should_inject_bundled_node_runtime("npm"));
+        assert!(should_inject_bundled_node_runtime("C:/bin/node.exe"));
+        assert!(!should_inject_bundled_node_runtime("python"));
+    }
+
+    #[test]
+    fn prepend_path_value_puts_bundled_dir_first() {
+        let bundled = PathBuf::from("node-runtime");
+        let existing = std::env::join_paths([PathBuf::from("bin-a"), PathBuf::from("bin-b")])
+            .expect("failed to build PATH fixture");
+        let merged = prepend_path_value(Some(existing), &bundled);
+        let entries: Vec<PathBuf> = std::env::split_paths(&merged).collect();
+        assert_eq!(entries.first(), Some(&bundled));
     }
 
     #[test]

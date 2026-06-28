@@ -23,9 +23,34 @@ import {
   createProviderFromPreset,
   DEFAULT_MODEL_CONTEXT_LENGTH,
   DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+  VISION_FALLBACK_KIND_LOCAL_OCR,
+  VISION_FALLBACK_KIND_MULTIMODAL,
 } from "../../stores/appStore";
 import type { ProviderConfig, ProviderPreset, ProviderModel, PoolModelEndpoint } from "../../types/provider";
 import type { ConfigEdit } from "../../types";
+
+const LOCAL_OCR_FALLBACK_VALUE = "__local_ocr__";
+
+function buildMultimodalFallbackValue(providerId: string, modelId: string): string {
+  return `multimodal:${providerId}:${modelId}`;
+}
+
+function parseMultimodalFallbackValue(value: string): { providerId: string; modelId: string } | null {
+  if (!value.startsWith("multimodal:")) {
+    return null;
+  }
+  const payload = value.slice("multimodal:".length);
+  const delimiter = payload.indexOf(":");
+  if (delimiter <= 0 || delimiter >= payload.length - 1) {
+    return null;
+  }
+  const providerId = payload.slice(0, delimiter).trim();
+  const modelId = payload.slice(delimiter + 1).trim();
+  if (!providerId || !modelId) {
+    return null;
+  }
+  return { providerId, modelId };
+}
 
 /**
  * 供应商管理面板 (cc-switch 风格)
@@ -156,10 +181,14 @@ export function ProviderPanel() {
       return;
     }
     if (selectedProvider.type === "local-pool") {
-      const hasEnabledEndpoint = selectedProvider.models.some((model) =>
-        (model.endpoints ?? []).some((endpoint) => endpoint.enabled && endpoint.url.trim().length > 0),
+      const enabledEndpoints = selectedProvider.models.flatMap((model) =>
+        (model.endpoints ?? []).filter((endpoint) => endpoint.enabled),
       );
-      if (!hasEnabledEndpoint) {
+      const hasEnabledEndpoint = enabledEndpoints.length > 0;
+      const hasInvalidEnabledEndpoint = enabledEndpoints.some((endpoint) =>
+        endpoint.url.trim().length === 0 || endpoint.model.trim().length === 0,
+      );
+      if (!hasEnabledEndpoint || hasInvalidEnabledEndpoint) {
         setFeedback({ kind: "error", text: intl.formatMessage({ id: "settings.pool.endpointRequired" }) });
         return;
       }
@@ -204,14 +233,62 @@ export function ProviderPanel() {
         const targetModelId = targetModel?.id ?? "";
         const targetModelContextLength = targetModel?.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH;
         const targetModelMaxTokens = targetModel?.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS;
+        const modelSupportsVision = Boolean(targetModel?.supportsVision);
+        const fallbackProviderId = targetModel?.visionFallbackProviderId?.trim() ?? "";
+        const fallbackModelId = targetModel?.visionFallbackModelId?.trim() ?? "";
+        let fallbackKindValue: string | null = null;
+        let fallbackProviderKey: string | null = null;
+        let fallbackModelValue: string | null = null;
+        if (!modelSupportsVision) {
+          if (targetModel?.visionFallbackKind === VISION_FALLBACK_KIND_LOCAL_OCR) {
+            fallbackKindValue = VISION_FALLBACK_KIND_LOCAL_OCR;
+          } else if (fallbackProviderId && fallbackModelId) {
+            const fallbackProvider = store.providers.find((provider) =>
+              provider.id === fallbackProviderId || provider.type === fallbackProviderId
+            );
+            const fallbackModel = fallbackProvider?.models.find((candidate) =>
+              candidate.id === fallbackModelId && candidate.supportsVision
+            );
+            if (fallbackProvider && fallbackModel) {
+              fallbackKindValue = VISION_FALLBACK_KIND_MULTIMODAL;
+              fallbackProviderKey = fallbackProvider.type || fallbackProvider.id;
+              fallbackModelValue = fallbackModel.id;
+            }
+          }
+        }
+        const modelEndpoints = selectedProvider.type === "local-pool" && targetModel?.endpoints?.length
+          ? targetModel.endpoints
+              .filter((endpoint) => endpoint.enabled)
+              .map((endpoint) => ({
+                url: endpoint.url.trim(),
+                label: endpoint.label.trim() || undefined,
+                model: endpoint.model.trim() || targetModel.id,
+                api_key: endpoint.apiKey?.trim() || undefined,
+                wire_api: endpoint.wireApi?.trim() || undefined,
+              }))
+              .filter((endpoint) => endpoint.url.length > 0 && endpoint.model.length > 0)
+          : [];
         const edits: ConfigEdit[] = [
           { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
           { keyPath: "model", value: targetModelId, mergeStrategy: "replace" },
           { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
           { keyPath: "model_context_window", value: targetModelContextLength, mergeStrategy: "replace" },
           { keyPath: "max_output_tokens", value: targetModelMaxTokens, mergeStrategy: "replace" },
+          { keyPath: "model_supports_vision", value: modelSupportsVision, mergeStrategy: "replace" },
+          { keyPath: "vision_fallback_kind", value: fallbackKindValue, mergeStrategy: "replace" },
+          { keyPath: "vision_fallback_provider", value: fallbackProviderKey, mergeStrategy: "replace" },
+          { keyPath: "vision_fallback_model", value: fallbackModelValue, mergeStrategy: "replace" },
+          { keyPath: "model_endpoints", value: modelEndpoints, mergeStrategy: "replace" },
+          {
+            keyPath: "active_endpoint_index",
+            value: modelEndpoints.length > 0 ? 0 : null,
+            mergeStrategy: "replace",
+          },
         ];
         await standaloneConfigWrite(edits);
+        if (selectedProvider.type === "local-pool") {
+          useAppStore.setState({ activeEndpointIndex: modelEndpoints.length > 0 ? 0 : null });
+        }
       }
 
       setEditForm((f) => ({ ...f, apiKey: "" }));
@@ -672,17 +749,115 @@ function ModelRow({
   const [showEndpoints, setShowEndpoints] = useState(false);
   const [newEndpointUrl, setNewEndpointUrl] = useState("");
   const [newEndpointLabel, setNewEndpointLabel] = useState("");
+  const [newEndpointModel, setNewEndpointModel] = useState(model.id);
   const [newEndpointApiKey, setNewEndpointApiKey] = useState("");
   const [newEndpointWireApi, setNewEndpointWireApi] = useState("");
   const [editingEpId, setEditingEpId] = useState<string | null>(null);
-  const [editEpForm, setEditEpForm] = useState({ url: "", label: "", apiKey: "", wireApi: "" });
+  const [editEpForm, setEditEpForm] = useState({
+    url: "",
+    label: "",
+    model: "",
+    apiKey: "",
+    wireApi: "",
+  });
   const activeEndpointIndex = useAppStore((s) => s.activeEndpointIndex);
+  const providers = useAppStore((s) => s.providers);
+
+  const visionFallbackOptions = useMemo(() => {
+    const options: Array<{ value: string; label: string }> = [
+      {
+        value: LOCAL_OCR_FALLBACK_VALUE,
+        label: intl.formatMessage({ id: "settings.provider.visionFallbackLocalOcr" }),
+      },
+    ];
+    providers.forEach((provider) => {
+      provider.models.forEach((candidate) => {
+        if (!candidate.supportsVision) {
+          return;
+        }
+        options.push({
+          value: buildMultimodalFallbackValue(provider.id, candidate.id),
+          label: `${provider.name} / ${candidate.label}`,
+        });
+      });
+    });
+    return options;
+  }, [providers, intl]);
+
+  const selectedVisionFallbackValue = useMemo(() => {
+    if (model.visionFallbackKind === VISION_FALLBACK_KIND_LOCAL_OCR) {
+      return LOCAL_OCR_FALLBACK_VALUE;
+    }
+    const fallbackProviderId = model.visionFallbackProviderId?.trim();
+    const fallbackModelId = model.visionFallbackModelId?.trim();
+    if (!fallbackProviderId || !fallbackModelId) {
+      return "";
+    }
+    const fallbackProvider = providers.find((provider) =>
+      provider.id === fallbackProviderId || provider.type === fallbackProviderId
+    );
+    const fallbackModel = fallbackProvider?.models.find((candidate) =>
+      candidate.id === fallbackModelId && candidate.supportsVision
+    );
+    if (!fallbackProvider || !fallbackModel) {
+      return "";
+    }
+    return buildMultimodalFallbackValue(fallbackProvider.id, fallbackModel.id);
+  }, [
+    model.visionFallbackKind,
+    model.visionFallbackProviderId,
+    model.visionFallbackModelId,
+    providers,
+  ]);
 
   const handleToggleVision = useCallback(() => {
     useAppStore.getState().updateProviderModel(providerId, model.id, {
       supportsVision: !model.supportsVision,
     });
   }, [providerId, model.id, model.supportsVision]);
+
+  const clearVisionFallback = useCallback(() => {
+    useAppStore.getState().updateProviderModel(providerId, model.id, {
+      visionFallbackKind: undefined,
+      visionFallbackProviderId: undefined,
+      visionFallbackModelId: undefined,
+    });
+  }, [providerId, model.id]);
+
+  const handleVisionFallbackChange = useCallback((value: string) => {
+    if (!value) {
+      clearVisionFallback();
+      return;
+    }
+    if (value === LOCAL_OCR_FALLBACK_VALUE) {
+      useAppStore.getState().updateProviderModel(providerId, model.id, {
+        visionFallbackKind: VISION_FALLBACK_KIND_LOCAL_OCR,
+        visionFallbackProviderId: undefined,
+        visionFallbackModelId: undefined,
+      });
+      return;
+    }
+    const parsed = parseMultimodalFallbackValue(value);
+    if (!parsed) {
+      clearVisionFallback();
+      return;
+    }
+    const fallbackProvider = providers.find((provider) =>
+      provider.id === parsed.providerId || provider.type === parsed.providerId
+    );
+    const fallbackModel = fallbackProvider?.models.find((candidate) =>
+      candidate.id === parsed.modelId && candidate.supportsVision
+    );
+    if (!fallbackProvider || !fallbackModel) {
+      clearVisionFallback();
+      return;
+    }
+    useAppStore.getState().updateProviderModel(providerId, model.id, {
+      visionFallbackKind: VISION_FALLBACK_KIND_MULTIMODAL,
+      visionFallbackProviderId: fallbackProvider.id,
+      visionFallbackModelId: fallbackModel.id,
+    });
+  }, [clearVisionFallback, providerId, model.id, providers]);
 
   const handleSaveMaxOutputTokens = useCallback(() => {
     const parsed = parseInt(maxTokensValue, 10);
@@ -708,10 +883,12 @@ function ModelRow({
 
   const handleAddEndpoint = useCallback(() => {
     const url = newEndpointUrl.trim();
-    if (!url) return;
+    const modelName = newEndpointModel.trim();
+    if (!url || !modelName) return;
     const ep: PoolModelEndpoint = {
       id: crypto.randomUUID(),
       url,
+      model: modelName,
       label: newEndpointLabel.trim(),
       enabled: true,
       ...(newEndpointApiKey.trim() ? { apiKey: newEndpointApiKey.trim() } : {}),
@@ -721,9 +898,19 @@ function ModelRow({
     useAppStore.getState().updateProviderModel(providerId, model.id, { endpoints: updated });
     setNewEndpointUrl("");
     setNewEndpointLabel("");
+    setNewEndpointModel(model.id);
     setNewEndpointApiKey("");
     setNewEndpointWireApi("");
-  }, [providerId, model.id, endpoints, newEndpointUrl, newEndpointLabel, newEndpointApiKey, newEndpointWireApi]);
+  }, [
+    providerId,
+    model.id,
+    endpoints,
+    newEndpointUrl,
+    newEndpointLabel,
+    newEndpointModel,
+    newEndpointApiKey,
+    newEndpointWireApi,
+  ]);
 
   const handleRemoveEndpoint = useCallback((epId: string) => {
     const updated = endpoints.filter((ep) => ep.id !== epId);
@@ -749,14 +936,27 @@ function ModelRow({
 
   const handleStartEditEndpoint = useCallback((ep: PoolModelEndpoint) => {
     setEditingEpId(ep.id);
-    setEditEpForm({ url: ep.url, label: ep.label, apiKey: ep.apiKey ?? "", wireApi: ep.wireApi ?? "" });
+    setEditEpForm({
+      url: ep.url,
+      label: ep.label,
+      model: ep.model,
+      apiKey: ep.apiKey ?? "",
+      wireApi: ep.wireApi ?? "",
+    });
   }, []);
 
   const handleSaveEditEndpoint = useCallback(() => {
     if (!editingEpId) return;
     const updated = endpoints.map((ep) =>
       ep.id === editingEpId
-        ? { ...ep, url: editEpForm.url, label: editEpForm.label, apiKey: editEpForm.apiKey || undefined, wireApi: editEpForm.wireApi || undefined }
+        ? {
+          ...ep,
+          url: editEpForm.url.trim(),
+          label: editEpForm.label.trim(),
+          model: editEpForm.model.trim(),
+          apiKey: editEpForm.apiKey.trim() || undefined,
+          wireApi: editEpForm.wireApi.trim() || undefined,
+        }
         : ep,
     );
     useAppStore.getState().updateProviderModel(providerId, model.id, { endpoints: updated });
@@ -870,6 +1070,27 @@ function ModelRow({
               Vision
             </button>
           </div>
+          {!model.supportsVision && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "settings.provider.visionFallback" })}
+              </span>
+              <select
+                value={selectedVisionFallbackValue}
+                onChange={(event) => handleVisionFallbackChange(event.target.value)}
+                className="app-select min-w-56 px-2 py-1 text-[12px] text-[var(--text-strong)]"
+              >
+                <option value="">
+                  {intl.formatMessage({ id: "settings.provider.visionFallbackNone" })}
+                </option>
+                {visionFallbackOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -914,6 +1135,12 @@ function ModelRow({
                     <IconGripVertical size={10} stroke={1.5} className="shrink-0 cursor-grab text-[var(--text-faint)]" />
                     <span className="shrink-0 w-4 text-center font-mono text-[10px] text-[var(--text-faint)]">{idx + 1}</span>
                     <span className="min-w-0 flex-1 truncate font-mono text-[var(--text-base)]" title={ep.url}>{ep.url}</span>
+                    <span
+                      className="shrink-0 rounded bg-[var(--surface-contrast)] px-1 py-0.5 font-mono text-[10px] text-[var(--text-faint)]"
+                      title={ep.model}
+                    >
+                      {ep.model}
+                    </span>
                     {ep.label && (
                       <span className="shrink-0 text-[var(--text-faint)]">{ep.label}</span>
                     )}
@@ -1000,6 +1227,16 @@ function ModelRow({
                         </div>
                         <div className="space-y-0.5">
                           <label className="text-[10px] text-[var(--text-faint)]">
+                            {intl.formatMessage({ id: "settings.pool.endpointModel" })}
+                          </label>
+                          <input
+                            value={editEpForm.model}
+                            onChange={(e) => setEditEpForm((f) => ({ ...f, model: e.target.value }))}
+                            className="app-input w-full text-[11px]"
+                          />
+                        </div>
+                        <div className="space-y-0.5">
+                          <label className="text-[10px] text-[var(--text-faint)]">
                             {intl.formatMessage({ id: "settings.pool.endpointApiKey" })}
                           </label>
                           <input
@@ -1036,7 +1273,7 @@ function ModelRow({
                         <button
                           type="button"
                           onClick={handleSaveEditEndpoint}
-                          disabled={!editEpForm.url.trim()}
+                          disabled={!editEpForm.url.trim() || !editEpForm.model.trim()}
                           className="rounded-[var(--radius-sm)] bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent)] hover:text-white disabled:opacity-40"
                         >
                           {intl.formatMessage({ id: "settings.pool.saveEndpoint" })}
@@ -1079,6 +1316,18 @@ function ModelRow({
               </div>
               <div className="space-y-0.5">
                 <label className="text-[10px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "settings.pool.endpointModel" })}
+                </label>
+                <input
+                  value={newEndpointModel}
+                  onChange={(e) => setNewEndpointModel(e.target.value)}
+                  placeholder={intl.formatMessage({ id: "settings.pool.endpointModelPlaceholder" })}
+                  className="app-input w-full text-[11px]"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddEndpoint(); }}
+                />
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-[10px] text-[var(--text-faint)]">
                   {intl.formatMessage({ id: "settings.pool.endpointApiKey" })}
                 </label>
                 <input
@@ -1112,7 +1361,7 @@ function ModelRow({
               <button
                 type="button"
                 onClick={handleAddEndpoint}
-                disabled={!newEndpointUrl.trim()}
+                disabled={!newEndpointUrl.trim() || !newEndpointModel.trim()}
                 className="flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--accent-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent)] hover:text-white disabled:opacity-40"
               >
                 <IconPlus size={11} stroke={2} />

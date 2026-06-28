@@ -62,6 +62,18 @@ describe("appStore", () => {
       expect(useAppStore.getState().showSettings).toBe(true);
     });
 
+    it("setShowSettings(true) hides right panel and does not auto-restore", () => {
+      useAppStore.setState({ rightPanelVisible: true });
+
+      useAppStore.getState().setShowSettings(true);
+      expect(useAppStore.getState().showSettings).toBe(true);
+      expect(useAppStore.getState().rightPanelVisible).toBe(false);
+
+      useAppStore.getState().setShowSettings(false);
+      expect(useAppStore.getState().showSettings).toBe(false);
+      expect(useAppStore.getState().rightPanelVisible).toBe(false);
+    });
+
     it("setChatMode switches between chat and goal mode", () => {
       useAppStore.getState().setChatMode("goal");
       expect(useAppStore.getState().chatMode).toBe("goal");
@@ -1104,6 +1116,245 @@ describe("appStore", () => {
         .messages.find((message) => message.toolCalls)?.toolCalls;
       expect(toolCalls?.[0].displayLabel).toBe("project/preferences.md");
       expect(toolCalls?.[1].displayLabel).toBe("project/obsolete.md");
+    });
+  });
+
+  describe("vision fallback sync", () => {
+    it("writes local OCR fallback kind when active model switches", async () => {
+      useAppStore.setState({
+        providers: [
+          {
+            id: "provider-main",
+            type: "custom-main",
+            name: "Main",
+            category: "other",
+            baseUrl: "http://localhost:9999/v1",
+            apiKey: "sk-main",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "text-model",
+                label: "Text Model",
+                supportsVision: false,
+                visionFallbackKind: "local_ocr",
+                contextLength: 128000,
+                maxOutputTokens: 65535,
+              },
+            ],
+            isCustom: true,
+            createdAt: Date.now(),
+          },
+        ],
+        configuredModels: [
+          {
+            id: "provider-main:text-model",
+            provider: "provider-main",
+            model: "text-model",
+            label: "Text Model",
+            supportsVision: false,
+          },
+        ],
+      });
+      mockInvoke.mockResolvedValue({ status: "ok" });
+
+      useAppStore.getState().setActiveModelId("provider-main:text-model");
+      await Promise.resolve();
+
+      const standaloneCalls = mockInvoke.mock.calls.filter(([command]) => command === "standalone_config_write");
+      expect(standaloneCalls.length).toBeGreaterThan(0);
+      const latestCall = standaloneCalls[standaloneCalls.length - 1];
+      const edits = (latestCall?.[1] as { edits: Array<{ keyPath: string; value: unknown }> }).edits;
+      const values = Object.fromEntries(edits.map((edit) => [edit.keyPath, edit.value]));
+      expect(values.model_supports_vision).toBe(false);
+      expect(values.vision_fallback_kind).toBe("local_ocr");
+      expect(values.vision_fallback_provider).toBeNull();
+      expect(values.vision_fallback_model).toBeNull();
+    });
+
+    it("keeps legacy multimodal fallback compatible and writes fallback kind", async () => {
+      useAppStore.setState({
+        providers: [
+          {
+            id: "provider-main",
+            type: "custom-main",
+            name: "Main",
+            category: "other",
+            baseUrl: "http://localhost:9999/v1",
+            apiKey: "sk-main",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "text-model",
+                label: "Text Model",
+                supportsVision: false,
+                visionFallbackProviderId: "provider-vision",
+                visionFallbackModelId: "qwen-vl-max",
+                contextLength: 128000,
+                maxOutputTokens: 65535,
+              },
+            ],
+            isCustom: true,
+            createdAt: Date.now(),
+          },
+          {
+            id: "provider-vision",
+            type: "qwen",
+            name: "Qwen Vision",
+            category: "china",
+            baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            apiKey: "sk-vision",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "qwen-vl-max",
+                label: "Qwen VL Max",
+                supportsVision: true,
+                contextLength: 128000,
+                maxOutputTokens: 65535,
+              },
+            ],
+            isCustom: false,
+            createdAt: Date.now(),
+          },
+        ],
+        configuredModels: [
+          {
+            id: "provider-main:text-model",
+            provider: "provider-main",
+            model: "text-model",
+            label: "Text Model",
+            supportsVision: false,
+          },
+        ],
+      });
+      mockInvoke.mockResolvedValue({ status: "ok" });
+
+      useAppStore.getState().setActiveModelId("provider-main:text-model");
+      await Promise.resolve();
+
+      const standaloneCalls = mockInvoke.mock.calls.filter(([command]) => command === "standalone_config_write");
+      expect(standaloneCalls.length).toBeGreaterThan(0);
+      const latestCall = standaloneCalls[standaloneCalls.length - 1];
+      const edits = (latestCall?.[1] as { edits: Array<{ keyPath: string; value: unknown }> }).edits;
+      const values = Object.fromEntries(edits.map((edit) => [edit.keyPath, edit.value]));
+      expect(values.vision_fallback_kind).toBe("multimodal");
+      expect(values.vision_fallback_provider).toBe("qwen");
+      expect(values.vision_fallback_model).toBe("qwen-vl-max");
+    });
+
+    it("writes local OCR fallback kind when provider is activated", async () => {
+      useAppStore.setState({
+        activeProviderId: null,
+        activeModelId: null,
+        providers: [
+          {
+            id: "provider-main",
+            type: "custom-main",
+            name: "Main",
+            category: "other",
+            baseUrl: "http://localhost:9999/v1",
+            apiKey: "sk-main",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "text-model",
+                label: "Text Model",
+                supportsVision: false,
+                visionFallbackKind: "local_ocr",
+                contextLength: 128000,
+                maxOutputTokens: 65535,
+              },
+            ],
+            isCustom: true,
+            createdAt: Date.now(),
+          },
+        ],
+      });
+      mockInvoke.mockResolvedValue({ status: "ok" });
+
+      useAppStore.getState().activateProvider("provider-main");
+      await Promise.resolve();
+
+      const standaloneCalls = mockInvoke.mock.calls.filter(([command]) => command === "standalone_config_write");
+      expect(standaloneCalls.length).toBeGreaterThan(0);
+      const latestCall = standaloneCalls[standaloneCalls.length - 1];
+      const edits = (latestCall?.[1] as { edits: Array<{ keyPath: string; value: unknown }> }).edits;
+      const values = Object.fromEntries(edits.map((edit) => [edit.keyPath, edit.value]));
+      expect(values.model_supports_vision).toBe(false);
+      expect(values.vision_fallback_kind).toBe("local_ocr");
+      expect(values.vision_fallback_provider).toBeNull();
+      expect(values.vision_fallback_model).toBeNull();
+    });
+
+    it("writes multimodal fallback kind when provider is activated", async () => {
+      useAppStore.setState({
+        activeProviderId: null,
+        activeModelId: null,
+        providers: [
+          {
+            id: "provider-main",
+            type: "custom-main",
+            name: "Main",
+            category: "other",
+            baseUrl: "http://localhost:9999/v1",
+            apiKey: "sk-main",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "text-model",
+                label: "Text Model",
+                supportsVision: false,
+                visionFallbackProviderId: "provider-vision",
+                visionFallbackModelId: "qwen-vl-max",
+                contextLength: 128000,
+                maxOutputTokens: 65535,
+              },
+            ],
+            isCustom: true,
+            createdAt: Date.now(),
+          },
+          {
+            id: "provider-vision",
+            type: "qwen",
+            name: "Qwen Vision",
+            category: "china",
+            baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            apiKey: "sk-vision",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "qwen-vl-max",
+                label: "Qwen VL Max",
+                supportsVision: true,
+                contextLength: 128000,
+                maxOutputTokens: 65535,
+              },
+            ],
+            isCustom: false,
+            createdAt: Date.now(),
+          },
+        ],
+      });
+      mockInvoke.mockResolvedValue({ status: "ok" });
+
+      useAppStore.getState().activateProvider("provider-main");
+      await Promise.resolve();
+
+      const standaloneCalls = mockInvoke.mock.calls.filter(([command]) => command === "standalone_config_write");
+      expect(standaloneCalls.length).toBeGreaterThan(0);
+      const latestCall = standaloneCalls[standaloneCalls.length - 1];
+      const edits = (latestCall?.[1] as { edits: Array<{ keyPath: string; value: unknown }> }).edits;
+      const values = Object.fromEntries(edits.map((edit) => [edit.keyPath, edit.value]));
+      expect(values.model_supports_vision).toBe(false);
+      expect(values.vision_fallback_kind).toBe("multimodal");
+      expect(values.vision_fallback_provider).toBe("qwen");
+      expect(values.vision_fallback_model).toBe("qwen-vl-max");
     });
   });
 });

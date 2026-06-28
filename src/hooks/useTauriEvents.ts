@@ -36,6 +36,21 @@ interface TurnEventPayload {
   };
 }
 
+interface ReasoningDeltaPayload {
+  threadId?: string;
+  delta?: string;
+}
+
+interface ServerErrorEventPayload {
+  error?: { message?: string };
+  message?: string;
+  threadId?: string;
+  retryable?: boolean;
+  retryInMs?: number;
+  attempt?: number;
+  maxAttempts?: number;
+}
+
 interface SmartbrainExtractionStartedPayload {
   source?: string;
   total?: number;
@@ -423,6 +438,27 @@ export function useTauriEvents() {
   useEffect(() => {
     let cancelled = false;
     const unlisten: UnlistenFn[] = [];
+    const reasoningByThread = new Map<string, string>();
+
+    const appendReasoningDelta = (payload: ReasoningDeltaPayload) => {
+      const delta = payload.delta ?? "";
+      if (!delta) {
+        return;
+      }
+      const store = useAppStore.getState();
+      const threadId = payload.threadId ?? store.currentThreadId ?? null;
+      if (!threadId) {
+        return;
+      }
+      if (payload.threadId && payload.threadId !== store.currentThreadId) {
+        return;
+      }
+      const nextValue = `${reasoningByThread.get(threadId) ?? ""}${delta}`;
+      reasoningByThread.set(threadId, nextValue);
+      if (store.isStreaming) {
+        store.setStreamingLabel(`${intl.formatMessage({ id: "tool.reasoning" })}...`);
+      }
+    };
 
     const setup = async () => {
       const listeners: Array<Promise<UnlistenFn>> = [
@@ -445,6 +481,14 @@ export function useTauriEvents() {
           store.appendStreamingText(e.payload.delta);
         }),
 
+        listen<ReasoningDeltaPayload>("reasoning-text-delta", (e) => {
+          appendReasoningDelta(e.payload);
+        }),
+
+        listen<ReasoningDeltaPayload>("reasoning-summary-delta", (e) => {
+          appendReasoningDelta(e.payload);
+        }),
+
         listen<TurnEventPayload>(
           "turn-started",
           (e) => {
@@ -456,6 +500,9 @@ export function useTauriEvents() {
             store.setStreaming(true);
             store.clearStreamingText();
             store.setStreamingLabel(intl.formatMessage({ id: "streaming.processing" }));
+            if (e.payload.threadId) {
+              reasoningByThread.set(e.payload.threadId, "");
+            }
             if ("goal" in e.payload) {
               store.setCurrentGoal(e.payload.goal ?? null);
             }
@@ -468,6 +515,32 @@ export function useTauriEvents() {
             const store = useAppStore.getState();
             if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
               return;
+            }
+            const threadId = e.payload.threadId;
+            if (threadId) {
+              const reasoningText = (reasoningByThread.get(threadId) ?? "").trim();
+              if (reasoningText) {
+                store.addMessage({
+                  id: `reasoning-${crypto.randomUUID()}`,
+                  role: "system",
+                  content: "",
+                  timestamp: Date.now(),
+                  toolCalls: [
+                    {
+                      id: `reasoning-call-${crypto.randomUUID()}`,
+                      name: "reasoning",
+                      arguments: "{}",
+                      status: "success",
+                      displayLabel: intl.formatMessage({
+                        id: "tool.reasoning",
+                        defaultMessage: "思考过程",
+                      }),
+                      output: reasoningText,
+                    },
+                  ],
+                });
+              }
+              reasoningByThread.delete(threadId);
             }
             if (store.isStreaming) {
               const text = store.streamingText;
@@ -542,25 +615,28 @@ export function useTauriEvents() {
 
           const browserCall = e.payload.calls.find((c) => c.name === "browser_run" || c.name === "web_search");
           if (browserCall) {
-            // 自动打开右面板并切到 browser tab
-            useAppStore.getState().setRightPanelTab("browser");
+            // 设置面板打开时不自动拉起右侧栏，避免内置浏览器遮挡设置层。
+            const latestStore = useAppStore.getState();
+            if (!latestStore.showSettings) {
+              latestStore.setRightPanelTab("browser");
+            }
             try {
               const parsed = JSON.parse(browserCall.arguments) as Record<string, unknown>;
               const url = typeof parsed.url === "string" && parsed.url.trim()
                 ? parsed.url.trim()
                 : null;
-              useAppStore.getState().setBrowserPanelState({
+              latestStore.setBrowserPanelState({
                 url,
                 title: null,
                 status: "running",
               });
             } catch {
-              useAppStore.getState().setBrowserPanelState({
+              latestStore.setBrowserPanelState({
                 status: "running",
               });
             }
-            useAppStore.getState().setBrowserActive(true);
-            useAppStore.getState().triggerBrowserSync();
+            latestStore.setBrowserActive(true);
+            latestStore.triggerBrowserSync();
           }
 
           store.addMessage({
@@ -780,7 +856,7 @@ export function useTauriEvents() {
           });
         }),
 
-        listen<{ error?: { message?: string }; message?: string; threadId?: string }>(
+        listen<ServerErrorEventPayload>(
           "server-error",
           (e) => {
             const store = useAppStore.getState();
@@ -788,10 +864,28 @@ export function useTauriEvents() {
               return;
             }
             console.error("[event] server-error:", e.payload);
+            if (e.payload.retryable) {
+              const retryInMs = Number(e.payload.retryInMs ?? 1_000);
+              const waitSeconds = Math.max(1, Math.ceil(retryInMs / 1_000));
+              const attempt = Number(e.payload.attempt ?? 0);
+              const maxAttempts = Number(e.payload.maxAttempts ?? 0);
+              const retrySuffix =
+                attempt > 0 && maxAttempts > 0 ? ` (${attempt}/${maxAttempts})` : "";
+              store.setStreaming(true);
+              store.setStreamingLabel(`429 限流，${waitSeconds}s 后重试${retrySuffix}`);
+              return;
+            }
             const msg =
               e.payload.message ??
               e.payload.error?.message ??
               JSON.stringify(e.payload);
+            if (e.payload.threadId) {
+              reasoningByThread.delete(e.payload.threadId);
+            }
+            store.markRunningToolCallsInterrupted(msg);
+            store.clearStreamingText();
+            store.setStreaming(false);
+            store.setCurrentTurnId(null);
             store.addMessage({
               id: crypto.randomUUID(),
               role: "system",
@@ -899,6 +993,14 @@ export function useTauriEvents() {
           (e) => {
             const store = useAppStore.getState();
             if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+              return;
+            }
+            const duplicated = store.messages.some(
+              (message) =>
+                message.planFile?.path === e.payload.path &&
+                message.planFile?.content === e.payload.content,
+            );
+            if (duplicated) {
               return;
             }
             store.setLatestPlanContent(e.payload.content);

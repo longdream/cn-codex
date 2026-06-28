@@ -6,12 +6,16 @@
 
 /** 供应商分类 */
 export type ProviderCategory = "global" | "china" | "local" | "other";
+/** 非视觉模型的图片后备策略 */
+export type VisionFallbackKind = "multimodal" | "local_ocr";
 
 /** 资源池模型的单个后端端点地址 */
 export interface PoolModelEndpoint {
   id: string;
   /** 实际请求地址，如 http://10.0.0.1:8080/v1 */
   url: string;
+  /** 该端点实际调用的模型名（API model 字段） */
+  model: string;
   /** 可选标签，如 "节点1" */
   label: string;
   /** 是否启用 */
@@ -27,6 +31,12 @@ export interface ProviderModel {
   id: string;
   label: string;
   supportsVision: boolean;
+  /** 当当前模型不支持视觉时，后补类型（多模态模型 / 本地 OCR） */
+  visionFallbackKind?: VisionFallbackKind;
+  /** 当当前模型不支持视觉时，可选的后补多模态供应商实例 ID */
+  visionFallbackProviderId?: string;
+  /** 当当前模型不支持视觉时，可选的后补多模态模型 ID */
+  visionFallbackModelId?: string;
   /** 上下文窗口大小（token），默认 128000 */
   contextLength: number;
   /** 单次回复最大输出 token 数，默认 65535 */

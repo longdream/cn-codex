@@ -43,6 +43,14 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/ocr/README.md",
+      "resources/ocr/onnxruntime.dll",
+      "resources/ocr/onnxruntime_providers_shared.dll",
+      "resources/ocr/ppocrv5_mobile_det.onnx",
+      "resources/ocr/ppocrv5_mobile_rec.onnx",
+      "resources/ocr/ppocrv5_mobile_vocab.txt"
     ]
   }
 }

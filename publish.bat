@@ -165,6 +165,20 @@ echo [6/8] Copying codey runtime resources (skills/plugins/robots)...
 set "CODEY_DEST=%PUBLISH_DIR%\codey"
 mkdir "%CODEY_DEST%"
 
+set "REQUIRED_SKILL_AGENT_REACH=%CODEY_SRC%\skills\agent-reach\SKILL.md"
+set "REQUIRED_SKILL_PONYTAIL=%CODEY_SRC%\skills\ponytail\SKILL.md"
+
+if not exist "%REQUIRED_SKILL_AGENT_REACH%" (
+    echo [ERROR] Required skill missing: codey/skills/agent-reach/SKILL.md
+    pause
+    exit /b 1
+)
+if not exist "%REQUIRED_SKILL_PONYTAIL%" (
+    echo [ERROR] Required skill missing: codey/skills/ponytail/SKILL.md
+    pause
+    exit /b 1
+)
+
 :: Copy skills
 if exist "%CODEY_SRC%\skills" (
     xcopy "%CODEY_SRC%\skills" "%CODEY_DEST%\skills\" /E /I /Q /Y >nul
@@ -173,6 +187,17 @@ if exist "%CODEY_SRC%\skills" (
     mkdir "%CODEY_DEST%\skills"
     echo   - codey/skills/ (empty, created)
 )
+if not exist "%CODEY_DEST%\skills\agent-reach\SKILL.md" (
+    echo [ERROR] Publish verify failed: codey/skills/agent-reach/SKILL.md not found in publish output
+    pause
+    exit /b 1
+)
+if not exist "%CODEY_DEST%\skills\ponytail\SKILL.md" (
+    echo [ERROR] Publish verify failed: codey/skills/ponytail/SKILL.md not found in publish output
+    pause
+    exit /b 1
+)
+echo   - required skills verified: agent-reach, ponytail
 
 :: Copy plugins
 if exist "%CODEY_SRC%\plugins" (

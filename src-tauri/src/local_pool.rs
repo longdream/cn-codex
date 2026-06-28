@@ -11,6 +11,7 @@ use crate::config_system::ModelEndpointInfo;
 pub struct ResolvedEndpoint {
     pub endpoint_index: usize,
     pub url: String,
+    pub model: Option<String>,
     pub api_key: Option<String>,
     pub wire_api: Option<String>,
 }
@@ -117,6 +118,7 @@ impl PoolResolver {
             return Some(ResolvedEndpoint {
                 endpoint_index: idx,
                 url: ep.url.clone(),
+                model: ep.model.clone(),
                 api_key: ep.api_key.clone(),
                 wire_api: ep.wire_api.clone(),
             });
@@ -133,6 +135,7 @@ impl PoolResolver {
         Some(ResolvedEndpoint {
             endpoint_index: 0,
             url: ep.url.clone(),
+            model: ep.model.clone(),
             api_key: ep.api_key.clone(),
             wire_api: ep.wire_api.clone(),
         })
@@ -167,6 +170,7 @@ mod tests {
             .map(|i| ModelEndpointInfo {
                 url: format!("http://10.0.0.{i}:8080/v1"),
                 label: Some(format!("Node {i}")),
+                model: Some(format!("model-{i}")),
                 api_key: Some(format!("sk-{i}")),
                 wire_api: Some("chat".to_string()),
             })
@@ -181,6 +185,7 @@ mod tests {
         let ep = resolver.resolve_endpoint("k", &eps).unwrap();
         assert_eq!(ep.endpoint_index, 0);
         assert_eq!(ep.url, "http://10.0.0.0:8080/v1");
+        assert_eq!(ep.model.as_deref(), Some("model-0"));
     }
 
     #[test]

@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import { useIntl } from "react-intl";
 import {
   DEFAULT_MODEL_CONTEXT_LENGTH,
+  VISION_FALLBACK_KIND_LOCAL_OCR,
   useAppStore,
   type ChatMode,
   type ChatSendOptions,
@@ -220,6 +221,15 @@ export function ChatInput({
 
   // 显示的模型名称：优先取旧的 activeEntry，否则取供应商默认模型
   const activeEntry = configuredModels.find((m) => m.id === activeModelId) ?? null;
+  const activeProviderModel = useMemo(() => {
+    if (activeEntry) {
+      return providerModels.find((model) => model.id === activeEntry.model) ?? null;
+    }
+    if (currentModel) {
+      return providerModels.find((model) => model.id === currentModel) ?? null;
+    }
+    return providerModels[0] ?? null;
+  }, [activeEntry, currentModel, providerModels]);
   const displayModel = activeEntry?.label
     ?? currentModel
     ?? providerModels[0]?.label
@@ -682,7 +692,16 @@ export function ChatInput({
     if (!mimeType.startsWith("image/")) {
       return;
     }
-    if (activeEntry?.supportsVision) {
+    if (activeProviderModel?.supportsVision || activeEntry?.supportsVision) {
+      return;
+    }
+    if (activeProviderModel?.visionFallbackKind === VISION_FALLBACK_KIND_LOCAL_OCR) {
+      return;
+    }
+    if (
+      activeProviderModel?.visionFallbackProviderId
+      && activeProviderModel?.visionFallbackModelId
+    ) {
       return;
     }
     const providerVision = providerModels.some((m) => m.supportsVision);
@@ -690,7 +709,7 @@ export function ChatInput({
       setVisionWarning(true);
       setTimeout(() => setVisionWarning(false), 4000);
     }
-  }, [activeEntry, providerModels]);
+  }, [activeEntry, activeProviderModel, providerModels]);
 
   const addBrowserFileAttachment = useCallback((file: File, fallbackName?: string) => {
     const resolvedName = file.name.trim() || fallbackName || `attachment-${Date.now()}`;
@@ -1015,13 +1034,6 @@ export function ChatInput({
 
         <div className="chat-composer-shell px-4 pb-3 pt-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          {isGeneralMode ? (
-            <div className="inline-flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] px-3 py-1">
-              <span className="text-[11px] font-medium text-[var(--chat-prose)]">
-                {intl.formatMessage({ id: "chat.mode.chat" })}
-              </span>
-            </div>
-          ) : (
           <div className="inline-flex rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] p-1">
             <button
               type="button"
@@ -1062,7 +1074,6 @@ export function ChatInput({
               {intl.formatMessage({ id: "chat.mode.goal" })}
             </button>
           </div>
-          )}
 
           {!isGeneralMode && (
             <div className="relative">

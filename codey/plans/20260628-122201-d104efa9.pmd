@@ -1,0 +1,116 @@
+# CN-Codex 技术详解文档 + PPT 演示制作方案
+
+## 整体思路
+基于对项目源代码的全面分析，已有 `docs/CN-Codex-技术详解.md` 文档（33K+字符），需要补充更多技术细节并同步更新，然后利用 Presentations 插件技能制作一份专业 PPT 供你讲解使用。
+
+---
+
+## 阶段一：完善技术详解 MD 文档（更新已有文档）
+
+**目标文件**: `docs/CN-Codex-技术详解.md`（追加新发现的模块细节）
+
+需要补充的内容章节：
+
+### 第22章：本地资源池（Local Pool）
+- `PoolResolver` 端点健康检测与故障转移机制
+- 顺序轮询 + 自动跳过故障端点（60秒恢复期）
+- `active_endpoint_index` 持久化与恢复
+- 多端点配置（`model_endpoints` TOML 数组）
+
+### 第23章：OCR 离线识别
+- PP-OCRv5 Mobile 模型（ONNX 格式）
+- 内置 onnxruntime.dll（~120MB 资源文件）
+- 图片预处理：缩放、灰度、归一化
+- 场景：`view_image` 后的本地 OCR 回退
+
+### 第24章：终端模拟器
+- `portable-pty` 实现 PTY 创建
+- xterm.js 前端 + Rust PTY 后端
+- `terminal_create/write/resize/close` 命令
+
+### 第25章：窗口系统
+- 无边框窗口（`decorations: false`）
+- 三窗口架构：主窗（聊天）+ detail（文档详情）+ diff（RunSummary Diff）
+- 自定义标题栏拖动、最小化/最大化/关闭
+- 浏览器子窗口（`window_open_browser`）
+
+### 第26章：用户规则系统
+- 全局规则（`codey/rules/user.md`）
+- 项目级规则（项目目录 `.rule.md`）
+- 自动注入 system prompt
+
+### 第27章：协议层（Protocol）
+- JSON-RPC 风格的 approval/notification/request 通信
+- `approval_tx/rx` 通道实现用户审批
+- `file_review` 审阅回调（apply_patch 前置确认）
+
+### 更新各章节细节
+- 补全 ToolExecutor 所有 40+ 工具列表
+- 补全 API 层所有 Tauri Command 签名
+- 补全前端组件树和路由结构
+- 补全国际化（zh-CN/en-US 双语言）
+
+---
+
+## 阶段二：制作 PPTX 演示文稿
+
+使用 Presentations 技能的制作流程：
+
+### 2.1 内容架构（约30页）
+
+| 章节 | 页数 | 内容 |
+|------|------|------|
+| **封面** | 1 | CN-Codex 项目介绍 |
+| **项目背景** | 2 | 定位、设计理念、核心亮点 |
+| **技术栈全景** | 1 | Rust/React/Tauri/TypeScript 全栈 |
+| **整体架构** | 2 | 架构图、通信模型、事件流 |
+| **前端详解** | 3 | React 组件树、Zustand 状态管理、UI 组件 |
+| **Rust 后端** | 4 | AgentEngine、ToolExecutor、Adapter 层、ConfigSystem |
+| **LLM 适配层** | 2 | 4种 API 格式（Chat/Responses/Anthropic/Gemini）、流式处理 |
+| **数据持久化** | 2 | ThreadStore JSONL、SQLite 用量 DB、TOML 配置 |
+| **移动端远程控制** | 2 | Axum Web 服务器、WebSocket 广播、QR 码连接 |
+| **外部浏览器与录制** | 2 | Chrome CDP 协议、操作录制与回放 |
+| **SmartBrain 智能脑** | 2 | 经验提取、知识管理、BM25 搜索 |
+| **机器人系统** | 1 | 工作流编排、节点推进、技能绑定 |
+| **插件系统** | 1 | 8个内置插件、App Connectors |
+| **构建与发布** | 1 | Dev/Build/Publish 流程 |
+| **总结** | 2 | 功能亮点、技术优势、下一步规划 |
+
+### 2.2 设计系统
+- **风格**: 技术演讲风格，深色底 + 翡翠绿强调（复用项目 DESIGN.md 体系）
+- **字体**: 中英文混排（Segoe UI + PingFang SC）
+- **每页**: 标题结论化 + 技术要点 + 代码片段（可选的架构图）
+
+### 2.3 制作步骤
+1. 确认设计体系和每页 claim spine
+2. 用 artifact-tool presentation JSX 构建幻灯片
+3. 渲染预览并 QA 校验
+4. 导出最终 PPTX 到 `docs/CN-Codex-技术讲解.pptx`
+
+---
+
+## 关键文件清单
+
+| 文件 | 说明 |
+|------|------|
+| `docs/CN-Codex-技术详解.md` | 完整技术详解文档（更新版） |
+| `docs/CN-Codex-技术讲解.pptx` | 最终 PPT 演示文件 |
+| `outputs/${THREAD_ID}/presentations/` | 生成过程中的工作目录 |
+
+---
+
+## 潜在风险
+
+1. **PPT 制作**: Presentations 技能需要 artifact-tool 运行时支持，如果当前环境不支持，需要回退到使用 `python-pptx` 方案
+2. **文档长度**: 技术详解文档可能超过 50K 字符，需要拆分为多文件或保持单文件但优化结构
+3. **中文渲染**: PPTX 中的中文排版需要确认字体嵌入或使用通用中文字体
+
+---
+
+## 验收标准
+
+1. ✅ MD 文档覆盖项目所有核心模块（不少于25章）
+2. ✅ PPTX 演示文稿不少于25页，结构清晰
+3. ✅ PPTX 可通过 PowerPoint/WPS 直接打开编辑
+4. ✅ 内容准确，可直接用于团队内部分享
+</proposed_plan>

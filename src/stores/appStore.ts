@@ -10,7 +10,14 @@ import type {
   ThreadGoal as ApiThreadGoal,
   ThreadGoalStatus,
 } from "../api";
-import type { ProviderConfig, ProviderPreset, ProviderModel, AttachedFile } from "../types/provider";
+import type {
+  AttachedFile,
+  PoolModelEndpoint,
+  ProviderConfig,
+  ProviderModel,
+  ProviderPreset,
+  VisionFallbackKind,
+} from "../types/provider";
 
 export const GENERAL_PROJECT_ID = "__general__";
 
@@ -166,6 +173,8 @@ export const RIGHT_PANEL_WIDTH_MAX = 760;
 export const DEFAULT_RIGHT_PANEL_WIDTH = 384;
 export const DEFAULT_MODEL_CONTEXT_LENGTH = 128000;
 export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 65535;
+export const VISION_FALLBACK_KIND_MULTIMODAL: VisionFallbackKind = "multimodal";
+export const VISION_FALLBACK_KIND_LOCAL_OCR: VisionFallbackKind = "local_ocr";
 
 interface RawToolCallInfo {
   id: string;
@@ -258,6 +267,8 @@ function toolDisplayLabelFromArgs(name: string, args: string): string {
         return parsed.reason ?? "permissions";
       case "view_image":
         return parsed.path ?? "view_image";
+      case "ocr_image":
+        return parsed.path ?? "ocr_image";
       case "image_generate":
         return parsed.output_path ?? promptPreview(parsed.prompt) ?? "image_generate";
       case "memory_list":
@@ -603,20 +614,217 @@ function normalizeModelMaxOutputTokens(
   return normalizePositiveInt(value, fallback);
 }
 
+function normalizeVisionFallbackKind(value: unknown): VisionFallbackKind | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  if (
+    value === VISION_FALLBACK_KIND_MULTIMODAL
+    || value === VISION_FALLBACK_KIND_LOCAL_OCR
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeEndpointModelName(value: unknown, fallbackModelId: string): string {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  if (candidate.length > 0) {
+    return candidate;
+  }
+  return fallbackModelId.trim();
+}
+
+function normalizePoolModelEndpoint(
+  endpoint: Partial<PoolModelEndpoint>,
+  fallbackModelId: string,
+): PoolModelEndpoint {
+  const id = typeof endpoint.id === "string" && endpoint.id.trim()
+    ? endpoint.id
+    : crypto.randomUUID();
+  const url = typeof endpoint.url === "string" ? endpoint.url.trim() : "";
+  const label = typeof endpoint.label === "string" ? endpoint.label.trim() : "";
+  const model = normalizeEndpointModelName(endpoint.model, fallbackModelId);
+
+  return {
+    id,
+    url,
+    model,
+    label,
+    enabled: endpoint.enabled !== false,
+    ...(typeof endpoint.apiKey === "string" && endpoint.apiKey.trim()
+      ? { apiKey: endpoint.apiKey.trim() }
+      : {}),
+    ...(typeof endpoint.wireApi === "string" && endpoint.wireApi.trim()
+      ? { wireApi: endpoint.wireApi.trim() }
+      : {}),
+  };
+}
+
 function normalizeProviderModel(
   model: Partial<ProviderModel>,
   fallbackMaxOutputTokens = DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
 ): ProviderModel {
   const id = typeof model.id === "string" ? model.id : "";
   const label = typeof model.label === "string" && model.label.trim() ? model.label : id;
+  const requestedFallbackKind = normalizeVisionFallbackKind(model.visionFallbackKind);
+  const visionFallbackProviderId = typeof model.visionFallbackProviderId === "string"
+    ? model.visionFallbackProviderId.trim()
+    : "";
+  const visionFallbackModelId = typeof model.visionFallbackModelId === "string"
+    ? model.visionFallbackModelId.trim()
+    : "";
+  const hasMultimodalFallback = Boolean(visionFallbackProviderId && visionFallbackModelId);
+  const fallbackKind = requestedFallbackKind === VISION_FALLBACK_KIND_LOCAL_OCR
+    ? VISION_FALLBACK_KIND_LOCAL_OCR
+    : hasMultimodalFallback
+      ? VISION_FALLBACK_KIND_MULTIMODAL
+      : undefined;
+  const normalizedEndpoints = Array.isArray(model.endpoints)
+    ? model.endpoints.map((endpoint) => normalizePoolModelEndpoint(endpoint, id))
+    : undefined;
   return {
     id,
     label,
     supportsVision: Boolean(model.supportsVision),
+    ...(fallbackKind === VISION_FALLBACK_KIND_LOCAL_OCR
+      ? { visionFallbackKind: VISION_FALLBACK_KIND_LOCAL_OCR }
+      : {}),
+    ...(fallbackKind === VISION_FALLBACK_KIND_MULTIMODAL
+      ? {
+        visionFallbackKind: VISION_FALLBACK_KIND_MULTIMODAL,
+        visionFallbackProviderId,
+        visionFallbackModelId,
+      }
+      : {}),
     contextLength: normalizeContextLength(model.contextLength),
     maxOutputTokens: normalizeModelMaxOutputTokens(model.maxOutputTokens, fallbackMaxOutputTokens),
-    ...(model.endpoints ? { endpoints: model.endpoints } : {}),
+    ...(normalizedEndpoints !== undefined ? { endpoints: normalizedEndpoints } : {}),
   };
+}
+
+function buildLocalPoolModelEndpoints(
+  provider: ProviderConfig | null | undefined,
+  model: ProviderModel | null | undefined,
+): Array<{
+  url: string;
+  label?: string;
+  model: string;
+  api_key?: string;
+  wire_api?: string;
+}> {
+  if (provider?.type !== "local-pool" || !model?.endpoints?.length) {
+    return [];
+  }
+
+  return model.endpoints
+    .filter((ep) => ep.enabled)
+    .map((ep) => ({
+      url: ep.url.trim(),
+      label: ep.label.trim() || undefined,
+      model: normalizeEndpointModelName(ep.model, model.id),
+      api_key: ep.apiKey?.trim() || undefined,
+      wire_api: ep.wireApi?.trim() || undefined,
+    }))
+    .filter((ep) => ep.url.length > 0 && ep.model.length > 0);
+}
+
+function resolveVisionFallbackConfig(
+  model: ProviderModel | null | undefined,
+  providers: ProviderConfig[],
+): {
+  modelSupportsVision: boolean;
+  fallbackKind: VisionFallbackKind | null;
+  fallbackProviderKey: string | null;
+  fallbackModelId: string | null;
+} {
+  const modelSupportsVision = Boolean(model?.supportsVision);
+  if (modelSupportsVision) {
+    return {
+      modelSupportsVision,
+      fallbackKind: null,
+      fallbackProviderKey: null,
+      fallbackModelId: null,
+    };
+  }
+
+  if (normalizeVisionFallbackKind(model?.visionFallbackKind) === VISION_FALLBACK_KIND_LOCAL_OCR) {
+    return {
+      modelSupportsVision,
+      fallbackKind: VISION_FALLBACK_KIND_LOCAL_OCR,
+      fallbackProviderKey: null,
+      fallbackModelId: null,
+    };
+  }
+
+  const fallbackProviderId = model?.visionFallbackProviderId?.trim();
+  const fallbackModelId = model?.visionFallbackModelId?.trim();
+  if (!fallbackProviderId || !fallbackModelId) {
+    return {
+      modelSupportsVision,
+      fallbackKind: null,
+      fallbackProviderKey: null,
+      fallbackModelId: null,
+    };
+  }
+
+  const fallbackProvider = providers.find((provider) =>
+    provider.id === fallbackProviderId || provider.type === fallbackProviderId
+  );
+  if (!fallbackProvider) {
+    return {
+      modelSupportsVision,
+      fallbackKind: null,
+      fallbackProviderKey: null,
+      fallbackModelId: null,
+    };
+  }
+
+  const fallbackModel = fallbackProvider.models.find((candidate) =>
+    candidate.id === fallbackModelId && candidate.supportsVision
+  );
+  if (!fallbackModel) {
+    return {
+      modelSupportsVision,
+      fallbackKind: null,
+      fallbackProviderKey: null,
+      fallbackModelId: null,
+    };
+  }
+
+  return {
+    modelSupportsVision,
+    fallbackKind: VISION_FALLBACK_KIND_MULTIMODAL,
+    fallbackProviderKey: fallbackProvider.type || fallbackProvider.id,
+    fallbackModelId: fallbackModel.id,
+  };
+}
+
+function buildVisionFallbackConfigEdits(
+  visionFallback: ReturnType<typeof resolveVisionFallbackConfig>,
+): Array<{ keyPath: string; value: unknown; mergeStrategy: string }> {
+  return [
+    {
+      keyPath: "model_supports_vision",
+      value: visionFallback.modelSupportsVision,
+      mergeStrategy: "replace",
+    },
+    {
+      keyPath: "vision_fallback_kind",
+      value: visionFallback.fallbackKind,
+      mergeStrategy: "replace",
+    },
+    {
+      keyPath: "vision_fallback_provider",
+      value: visionFallback.fallbackProviderKey,
+      mergeStrategy: "replace",
+    },
+    {
+      keyPath: "vision_fallback_model",
+      value: visionFallback.fallbackModelId,
+      mergeStrategy: "replace",
+    },
+  ];
 }
 
 function resolveProviderModelByEntry(
@@ -1122,16 +1330,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (modelName) {
       const { model, provider: matchedProvider } = resolveProviderModelByEntry(state.providers, entry, modelName);
 
-      const modelEndpoints = matchedProvider?.type === "local-pool" && model?.endpoints?.length
-        ? model.endpoints
-            .filter((ep) => ep.enabled)
-            .map((ep) => ({
-              url: ep.url,
-              label: ep.label || undefined,
-              api_key: ep.apiKey || undefined,
-              wire_api: ep.wireApi || undefined,
-            }))
-        : [];
+      const modelEndpoints = buildLocalPoolModelEndpoints(matchedProvider, model);
+      const visionFallback = model
+        ? resolveVisionFallbackConfig(model, state.providers)
+        : {
+          modelSupportsVision: Boolean(entry?.supportsVision),
+          fallbackKind: null,
+          fallbackProviderKey: null,
+          fallbackModelId: null,
+        };
 
       set({ activeEndpointIndex: modelEndpoints.length > 0 ? 0 : null });
 
@@ -1147,6 +1354,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           value: modelMaxOutputTokensOrDefault(model),
           mergeStrategy: "replace",
         },
+        ...buildVisionFallbackConfigEdits(visionFallback),
         { keyPath: "model_endpoints", value: modelEndpoints, mergeStrategy: "replace" },
         { keyPath: "active_endpoint_index", value: modelEndpoints.length > 0 ? 0 : null, mergeStrategy: "replace" },
       ];
@@ -1219,7 +1427,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       isStreaming: false,
       currentTurnId: null,
       currentGoal: null,
-      chatMode: "chat",
       latestPlanContent: null,
       pendingMessageQueue: [],
     });
@@ -1287,16 +1494,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         : undefined;
       const selectedModel = provider.models.find((model) => model.id === preferredModelId)
         ?? provider.models[0];
-      const modelEndpoints = provider.type === "local-pool" && selectedModel?.endpoints?.length
-        ? selectedModel.endpoints
-            .filter((ep) => ep.enabled)
-            .map((ep) => ({
-              url: ep.url,
-              label: ep.label || undefined,
-              api_key: ep.apiKey || undefined,
-              wire_api: ep.wireApi || undefined,
-            }))
-        : [];
+      const modelEndpoints = buildLocalPoolModelEndpoints(provider, selectedModel);
+      const visionFallback = resolveVisionFallbackConfig(selectedModel, state.providers);
 
       set({ activeEndpointIndex: modelEndpoints.length > 0 ? 0 : null });
 
@@ -1314,6 +1513,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           value: modelMaxOutputTokensOrDefault(selectedModel),
           mergeStrategy: "replace",
         },
+        ...buildVisionFallbackConfigEdits(visionFallback),
         { keyPath: "model_endpoints", value: modelEndpoints, mergeStrategy: "replace" },
         { keyPath: "active_endpoint_index", value: modelEndpoints.length > 0 ? 0 : null, mergeStrategy: "replace" },
       ];
@@ -1409,6 +1609,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!activeModel) {
       return;
     }
+    const modelEndpoints = buildLocalPoolModelEndpoints(activeProvider, activeModel);
+    const nextActiveEndpointIndex = modelEndpoints.length > 0 ? 0 : null;
+    const visionFallback = resolveVisionFallbackConfig(activeModel, providers);
+    if (activeProvider.type === "local-pool") {
+      set({ activeEndpointIndex: nextActiveEndpointIndex });
+    }
     const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
       {
         keyPath: "model_context_window",
@@ -1420,7 +1626,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         value: modelMaxOutputTokensOrDefault(activeModel),
         mergeStrategy: "replace",
       },
+      ...buildVisionFallbackConfigEdits(visionFallback),
     ];
+    if (activeProvider.type === "local-pool") {
+      edits.push(
+        { keyPath: "model_endpoints", value: modelEndpoints, mergeStrategy: "replace" },
+        { keyPath: "active_endpoint_index", value: nextActiveEndpointIndex, mergeStrategy: "replace" },
+      );
+    }
     standaloneConfigWrite(edits).catch((err) => {
       console.error("Failed to sync active model config:", err);
     });
@@ -1751,7 +1964,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   setChatMode: (mode) => set({ chatMode: mode }),
   setLatestPlanContent: (content) => set({ latestPlanContent: content }),
   setCurrentGoal: (goal) => set({ currentGoal: normalizeThreadGoal(goal) }),
-  setShowSettings: (v) => set({ showSettings: v }),
+  setShowSettings: (v) =>
+    set((state) =>
+      v
+        ? {
+          showSettings: true,
+          // 设置弹层打开时强制隐藏右侧区域，避免内置浏览器覆盖在最上层。
+          rightPanelVisible: false,
+        }
+        : {
+          showSettings: false,
+          // 关闭设置时保持当前右侧状态（不自动恢复）。
+          rightPanelVisible: state.rightPanelVisible,
+        }),
   setAutoApprove: (v) => {
     void appStateSet(AUTO_APPROVE_KEY, String(v));
     set({ autoApprove: v });
@@ -1813,7 +2038,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       const threadId = resp?.thread?.id ?? null;
       if (threadId) {
         const projectId = get().currentProjectId;
-        const isGeneral = projectId === GENERAL_PROJECT_ID;
         set({
           currentThreadId: threadId,
           messages: [],
@@ -1824,7 +2048,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           latestPlanContent: null,
           pendingMessageQueue: [],
           pendingFileReviews: {},
-          ...(isGeneral ? { chatMode: "chat" as ChatMode } : {}),
         });
         const newThread: ThreadSummary = {
           id: threadId,

@@ -133,6 +133,8 @@ pub struct ModelEndpointInfo {
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
     pub wire_api: Option<String>,
@@ -150,6 +152,14 @@ pub struct ConfigToml {
     pub model_context_window: Option<i64>,
     #[serde(default)]
     pub max_output_tokens: Option<i64>,
+    #[serde(default)]
+    pub model_supports_vision: Option<bool>,
+    #[serde(default)]
+    pub vision_fallback_kind: Option<String>,
+    #[serde(default)]
+    pub vision_fallback_provider: Option<String>,
+    #[serde(default)]
+    pub vision_fallback_model: Option<String>,
     #[serde(default)]
     pub approval_policy: Option<String>,
     #[serde(default)]
@@ -416,6 +426,16 @@ impl ConfigToml {
             }
             "model_context_window" => self.model_context_window = value.as_i64(),
             "max_output_tokens" => self.max_output_tokens = value.as_i64(),
+            "model_supports_vision" => self.model_supports_vision = value.as_bool(),
+            "vision_fallback_kind" => {
+                self.vision_fallback_kind = value.as_str().map(String::from);
+            }
+            "vision_fallback_provider" => {
+                self.vision_fallback_provider = value.as_str().map(String::from);
+            }
+            "vision_fallback_model" => {
+                self.vision_fallback_model = value.as_str().map(String::from);
+            }
             "approval_policy" => self.approval_policy = value.as_str().map(String::from),
             "web_search" => self.web_search = value.as_str().map(String::from),
             "instructions" => self.instructions = value.as_str().map(String::from),
@@ -528,18 +548,21 @@ impl ConfigToml {
             .as_deref()
             .unwrap_or("openai")
             .to_string();
+        let provider = self.resolve_provider_by_id(&provider_id);
+        (provider_id, provider)
+    }
+
+    pub fn resolve_provider_by_id(&self, provider_id: &str) -> ModelProviderInfo {
+        if let Some(user_provider) = self.model_providers.get(provider_id) {
+            return user_provider.clone();
+        }
 
         let builtins = builtin_providers();
-
-        if let Some(user_provider) = self.model_providers.get(&provider_id) {
-            return (provider_id, user_provider.clone());
+        if let Some(builtin) = builtins.get(provider_id) {
+            return builtin.clone();
         }
 
-        if let Some(builtin) = builtins.get(&provider_id) {
-            return (provider_id, builtin.clone());
-        }
-
-        (provider_id, ModelProviderInfo::default())
+        ModelProviderInfo::default()
     }
 
     /// 解析当前配置的模型名称
@@ -803,12 +826,14 @@ mod tests {
             [[model_endpoints]]
             url = "http://10.0.0.1:8080/v1"
             label = "节点1"
+            model = "qwen-router-a"
             api_key = "sk-aaa"
             wire_api = "chat"
 
             [[model_endpoints]]
             url = "http://10.0.0.2:8080/v1"
             label = "节点2"
+            model = "qwen-router-b"
             api_key = "sk-bbb"
             wire_api = "responses"
             "#,
@@ -818,9 +843,17 @@ mod tests {
         assert_eq!(config.model_endpoints.len(), 2);
         assert_eq!(config.model_endpoints[0].url, "http://10.0.0.1:8080/v1");
         assert_eq!(config.model_endpoints[0].label.as_deref(), Some("节点1"));
+        assert_eq!(
+            config.model_endpoints[0].model.as_deref(),
+            Some("qwen-router-a")
+        );
         assert_eq!(config.model_endpoints[0].api_key.as_deref(), Some("sk-aaa"));
         assert_eq!(config.model_endpoints[0].wire_api.as_deref(), Some("chat"));
         assert_eq!(config.model_endpoints[1].url, "http://10.0.0.2:8080/v1");
+        assert_eq!(
+            config.model_endpoints[1].model.as_deref(),
+            Some("qwen-router-b")
+        );
         assert_eq!(
             config.model_endpoints[1].wire_api.as_deref(),
             Some("responses")
@@ -831,22 +864,65 @@ mod tests {
     fn apply_edit_model_endpoints() {
         let mut config = ConfigToml::default();
         let endpoints_json = serde_json::json!([
-            { "url": "http://10.0.0.1:8080/v1", "label": "Node A", "api_key": "sk-1", "wire_api": "chat" },
-            { "url": "http://10.0.0.2:8080/v1", "label": "Node B" },
+            { "url": "http://10.0.0.1:8080/v1", "label": "Node A", "model": "qwen-router-a", "api_key": "sk-1", "wire_api": "chat" },
+            { "url": "http://10.0.0.2:8080/v1", "label": "Node B", "model": "qwen-router-b" },
         ]);
         config
             .apply_edit("model_endpoints", &endpoints_json)
             .expect("apply model_endpoints");
         assert_eq!(config.model_endpoints.len(), 2);
         assert_eq!(config.model_endpoints[0].url, "http://10.0.0.1:8080/v1");
+        assert_eq!(
+            config.model_endpoints[0].model.as_deref(),
+            Some("qwen-router-a")
+        );
         assert_eq!(config.model_endpoints[0].api_key.as_deref(), Some("sk-1"));
         assert_eq!(config.model_endpoints[1].label.as_deref(), Some("Node B"));
+        assert_eq!(
+            config.model_endpoints[1].model.as_deref(),
+            Some("qwen-router-b")
+        );
         assert!(config.model_endpoints[1].api_key.is_none());
 
         config
             .apply_edit("model_endpoints", &serde_json::Value::Null)
             .expect("clear model_endpoints");
         assert!(config.model_endpoints.is_empty());
+    }
+
+    #[test]
+    fn apply_edit_vision_fallback_fields() {
+        let mut config = ConfigToml::default();
+        config
+            .apply_edit("model_supports_vision", &serde_json::json!(false))
+            .expect("set model_supports_vision");
+        config
+            .apply_edit("vision_fallback_kind", &serde_json::json!("multimodal"))
+            .expect("set vision_fallback_kind");
+        config
+            .apply_edit("vision_fallback_provider", &serde_json::json!("qwen"))
+            .expect("set vision_fallback_provider");
+        config
+            .apply_edit("vision_fallback_model", &serde_json::json!("qwen-vl-max"))
+            .expect("set vision_fallback_model");
+
+        assert_eq!(config.model_supports_vision, Some(false));
+        assert_eq!(config.vision_fallback_kind.as_deref(), Some("multimodal"));
+        assert_eq!(config.vision_fallback_provider.as_deref(), Some("qwen"));
+        assert_eq!(config.vision_fallback_model.as_deref(), Some("qwen-vl-max"));
+
+        config
+            .apply_edit("vision_fallback_kind", &serde_json::Value::Null)
+            .expect("clear vision_fallback_kind");
+        config
+            .apply_edit("vision_fallback_provider", &serde_json::Value::Null)
+            .expect("clear vision_fallback_provider");
+        config
+            .apply_edit("vision_fallback_model", &serde_json::Value::Null)
+            .expect("clear vision_fallback_model");
+        assert!(config.vision_fallback_kind.is_none());
+        assert!(config.vision_fallback_provider.is_none());
+        assert!(config.vision_fallback_model.is_none());
     }
 
     #[test]
