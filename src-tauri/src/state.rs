@@ -81,6 +81,13 @@ pub struct AppState {
     /// - 详情窗初始化时读取该值，避免“窗口刚创建时事件尚未监听”造成首屏空白；
     /// - 关闭详情窗后清空，防止主窗后续误读旧路径。
     pub document_detail_active_path: Arc<RwLock<Option<String>>>,
+    /// 当前文档详情窗激活的工作区根目录（可选）。
+    ///
+    /// 说明：
+    /// - 右侧文件树可在“项目子目录”视角打开详情；
+    /// - 该状态用于详情页读写校验时放宽到该子目录根；
+    /// - 关闭详情窗后清空，避免后续会话复用旧根目录。
+    pub document_detail_active_root: Arc<RwLock<Option<String>>>,
     /// 当前 RunSummary Diff 独立窗口激活的载荷。
     ///
     /// 说明：
@@ -88,6 +95,8 @@ pub struct AppState {
     /// - Diff 窗初始化时读取该值，保证单实例复用与首帧可见；
     /// - 关闭 Diff 窗后清空，避免后续复用时误读旧内容。
     pub runsummary_diff_payload: Arc<RwLock<Option<RunSummaryDiffPayload>>>,
+    /// 浏览器最近一次已知 URL（用于嵌入/独立窗口模式切换时恢复页面）。
+    pub browser_last_url: Arc<RwLock<Option<String>>>,
     pub external_browser: Arc<crate::external_browser::ExternalBrowser>,
     pub recorder: Arc<crate::recording::Recorder>,
 }
@@ -265,7 +274,9 @@ impl AppState {
             pricing_table,
             file_review_sessions: Arc::new(RwLock::new(HashMap::new())),
             document_detail_active_path: Arc::new(RwLock::new(None)),
+            document_detail_active_root: Arc::new(RwLock::new(None)),
             runsummary_diff_payload: Arc::new(RwLock::new(None)),
+            browser_last_url: Arc::new(RwLock::new(None)),
             external_browser: Arc::new(crate::external_browser::ExternalBrowser::new()),
             recorder: Arc::new(crate::recording::Recorder::new()),
         }

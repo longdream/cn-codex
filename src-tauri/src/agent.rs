@@ -864,11 +864,9 @@ impl AgentEngine {
                             );
                             if let Some(ref plan_content) = effective_plan {
                                 let unchanged_active_plan = turn_mode == "plan"
-                                    && active_plan_content
-                                        .as_deref()
-                                        .is_some_and(|current| {
-                                            plan_contents_equivalent(current, plan_content)
-                                        });
+                                    && active_plan_content.as_deref().is_some_and(|current| {
+                                        plan_contents_equivalent(current, plan_content)
+                                    });
                                 if unchanged_active_plan {
                                     info!(
                                         "Skipping plan update for thread {thread_id} because content is unchanged"
@@ -2861,7 +2859,9 @@ impl AgentEngine {
             if let Some((path, revision, content)) = active_plan_context {
                 messages.push(InternalMessage {
                     role: "system".to_string(),
-                    content: text_content(build_active_plan_context_prompt(path, revision, content)),
+                    content: text_content(build_active_plan_context_prompt(
+                        path, revision, content,
+                    )),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
@@ -3786,7 +3786,10 @@ fn user_requested_new_plan_file(user_input: &str) -> bool {
         "new version of plan",
         "another plan",
     ];
-    if en_patterns.iter().any(|pattern| normalized.contains(pattern)) {
+    if en_patterns
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+    {
         return true;
     }
 
@@ -5259,9 +5262,13 @@ mod tests {
 
     #[test]
     fn is_retryable_rate_limit_error_detects_429_and_rate_limit_text() {
-        assert!(is_retryable_rate_limit_error("LLM API error (429 Too Many Requests): overload"));
+        assert!(is_retryable_rate_limit_error(
+            "LLM API error (429 Too Many Requests): overload"
+        ));
         assert!(is_retryable_rate_limit_error("rate limit exceeded"));
-        assert!(!is_retryable_rate_limit_error("LLM API error (500): internal"));
+        assert!(!is_retryable_rate_limit_error(
+            "LLM API error (500): internal"
+        ));
     }
 
     #[test]

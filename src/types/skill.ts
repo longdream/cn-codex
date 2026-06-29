@@ -6,6 +6,11 @@ export interface SkillSummary {
   path: string;
 }
 
+export interface SkillCategoryConfig {
+  labelId: string;
+  ids: string[];
+}
+
 export interface SkillDetail {
   id: string;
   name: string;

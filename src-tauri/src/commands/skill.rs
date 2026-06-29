@@ -1,5 +1,5 @@
-use serde::Serialize;
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
@@ -15,6 +15,13 @@ pub struct SkillSummary {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCategoryConfig {
+    pub label_id: String,
+    pub ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillDetail {
@@ -28,6 +35,10 @@ pub struct SkillDetail {
 
 fn get_skills_dir(state: &AppState) -> PathBuf {
     state.workspace_config_dir.join("skills")
+}
+
+fn get_skill_categories_path(state: &AppState) -> PathBuf {
+    get_skills_dir(state).join("categories.json")
 }
 
 fn parse_skill_frontmatter(content: &str) -> (String, String, Vec<String>) {
@@ -60,6 +71,34 @@ fn parse_skill_frontmatter(content: &str) -> (String, String, Vec<String>) {
     }
 
     (name, description, tags)
+}
+
+fn read_skill_categories(path: &Path) -> Vec<SkillCategoryConfig> {
+    if !path.exists() {
+        return Vec::new();
+    }
+
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) => {
+            tracing::warn!(
+                "Failed to read skill categories {}: {error}",
+                path.display()
+            );
+            return Vec::new();
+        }
+    };
+
+    match serde_json::from_str::<Vec<SkillCategoryConfig>>(&content) {
+        Ok(categories) => categories,
+        Err(error) => {
+            tracing::warn!(
+                "Failed to parse skill categories {}: {error}",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
 }
 
 #[tauri::command]
@@ -105,6 +144,13 @@ pub async fn skill_list(state: State<'_, AppState>) -> AppResult<Vec<SkillSummar
 
     skills.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(skills)
+}
+
+#[tauri::command]
+pub async fn skill_categories_read(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<SkillCategoryConfig>> {
+    Ok(read_skill_categories(&get_skill_categories_path(&state)))
 }
 
 #[tauri::command]

@@ -947,6 +947,53 @@ describe("appStore", () => {
       expect(toolCall?.displayLabel).toBe("codey/images/generated/browser.png");
     });
 
+    it("labels restored echarts_report tool calls with title", async () => {
+      mockInvoke.mockImplementation(async (command) => {
+        if (command === "standalone_thread_read") {
+          return {
+            thread: {
+              id: "t-echarts",
+              turns: [
+                {
+                  id: "turn-echarts",
+                  startedAt: 100,
+                  items: [
+                    {
+                      type: "toolUse",
+                      id: "echarts-tools",
+                      calls: [
+                        {
+                          id: "echarts-call",
+                          name: "echarts_report",
+                          arguments: JSON.stringify({
+                            title: "Quarterly revenue",
+                            chart_type: "bar",
+                            option: {
+                              xAxis: { type: "category", data: ["Q1", "Q2"] },
+                              yAxis: { type: "value" },
+                              series: [{ type: "bar", data: [120, 180] }],
+                            },
+                          }),
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          };
+        }
+        return {};
+      });
+
+      await useAppStore.getState().loadThread("t-echarts");
+
+      const toolCall = useAppStore
+        .getState()
+        .messages.find((message) => message.toolCalls)?.toolCalls?.[0];
+      expect(toolCall?.displayLabel).toBe("Quarterly revenue");
+    });
+
     it("labels restored direct MCP tool calls with server and tool", async () => {
       mockInvoke.mockImplementation(async (command) => {
         if (command === "standalone_thread_read") {

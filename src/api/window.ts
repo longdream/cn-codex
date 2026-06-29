@@ -8,6 +8,48 @@ export interface BrowserWindowInfo {
   cdpEndpoint: string;
 }
 
+export interface BrowserEditContext {
+  editable: boolean;
+  currentUrl: string;
+  sourcePath?: string | null;
+  reason?: string | null;
+  livePreviewMode: string;
+}
+
+export interface BrowserPickedElement {
+  selector: string;
+  selectorCandidates: string[];
+  tagName: string;
+  text: string;
+  url: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  pickedAt: number;
+  sourcePath?: string | null;
+}
+
+export interface BrowserDomEditRequest {
+  selector: string;
+  text?: string | null;
+  color?: string | null;
+  backgroundColor?: string | null;
+  fontSize?: string | null;
+  fontWeight?: string | null;
+  lineHeight?: string | null;
+  margin?: string | null;
+  padding?: string | null;
+}
+
+export interface BrowserDomEditResult {
+  selector: string;
+  currentUrl: string;
+  sourcePath?: string | null;
+  previewHtml: string;
+  livePreview: boolean;
+}
+
 export interface DocumentDetailWindowInfo {
   label: string;
   path: string;
@@ -82,8 +124,63 @@ export async function windowCloseBrowser(): Promise<void> {
   await invoke("window_close_browser");
 }
 
-export async function windowOpenDocumentDetail(path: string): Promise<DocumentDetailWindowInfo> {
-  return invoke<DocumentDetailWindowInfo>("window_open_document_detail", { path });
+export async function windowDetachBrowser(
+  size?: { width: number; height: number },
+): Promise<BrowserWindowInfo> {
+  return invoke<BrowserWindowInfo>("window_detach_browser", {
+    width: size?.width ?? null,
+    height: size?.height ?? null,
+  });
+}
+
+export async function windowAttachBrowser(
+  url?: string,
+  rect?: { x: number; y: number; width: number; height: number },
+): Promise<BrowserWindowInfo> {
+  const trimmed = url?.trim();
+  return invoke<BrowserWindowInfo>("window_attach_browser", {
+    url: trimmed ? trimmed : null,
+    x: rect?.x ?? null,
+    y: rect?.y ?? null,
+    width: rect?.width ?? null,
+    height: rect?.height ?? null,
+  });
+}
+
+export async function browserGetEditContext(): Promise<BrowserEditContext> {
+  return invoke<BrowserEditContext>("browser_get_edit_context");
+}
+
+export async function browserStartPickMode(): Promise<BrowserEditContext> {
+  return invoke<BrowserEditContext>("browser_start_pick_mode");
+}
+
+export async function browserStopPickMode(): Promise<void> {
+  await invoke("browser_stop_pick_mode");
+}
+
+export async function browserPollPickedElement(): Promise<BrowserPickedElement | null> {
+  return invoke<BrowserPickedElement | null>("browser_poll_picked_element");
+}
+
+export async function browserApplyDomEdit(
+  request: BrowserDomEditRequest,
+): Promise<BrowserDomEditResult> {
+  return invoke<BrowserDomEditResult>("browser_apply_dom_edit", { request });
+}
+
+export async function browserRefreshPreview(): Promise<string> {
+  return invoke<string>("browser_refresh_preview");
+}
+
+export async function windowOpenDocumentDetail(
+  path: string,
+  workspaceRoot?: string,
+): Promise<DocumentDetailWindowInfo> {
+  return invoke<DocumentDetailWindowInfo>("window_open_document_detail", {
+    path,
+    workspaceRoot: workspaceRoot ?? null,
+  });
 }
 
 export async function windowCloseDocumentDetail(): Promise<void> {

@@ -539,6 +539,17 @@ struct ImageGenerateArgs {
     base_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct EchartsReportArgs {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    chart_type: Option<String>,
+    option: serde_json::Value,
+    #[serde(default)]
+    notes: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct GeneratedImageOutput {
@@ -1669,6 +1680,35 @@ impl ToolExecutor {
             serde_json::json!({
                 "type": "function",
                 "function": {
+                    "name": "echarts_report",
+                    "description": "Prepare an interactive ECharts report configuration and return a reusable ```echarts code block for chat rendering.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "description": "Optional chart title shown in tool summaries."
+                            },
+                            "chart_type": {
+                                "type": "string",
+                                "description": "Optional chart type hint, such as line, bar, pie, scatter, radar, or heatmap."
+                            },
+                            "option": {
+                                "type": "object",
+                                "description": "ECharts option object. Must be valid JSON object syntax accepted by echarts.setOption."
+                            },
+                            "notes": {
+                                "type": "string",
+                                "description": "Optional notes or interpretation text for this report."
+                            }
+                        },
+                        "required": ["option"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
                     "name": "browser_run",
                     "description": "Run a browser session for navigation, UI interaction, screenshots, rendered DOM inspection, and web app testing. Runtime uses CN-Codex Tauri WebView with Rust-side JS Injection + CDP.",
                     "parameters": {
@@ -2581,6 +2621,10 @@ impl ToolExecutor {
             }
             "image_generate" => {
                 self.exec_image_generate(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "echarts_report" => {
+                self.exec_echarts_report(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "browser_run" => {
@@ -3598,6 +3642,42 @@ impl ToolExecutor {
             thread_id,
             call_id,
             "update_plan",
+            exit_code,
+            &output,
+        );
+        Ok(output)
+    }
+
+    async fn exec_echarts_report(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        let args: EchartsReportArgs = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid echarts_report args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "echarts_report", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "echarts_report", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let display = echarts_report_display(&args);
+        self.emit_tool_start(app_handle, thread_id, call_id, "echarts_report", &display);
+
+        let result = format_echarts_report(&args);
+        let (exit_code, output) = match result {
+            Ok(output) => (0, output),
+            Err(msg) => (-1, msg),
+        };
+        self.emit_tool_end(
+            app_handle,
+            thread_id,
+            call_id,
+            "echarts_report",
             exit_code,
             &output,
         );
@@ -10595,6 +10675,31 @@ fn image_generate_display(args: &ImageGenerateArgs) -> String {
     }
 }
 
+fn echarts_report_display(args: &EchartsReportArgs) -> String {
+    if let Some(title) = args
+        .title
+        .as_deref()
+        .map(condense_whitespace)
+        .filter(|value| !value.is_empty())
+    {
+        if title.chars().count() > 64 {
+            return format!("{}...", title.chars().take(64).collect::<String>());
+        }
+        return title;
+    }
+
+    if let Some(chart_type) = args
+        .chart_type
+        .as_deref()
+        .map(condense_whitespace)
+        .filter(|value| !value.is_empty())
+    {
+        return chart_type;
+    }
+
+    "echarts_report".to_string()
+}
+
 fn image_generation_api_key() -> Option<String> {
     std::env::var("CN_CODEX_IMAGE_API_KEY")
         .ok()
@@ -11383,6 +11488,51 @@ fn format_plan_update(explanation: Option<&str>, plan: &[PlanItemArg]) -> Result
     }
 
     Ok(output.trim_end().to_string())
+}
+
+fn format_echarts_report(args: &EchartsReportArgs) -> Result<String, String> {
+    if !args.option.is_object() {
+        return Err("Error: echarts_report option must be a JSON object".to_string());
+    }
+
+    let title = args
+        .title
+        .as_deref()
+        .map(condense_whitespace)
+        .filter(|value| !value.is_empty());
+    let chart_type = args
+        .chart_type
+        .as_deref()
+        .map(condense_whitespace)
+        .filter(|value| !value.is_empty());
+    let notes = args
+        .notes
+        .as_deref()
+        .map(condense_whitespace)
+        .filter(|value| !value.is_empty());
+    let option_json = serde_json::to_string_pretty(&args.option)
+        .map_err(|e| format!("Error: echarts_report option serialization failed: {e}"))?;
+
+    let mut output = String::from("ECharts report ready");
+    if let Some(title) = title.as_deref() {
+        output.push_str(": ");
+        output.push_str(title);
+    }
+    if let Some(chart_type) = chart_type.as_deref() {
+        output.push_str("\nChart type: ");
+        output.push_str(chart_type);
+    }
+    if let Some(notes) = notes.as_deref() {
+        output.push_str("\nNotes: ");
+        output.push_str(notes);
+    }
+
+    output.push_str("\nOption JSON:\n");
+    output.push_str(&option_json);
+    output.push_str("\n\n```echarts\n");
+    output.push_str(&option_json);
+    output.push_str("\n```");
+    Ok(output)
 }
 
 fn format_json_value(value: &serde_json::Value) -> String {
@@ -12977,6 +13127,7 @@ mod tests {
         assert!(disabled_names.contains(&"view_image"));
         assert!(disabled_names.contains(&"ocr_image"));
         assert!(disabled_names.contains(&"image_generate"));
+        assert!(disabled_names.contains(&"echarts_report"));
         assert!(disabled_names.contains(&"browser_run"));
         assert!(disabled_names.contains(&"spawn_agent"));
         assert!(disabled_names.contains(&"wait_agent"));
@@ -13006,6 +13157,7 @@ mod tests {
         assert!(enabled_names.contains(&"memory_forget"));
         assert!(enabled_names.contains(&"ocr_image"));
         assert!(enabled_names.contains(&"image_generate"));
+        assert!(enabled_names.contains(&"echarts_report"));
         assert!(enabled_names.contains(&"browser_run"));
         assert!(enabled_names.contains(&"spawn_agent"));
         assert!(enabled_names.contains(&"send_input"));
@@ -14694,6 +14846,39 @@ index 1111111..2222222 100644
         .unwrap_err();
 
         assert!(err.contains("only one plan item"));
+    }
+
+    #[test]
+    fn format_echarts_report_outputs_reusable_echarts_block() {
+        let output = format_echarts_report(&EchartsReportArgs {
+            title: Some("Quarterly revenue".to_string()),
+            chart_type: Some("bar".to_string()),
+            option: serde_json::json!({
+                "xAxis": { "type": "category", "data": ["Q1", "Q2"] },
+                "yAxis": { "type": "value" },
+                "series": [{ "type": "bar", "data": [120, 180] }]
+            }),
+            notes: Some("Revenue in ten-thousands".to_string()),
+        })
+        .unwrap();
+
+        assert!(output.contains("ECharts report ready: Quarterly revenue"));
+        assert!(output.contains("Chart type: bar"));
+        assert!(output.contains("```echarts"));
+        assert!(output.contains("\"series\""));
+    }
+
+    #[test]
+    fn format_echarts_report_rejects_non_object_option() {
+        let err = format_echarts_report(&EchartsReportArgs {
+            title: None,
+            chart_type: None,
+            option: serde_json::json!(["invalid"]),
+            notes: None,
+        })
+        .unwrap_err();
+
+        assert!(err.contains("option must be a JSON object"));
     }
 
     #[test]

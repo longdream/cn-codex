@@ -1,96 +1,30 @@
 import { IconChevronDown, IconChevronRight } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useIntl } from "react-intl";
-import { skillList, skillRead } from "../../api";
-import type { SkillSummary } from "../../types/skill";
-
-interface SkillCategory {
-  labelId: string;
-  ids: string[];
-}
-
-const CATEGORIES: SkillCategory[] = [
-  {
-    labelId: "settings.skills.category.codeReview",
-    ids: [
-      "code-review",
-      "code-review-breaking-changes",
-      "code-review-change-size",
-      "code-review-context",
-      "code-review-testing",
-    ],
-  },
-  {
-    labelId: "settings.skills.category.githubCi",
-    ids: [
-      "babysit-pr",
-      "codex-pr-body",
-      "gh-address-comments",
-      "gh-fix-ci",
-      "pr-review-ci-fix",
-      "pushing-ci-changes",
-    ],
-  },
-  {
-    labelId: "settings.skills.category.browserTest",
-    ids: ["browser", "browser-harness", "webapp-testing", "webview-js-injection"],
-  },
-  {
-    labelId: "settings.skills.category.internetResearch",
-    ids: ["agent-reach"],
-  },
-  {
-    labelId: "settings.skills.category.codingStyle",
-    ids: ["ponytail"],
-  },
-  {
-    labelId: "settings.skills.category.projectTools",
-    ids: [
-      "create-plan",
-      "codebase-migrate",
-      "deploy-pipeline",
-      "find-skills",
-      "remote-tests",
-      "skill-creator",
-      "mcp-builder",
-    ],
-  },
-  {
-    labelId: "settings.skills.category.diagOps",
-    ids: [
-      "codex-bug",
-      "codex-issue-digest",
-      "sentry-triage",
-      "update-v8-version",
-      "test-tui",
-    ],
-  },
-  {
-    labelId: "settings.skills.category.docBid",
-    ids: ["bid-review", "tender-document-parsing"],
-  },
-  {
-    labelId: "settings.skills.category.mediaDesign",
-    ids: ["hyperframes", "taste-skill", "awesome-design-md"],
-  },
-];
-
-const ALL_CATEGORIZED_IDS = new Set(CATEGORIES.flatMap((c) => c.ids));
+import { skillCategoriesRead, skillList, skillRead } from "../../api";
+import type { SkillCategoryConfig, SkillSummary } from "../../types/skill";
 
 export function SkillsPanel() {
   const intl = useIntl();
   const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const [categories, setCategories] = useState<SkillCategoryConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [skillContent, setSkillContent] = useState<string>("");
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
-      const list = await skillList();
+      const [list, configuredCategories] = await Promise.all([
+        skillList(),
+        skillCategoriesRead(),
+      ]);
       setSkills(list);
+      setCategories(configuredCategories);
     } catch {
       setSkills([]);
+      setCategories([]);
     }
     setLoading(false);
   }, []);
@@ -135,21 +69,29 @@ export function SkillsPanel() {
   }, [skills]);
 
   const categorizedGroups = useMemo(() => {
+    const orderedCategories = categories.filter((category) => category.labelId && category.ids.length > 0);
     const groups: Array<{
       labelId: string;
       skills: SkillSummary[];
     }> = [];
+    const assignedIds = new Set<string>();
 
-    for (const cat of CATEGORIES) {
-      const matched = cat.ids
-        .map((id) => skillMap.get(id))
-        .filter((s): s is SkillSummary => s != null);
+    for (const category of orderedCategories) {
+      const matched: SkillSummary[] = [];
+      for (const id of category.ids) {
+        const skill = skillMap.get(id);
+        if (!skill || assignedIds.has(skill.id)) {
+          continue;
+        }
+        matched.push(skill);
+        assignedIds.add(skill.id);
+      }
       if (matched.length > 0) {
-        groups.push({ labelId: cat.labelId, skills: matched });
+        groups.push({ labelId: category.labelId, skills: matched });
       }
     }
 
-    const uncategorized = skills.filter((s) => !ALL_CATEGORIZED_IDS.has(s.id));
+    const uncategorized = skills.filter((skill) => !assignedIds.has(skill.id));
     if (uncategorized.length > 0) {
       groups.push({
         labelId: "settings.skills.category.other",
@@ -158,7 +100,7 @@ export function SkillsPanel() {
     }
 
     return groups;
-  }, [skills, skillMap]);
+  }, [categories, skills, skillMap]);
 
   if (loading) {
     return (

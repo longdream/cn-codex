@@ -1,6 +1,7 @@
 import {
   IconAlertTriangle,
   IconBrowser,
+  IconChartBar,
   IconCheck,
   IconChevronDown,
   IconChevronRight,
@@ -26,6 +27,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { fileReviewApply, fileReviewCancel, fileReviewUpdate } from "../../api/fileReview";
 import {
   revealInExplorer,
+  windowOpenDocumentDetail,
   windowOpenRunSummaryDiff,
   type RunSummaryDiffPayload,
 } from "../../api/window";
@@ -36,6 +38,7 @@ import remarkGfm from "remark-gfm";
 import type { ChatMessage, RunSummary, ToolCallItem } from "../../stores/appStore";
 import { useAppStore } from "../../stores/appStore";
 import { formatDuration } from "../../utils/formatDuration";
+import { ChartBlock } from "./ChartBlock";
 import { CodeBlock } from "./CodeBlock";
 import { PlanCard } from "./PlanCard";
 
@@ -354,6 +357,13 @@ function RunSummaryCard({
     });
   }, [intl, summary.changedFileSnapshots, workspaceCwd]);
 
+  const openFileDetail = useCallback((filePath: string) => {
+    const absolutePath = toAbsolutePath(filePath, workspaceCwd);
+    void windowOpenDocumentDetail(absolutePath).catch((err) => {
+      console.error("Open document detail window failed:", err);
+    });
+  }, [workspaceCwd]);
+
   return (
     <section className="max-w-[1100px]">
       <div className="chat-status-line border-b border-[var(--chat-line)] pb-3">
@@ -423,6 +433,17 @@ function RunSummaryCard({
                   title={intl.formatMessage({ id: "patchDiff.viewDiffTitle" })}
                 >
                   <IconFileDiff size={15} stroke={1.8} />
+                </button>
+                <button
+                  type="button"
+                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--accent)]"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openFileDetail(file.path);
+                  }}
+                  title={intl.formatMessage({ id: "chat.runSummary.viewDetail" })}
+                >
+                  <IconFileText size={15} stroke={1.8} />
                 </button>
                 <button
                   type="button"
@@ -742,6 +763,7 @@ interface ToolGroup {
     | "request_permissions"
     | "view_image"
     | "image_generate"
+    | "echarts_report"
     | "memory_list"
     | "memory_read"
     | "memory_search"
@@ -813,6 +835,7 @@ function toolGroupIcon(type: string) {
     case "request_permissions": return <IconAlertTriangle size={13} stroke={1.8} />;
     case "view_image": return <IconPhoto size={13} stroke={1.8} />;
     case "image_generate": return <IconPhoto size={13} stroke={1.8} />;
+    case "echarts_report": return <IconChartBar size={13} stroke={1.8} />;
     case "memory_list": return <IconFolderOpen size={13} stroke={1.8} />;
     case "memory_read": return <IconFileText size={13} stroke={1.8} />;
     case "memory_search": return <IconSearch size={13} stroke={1.8} />;
@@ -881,6 +904,8 @@ function toolGroupSummary(group: ToolGroup): string {
       return n === 1 ? `Viewed image ${group.items[0].displayLabel}` : `Viewed ${n} images`;
     case "image_generate":
       return n === 1 ? `Generated image ${group.items[0].displayLabel}` : `Generated ${n} images`;
+    case "echarts_report":
+      return n === 1 ? `Rendered chart ${group.items[0].displayLabel}` : `Rendered ${n} charts`;
     case "memory_list":
       return n === 1 ? `Listed memories ${group.items[0].displayLabel}` : `Listed ${n} memory paths`;
     case "memory_read":
@@ -1205,6 +1230,10 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
   const size = args.size as string | undefined;
   const quality = args.quality as string | undefined;
   const background = args.background as string | undefined;
+  const chartTitle = typeof args.title === "string" ? args.title.trim() : "";
+  const chartType = typeof args.chart_type === "string" ? args.chart_type.trim() : "";
+  const chartNotes = typeof args.notes === "string" ? args.notes.trim() : "";
+  const chartSource = item.name === "echarts_report" ? args.option : null;
   const role = args.role as string | undefined;
   const agentId = args.agent_id as string | undefined;
   const sendInputTarget = (args.target ?? args.agent_id ?? args.id) as string | undefined;
@@ -1525,6 +1554,25 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+      {item.name === "echarts_report" && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5">
+            <IconChartBar size={11} stroke={1.8} />
+            <span className="font-mono break-all">{chartTitle || chartType || item.displayLabel}</span>
+          </div>
+          {chartType && (
+            <div className="flex flex-wrap gap-1.5 text-[11px] text-[var(--chat-muted)]">
+              <span className="rounded-[var(--radius-sm)] bg-[var(--chat-chip)] px-1.5 py-0.5">
+                {chartType}
+              </span>
+            </div>
+          )}
+          {chartNotes && (
+            <p className="text-[11px] text-[var(--chat-prose)]">{chartNotes}</p>
+          )}
+          <ChartBlock source={chartSource} title={chartTitle || undefined} />
         </div>
       )}
       {item.name === "memory_list" && (
@@ -2171,8 +2219,12 @@ const markdownComponents: Components = {
   code: ({ className, children }) => {
     const code = String(children).replace(/\n$/, "");
     const language = /language-([\w-]+)/.exec(className ?? "")?.[1] ?? "";
+    const normalizedLanguage = language.toLowerCase();
     const isBlockCode = Boolean(language) || code.includes("\n");
     if (isBlockCode) {
+      if (normalizedLanguage === "echarts" || normalizedLanguage === "echart") {
+        return <ChartBlock source={code} />;
+      }
       return <CodeBlock code={code} language={language} />;
     }
     return <code className="chat-inline-code">{code}</code>;

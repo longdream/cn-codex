@@ -156,6 +156,17 @@ function normalizeTokenBudget(value?: number | null): number | undefined {
   return Math.floor(budget);
 }
 
+function hasWebFileChanges(changedFiles?: FileChange[] | null): boolean {
+  if (!Array.isArray(changedFiles) || changedFiles.length === 0) {
+    return false;
+  }
+  return changedFiles.some((file) => {
+    const path = String(file.path ?? "").toLowerCase();
+    return [".html", ".htm", ".css", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue", ".svelte"]
+      .some((ext) => path.endsWith(ext));
+  });
+}
+
 function toolActivityLabel(
   calls: Array<{ name: string; arguments: string }>,
   intl: IntlShape,
@@ -175,6 +186,7 @@ function toolActivityLabel(
     code_review: intl.formatMessage({ id: "tool.codeReview" }),
     browser_run: intl.formatMessage({ id: "tool.browserRun" }),
     image_generate: intl.formatMessage({ id: "tool.imageGenerate" }),
+    echarts_report: intl.formatMessage({ id: "tool.echartsReport" }),
     view_image: intl.formatMessage({ id: "tool.viewImage" }),
     spawn_agent: intl.formatMessage({ id: "tool.spawnAgent" }),
     update_plan: intl.formatMessage({ id: "tool.updatePlan" }),
@@ -238,6 +250,14 @@ function toolDisplayLabel(name: string, args: string): string {
         return parsed.path ?? "view_image";
       case "image_generate":
         return parsed.output_path ?? promptPreview(parsed.prompt) ?? "image_generate";
+      case "echarts_report": {
+        const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+        if (title) {
+          return title;
+        }
+        const chartType = typeof parsed.chart_type === "string" ? parsed.chart_type.trim() : "";
+        return chartType || "echarts_report";
+      }
       case "memory_list":
         return parsed.path ?? ".";
       case "memory_read":
@@ -568,6 +588,9 @@ export function useTauriEvents() {
             const summary = runSummaryFromTurn(e.payload.turn);
             if (summary) {
               store.addMessage(createRunSummaryMessage(summary));
+            }
+            if (hasWebFileChanges(e.payload.turn.changedFiles)) {
+              window.dispatchEvent(new CustomEvent("cn-codex:browser-refresh-requested"));
             }
             if ("goal" in e.payload) {
               store.setCurrentGoal(e.payload.goal ?? null);

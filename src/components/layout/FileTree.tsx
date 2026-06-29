@@ -241,7 +241,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                     if (!content) {
                       void invoke("rules_write_project", { projectPath: dirPath, content: "# Project Rules\n\n" });
                     }
-                    void windowOpenDocumentDetail(rulePath);
+                    void windowOpenDocumentDetail(rulePath, rootPath ?? undefined);
                   });
                 },
               } satisfies ContextMenuEntry,
@@ -273,7 +273,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     setDetailOpenError(null);
     try {
       // 文档详情窗由后端做“单实例复用”，这里仅传文件路径作为打开入口。
-      await windowOpenDocumentDetail(node.path);
+      await windowOpenDocumentDetail(node.path, rootPath ?? undefined);
     } catch (err) {
       setDetailOpenError(String(err));
     }

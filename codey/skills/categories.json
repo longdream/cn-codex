@@ -1,0 +1,95 @@
+[
+  {
+    "labelId": "settings.skills.category.codeReview",
+    "ids": [
+      "code-review",
+      "code-review-breaking-changes",
+      "code-review-change-size",
+      "code-review-context",
+      "code-review-testing",
+      "pr-review-ci-fix"
+    ]
+  },
+  {
+    "labelId": "settings.skills.category.githubCi",
+    "ids": [
+      "babysit-pr",
+      "codex-pr-body",
+      "gh-address-comments",
+      "gh-fix-ci",
+      "pushing-ci-changes"
+    ]
+  },
+  {
+    "labelId": "settings.skills.category.browserTest",
+    "ids": [
+      "browser",
+      "browser-harness",
+      "webapp-testing",
+      "webview-js-injection",
+      "api-testing",
+      "performance-testing",
+      "security-testing",
+      "test-case-design",
+      "test-report-generation",
+      "test-strategy-planning",
+      "test-tui"
+    ]
+  },
+  {
+    "labelId": "settings.skills.category.internetResearch",
+    "ids": [
+      "agent-reach",
+      "baidu-search-tiequan"
+    ]
+  },
+  {
+    "labelId": "settings.skills.category.codingStyle",
+    "ids": [
+      "ponytail"
+    ]
+  },
+  {
+    "labelId": "settings.skills.category.projectTools",
+    "ids": [
+      "create-plan",
+      "codebase-migrate",
+      "deploy-pipeline",
+      "find-skills",
+      "remote-tests",
+      "skill-creator",
+      "mcp-builder",
+      "batch-production",
+      "requirements-intake",
+      "prd-story-modeler",
+      "prd-delivery-review"
+    ]
+  },
+  {
+    "labelId": "settings.skills.category.diagOps",
+    "ids": [
+      "codex-bug",
+      "codex-issue-digest",
+      "sentry-triage",
+      "update-v8-version"
+    ]
+  },
+  {
+    "labelId": "settings.skills.category.docBid",
+    "ids": [
+      "document-writer",
+      "dingtalk-document",
+      "report-generation"
+    ]
+  },
+  {
+    "labelId": "settings.skills.category.mediaDesign",
+    "ids": [
+      "hyperframes",
+      "taste-skill",
+      "awesome-design-md",
+      "design-automation",
+      "novel-claude"
+    ]
+  }
+]

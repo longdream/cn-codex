@@ -182,6 +182,7 @@ pub fn run() {
             commands::reject_approval,
             // Skills
             commands::skill_list,
+            commands::skill_categories_read,
             commands::skill_read,
             // Plugins
             commands::plugin_list,
@@ -239,6 +240,14 @@ pub fn run() {
             commands::window_resize_browser,
             commands::window_navigate_browser,
             commands::window_close_browser,
+            commands::window_detach_browser,
+            commands::window_attach_browser,
+            commands::browser_get_edit_context,
+            commands::browser_start_pick_mode,
+            commands::browser_stop_pick_mode,
+            commands::browser_poll_picked_element,
+            commands::browser_apply_dom_edit,
+            commands::browser_refresh_preview,
             commands::window_open_document_detail,
             commands::window_close_document_detail,
             commands::window_get_document_detail_path,

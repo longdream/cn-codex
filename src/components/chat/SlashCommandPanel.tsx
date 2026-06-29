@@ -59,7 +59,7 @@ export function SlashCommandPanel({
           <span className="text-[11px] text-[var(--chat-faint)]">{filtered.length}</span>
         </div>
 
-        <div className="p-1">
+        <div className="thin-scrollbar max-h-[220px] overflow-y-auto p-1">
           {filtered.map((command, index) => (
             <button
               key={command.name}

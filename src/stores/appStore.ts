@@ -284,6 +284,14 @@ function toolDisplayLabelFromArgs(name: string, args: string): string {
         return parsed.path ?? "ocr_image";
       case "image_generate":
         return parsed.output_path ?? promptPreview(parsed.prompt) ?? "image_generate";
+      case "echarts_report": {
+        const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+        if (title) {
+          return title;
+        }
+        const chartType = typeof parsed.chart_type === "string" ? parsed.chart_type.trim() : "";
+        return chartType || "echarts_report";
+      }
       case "memory_list":
         return parsed.path ?? ".";
       case "memory_read":
@@ -1235,6 +1243,7 @@ interface AppState {
   smartbrainExtractionProgress: SmartbrainExtractionProgress | null;
   browserSyncTrigger: number;
   browserActive: boolean;
+  browserDetached: boolean;
   autoApprove: boolean;
   sidebarTab: SidebarTab;
 
@@ -1357,6 +1366,7 @@ interface AppState {
   }>) => void;
   triggerBrowserSync: () => void;
   setBrowserActive: (v: boolean) => void;
+  setBrowserDetached: (v: boolean) => void;
   createThread: () => Promise<string | null>;
   loadThreads: () => Promise<void>;
   loadThread: (threadId: string) => Promise<void>;
@@ -1415,6 +1425,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   smartbrainExtractionProgress: null,
   browserSyncTrigger: 0,
   browserActive: false,
+  browserDetached: false,
 
   setInitialized: (v) => set({ initialized: v }),
   setInitError: (err) => set({ initError: err }),
@@ -2212,6 +2223,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   triggerBrowserSync: () =>
     set((s) => ({ browserSyncTrigger: s.browserSyncTrigger + 1 })),
   setBrowserActive: (v) => set({ browserActive: v }),
+  setBrowserDetached: (v) => set({ browserDetached: v }),
 
   createThread: async () => {
     try {

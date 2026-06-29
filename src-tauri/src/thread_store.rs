@@ -815,7 +815,9 @@ impl ThreadStore {
     ) -> AppResult<ThreadActivePlan> {
         self.ensure_loaded().await;
         if path.trim().is_empty() {
-            return Err(AppError::Custom("Active plan path cannot be empty".to_string()));
+            return Err(AppError::Custom(
+                "Active plan path cannot be empty".to_string(),
+            ));
         }
         if !self.threads.read().await.contains_key(thread_id) {
             return Err(AppError::Custom(format!("Thread not found: {thread_id}")));

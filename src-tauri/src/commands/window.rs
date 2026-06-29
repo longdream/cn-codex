@@ -1,26 +1,36 @@
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl,
     WebviewWindowBuilder, Window, webview::WebviewBuilder,
 };
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::error::{AppError, AppResult};
 use crate::state::{AppState, RunSummaryDiffPayload};
 
 const BROWSER_WEBVIEW_LABEL: &str = "cn-browser";
+const BROWSER_POPUP_WINDOW_LABEL: &str = "cn-browser-popup";
 const BROWSER_DEBUG_PORT: u16 = 9242;
 const BROWSER_ENDPOINT_FILE: &str = "visible-browser.json";
+const BROWSER_DETACHED_CHANGED_EVENT: &str = "browser-detached-changed";
+const BROWSER_POPUP_CLOSED_EVENT: &str = "browser-popup-closed";
 const DOCUMENT_DETAIL_WINDOW_LABEL: &str = "document-detail";
 const DOCUMENT_DETAIL_OPEN_EVENT: &str = "document-detail-open";
 const DOCUMENT_DETAIL_INSERT_EVENT: &str = "document-detail-insert-snippet";
 const RUNSUMMARY_DIFF_WINDOW_LABEL: &str = "runsummary-diff";
 const RUNSUMMARY_DIFF_OPEN_EVENT: &str = "runsummary-diff-open";
+const MAX_PICKED_ELEMENT_QUEUE: usize = 24;
+const WEB_EDITABLE_EXTENSIONS: &[&str] = &[
+    "html", "htm", "css", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte",
+];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +66,72 @@ struct BrowserEndpointMetadata {
     debug_port: u16,
     cdp_endpoint: String,
     updated_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserEditContext {
+    pub editable: bool,
+    pub current_url: String,
+    pub source_path: Option<String>,
+    pub reason: Option<String>,
+    pub live_preview_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserPickedElement {
+    pub selector: String,
+    pub selector_candidates: Vec<String>,
+    pub tag_name: String,
+    pub text: String,
+    pub url: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub picked_at: u128,
+    pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserDomEditRequest {
+    pub selector: String,
+    pub text: Option<String>,
+    pub color: Option<String>,
+    pub background_color: Option<String>,
+    pub font_size: Option<String>,
+    pub font_weight: Option<String>,
+    pub line_height: Option<String>,
+    pub margin: Option<String>,
+    pub padding: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserDomEditResult {
+    pub selector: String,
+    pub current_url: String,
+    pub source_path: Option<String>,
+    pub preview_html: String,
+    pub live_preview: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserDetachedChangedEvent {
+    detached: bool,
+    url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteTabInfo {
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default, rename = "webSocketDebuggerUrl")]
+    web_socket_debugger_url: String,
 }
 
 #[tauri::command]
@@ -107,11 +183,15 @@ pub async fn window_open_browser(
     width: Option<f64>,
     height: Option<f64>,
 ) -> AppResult<BrowserWindowInfo> {
+    if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
+        window.close()?;
+        emit_browser_detached_state(&app, false, None);
+    }
     let pos_x = x.unwrap_or(0.0);
     let pos_y = y.unwrap_or(0.0);
     let w = width.unwrap_or(400.0);
     let h = height.unwrap_or(600.0);
-    open_browser_embedded(
+    let info = open_browser_embedded(
         &app,
         &state.workspace_config_dir,
         url.as_deref(),
@@ -119,7 +199,12 @@ pub async fn window_open_browser(
         pos_y,
         w,
         h,
-    )
+    )?;
+    {
+        let mut guard = state.browser_last_url.write().await;
+        *guard = Some(info.url.clone());
+    }
+    Ok(info)
 }
 
 #[tauri::command]
@@ -144,26 +229,336 @@ pub async fn window_navigate_browser(
     url: String,
 ) -> AppResult<()> {
     let browser_url = normalize_browser_url(Some(&url))?;
+    let mut navigated = false;
     if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
         webview.navigate(browser_url.clone())?;
+        navigated = true;
+    } else if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
+        window.navigate(browser_url.clone())?;
+        navigated = true;
+    }
+    if navigated {
+        let url = browser_url.as_str().to_string();
         let info = BrowserWindowInfo {
-            label: BROWSER_WEBVIEW_LABEL.to_string(),
-            url: browser_url.as_str().to_string(),
+            label: if app.get_webview(BROWSER_WEBVIEW_LABEL).is_some() {
+                BROWSER_WEBVIEW_LABEL.to_string()
+            } else {
+                BROWSER_POPUP_WINDOW_LABEL.to_string()
+            },
+            url: url.clone(),
             created: false,
             debug_port: BROWSER_DEBUG_PORT,
             cdp_endpoint: browser_cdp_endpoint(),
         };
         write_browser_endpoint_metadata(&state.workspace_config_dir, &info)?;
+        let mut guard = state.browser_last_url.write().await;
+        *guard = Some(url);
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn window_close_browser(app: AppHandle) -> AppResult<()> {
+pub async fn window_close_browser(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
     if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
         webview.close()?;
     }
+    if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
+        window.close()?;
+    }
+    {
+        let mut guard = state.browser_last_url.write().await;
+        *guard = None;
+    }
+    emit_browser_detached_state(&app, false, None);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn window_detach_browser(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> AppResult<BrowserWindowInfo> {
+    let browser_url = resolve_active_browser_url(&state).await?;
+    if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
+        webview.close()?;
+    }
+
+    let popup_width = width.unwrap_or(1280.0).max(640.0);
+    let popup_height = height.unwrap_or(860.0).max(480.0);
+    let info = open_browser_popup(
+        &app,
+        &state.workspace_config_dir,
+        &state.browser_last_url,
+        &browser_url,
+        popup_width,
+        popup_height,
+    )?;
+    {
+        let mut guard = state.browser_last_url.write().await;
+        *guard = Some(info.url.clone());
+    }
+    emit_browser_detached_state(&app, true, Some(info.url.clone()));
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn window_attach_browser(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> AppResult<BrowserWindowInfo> {
+    if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
+        window.close()?;
+    }
+
+    let resolved_url = if let Some(value) = url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value.to_string())
+    } else {
+        state.browser_last_url.read().await.clone()
+    };
+
+    let info = open_browser_embedded(
+        &app,
+        &state.workspace_config_dir,
+        resolved_url.as_deref(),
+        x.unwrap_or(0.0),
+        y.unwrap_or(0.0),
+        width.unwrap_or(400.0),
+        height.unwrap_or(600.0),
+    )?;
+    {
+        let mut guard = state.browser_last_url.write().await;
+        *guard = Some(info.url.clone());
+    }
+    emit_browser_detached_state(&app, false, Some(info.url.clone()));
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn browser_get_edit_context(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<BrowserEditContext> {
+    resolve_browser_edit_context(&app, &state).await
+}
+
+#[tauri::command]
+pub async fn browser_start_pick_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<BrowserEditContext> {
+    let context = resolve_browser_edit_context(&app, &state).await?;
+    if !context.editable {
+        return Err(AppError::Custom(context.reason.unwrap_or_else(|| {
+            "Current page is not editable. Open a workspace local web page first.".to_string()
+        })));
+    }
+
+    evaluate_browser_script(&pick_mode_start_script(), true).await?;
+    Ok(context)
+}
+
+#[tauri::command]
+pub async fn browser_stop_pick_mode(app: AppHandle) -> AppResult<()> {
+    ensure_browser_webview(&app)?;
+    evaluate_browser_script(
+        r#"
+        (() => {
+            const state = window.__cnPickState;
+            if (state && typeof state.cleanup === "function") {
+                state.cleanup();
+            }
+            if (state) {
+                state.enabled = false;
+            }
+            return { enabled: false };
+        })()
+        "#,
+        true,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_poll_picked_element(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Option<BrowserPickedElement>> {
+    ensure_browser_webview(&app)?;
+    let context = resolve_browser_edit_context(&app, &state).await?;
+    if !context.editable {
+        return Ok(None);
+    }
+
+    let value = evaluate_browser_script(
+        r#"
+        (() => {
+            const queue = window.__cnPickState && Array.isArray(window.__cnPickState.queue)
+                ? window.__cnPickState.queue
+                : null;
+            if (!queue || queue.length === 0) {
+                return null;
+            }
+            return queue.shift();
+        })()
+        "#,
+        true,
+    )
+    .await?;
+
+    if value.is_null() {
+        return Ok(None);
+    }
+    let mut picked: BrowserPickedElement = serde_json::from_value(value)
+        .map_err(|e| AppError::Custom(format!("Failed to parse picked element payload: {e}")))?;
+    if picked.source_path.is_none() {
+        picked.source_path = context.source_path;
+    }
+    Ok(Some(picked))
+}
+
+#[tauri::command]
+pub async fn browser_apply_dom_edit(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: BrowserDomEditRequest,
+) -> AppResult<BrowserDomEditResult> {
+    ensure_browser_webview(&app)?;
+    let context = resolve_browser_edit_context(&app, &state).await?;
+    if !context.editable {
+        return Err(AppError::Custom(context.reason.unwrap_or_else(|| {
+            "Current page is not editable. Open a workspace local web page first.".to_string()
+        })));
+    }
+
+    let selector = request.selector.trim();
+    if selector.is_empty() {
+        return Err(AppError::Custom(
+            "Selector is empty, cannot apply DOM edit.".to_string(),
+        ));
+    }
+
+    let payload = serde_json::to_string(&request)
+        .map_err(|e| AppError::Custom(format!("Failed to encode DOM edit request: {e}")))?;
+    let value = evaluate_browser_script(
+        &format!(
+            r#"
+            (() => {{
+                const request = {payload};
+                const selector = (request.selector || "").trim();
+                if (!selector) {{
+                    throw new Error("Selector is empty.");
+                }}
+                const element = document.querySelector(selector);
+                if (!element) {{
+                    throw new Error(`Selector not found: ${{selector}}`);
+                }}
+                if (typeof request.text === "string") {{
+                    element.textContent = request.text;
+                }}
+                const style = element.style;
+                const styleMap = [
+                    ["color", request.color],
+                    ["backgroundColor", request.backgroundColor],
+                    ["fontSize", request.fontSize],
+                    ["fontWeight", request.fontWeight],
+                    ["lineHeight", request.lineHeight],
+                    ["margin", request.margin],
+                    ["padding", request.padding],
+                ];
+                for (const [key, value] of styleMap) {{
+                    if (typeof value === "string" && value.trim().length > 0) {{
+                        style[key] = value.trim();
+                    }}
+                }}
+                return {{
+                    selector,
+                    currentUrl: location.href || "",
+                    previewHtml: (element.outerHTML || "").slice(0, 4000),
+                    livePreview: true,
+                }};
+            }})()
+            "#,
+            payload = payload
+        ),
+        true,
+    )
+    .await?;
+
+    let selector = value
+        .get("selector")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(selector)
+        .to_string();
+    let current_url = value
+        .get("currentUrl")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(context.current_url.as_str())
+        .to_string();
+    let preview_html = value
+        .get("previewHtml")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let live_preview = value
+        .get("livePreview")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+
+    Ok(BrowserDomEditResult {
+        selector,
+        current_url,
+        source_path: context.source_path,
+        preview_html,
+        live_preview,
+    })
+}
+
+#[tauri::command]
+pub async fn browser_refresh_preview(app: AppHandle) -> AppResult<String> {
+    ensure_browser_webview(&app)?;
+    let mode = evaluate_browser_script(
+        r#"
+        (() => {
+            const hasViteHmr = Boolean(window.__vite_hot) || Boolean(window.__vite_plugin_react_preamble_installed__);
+            const hasWebpackHmr = Boolean(window.webpackHotUpdate) || Boolean(window.__webpack_hash__);
+            if (hasViteHmr || hasWebpackHmr) {
+                return "hmr";
+            }
+            location.reload();
+            return "reload";
+        })()
+        "#,
+        true,
+    )
+    .await;
+    if let Ok(mode) = mode {
+        return Ok(mode.as_str().unwrap_or("reload").to_string());
+    }
+
+    if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
+        window.eval("window.location.reload();")?;
+        return Ok("reload".to_string());
+    }
+    if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
+        webview.eval("window.location.reload();")?;
+        return Ok("reload".to_string());
+    }
+
+    Err(AppError::Custom(
+        "No browser target available for preview refresh.".to_string(),
+    ))
 }
 
 #[tauri::command]
@@ -171,12 +566,18 @@ pub async fn window_open_document_detail(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
+    workspace_root: Option<String>,
 ) -> AppResult<DocumentDetailWindowInfo> {
     let (display_path, _) = resolve_existing_file_path(&path)?;
+    let active_root = normalize_workspace_root_hint(workspace_root);
     {
         // 先写入“当前目标路径”，保障详情窗首次启动时可通过 command 主动读取。
         let mut guard = state.document_detail_active_path.write().await;
         *guard = Some(display_path.clone());
+    }
+    {
+        let mut guard = state.document_detail_active_root.write().await;
+        *guard = active_root;
     }
 
     if let Some(window) = app.get_webview_window(DOCUMENT_DETAIL_WINDOW_LABEL) {
@@ -213,11 +614,17 @@ pub async fn window_open_document_detail(
     detail_window.set_focus()?;
 
     let active_path = state.document_detail_active_path.clone();
+    let active_root = state.document_detail_active_root.clone();
     detail_window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
             let active_path = active_path.clone();
+            let active_root = active_root.clone();
             tauri::async_runtime::spawn(async move {
-                let mut guard = active_path.write().await;
+                {
+                    let mut guard = active_path.write().await;
+                    *guard = None;
+                }
+                let mut guard = active_root.write().await;
                 *guard = None;
             });
         }
@@ -238,7 +645,11 @@ pub async fn window_close_document_detail(
     if let Some(window) = app.get_webview_window(DOCUMENT_DETAIL_WINDOW_LABEL) {
         window.close()?;
     }
-    let mut guard = state.document_detail_active_path.write().await;
+    {
+        let mut guard = state.document_detail_active_path.write().await;
+        *guard = None;
+    }
+    let mut guard = state.document_detail_active_root.write().await;
     *guard = None;
     Ok(())
 }
@@ -421,6 +832,593 @@ fn browser_additional_args() -> String {
     format!("--remote-debugging-port={BROWSER_DEBUG_PORT} --remote-allow-origins=*")
 }
 
+fn open_browser_popup(
+    app: &AppHandle,
+    workspace_config_dir: &Path,
+    browser_last_url: &std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
+    url: &str,
+    width: f64,
+    height: f64,
+) -> AppResult<BrowserWindowInfo> {
+    let browser_url = normalize_browser_url(Some(url))?;
+    let url_string = browser_url.as_str().to_string();
+    let cdp_endpoint = browser_cdp_endpoint();
+
+    if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
+        window.navigate(browser_url.clone())?;
+        window.set_size(LogicalSize::new(width, height))?;
+        if !window.is_visible().unwrap_or(true) {
+            window.show()?;
+        }
+        window.set_focus()?;
+        let info = BrowserWindowInfo {
+            label: BROWSER_POPUP_WINDOW_LABEL.to_string(),
+            url: url_string,
+            created: false,
+            debug_port: BROWSER_DEBUG_PORT,
+            cdp_endpoint,
+        };
+        write_browser_endpoint_metadata(workspace_config_dir, &info)?;
+        return Ok(info);
+    }
+
+    let popup = WebviewWindowBuilder::new(
+        app,
+        BROWSER_POPUP_WINDOW_LABEL,
+        WebviewUrl::External(browser_url),
+    )
+    .title("Browser")
+    .inner_size(width, height)
+    .min_inner_size(640.0, 480.0)
+    .resizable(true)
+    .build()?;
+    popup.show()?;
+    popup.set_focus()?;
+
+    let app_handle = app.clone();
+    let last_url = browser_last_url.clone();
+    popup.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            let app_handle = app_handle.clone();
+            let last_url = last_url.clone();
+            tauri::async_runtime::spawn(async move {
+                let url = last_url.read().await.clone();
+                let _ = app_handle.emit_to(
+                    "main",
+                    BROWSER_POPUP_CLOSED_EVENT,
+                    serde_json::json!({ "url": url }),
+                );
+                let _ = app_handle.emit_to(
+                    "main",
+                    BROWSER_DETACHED_CHANGED_EVENT,
+                    BrowserDetachedChangedEvent {
+                        detached: false,
+                        url,
+                    },
+                );
+            });
+        }
+    });
+
+    let info = BrowserWindowInfo {
+        label: BROWSER_POPUP_WINDOW_LABEL.to_string(),
+        url: url_string,
+        created: true,
+        debug_port: BROWSER_DEBUG_PORT,
+        cdp_endpoint,
+    };
+    write_browser_endpoint_metadata(workspace_config_dir, &info)?;
+    Ok(info)
+}
+
+async fn resolve_active_browser_url(state: &State<'_, AppState>) -> AppResult<String> {
+    if let Ok(current_url) = current_browser_url().await {
+        let trimmed = current_url.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    if let Some(url) = state.browser_last_url.read().await.clone() {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    Ok("about:blank".to_string())
+}
+
+fn emit_browser_detached_state(app: &AppHandle, detached: bool, url: Option<String>) {
+    let _ = app.emit_to(
+        "main",
+        BROWSER_DETACHED_CHANGED_EVENT,
+        BrowserDetachedChangedEvent { detached, url },
+    );
+}
+
+fn ensure_browser_webview(app: &AppHandle) -> AppResult<()> {
+    if app.get_webview(BROWSER_WEBVIEW_LABEL).is_some()
+        || app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL).is_some()
+    {
+        return Ok(());
+    }
+    Err(AppError::Custom(
+        "Browser panel is not active. Open the browser tab first.".to_string(),
+    ))
+}
+
+async fn resolve_browser_edit_context(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+) -> AppResult<BrowserEditContext> {
+    if app.get_webview(BROWSER_WEBVIEW_LABEL).is_none() {
+        return Ok(BrowserEditContext {
+            editable: false,
+            current_url: "about:blank".to_string(),
+            source_path: None,
+            reason: Some("Browser panel is not active.".to_string()),
+            live_preview_mode: "readonly".to_string(),
+        });
+    }
+
+    let current_url = current_browser_url().await?;
+    let parsed_url = match Url::parse(&current_url) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            return Ok(BrowserEditContext {
+                editable: false,
+                current_url,
+                source_path: None,
+                reason: Some("Current browser URL is invalid.".to_string()),
+                live_preview_mode: "readonly".to_string(),
+            });
+        }
+    };
+
+    let workspace_root = workspace_root_from_state(state).await?;
+    let Some(source_path) = resolve_workspace_web_source_path(&workspace_root, &parsed_url) else {
+        let reason = if !matches!(parsed_url.scheme(), "http" | "https") {
+            "Only http/https local pages can enter edit mode.".to_string()
+        } else {
+            "Current page cannot be mapped to a workspace web file.".to_string()
+        };
+        return Ok(BrowserEditContext {
+            editable: false,
+            current_url,
+            source_path: None,
+            reason: Some(reason),
+            live_preview_mode: "readonly".to_string(),
+        });
+    };
+
+    Ok(BrowserEditContext {
+        editable: true,
+        current_url,
+        source_path: Some(normalize_windows_verbatim_prefix(
+            &source_path.to_string_lossy(),
+        )),
+        reason: None,
+        live_preview_mode: "hmr-or-reload".to_string(),
+    })
+}
+
+async fn workspace_root_from_state(state: &State<'_, AppState>) -> AppResult<PathBuf> {
+    let cwd = state.cwd.read().await.clone();
+    let path = PathBuf::from(normalize_windows_verbatim_prefix(&cwd));
+    if path.is_dir() {
+        return Ok(path.canonicalize().unwrap_or(path));
+    }
+    Err(AppError::Custom(format!(
+        "Workspace directory is invalid: {}",
+        path.display()
+    )))
+}
+
+fn resolve_workspace_web_source_path(workspace_root: &Path, browser_url: &Url) -> Option<PathBuf> {
+    let scheme = browser_url.scheme();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let host = browser_url.host_str()?.to_ascii_lowercase();
+    if !is_local_browser_host(&host) {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(file_query) = browser_url
+        .query_pairs()
+        .find_map(|(key, value)| {
+            if key == "file" || key == "path" {
+                Some(value.to_string())
+            } else {
+                None
+            }
+        })
+        .map(|value| value.trim().to_string())
+    {
+        if !file_query.is_empty() {
+            let query_path = PathBuf::from(file_query);
+            if query_path.is_absolute() {
+                candidates.push(query_path);
+            } else {
+                candidates.push(workspace_root.join(query_path));
+            }
+        }
+    }
+
+    let mut relative_path = browser_url
+        .path()
+        .trim()
+        .trim_start_matches('/')
+        .to_string();
+    if relative_path.is_empty() {
+        relative_path = "index.html".to_string();
+    }
+    if relative_path.ends_with('/') {
+        relative_path.push_str("index.html");
+    }
+
+    candidates.push(workspace_root.join(&relative_path));
+    candidates.push(workspace_root.join("public").join(&relative_path));
+
+    let relative_no_suffix = relative_path.trim_end_matches('/');
+    if Path::new(relative_no_suffix).extension().is_none() {
+        candidates.push(workspace_root.join(format!("{relative_no_suffix}.html")));
+        candidates.push(workspace_root.join(relative_no_suffix).join("index.html"));
+        candidates.push(
+            workspace_root
+                .join("public")
+                .join(relative_no_suffix)
+                .join("index.html"),
+        );
+    }
+
+    candidates.into_iter().find_map(|candidate| {
+        if !candidate.is_file() || !has_editable_web_extension(&candidate) {
+            return None;
+        }
+        let root = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+        let canonical = candidate.canonicalize().ok()?;
+        if canonical.starts_with(&root) {
+            Some(canonical)
+        } else {
+            None
+        }
+    })
+}
+
+fn has_editable_web_extension(path: &Path) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    WEB_EDITABLE_EXTENSIONS
+        .iter()
+        .any(|item| *item == extension)
+}
+
+fn is_local_browser_host(host: &str) -> bool {
+    host == "localhost" || host == "::1" || host.starts_with("127.") || host.starts_with("0.0.0.0")
+}
+
+fn pick_mode_start_script() -> String {
+    format!(
+        r#"
+        (() => {{
+            const maxQueue = {max_queue};
+            if (!window.__cnPickState) {{
+                window.__cnPickState = {{
+                    enabled: false,
+                    queue: [],
+                    hovered: null,
+                    previousOutline: "",
+                    previousOutlineOffset: "",
+                    cleanup: null
+                }};
+            }}
+            const state = window.__cnPickState;
+            if (state.enabled) {{
+                return {{ enabled: true }};
+            }}
+
+            const cssEscape = (value) => {{
+                if (window.CSS && typeof window.CSS.escape === "function") {{
+                    return window.CSS.escape(value);
+                }}
+                return String(value).replace(/([^\w-])/g, "\\\\$1");
+            }};
+
+            const buildCandidates = (element) => {{
+                const candidates = [];
+                if (!element || !(element instanceof Element)) {{
+                    return candidates;
+                }}
+                if (element.id) {{
+                    candidates.push(`#${{cssEscape(element.id)}}`);
+                }}
+                const testId = element.getAttribute("data-testid") || element.getAttribute("data-test-id");
+                if (testId) {{
+                    candidates.push(`[data-testid="${{cssEscape(testId)}}"]`);
+                }}
+                const ariaLabel = element.getAttribute("aria-label");
+                if (ariaLabel) {{
+                    candidates.push(`[aria-label="${{cssEscape(ariaLabel)}}"]`);
+                }}
+                const name = element.getAttribute("name");
+                if (name) {{
+                    candidates.push(`[name="${{cssEscape(name)}}"]`);
+                }}
+                const placeholder = element.getAttribute("placeholder");
+                if (placeholder) {{
+                    candidates.push(`[placeholder="${{cssEscape(placeholder)}}"]`);
+                }}
+                if (element.tagName) {{
+                    const tagName = element.tagName.toLowerCase();
+                    const classList = Array.from(element.classList || []).slice(0, 2).map(cssEscape);
+                    if (classList.length) {{
+                        candidates.push(`${{tagName}}.${{classList.join(".")}}`);
+                    }} else {{
+                        candidates.push(tagName);
+                    }}
+                }}
+                const pathSegments = [];
+                let cursor = element;
+                while (cursor && cursor.nodeType === 1 && pathSegments.length < 6) {{
+                    let segment = cursor.tagName.toLowerCase();
+                    if (cursor.id) {{
+                        segment += `#${{cssEscape(cursor.id)}}`;
+                        pathSegments.unshift(segment);
+                        break;
+                    }}
+                    let siblingIndex = 1;
+                    let previous = cursor.previousElementSibling;
+                    while (previous) {{
+                        if (previous.tagName === cursor.tagName) {{
+                            siblingIndex += 1;
+                        }}
+                        previous = previous.previousElementSibling;
+                    }}
+                    segment += `:nth-of-type(${{siblingIndex}})`;
+                    pathSegments.unshift(segment);
+                    cursor = cursor.parentElement;
+                }}
+                if (pathSegments.length) {{
+                    candidates.push(pathSegments.join(" > "));
+                }}
+                return Array.from(new Set(candidates.filter((item) => typeof item === "string" && item.trim().length > 0)));
+            }};
+
+            const restoreHover = () => {{
+                if (state.hovered instanceof Element) {{
+                    state.hovered.style.outline = state.previousOutline || "";
+                    state.hovered.style.outlineOffset = state.previousOutlineOffset || "";
+                }}
+                state.hovered = null;
+                state.previousOutline = "";
+                state.previousOutlineOffset = "";
+            }};
+
+            const onMove = (event) => {{
+                const target = event.target instanceof Element ? event.target : null;
+                if (!target || target === state.hovered) {{
+                    return;
+                }}
+                restoreHover();
+                state.hovered = target;
+                state.previousOutline = target.style.outline || "";
+                state.previousOutlineOffset = target.style.outlineOffset || "";
+                target.style.outline = "2px solid #22c55e";
+                target.style.outlineOffset = "2px";
+            }};
+
+            const onClick = (event) => {{
+                const target = event.target instanceof Element ? event.target : null;
+                if (!target) {{
+                    return;
+                }}
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                const rect = target.getBoundingClientRect();
+                const candidates = buildCandidates(target);
+                const text = (target.innerText || target.textContent || target.getAttribute("value") || "").trim().slice(0, 240);
+                const payload = {{
+                    selector: candidates[0] || "",
+                    selectorCandidates: candidates,
+                    tagName: target.tagName ? target.tagName.toLowerCase() : "",
+                    text,
+                    url: location.href || "",
+                    x: rect.x || rect.left || 0,
+                    y: rect.y || rect.top || 0,
+                    width: rect.width || 0,
+                    height: rect.height || 0,
+                    pickedAt: Date.now(),
+                    sourcePath: null
+                }};
+                state.queue.push(payload);
+                if (state.queue.length > maxQueue) {{
+                    state.queue.splice(0, state.queue.length - maxQueue);
+                }}
+            }};
+
+            document.addEventListener("mousemove", onMove, true);
+            document.addEventListener("click", onClick, true);
+            state.cleanup = () => {{
+                document.removeEventListener("mousemove", onMove, true);
+                document.removeEventListener("click", onClick, true);
+                restoreHover();
+            }};
+            state.enabled = true;
+            return {{ enabled: true }};
+        }})()
+        "#,
+        max_queue = MAX_PICKED_ELEMENT_QUEUE
+    )
+}
+
+async fn current_browser_url() -> AppResult<String> {
+    let value = evaluate_browser_script("(() => location.href || \"\")()", true).await?;
+    Ok(value.as_str().unwrap_or("about:blank").to_string())
+}
+
+async fn evaluate_browser_script(
+    script: &str,
+    return_by_value: bool,
+) -> AppResult<serde_json::Value> {
+    let cdp_endpoint = browser_cdp_endpoint();
+    let ws_url = browser_tab_websocket_url(&cdp_endpoint).await?;
+    let (mut stream, _) = connect_async(&ws_url)
+        .await
+        .map_err(|e| AppError::Custom(format!("CDP connect failed: {e}")))?;
+
+    cdp_send_command(&mut stream, 1, "Runtime.enable", json!({})).await?;
+    let response = cdp_send_command(
+        &mut stream,
+        2,
+        "Runtime.evaluate",
+        json!({
+            "expression": script,
+            "returnByValue": return_by_value,
+            "awaitPromise": true,
+            "userGesture": true
+        }),
+    )
+    .await?;
+
+    if let Some(exception) = response
+        .get("result")
+        .and_then(|value| value.get("exceptionDetails"))
+    {
+        let message = exception
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown browser script error");
+        return Err(AppError::Custom(format!(
+            "Browser script execution failed: {message}"
+        )));
+    }
+
+    let result = response
+        .get("result")
+        .and_then(|value| value.get("result"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    if return_by_value {
+        if let Some(value) = result.get("value") {
+            return Ok(value.clone());
+        }
+        if let Some(value) = result.get("unserializableValue") {
+            return Ok(value.clone());
+        }
+        if let Some(value) = result.get("description") {
+            return Ok(value.clone());
+        }
+    }
+
+    Ok(result)
+}
+
+async fn browser_tab_websocket_url(cdp_endpoint: &str) -> AppResult<String> {
+    let tabs = list_browser_tabs(cdp_endpoint).await?;
+    let target = tabs
+        .into_iter()
+        .find(|tab| !tab.web_socket_debugger_url.is_empty())
+        .ok_or_else(|| {
+            AppError::Custom("No browser tab exposes a CDP websocket endpoint.".to_string())
+        })?;
+    Ok(target.web_socket_debugger_url)
+}
+
+async fn list_browser_tabs(cdp_endpoint: &str) -> AppResult<Vec<RemoteTabInfo>> {
+    let response = reqwest::Client::new()
+        .get(format!("{cdp_endpoint}/json/list"))
+        .send()
+        .await
+        .map_err(|e| AppError::Custom(format!("Failed to query browser tabs: {e}")))?;
+    if !response.status().is_success() {
+        return Err(AppError::Custom(format!(
+            "Failed to query browser tabs: HTTP {}",
+            response.status().as_u16()
+        )));
+    }
+    let tabs = response
+        .json::<Vec<RemoteTabInfo>>()
+        .await
+        .map_err(|e| AppError::Custom(format!("Failed to parse browser tabs: {e}")))?;
+    Ok(tabs
+        .into_iter()
+        .filter(|tab| tab.kind.is_empty() || tab.kind == "page")
+        .collect())
+}
+
+async fn cdp_send_command(
+    stream: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    id: i64,
+    method: &str,
+    params: serde_json::Value,
+) -> AppResult<serde_json::Value> {
+    let payload = serde_json::to_string(&json!({
+        "id": id,
+        "method": method,
+        "params": params
+    }))
+    .map_err(|e| AppError::Custom(format!("Failed to encode CDP payload: {e}")))?;
+    stream
+        .send(Message::Text(payload))
+        .await
+        .map_err(|e| AppError::Custom(format!("CDP send failed: {e}")))?;
+
+    while let Some(message) = stream.next().await {
+        let message = message.map_err(|e| AppError::Custom(format!("CDP receive failed: {e}")))?;
+        let Some(parsed) = parse_cdp_message(message)? else {
+            continue;
+        };
+        let Some(response_id) = parsed.get("id").and_then(serde_json::Value::as_i64) else {
+            continue;
+        };
+        if response_id != id {
+            continue;
+        }
+        if let Some(error) = parsed.get("error") {
+            let reason = error
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown CDP error");
+            return Err(AppError::Custom(format!("{method} failed: {reason}")));
+        }
+        return Ok(parsed);
+    }
+
+    Err(AppError::Custom(
+        "CDP connection closed before receiving a response.".to_string(),
+    ))
+}
+
+fn parse_cdp_message(message: Message) -> AppResult<Option<serde_json::Value>> {
+    match message {
+        Message::Text(text) => {
+            let parsed = serde_json::from_str(&text)
+                .map_err(|e| AppError::Custom(format!("CDP json parse failed: {e}")))?;
+            Ok(Some(parsed))
+        }
+        Message::Binary(bytes) => {
+            let text = String::from_utf8(bytes)
+                .map_err(|e| AppError::Custom(format!("CDP binary decode failed: {e}")))?;
+            let parsed = serde_json::from_str(&text)
+                .map_err(|e| AppError::Custom(format!("CDP json parse failed: {e}")))?;
+            Ok(Some(parsed))
+        }
+        Message::Ping(_) | Message::Pong(_) => Ok(None),
+        Message::Close(_) => Err(AppError::Custom("CDP websocket closed.".to_string())),
+        _ => Ok(None),
+    }
+}
+
 fn write_browser_endpoint_metadata(
     workspace_config_dir: &Path,
     info: &BrowserWindowInfo,
@@ -531,6 +1529,68 @@ fn resolve_existing_file_path(path: &str) -> AppResult<(String, std::path::PathB
         )));
     }
     Ok((display_path, file_path))
+}
+
+fn normalize_workspace_root_hint(workspace_root: Option<String>) -> Option<String> {
+    workspace_root
+        .as_deref()
+        .and_then(resolve_workspace_root_candidate)
+        .map(|path| normalize_windows_verbatim_prefix(&path.to_string_lossy()))
+}
+
+fn resolve_workspace_root_candidate(raw: &str) -> Option<PathBuf> {
+    let normalized = normalize_windows_verbatim_prefix(raw);
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.is_dir() {
+        return None;
+    }
+    Some(path.canonicalize().unwrap_or(path))
+}
+
+async fn ensure_workspace_file_access(
+    state: &State<'_, AppState>,
+    file_path: &Path,
+) -> AppResult<()> {
+    let workspace_root = workspace_root_from_state(state).await?;
+    let canonical_target = file_path
+        .canonicalize()
+        .unwrap_or_else(|_| file_path.to_path_buf());
+    if canonical_target.starts_with(&workspace_root) {
+        return Ok(());
+    }
+
+    Err(AppError::Custom(format!(
+        "File path is outside workspace and cannot be edited: {}",
+        normalize_windows_verbatim_prefix(&canonical_target.to_string_lossy())
+    )))
+}
+
+async fn ensure_document_detail_file_access(
+    state: &State<'_, AppState>,
+    file_path: &Path,
+) -> AppResult<()> {
+    let mut allowed_roots = vec![workspace_root_from_state(state).await?];
+    if let Some(active_root) = state.document_detail_active_root.read().await.clone() {
+        if let Some(root) = resolve_workspace_root_candidate(&active_root) {
+            allowed_roots.push(root);
+        }
+    }
+
+    let canonical_target = file_path
+        .canonicalize()
+        .unwrap_or_else(|_| file_path.to_path_buf());
+    if allowed_roots.iter().any(|root| canonical_target.starts_with(root)) {
+        return Ok(());
+    }
+
+    Err(AppError::Custom(format!(
+        "File path is outside workspace and cannot be edited: {}",
+        normalize_windows_verbatim_prefix(&canonical_target.to_string_lossy())
+    )))
 }
 
 fn document_detail_window_url() -> AppResult<WebviewUrl> {
@@ -785,10 +1845,14 @@ pub struct DocumentDetailInsertEvent {
 }
 
 #[tauri::command]
-pub async fn read_file_for_attach(path: String) -> AppResult<FileAttachResult> {
+pub async fn read_file_for_attach(
+    state: State<'_, AppState>,
+    path: String,
+) -> AppResult<FileAttachResult> {
     use base64::Engine;
 
     let (display_path, file_path) = resolve_existing_file_path(&path)?;
+    ensure_workspace_file_access(&state, &file_path).await?;
 
     let metadata = fs::metadata(&file_path)
         .map_err(|e| AppError::Custom(format!("Failed to read file metadata: {e}")))?;
@@ -858,8 +1922,12 @@ pub async fn read_file_for_attach(path: String) -> AppResult<FileAttachResult> {
 }
 
 #[tauri::command]
-pub async fn read_text_file_preview(path: String) -> AppResult<TextFilePreviewResult> {
+pub async fn read_text_file_preview(
+    state: State<'_, AppState>,
+    path: String,
+) -> AppResult<TextFilePreviewResult> {
     let (display_path, file_path) = resolve_existing_file_path(&path)?;
+    ensure_document_detail_file_access(&state, &file_path).await?;
 
     let metadata = fs::metadata(&file_path)
         .map_err(|e| AppError::Custom(format!("Failed to read file metadata: {e}")))?;
@@ -920,10 +1988,12 @@ pub async fn read_text_file_preview(path: String) -> AppResult<TextFilePreviewRe
 
 #[tauri::command]
 pub async fn write_text_file_preview(
+    state: State<'_, AppState>,
     path: String,
     content: String,
 ) -> AppResult<TextFileWriteResult> {
     let (display_path, file_path) = resolve_existing_file_path(&path)?;
+    ensure_document_detail_file_access(&state, &file_path).await?;
     let metadata = fs::metadata(&file_path)
         .map_err(|e| AppError::Custom(format!("Failed to read file metadata: {e}")))?;
     // 为防止“读取时已截断但保存时覆盖整文件”的误写，这里限制仅允许处理预览上限内的文本文件。
@@ -1038,6 +2108,73 @@ mod tests {
         let err = resolve_existing_file_path(&temp_dir.to_string_lossy()).unwrap_err();
         assert!(err.to_string().contains("Path is not a file"));
 
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_workspace_web_source_path_accepts_local_workspace_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cn_codex_window_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let html_path = temp_dir.join("index.html");
+        fs::write(&html_path, "<html><body>ok</body></html>").unwrap();
+
+        let parsed = Url::parse("http://localhost:5173/").unwrap();
+        let resolved = resolve_workspace_web_source_path(&temp_dir, &parsed).unwrap();
+        assert!(resolved.ends_with("index.html"));
+
+        fs::remove_file(&html_path).unwrap();
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_workspace_web_source_path_rejects_remote_host() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cn_codex_window_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+        fs::write(temp_dir.join("index.html"), "<html></html>").unwrap();
+
+        let parsed = Url::parse("https://example.com/").unwrap();
+        assert!(resolve_workspace_web_source_path(&temp_dir, &parsed).is_none());
+
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_workspace_web_source_path_rejects_outside_workspace_query_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cn_codex_window_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let outside_file = std::env::temp_dir().join(format!(
+            "cn_codex_window_outside_{}.html",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::write(&outside_file, "<html></html>").unwrap();
+
+        let query_value = outside_file.to_string_lossy().replace('\\', "/");
+        let parsed = Url::parse(&format!("http://localhost:1420/?file={query_value}")).unwrap();
+        assert!(resolve_workspace_web_source_path(&temp_dir, &parsed).is_none());
+
+        fs::remove_file(outside_file).unwrap();
         fs::remove_dir_all(&temp_dir).unwrap();
     }
 }
