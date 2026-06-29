@@ -1211,7 +1211,7 @@ impl ToolExecutor {
                             },
                             "source_dir": {
                                 "type": "string",
-                                "description": "Optional Codex plugin cache directory. Defaults to the user's .codex/plugins/cache directory."
+                                "description": "Optional Codex plugin cache directory. Defaults to the user's .cn-codex/plugins/cache directory."
                             },
                             "include_installed": {
                                 "type": "boolean",
@@ -1260,7 +1260,7 @@ impl ToolExecutor {
                             },
                             "source_dir": {
                                 "type": "string",
-                                "description": "Optional Codex plugin cache directory. Defaults to the user's .codex/plugins/cache directory."
+                                "description": "Optional Codex plugin cache directory. Defaults to the user's .cn-codex/plugins/cache directory."
                             }
                         },
                         "required": []
@@ -1722,7 +1722,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "spawn_agent",
-                    "description": "Start a background Codex subagent for delegated investigation, review, testing, or implementation. The subagent runs through codex exec when CN_CODEX_SUBAGENT_CMD, CN_CODEX_EXE, CODEX_CLI_PATH, or codex in PATH is available.",
+                    "description": "Start a background CN-Codex subagent for delegated investigation, review, testing, or implementation. The subagent runs on the built-in internal subagent engine.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1750,16 +1750,16 @@ impl ToolExecutor {
                             },
                             "model": {
                                 "type": "string",
-                                "description": "Optional model override passed to codex exec."
+                                "description": "Optional model override for the internal subagent engine."
                             },
                             "sandbox": {
                                 "type": "string",
                                 "enum": ["read-only", "workspace-write", "danger-full-access"],
-                                "description": "Optional sandbox mode passed to codex exec. Defaults to workspace-write for the built-in codex exec command."
+                                "description": "Compatibility field reserved for Codex parity. Ignored by the current internal subagent runtime."
                             },
                             "dangerously_bypass_approvals_and_sandbox": {
                                 "type": "boolean",
-                                "description": "Pass Codex's dangerous bypass flag to the subagent. Use only when explicitly appropriate for the task."
+                                "description": "Compatibility field reserved for Codex parity. Ignored by the current internal subagent runtime."
                             }
                         },
                         "required": ["prompt"]
@@ -1798,7 +1798,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "send_input",
-                    "description": "Send a follow-up message to an existing background subagent. In the current CLI-backed runtime, CN-Codex records the submission and writes it to the running subagent process stdin when that stream is available; otherwise the message is retained in the subagent input history for visibility.",
+                    "description": "Send a follow-up message to an existing background subagent. CN-Codex forwards the message to the running internal subagent channel when available and records the submission in subagent input history.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1825,7 +1825,7 @@ impl ToolExecutor {
                             },
                             "interrupt": {
                                 "type": "boolean",
-                                "description": "Compatibility flag for Codex send_input. The CLI-backed runtime records the request but does not yet perform native turn interruption."
+                                "description": "Compatibility flag for Codex send_input. Currently recorded in input history only and does not force immediate turn interruption."
                             }
                         },
                         "required": []
@@ -1836,7 +1836,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "resume_agent",
-                    "description": "Resume a previously closed, completed, failed, or timed-out background subagent by restarting its CLI-backed process with the original task, previous output, and recorded send_input history as context. This keeps the same subagent id.",
+                    "description": "Resume a previously closed, completed, failed, or timed-out background subagent by restarting the internal subagent engine with the same task context and id.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1856,11 +1856,11 @@ impl ToolExecutor {
                                 "type": "integer",
                                 "minimum": 1000,
                                 "maximum": 1800000,
-                                "description": "Maximum runtime for the resumed subagent process. Defaults to 600000."
+                                "description": "Maximum runtime for the resumed subagent run. Defaults to 600000."
                             },
                             "wait": {
                                 "type": "boolean",
-                                "description": "Wait for the resumed process to finish before returning. Defaults to false."
+                                "description": "Wait for the resumed subagent run to finish before returning. Defaults to false."
                             }
                         },
                         "required": []
@@ -1889,7 +1889,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "close_agent",
-                    "description": "Close a background subagent started with spawn_agent when it is no longer needed. If the subagent is still running, CN-Codex attempts to stop its process tree and returns the previous status.",
+                    "description": "Close a background subagent started with spawn_agent when it is no longer needed. If it is still running, CN-Codex signals cancellation in the internal runtime and returns the previous status.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -8515,208 +8515,6 @@ async fn persist_subagent_records(
     }
 }
 
-#[allow(dead_code)]
-struct SubagentCommand {
-    program: String,
-    args: Vec<String>,
-}
-
-#[allow(dead_code)]
-async fn run_subagent_process(
-    id: String,
-    command: SubagentCommand,
-    cwd: PathBuf,
-    last_message_path: PathBuf,
-    timeout_ms: u64,
-    workspace_config_dir: PathBuf,
-    subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
-    subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
-) {
-    let mut cmd = Command::new(&command.program);
-    cmd.args(&command.args)
-        .current_dir(&cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    cmd.no_console();
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            update_subagent_finished(
-                &workspace_config_dir,
-                subagents,
-                &id,
-                None,
-                "failed",
-                None,
-                None,
-                Some(format!("Failed to start subagent command: {e}")),
-            )
-            .await;
-            return;
-        }
-    };
-
-    let process_id = child.id();
-    let closed_before_start = {
-        let mut subagents = subagents.lock().await;
-        if let Some(record) = subagents.get_mut(&id) {
-            record.process_id = process_id;
-            record.status == "closed"
-        } else {
-            false
-        }
-    };
-    persist_subagent_records(&workspace_config_dir, &subagents).await;
-    if closed_before_start {
-        let _ = child.kill().await;
-        return;
-    }
-
-    if let Some(stdin) = child.stdin.take() {
-        subagent_stdin.lock().await.insert(id.clone(), stdin);
-    }
-    let child_stdout = child.stdout.take();
-    let child_stderr = child.stderr.take();
-    let stdout_handle = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        if let Some(mut out) = child_stdout {
-            let _ = out.read_to_end(&mut buf).await;
-        }
-        buf
-    });
-    let stderr_handle = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        if let Some(mut err) = child_stderr {
-            let _ = err.read_to_end(&mut buf).await;
-        }
-        buf
-    });
-
-    match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait()).await {
-        Ok(Ok(status)) => {
-            subagent_stdin.lock().await.remove(&id);
-            let stdout = decode_command_output_bytes(&stdout_handle.await.unwrap_or_default())
-                .trim()
-                .to_string();
-            let stderr = decode_command_output_bytes(&stderr_handle.await.unwrap_or_default())
-                .trim()
-                .to_string();
-            let exit_code = status.code().unwrap_or(-1);
-            let last_message = tokio::fs::read_to_string(&last_message_path)
-                .await
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
-            let output = if exit_code == 0 {
-                last_message.unwrap_or_else(|| stdout.clone())
-            } else {
-                let mut parts = Vec::new();
-                parts.push(format!("[exit code: {exit_code}]"));
-                if let Some(message) = last_message {
-                    parts.push(message);
-                } else if !stdout.is_empty() {
-                    parts.push(stdout);
-                }
-                if !stderr.is_empty() {
-                    parts.push(format!("[stderr]\n{stderr}"));
-                }
-                parts.join("\n")
-            };
-            let status = if exit_code == 0 {
-                "completed"
-            } else {
-                "failed"
-            };
-            update_subagent_finished(
-                &workspace_config_dir,
-                subagents,
-                &id,
-                process_id,
-                status,
-                Some(exit_code),
-                Some(truncate_output(&output, 24_000)),
-                None,
-            )
-            .await;
-        }
-        Ok(Err(e)) => {
-            subagent_stdin.lock().await.remove(&id);
-            stdout_handle.abort();
-            stderr_handle.abort();
-            update_subagent_finished(
-                &workspace_config_dir,
-                subagents,
-                &id,
-                process_id,
-                "failed",
-                None,
-                None,
-                Some(format!("Failed to wait for subagent command: {e}")),
-            )
-            .await;
-        }
-        Err(_) => {
-            subagent_stdin.lock().await.remove(&id);
-            let _ = child.kill().await;
-            stdout_handle.abort();
-            stderr_handle.abort();
-            update_subagent_finished(
-                &workspace_config_dir,
-                subagents,
-                &id,
-                process_id,
-                "timed_out",
-                Some(124),
-                None,
-                Some(format!("Subagent timed out after {timeout_ms} ms")),
-            )
-            .await;
-        }
-    }
-}
-
-#[allow(dead_code)]
-async fn update_subagent_finished(
-    workspace_config_dir: &Path,
-    subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
-    id: &str,
-    expected_process_id: Option<u32>,
-    status: &str,
-    exit_code: Option<i32>,
-    output: Option<String>,
-    error: Option<String>,
-) {
-    let completed_at_ms = now_millis();
-    let changed = {
-        let mut subagents = subagents.lock().await;
-        if let Some(record) = subagents.get_mut(id) {
-            if let Some(pid) = expected_process_id {
-                if record.process_id != Some(pid) {
-                    return;
-                }
-            }
-            if record.status == "closed" {
-                return;
-            }
-            record.status = status.to_string();
-            record.completed_at_ms = Some(completed_at_ms);
-            record.duration_ms = Some(completed_at_ms.saturating_sub(record.started_at_ms));
-            record.process_id = None;
-            record.exit_code = exit_code;
-            record.output = output;
-            record.error = error;
-            true
-        } else {
-            false
-        }
-    };
-    if changed {
-        persist_subagent_records(workspace_config_dir, &subagents).await;
-    }
-}
-
 fn send_input_target(args: &SendInputArgs) -> Option<String> {
     [
         args.target.as_deref(),
@@ -8770,80 +8568,6 @@ fn send_input_item_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-#[allow(dead_code)]
-async fn send_subagent_input(
-    subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
-    subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
-    target: &str,
-    message: String,
-    interrupt: bool,
-) -> Result<SendInputResult, String> {
-    let status = {
-        let subagents = subagents.lock().await;
-        let record = subagents
-            .get(target)
-            .ok_or_else(|| format!("Subagent not found: {target}"))?;
-        record.status.clone()
-    };
-
-    let submission_id = format!("input-{}", uuid::Uuid::new_v4().simple());
-    let mut delivered_to_stdin = false;
-    let mut delivery_error = None;
-    if status == "running" {
-        let payload = format!(
-            "\n\n[CN-Codex send_input {submission_id}; interrupt={interrupt}]\n{message}\n"
-        );
-        let mut stdin_map = subagent_stdin.lock().await;
-        if let Some(stdin) = stdin_map.get_mut(target) {
-            if let Err(e) = stdin.write_all(payload.as_bytes()).await {
-                delivery_error = Some(format!("stdin write failed: {e}"));
-            } else if let Err(e) = stdin.flush().await {
-                delivery_error = Some(format!("stdin flush failed: {e}"));
-            } else {
-                delivered_to_stdin = true;
-            }
-        } else {
-            delivery_error = Some("subagent stdin is not available".to_string());
-        }
-    }
-
-    let submitted_at_ms = now_millis();
-    let mut subagents = subagents.lock().await;
-    let record = subagents
-        .get_mut(target)
-        .ok_or_else(|| format!("Subagent not found: {target}"))?;
-    record.last_input_at_ms = Some(submitted_at_ms);
-    record.input_history.push(SubagentInputRecord {
-        submission_id: submission_id.clone(),
-        message: truncate_output(&message, 8_000),
-        submitted_at_ms,
-        interrupt,
-        delivered_to_stdin,
-    });
-
-    let queued = !delivered_to_stdin;
-    let note = if delivered_to_stdin {
-        "Message was written to the running subagent process stdin.".to_string()
-    } else if let Some(error) = delivery_error {
-        format!(
-            "Message was recorded in the subagent input history but not delivered to stdin: {error}."
-        )
-    } else {
-        format!(
-            "Message was recorded in the subagent input history. Current subagent status is {status}."
-        )
-    };
-
-    Ok(SendInputResult {
-        target: target.to_string(),
-        submission_id,
-        status,
-        delivered_to_stdin,
-        queued,
-        note,
-    })
-}
-
 fn resume_agent_target(args: &ResumeAgentArgs) -> Option<String> {
     [
         args.id.as_deref(),
@@ -8856,216 +8580,12 @@ fn resume_agent_target(args: &ResumeAgentArgs) -> Option<String> {
     .find(|value| !value.is_empty())
 }
 
-#[allow(dead_code)]
-async fn resume_subagent(
-    subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
-    subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
-    workspace_config_dir: PathBuf,
-    target: &str,
-    timeout_ms: u64,
-) -> Result<ResumeAgentResult, String> {
-    let snapshot = {
-        let subagents = subagents.lock().await;
-        subagents
-            .get(target)
-            .cloned()
-            .ok_or_else(|| format!("Subagent not found: {target}"))?
-    };
-
-    if snapshot.status == "running" {
-        return Ok(ResumeAgentResult {
-            id: target.to_string(),
-            resumed: false,
-            previous_status: snapshot.status.clone(),
-            status: snapshot.status.clone(),
-            note: format!("Subagent {target} is already running"),
-            agent: Some(snapshot),
-        });
-    }
-
-    let cwd = PathBuf::from(&snapshot.cwd);
-    if !cwd.is_dir() {
-        return Err(format!(
-            "Subagent cwd is not a directory: {}",
-            cwd.display()
-        ));
-    }
-    let resume_prompt = build_resume_subagent_prompt(&snapshot);
-    let args = SpawnAgentArgs {
-        prompt: resume_prompt,
-        role: Some(snapshot.role.clone()),
-        cwd: Some(snapshot.cwd.clone()),
-        timeout_ms: Some(timeout_ms),
-        wait: Some(false),
-        model: None,
-        sandbox: None,
-        dangerously_bypass_approvals_and_sandbox: None,
-    };
-
-    let subagent_dir = workspace_config_dir.join("subagents").join(target);
-    tokio::fs::create_dir_all(&subagent_dir)
-        .await
-        .map_err(|e| format!("Error creating subagent directory: {e}"))?;
-    let last_message_path = subagent_dir.join("last-message.txt");
-    let command = build_subagent_command(&args, &last_message_path);
-    let command_display = subagent_command_display(&command.program, &command.args);
-    let started_at_ms = now_millis();
-    let resumed_record = {
-        let mut subagents = subagents.lock().await;
-        let record = subagents
-            .get_mut(target)
-            .ok_or_else(|| format!("Subagent not found: {target}"))?;
-        record.status = "running".to_string();
-        record.command = command_display;
-        record.process_id = None;
-        record.started_at_ms = started_at_ms;
-        record.completed_at_ms = None;
-        record.duration_ms = None;
-        record.exit_code = None;
-        record.error = None;
-        record.clone()
-    };
-    persist_subagent_records(&workspace_config_dir, &subagents).await;
-
-    let subagents_for_task = subagents.clone();
-    let stdin_for_task = subagent_stdin.clone();
-    let workspace_config_dir_for_task = workspace_config_dir.clone();
-    let spawned_id = target.to_string();
-    tokio::spawn(async move {
-        run_subagent_process(
-            spawned_id,
-            command,
-            cwd,
-            last_message_path,
-            timeout_ms,
-            workspace_config_dir_for_task,
-            subagents_for_task,
-            stdin_for_task,
-        )
-        .await;
-    });
-
-    Ok(ResumeAgentResult {
-        id: target.to_string(),
-        resumed: true,
-        previous_status: snapshot.status,
-        status: "running".to_string(),
-        note: format!("Subagent {target} was resumed with prior task context"),
-        agent: Some(resumed_record),
-    })
-}
-
-#[allow(dead_code)]
-fn build_resume_subagent_prompt(record: &SubagentRecord) -> String {
-    let mut parts = vec![
-        "Resume this CN-Codex subagent task from prior context.".to_string(),
-        format!("Original role: {}", record.role),
-        format!("Original prompt:\n{}", record.prompt),
-        format!("Previous status: {}", record.status),
-    ];
-
-    if let Some(output) = record.output.as_deref().filter(|value| !value.is_empty()) {
-        parts.push(format!(
-            "Previous output:\n{}",
-            truncate_output(output, 8_000)
-        ));
-    }
-    if let Some(error) = record.error.as_deref().filter(|value| !value.is_empty()) {
-        parts.push(format!(
-            "Previous error:\n{}",
-            truncate_output(error, 4_000)
-        ));
-    }
-    if !record.input_history.is_empty() {
-        let history = record
-            .input_history
-            .iter()
-            .map(|input| {
-                format!(
-                    "- {} interrupt={} delivered_to_stdin={}\n{}",
-                    input.submission_id, input.interrupt, input.delivered_to_stdin, input.message
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        parts.push(format!(
-            "Follow-up input history, newest relevant requests may be near the end:\n{}",
-            truncate_output(&history, 8_000)
-        ));
-    }
-    parts.push(
-        "Continue from this context. Address any recorded follow-up inputs while preserving the original task intent."
-            .to_string(),
-    );
-    parts.join("\n\n")
-}
-
 fn close_agent_target(args: CloseAgentArgs) -> Option<String> {
     [args.target, args.agent_id, args.id]
         .into_iter()
         .flatten()
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
-}
-
-#[allow(dead_code)]
-async fn close_subagent(
-    subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
-    subagent_stdin: Arc<Mutex<HashMap<String, ChildStdin>>>,
-    target: &str,
-) -> Result<SubagentCloseResult, String> {
-    let (previous_status, process_id) = {
-        let subagents = subagents.lock().await;
-        let record = subagents
-            .get(target)
-            .ok_or_else(|| format!("Subagent not found: {target}"))?;
-        (record.status.clone(), record.process_id)
-    };
-
-    if previous_status == "running" {
-        if let Some(pid) = process_id {
-            kill_process_tree(pid).await?;
-        }
-    }
-    subagent_stdin.lock().await.remove(target);
-
-    let mut subagents = subagents.lock().await;
-    let record = subagents
-        .get_mut(target)
-        .ok_or_else(|| format!("Subagent not found: {target}"))?;
-    let completed_at_ms = now_millis();
-    let message = if previous_status == "closed" {
-        format!("Subagent {target} was already closed")
-    } else if previous_status == "running" {
-        format!("Subagent {target} was closed and its process was stopped")
-    } else {
-        format!("Subagent {target} was closed")
-    };
-
-    if record.status != "closed" {
-        record.status = "closed".to_string();
-        record.process_id = None;
-        if record.completed_at_ms.is_none() {
-            record.completed_at_ms = Some(completed_at_ms);
-        }
-        if record.duration_ms.is_none() {
-            record.duration_ms = Some(completed_at_ms.saturating_sub(record.started_at_ms));
-        }
-        if previous_status == "running" {
-            record.exit_code.get_or_insert(-1);
-            record
-                .error
-                .get_or_insert_with(|| "Subagent closed by close_agent".to_string());
-        }
-    }
-
-    Ok(SubagentCloseResult {
-        target: target.to_string(),
-        closed: true,
-        previous_status,
-        message,
-        agent: Some(record.clone()),
-    })
 }
 
 #[allow(dead_code)]
@@ -9179,124 +8699,6 @@ async fn wait_for_subagents(
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
-}
-
-#[allow(dead_code)]
-fn build_subagent_command(args: &SpawnAgentArgs, last_message_path: &Path) -> SubagentCommand {
-    if let Ok(raw) = std::env::var("CN_CODEX_SUBAGENT_CMD") {
-        if let Some((program, mut command_args)) = split_command_line_simple(&raw) {
-            command_args.push(args.prompt.trim().to_string());
-            return SubagentCommand {
-                program,
-                args: command_args,
-            };
-        }
-    }
-
-    let program = std::env::var("CN_CODEX_EXE")
-        .ok()
-        .or_else(|| std::env::var("CODEX_CLI_PATH").ok())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "codex".to_string());
-    let mut command_args = build_codex_subagent_args(args, last_message_path);
-    command_args.push(args.prompt.trim().to_string());
-    SubagentCommand {
-        program,
-        args: command_args,
-    }
-}
-
-#[allow(dead_code)]
-fn build_codex_subagent_args(args: &SpawnAgentArgs, last_message_path: &Path) -> Vec<String> {
-    let mut command_args = vec![
-        "exec".to_string(),
-        "--skip-git-repo-check".to_string(),
-        "--output-last-message".to_string(),
-        last_message_path.to_string_lossy().to_string(),
-    ];
-
-    if args
-        .dangerously_bypass_approvals_and_sandbox
-        .unwrap_or(false)
-    {
-        command_args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-    } else {
-        command_args.push("--sandbox".to_string());
-        command_args.push(
-            args.sandbox
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| {
-                    matches!(
-                        *value,
-                        "read-only" | "workspace-write" | "danger-full-access"
-                    )
-                })
-                .unwrap_or("workspace-write")
-                .to_string(),
-        );
-    }
-
-    if let Some(model) = args
-        .model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        command_args.push("--model".to_string());
-        command_args.push(model.to_string());
-    }
-
-    command_args
-}
-
-#[allow(dead_code)]
-fn split_command_line_simple(input: &str) -> Option<(String, Vec<String>)> {
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-
-    for ch in input.chars() {
-        if let Some(active_quote) = quote {
-            if ch == active_quote {
-                quote = None;
-            } else {
-                current.push(ch);
-            }
-            continue;
-        }
-        match ch {
-            '"' | '\'' => quote = Some(ch),
-            ch if ch.is_whitespace() => {
-                if !current.is_empty() {
-                    parts.push(std::mem::take(&mut current));
-                }
-            }
-            _ => current.push(ch),
-        }
-    }
-
-    if !current.is_empty() {
-        parts.push(current);
-    }
-    if parts.is_empty() {
-        return None;
-    }
-    let program = parts.remove(0);
-    Some((program, parts))
-}
-
-#[allow(dead_code)]
-fn subagent_command_display(program: &str, args: &[String]) -> String {
-    let mut display_args = args.to_vec();
-    if let Some(last) = display_args.last_mut() {
-        if last.len() > 80 {
-            *last = format!("{}...", last.chars().take(80).collect::<String>());
-        }
-    }
-    format!("{program} {}", display_args.join(" "))
-        .trim()
-        .to_string()
 }
 
 fn format_subagent_wait_output(
@@ -14763,37 +14165,6 @@ rl.on("line", (line) => {
     }
 
     #[test]
-    fn codex_subagent_args_use_exec_and_workspace_sandbox() {
-        let args = SpawnAgentArgs {
-            prompt: "review the code".to_string(),
-            role: Some("reviewer".to_string()),
-            cwd: None,
-            timeout_ms: None,
-            wait: None,
-            model: Some("gpt-test".to_string()),
-            sandbox: None,
-            dangerously_bypass_approvals_and_sandbox: None,
-        };
-
-        let built = build_codex_subagent_args(&args, Path::new("last-message.txt"));
-        assert_eq!(built[0], "exec");
-        assert!(built.contains(&"--skip-git-repo-check".to_string()));
-        assert!(built.contains(&"--output-last-message".to_string()));
-        assert!(built.contains(&"--sandbox".to_string()));
-        assert!(built.contains(&"workspace-write".to_string()));
-        assert!(built.contains(&"--model".to_string()));
-        assert!(built.contains(&"gpt-test".to_string()));
-    }
-
-    #[test]
-    fn split_subagent_command_preserves_quoted_windows_paths() {
-        let parsed = split_command_line_simple(r#""C:\Program Files\Codex\codex.exe" exec --json"#)
-            .expect("command should parse");
-        assert_eq!(parsed.0, r#"C:\Program Files\Codex\codex.exe"#);
-        assert_eq!(parsed.1, vec!["exec".to_string(), "--json".to_string()]);
-    }
-
-    #[test]
     fn resolve_subagent_cwd_requires_existing_directory() {
         let root = std::env::temp_dir().join(format!(
             "cn-codex-subagent-cwd-test-{}",
@@ -14924,163 +14295,6 @@ rl.on("line", (line) => {
         assert!(state.contains("completed"));
 
         std::fs::remove_dir_all(root).ok();
-    }
-
-    #[tokio::test]
-    async fn close_subagent_marks_completed_record_closed() {
-        let id = "agent-close-test".to_string();
-        let mut map = HashMap::new();
-        map.insert(
-            id.clone(),
-            SubagentRecord {
-                id: id.clone(),
-                role: "tester".to_string(),
-                status: "completed".to_string(),
-                prompt: "test".to_string(),
-                cwd: ".".to_string(),
-                command: "codex exec test".to_string(),
-                process_id: None,
-                started_at_ms: 10,
-                completed_at_ms: Some(20),
-                duration_ms: Some(10),
-                exit_code: Some(0),
-                output: Some("done".to_string()),
-                error: None,
-                input_history: Vec::new(),
-                last_input_at_ms: None,
-            },
-        );
-
-        let subagents = Arc::new(Mutex::new(map));
-        let result = close_subagent(subagents.clone(), Arc::new(Mutex::new(HashMap::new())), &id)
-            .await
-            .unwrap();
-        assert_eq!(result.previous_status, "completed");
-        assert!(result.closed);
-
-        let subagents = subagents.lock().await;
-        let record = subagents.get(&id).unwrap();
-        assert_eq!(record.status, "closed");
-        assert_eq!(record.output.as_deref(), Some("done"));
-    }
-
-    #[tokio::test]
-    async fn send_subagent_input_records_history_when_not_running() {
-        let id = "agent-input-test".to_string();
-        let mut map = HashMap::new();
-        map.insert(
-            id.clone(),
-            SubagentRecord {
-                id: id.clone(),
-                role: "tester".to_string(),
-                status: "completed".to_string(),
-                prompt: "test".to_string(),
-                cwd: ".".to_string(),
-                command: "codex exec test".to_string(),
-                process_id: None,
-                started_at_ms: 10,
-                completed_at_ms: Some(20),
-                duration_ms: Some(10),
-                exit_code: Some(0),
-                output: Some("done".to_string()),
-                error: None,
-                input_history: Vec::new(),
-                last_input_at_ms: None,
-            },
-        );
-
-        let subagents = Arc::new(Mutex::new(map));
-        let result = send_subagent_input(
-            subagents.clone(),
-            Arc::new(Mutex::new(HashMap::new())),
-            &id,
-            "follow up".to_string(),
-            false,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(result.target, id);
-        assert!(!result.delivered_to_stdin);
-        assert!(result.queued);
-
-        let subagents = subagents.lock().await;
-        let record = subagents.get("agent-input-test").unwrap();
-        assert_eq!(record.input_history.len(), 1);
-        assert_eq!(record.input_history[0].message, "follow up");
-        assert!(record.last_input_at_ms.is_some());
-    }
-
-    #[tokio::test]
-    async fn resume_subagent_running_record_does_not_restart() {
-        let id = "agent-resume-running-test".to_string();
-        let mut map = HashMap::new();
-        map.insert(
-            id.clone(),
-            SubagentRecord {
-                id: id.clone(),
-                role: "tester".to_string(),
-                status: "running".to_string(),
-                prompt: "test".to_string(),
-                cwd: ".".to_string(),
-                command: "codex exec test".to_string(),
-                process_id: None,
-                started_at_ms: 10,
-                completed_at_ms: None,
-                duration_ms: None,
-                exit_code: None,
-                output: None,
-                error: None,
-                input_history: Vec::new(),
-                last_input_at_ms: None,
-            },
-        );
-
-        let result = resume_subagent(
-            Arc::new(Mutex::new(map)),
-            Arc::new(Mutex::new(HashMap::new())),
-            PathBuf::from("."),
-            &id,
-            1_000,
-        )
-        .await
-        .unwrap();
-
-        assert!(!result.resumed);
-        assert_eq!(result.previous_status, "running");
-        assert_eq!(result.status, "running");
-    }
-
-    #[test]
-    fn resume_subagent_prompt_includes_prior_output_and_inputs() {
-        let record = SubagentRecord {
-            id: "agent-resume-prompt-test".to_string(),
-            role: "tester".to_string(),
-            status: "closed".to_string(),
-            prompt: "original task".to_string(),
-            cwd: ".".to_string(),
-            command: "codex exec original task".to_string(),
-            process_id: None,
-            started_at_ms: 10,
-            completed_at_ms: Some(20),
-            duration_ms: Some(10),
-            exit_code: Some(0),
-            output: Some("prior result".to_string()),
-            error: None,
-            input_history: vec![SubagentInputRecord {
-                submission_id: "input-1".to_string(),
-                message: "follow up".to_string(),
-                submitted_at_ms: 30,
-                interrupt: false,
-                delivered_to_stdin: false,
-            }],
-            last_input_at_ms: Some(30),
-        };
-
-        let prompt = build_resume_subagent_prompt(&record);
-        assert!(prompt.contains("original task"));
-        assert!(prompt.contains("prior result"));
-        assert!(prompt.contains("follow up"));
     }
 
     #[test]

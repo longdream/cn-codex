@@ -144,6 +144,16 @@ AI 自动创建专业角色，绑定技能和工作流节点，实现自动化�
 
 ---
 
+## 进程排查：为什么会看到 `codex.exe`
+
+- CN-Codex 主程序进程名是 `cn-codex.exe`，不是 `codex.exe`。
+- 如果系统里出现 `codex.exe`，通常是命令执行链路触发（例如 `shell` / `exec_command` 实际执行了 `codex ...`）。
+- 也可能来自自定义配置：`codey/config.toml` 里的 MCP `command` 或 `codey/hooks.json` / 插件 hooks 命令中显式写了 `codex`。
+- 建议按顺序排查：最近工具调用记录 → MCP 配置命令字段 → Hook 命令字段。
+- 若不需要 Codex CLI，可移除相关配置或从 PATH 中去掉 `codex.exe`。
+
+---
+
 ## 文档与链接
 
 - [下载最新版本](https://github.com/longdream/cn-codex/releases) — 免安装，解压即用

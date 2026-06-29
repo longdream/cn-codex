@@ -2091,10 +2091,10 @@ impl AgentEngine {
              - list_available_plugins_to_install: List local Codex plugin cache candidates that can be imported into this CN-Codex workspace.\n\
              - request_plugin_install: Import one local Codex plugin cache candidate into codey/plugins; call list_available_plugins_to_install first when unsure of the tool_id.\n\
              - plugin_manage: List, enable, disable, or uninstall local workspace plugins under codey/plugins; disabled plugins stay on disk but are excluded from skills, MCP servers, app connectors, and hooks.\n\
-             - spawn_agent: Start a background Codex subagent for delegated investigation, review, testing, or implementation.\n\
+            - spawn_agent: Start a background CN-Codex subagent on the built-in internal subagent engine for delegated investigation, review, testing, or implementation.\n\
              - wait_agent: Wait for one or more spawned subagents and read their results.\n\
-             - send_input: Send a follow-up message to a spawned subagent; the CLI-backed runtime records all submissions and writes to process stdin when available.\n\
-             - resume_agent: Resume a stopped spawned subagent by restarting its CLI-backed process with prior task context and input history.\n\
+            - send_input: Send a follow-up message to a spawned subagent; CN-Codex forwards it through the internal subagent channel when available and records it in input history.\n\
+            - resume_agent: Resume a stopped spawned subagent by restarting the internal subagent engine with the same task context and id.\n\
              - list_agents: List spawned subagents and their current statuses.\n\
              - close_agent: Close a spawned subagent when it is no longer needed; running subagent processes are stopped when possible.\n\
              - memory_list: List durable CN-Codex memory files.\n\

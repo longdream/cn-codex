@@ -111,6 +111,7 @@ export interface PlanFile {
   content: string;
   revision?: number;
   updatedAt?: number;
+  synthetic?: boolean;
 }
 
 export interface ChatMessage {
@@ -539,9 +540,53 @@ function normalizePlanFile(
   };
 }
 
-function mapTurnsToMessages(turns: RawTurn[], activePlan: PlanFile | null): ChatMessage[] {
+const PROPOSED_PLAN_OPEN_TAG = "<proposed_plan>";
+const PROPOSED_PLAN_CLOSE_TAG = "</proposed_plan>";
+const TAGGED_PLAN_PATH = "conversation://proposed-plan";
+
+function extractTaggedPlanContent(text: string): string | null {
+  const start = text.indexOf(PROPOSED_PLAN_OPEN_TAG);
+  if (start < 0) return null;
+  const afterOpen = text.slice(start + PROPOSED_PLAN_OPEN_TAG.length);
+  const end = afterOpen.indexOf(PROPOSED_PLAN_CLOSE_TAG);
+  if (end < 0) return null;
+  const content = afterOpen.slice(0, end).trim();
+  return content.length > 0 ? content : null;
+}
+
+function stripTaggedPlanBlocks(text: string): string {
+  let visible = "";
+  let rest = text;
+
+  while (rest.length > 0) {
+    const start = rest.indexOf(PROPOSED_PLAN_OPEN_TAG);
+    if (start < 0) {
+      visible += rest;
+      break;
+    }
+
+    visible += rest.slice(0, start);
+    const afterOpen = rest.slice(start + PROPOSED_PLAN_OPEN_TAG.length);
+    const end = afterOpen.indexOf(PROPOSED_PLAN_CLOSE_TAG);
+    if (end < 0) {
+      // 历史异常兜底：缺少闭合标签时至少去掉起始标签，避免标签外露。
+      visible += afterOpen;
+      break;
+    }
+    rest = afterOpen.slice(end + PROPOSED_PLAN_CLOSE_TAG.length);
+  }
+
+  return visible;
+}
+
+function mapTurnsToMessages(
+  turns: RawTurn[],
+  activePlan: PlanFile | null,
+): { messages: ChatMessage[]; activePlan: PlanFile | null } {
   const messages: ChatMessage[] = [];
   const toolResultMap = new Map<string, string>();
+  let latestTaggedPlanContent: string | null = null;
+  let latestTaggedPlanTimestamp: number | null = null;
 
   for (const turn of turns) {
     for (const item of turn.items ?? []) {
@@ -570,13 +615,22 @@ function mapTurnsToMessages(turns: RawTurn[], activePlan: PlanFile | null): Chat
         }
       }
 
-      if (item.type === "agentMessage" && item.text?.trim()) {
-        messages.push({
-          id: item.id ?? crypto.randomUUID(),
-          role: "assistant",
-          content: item.text.trim(),
-          timestamp: toMillis(turn.completedAt ?? turn.startedAt),
-        });
+      if (item.type === "agentMessage" && typeof item.text === "string") {
+        const agentText = item.text ?? "";
+        const extractedPlan = extractTaggedPlanContent(agentText);
+        if (extractedPlan) {
+          latestTaggedPlanContent = extractedPlan;
+          latestTaggedPlanTimestamp = toMillis(turn.completedAt ?? turn.startedAt);
+        }
+        const visibleContent = stripTaggedPlanBlocks(agentText).trim();
+        if (visibleContent) {
+          messages.push({
+            id: item.id ?? crypto.randomUUID(),
+            role: "assistant",
+            content: visibleContent,
+            timestamp: toMillis(turn.completedAt ?? turn.startedAt),
+          });
+        }
       }
 
       if (item.type === "toolUse" && item.calls && item.calls.length > 0) {
@@ -614,25 +668,42 @@ function mapTurnsToMessages(turns: RawTurn[], activePlan: PlanFile | null): Chat
     }
   }
 
-  if (activePlan) {
+  const hydratedActivePlan = latestTaggedPlanContent
+    ? activePlan
+      ? {
+        ...activePlan,
+        content: latestTaggedPlanContent,
+      }
+      : {
+        path: TAGGED_PLAN_PATH,
+        content: latestTaggedPlanContent,
+        synthetic: true,
+      }
+    : activePlan;
+
+  if (hydratedActivePlan?.content.trim()) {
     const duplicated = messages.some(
       (message) =>
-        message.planFile?.path === activePlan.path
-        && message.planFile?.content === activePlan.content
-        && message.planFile?.revision === activePlan.revision,
+        message.planFile?.path === hydratedActivePlan.path
+        && message.planFile?.content === hydratedActivePlan.content
+        && message.planFile?.revision === hydratedActivePlan.revision,
     );
     if (!duplicated) {
       messages.push({
         id: `plan-${crypto.randomUUID()}`,
         role: "assistant",
         content: "",
-        timestamp: activePlan.updatedAt ? toMillis(activePlan.updatedAt) : Date.now(),
-        planFile: activePlan,
+        timestamp: latestTaggedPlanTimestamp
+          ?? (hydratedActivePlan.updatedAt ? toMillis(hydratedActivePlan.updatedAt) : Date.now()),
+        planFile: hydratedActivePlan,
       });
     }
   }
 
-  return messages;
+  return {
+    messages,
+    activePlan: hydratedActivePlan,
+  };
 }
 
 import { appStateSet, appStateDelete } from "../api/app_state";
@@ -2219,7 +2290,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       const rawThread = resp?.thread as RawThread | undefined;
       const turns = rawThread?.turns ?? [];
       const activePlan = normalizePlanFile(rawThread?.activePlan);
-      const messages = mapTurnsToMessages(turns as RawTurn[], activePlan);
+      const { messages, activePlan: hydratedActivePlan } = mapTurnsToMessages(
+        turns as RawTurn[],
+        activePlan,
+      );
 
       set({
         currentThreadId: threadId,
@@ -2227,8 +2301,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages,
         streamingText: "",
         isStreaming: false,
-        latestPlanContent: activePlan?.content ?? null,
-        activePlan,
+        latestPlanContent: hydratedActivePlan?.content ?? null,
+        activePlan: hydratedActivePlan,
         currentGoal: normalizeThreadGoal(rawThread?.goal),
         pendingMessageQueue: [],
         pendingFileReviews: {},

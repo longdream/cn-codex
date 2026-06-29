@@ -5,7 +5,52 @@ pub mod skill_gen;
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum StringLikeValue {
+    String(String),
+    Number(serde_json::Number),
+    Bool(bool),
+}
+
+impl StringLikeValue {
+    fn into_string(self) -> String {
+        match self {
+            Self::String(value) => value,
+            Self::Number(value) => value.to_string(),
+            Self::Bool(value) => value.to_string(),
+        }
+    }
+}
+
+fn deserialize_string_like<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = StringLikeValue::deserialize(deserializer)?;
+    Ok(value.into_string())
+}
+
+fn deserialize_option_string_like<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<StringLikeValue>::deserialize(deserializer)?;
+    Ok(value.map(StringLikeValue::into_string))
+}
+
+fn deserialize_vec_string_like<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<StringLikeValue>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .map(StringLikeValue::into_string)
+        .collect())
+}
 
 /// Root directory for workflow data: `codey/workflows/`.
 pub fn workflows_dir(workspace_config_dir: &Path) -> PathBuf {
@@ -18,7 +63,11 @@ pub struct WorkflowVariable {
     #[serde(rename = "type")]
     pub var_type: String,
     pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_option_string_like",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default: Option<String>,
 }
 
@@ -26,12 +75,13 @@ pub struct WorkflowVariable {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowNode {
+    #[serde(deserialize_with = "deserialize_string_like")]
     pub node_id: String,
     pub objective: String,
     pub tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args_hints: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec_string_like")]
     pub depends_on: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_output: Option<String>,
@@ -205,5 +255,76 @@ mod tests {
         let saved_dir = save_workflow(workspace_dir.path(), &loaded).expect("should save workflow");
         let saved = load_workflow(&saved_dir).expect("should reload saved workflow");
         assert!(!saved.created_at.trim().is_empty());
+    }
+
+    #[test]
+    fn workflow_deserialization_coerces_string_like_fields() {
+        let raw = r#"{
+  "name": "coercion-workflow",
+  "title": "类型容错测试",
+  "description": "验证 string-like 字段容错",
+  "variables": {
+    "timeoutSec": { "type": "string", "description": "超时时间（秒）", "default": 60 },
+    "dryRun": { "type": "string", "description": "是否为演练模式", "default": true }
+  },
+  "nodes": [
+    {
+      "nodeId": 1,
+      "objective": "执行命令",
+      "tools": ["shell"],
+      "dependsOn": [1, "step_0", true],
+      "tokenBudget": 1200
+    }
+  ],
+  "totalEstimatedTokens": 3000
+}"#;
+
+        let parsed: WorkflowDef =
+            serde_json::from_str(raw).expect("should parse with string-like coercion");
+        let timeout = parsed
+            .variables
+            .get("timeoutSec")
+            .and_then(|variable| variable.default.as_deref());
+        let dry_run = parsed
+            .variables
+            .get("dryRun")
+            .and_then(|variable| variable.default.as_deref());
+        assert_eq!(timeout, Some("60"));
+        assert_eq!(dry_run, Some("true"));
+
+        assert_eq!(parsed.nodes.len(), 1);
+        let node = &parsed.nodes[0];
+        assert_eq!(node.node_id, "1");
+        assert_eq!(
+            node.depends_on,
+            vec!["1".to_string(), "step_0".to_string(), "true".to_string()]
+        );
+        assert_eq!(node.token_budget, Some(1200));
+    }
+
+    #[test]
+    fn workflow_deserialization_keeps_numeric_budget_strict() {
+        let raw = r#"{
+  "name": "strict-budget",
+  "title": "数值字段严格校验",
+  "description": "tokenBudget 必须是数字",
+  "variables": {},
+  "nodes": [
+    {
+      "nodeId": "step_1",
+      "objective": "执行命令",
+      "tools": ["shell"],
+      "tokenBudget": "1500"
+    }
+  ]
+}"#;
+
+        let error =
+            serde_json::from_str::<WorkflowDef>(raw).expect_err("tokenBudget string should fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("invalid type") || message.contains("u32"),
+            "unexpected error message: {message}"
+        );
     }
 }

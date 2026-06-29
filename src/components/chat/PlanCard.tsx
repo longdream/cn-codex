@@ -39,6 +39,7 @@ export function PlanCard({ planFile, onExecute }: PlanCardProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
   const isStreaming = useAppStore((s) => s.isStreaming);
+  const canOpenFile = !planFile.synthetic;
 
   const fileName = planFile.path.split(/[\\/]/).pop() ?? planFile.path;
 
@@ -109,14 +110,16 @@ export function PlanCard({ planFile, onExecute }: PlanCardProps) {
               {copied ? <IconCheck size={13} stroke={1.8} /> : <IconCopy size={13} stroke={1.8} />}
               {intl.formatMessage({ id: copied ? "chat.copied" : "chat.plan.copy" })}
             </button>
-            <button
-              type="button"
-              onClick={handleOpenFile}
-              className="flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] px-3 py-1.5 text-[12px] font-medium text-[var(--chat-muted)] transition-colors hover:text-[var(--chat-prose)]"
-            >
-              <IconExternalLink size={13} stroke={1.8} />
-              {intl.formatMessage({ id: "chat.plan.openFile" })}
-            </button>
+            {canOpenFile && (
+              <button
+                type="button"
+                onClick={handleOpenFile}
+                className="flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] px-3 py-1.5 text-[12px] font-medium text-[var(--chat-muted)] transition-colors hover:text-[var(--chat-prose)]"
+              >
+                <IconExternalLink size={13} stroke={1.8} />
+                {intl.formatMessage({ id: "chat.plan.openFile" })}
+              </button>
+            )}
           </div>
         </>
       )}

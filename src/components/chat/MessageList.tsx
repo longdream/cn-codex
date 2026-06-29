@@ -137,6 +137,12 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
           </div>
         )}
 
+        {messages.length > 0 && !isStreaming && (
+          <div className="mt-1 flex justify-end">
+            <GenerateSkillButton />
+          </div>
+        )}
+
         <div ref={bottomRef} />
       </div>
     </div>
@@ -229,6 +235,27 @@ function CopyButton({ text }: { text: string }) {
         : intl.formatMessage({ id: "chat.copy" })}
     >
       {copied ? <IconCheck size={14} stroke={2} /> : <IconCopy size={14} stroke={2} />}
+    </button>
+  );
+}
+
+function GenerateSkillButton() {
+  const intl = useIntl();
+
+  return (
+    <button
+      type="button"
+      className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-chip)] px-3.5 py-1.5 text-[12px] font-medium text-[var(--chat-muted)] transition-colors hover:border-[var(--accent-border)] hover:text-[var(--accent)]"
+      onClick={() => {
+        const currentThreadId = useAppStore.getState().currentThreadId;
+        if (currentThreadId) {
+          useAppStore.getState().setWorkflowExtractThreadId(currentThreadId);
+        }
+      }}
+      title={intl.formatMessage({ id: "chat.runSummary.saveAsWorkflow" })}
+    >
+      <IconRoute size={14} stroke={1.8} />
+      {intl.formatMessage({ id: "chat.runSummary.saveAsWorkflow" })}
     </button>
   );
 }
@@ -418,28 +445,9 @@ function RunSummaryCard({
         )}
       </div>
 
-      {/* Save as Workflow button */}
-      <div className="mt-3 flex justify-end">
-        <button
-          type="button"
-          className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--chat-line)] px-3 py-1.5 text-[12px] text-[var(--chat-muted)] transition-colors hover:border-[var(--accent-border)] hover:text-[var(--accent)]"
-          onClick={() => {
-            const currentThreadId = useAppStore.getState().currentThreadId;
-            if (currentThreadId) {
-              useAppStore.getState().setWorkflowExtractThreadId(currentThreadId);
-            }
-          }}
-          title={intl.formatMessage({ id: "chat.runSummary.saveAsWorkflow" })}
-        >
-          <IconRoute size={14} stroke={1.8} />
-          {intl.formatMessage({ id: "chat.runSummary.saveAsWorkflow" })}
-        </button>
-      </div>
-
     </section>
   );
 }
-
 
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;

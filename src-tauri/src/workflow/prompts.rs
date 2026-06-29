@@ -19,6 +19,10 @@ const EXTRACTION_SYSTEM_PROMPT: &str = r#"你是一个 Workflow 提取专家。�
    - tokenBudget: 预估该节点消耗的 token 数
 8. totalEstimatedTokens: 整个 workflow 预估总 token 数
 9. createdAt: 可选，ISO 时间字符串；如未提供由系统自动回填
+10. 类型约束（必须严格遵守）：
+   - nodeId 和 dependsOn 数组元素必须是 JSON 字符串（例如 "step_1"），不能写成数字或布尔值
+   - variables 里的 default 必须是字符串（例如 "60"），不能写成 60 或 true
+   - tokenBudget 和 totalEstimatedTokens 必须是数字，不能加引号
 
 提取原则：
 - 只提取有意义的操作步骤，忽略纯聊天/确认/闲聊
@@ -36,7 +40,8 @@ JSON 格式示例：
   "createdAt": "2026-06-22T00:00:00Z",
   "triggerPhrases": ["创建 React 项目", "初始化前端项目", "新建 React 应用"],
   "variables": {
-    "projectName": { "type": "string", "description": "项目名称", "default": "my-app" }
+    "projectName": { "type": "string", "description": "项目名称", "default": "my-app" },
+    "timeoutSec": { "type": "string", "description": "命令超时时间（秒）", "default": "60" }
   },
   "nodes": [
     {
@@ -194,5 +199,45 @@ mod tests {
         let parsed = parse_extraction_output(raw).expect("should parse fenced json");
         assert_eq!(parsed.name, "workflow-b");
         assert_eq!(parsed.created_at, "");
+    }
+
+    #[test]
+    fn parse_extraction_output_coerces_string_like_fields() {
+        let raw = r#"{
+  "name": "workflow-coercion",
+  "title": "容错提取",
+  "description": "测试 integer/bool 到字符串字段的容错",
+  "variables": {
+    "timeoutSec": { "type": "string", "description": "超时秒数", "default": 60 },
+    "dryRun": { "type": "string", "description": "是否演练", "default": true }
+  },
+  "nodes": [
+    {
+      "nodeId": 1,
+      "objective": "执行脚本",
+      "tools": ["shell"],
+      "dependsOn": [1]
+    }
+  ],
+  "totalEstimatedTokens": 1200
+}"#;
+
+        let parsed = parse_extraction_output(raw).expect("should parse coercible workflow json");
+        assert_eq!(parsed.nodes[0].node_id, "1");
+        assert_eq!(parsed.nodes[0].depends_on, vec!["1".to_string()]);
+        assert_eq!(
+            parsed
+                .variables
+                .get("timeoutSec")
+                .and_then(|variable| variable.default.as_deref()),
+            Some("60")
+        );
+        assert_eq!(
+            parsed
+                .variables
+                .get("dryRun")
+                .and_then(|variable| variable.default.as_deref()),
+            Some("true")
+        );
     }
 }

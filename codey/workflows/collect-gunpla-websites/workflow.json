@@ -1,0 +1,100 @@
+{
+  "name": "collect-gunpla-websites",
+  "title": "收集高达相关网站大全",
+  "description": "通过百度搜索收集所有高达相关网站（官方、模型、论坛、视频等），并分类整理输出",
+  "triggerPhrases": [
+    "收集高达网站",
+    "高达网站大全",
+    "找高达相关网站",
+    "高达资源收集",
+    "高达网址汇总"
+  ],
+  "sourceThreadId": "39e24ecf-8e0e-448e-8ad9-117b3e9da208",
+  "createdAt": "2026-06-29T09:26:38.987242800+00:00",
+  "variables": {
+    "topic": {
+      "type": "string",
+      "description": "搜索主题关键词，如高达、Gundam",
+      "default": "高达"
+    }
+  },
+  "nodes": [
+    {
+      "nodeId": "step_1",
+      "objective": "在百度上搜索多个维度的相关页面并提取搜索结果内容",
+      "tools": [
+        "browser_run"
+      ],
+      "argsHints": {
+        "actions": [
+          {
+            "action": "goto",
+            "url": "https://www.baidu.com/s?wd={{topic}}+网站+推荐"
+          },
+          {
+            "action": "wait_for_timeout",
+            "timeout_ms": 5000
+          },
+          {
+            "action": "eval",
+            "script": "document.querySelector('#content_left') ? document.querySelector('#content_left').innerText : 'No results found'"
+          },
+          {
+            "action": "goto",
+            "url": "https://www.baidu.com/s?wd={{topic}}+论坛+社区"
+          },
+          {
+            "action": "wait_for_timeout",
+            "timeout_ms": 5000
+          },
+          {
+            "action": "eval",
+            "script": "document.querySelector('#content_left') ? document.querySelector('#content_left').innerText : 'No results found'"
+          },
+          {
+            "action": "goto",
+            "url": "https://www.baidu.com/s?wd={{topic}}+模型+购买+网站"
+          },
+          {
+            "action": "wait_for_timeout",
+            "timeout_ms": 5000
+          },
+          {
+            "action": "eval",
+            "script": "document.querySelector('#content_left') ? document.querySelector('#content_left').innerText : 'No results found'"
+          },
+          {
+            "action": "goto",
+            "url": "https://www.baidu.com/s?wd={{topic}}+视频+动画+资源+网站"
+          },
+          {
+            "action": "wait_for_timeout",
+            "timeout_ms": 5000
+          },
+          {
+            "action": "eval",
+            "script": "document.querySelector('#content_left') ? document.querySelector('#content_left').innerText : 'No results found'"
+          }
+        ],
+        "timeout_ms": "60000"
+      },
+      "dependsOn": [],
+      "expectedOutput": "多个搜索结果页面的文本内容，包含网站名称和链接信息",
+      "tokenBudget": 8000
+    },
+    {
+      "nodeId": "step_2",
+      "objective": "将上一步收集的搜索结果整理为分类清晰的高达网站大全列表",
+      "tools": [],
+      "argsHints": {
+        "input": "基于以下搜索结果，整理出完整的高达相关网站大全，按官方、模型购买、论坛社区、视频资源等分类输出，给出网站名称、说明和网址：\n{{step_1.output}}"
+      },
+      "dependsOn": [
+        "step_1"
+      ],
+      "expectedOutput": "分类整理的高达网站列表，包括官方、模型、论坛、视频等类别",
+      "tokenBudget": 2000
+    }
+  ],
+  "totalEstimatedTokens": 10000
+}
