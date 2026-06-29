@@ -322,6 +322,8 @@
   "chat.mode.goalActive": "目标模式已开启",
   "chat.plan.generated": "计划已生成",
   "chat.plan.execute": "执行计划",
+  "chat.plan.copy": "复制计划",
+  "chat.plan.copySteps": "复制步骤",
   "chat.plan.openFile": "打开文件",
   "chat.plan.executing": "正在执行计划...",
   "chat.plan.title": "实施计划",

@@ -51,6 +51,15 @@ interface ServerErrorEventPayload {
   maxAttempts?: number;
 }
 
+interface ThreadGoalUpdatedPayload {
+  threadId?: string;
+  goal?: ThreadGoal | null;
+}
+
+interface ThreadGoalClearedPayload {
+  threadId?: string;
+}
+
 interface SmartbrainExtractionStartedPayload {
   source?: string;
   total?: number;
@@ -470,6 +479,9 @@ export function useTauriEvents() {
           if (!store.isStreaming) {
             return;
           }
+          if (store.currentGoal?.status === "complete") {
+            return;
+          }
           const currentLen = store.streamingText.length;
           if (currentLen === 0) {
             store.setStreamingLabel(intl.formatMessage({ id: "streaming.generating" }));
@@ -580,11 +592,29 @@ export function useTauriEvents() {
             store.markRunningToolCallsInterrupted(
               "Turn completed before tool status settled.",
             );
-            store.clearStreamingText();
-            store.setStreaming(false);
-            store.setCurrentTurnId(null);
+            store.flushAndStopStreaming();
           },
         ),
+
+        listen<ThreadGoalUpdatedPayload>("thread-goal-updated", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
+          const goal = e.payload.goal ?? null;
+          store.setCurrentGoal(goal);
+          if (goal?.status === "complete") {
+            store.flushAndStopStreaming({ commitStreamingText: true });
+          }
+        }),
+
+        listen<ThreadGoalClearedPayload>("thread-goal-cleared", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
+          store.setCurrentGoal(null);
+        }),
 
         listen<{
           threadId: string;
@@ -883,9 +913,7 @@ export function useTauriEvents() {
               reasoningByThread.delete(e.payload.threadId);
             }
             store.markRunningToolCallsInterrupted(msg);
-            store.clearStreamingText();
-            store.setStreaming(false);
-            store.setCurrentTurnId(null);
+            store.flushAndStopStreaming();
             store.addMessage({
               id: crypto.randomUUID(),
               role: "system",
@@ -988,31 +1016,81 @@ export function useTauriEvents() {
           ]).catch((err) => console.error("Failed to persist active_endpoint_index:", err));
         }),
 
-        listen<{ threadId: string; path: string; content: string }>(
+        listen<{
+          threadId: string;
+          path: string;
+          content: string;
+          updated?: boolean;
+          revision?: number | null;
+        }>(
           "plan-generated",
           (e) => {
             const store = useAppStore.getState();
             if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
               return;
             }
-            const duplicated = store.messages.some(
-              (message) =>
-                message.planFile?.path === e.payload.path &&
-                message.planFile?.content === e.payload.content,
-            );
-            if (duplicated) {
-              return;
-            }
-            store.setLatestPlanContent(e.payload.content);
-            store.addMessage({
-              id: `plan-${crypto.randomUUID()}`,
-              role: "assistant",
-              content: "",
-              timestamp: Date.now(),
-              planFile: {
-                path: e.payload.path,
-                content: e.payload.content,
-              },
+            const revision = Number(e.payload.revision ?? 0);
+            const nextPlan = {
+              path: e.payload.path,
+              content: e.payload.content,
+              ...(Number.isFinite(revision) && revision > 0
+                ? { revision: Math.floor(revision) }
+                : {}),
+              updatedAt: Date.now(),
+            };
+            useAppStore.setState((state) => {
+              const activePath = state.activePlan?.path;
+              const targetPath =
+                e.payload.updated && activePath
+                  ? activePath
+                  : nextPlan.path;
+              const duplicated = state.messages.some(
+                (message) =>
+                  message.planFile?.path === nextPlan.path &&
+                  message.planFile?.content === nextPlan.content &&
+                  (message.planFile?.revision ?? 0) === (nextPlan.revision ?? 0),
+              );
+              if (!e.payload.updated && duplicated) {
+                return {
+                  latestPlanContent: nextPlan.content,
+                  activePlan: nextPlan,
+                };
+              }
+
+              let replaced = false;
+              const nextMessages = state.messages.map((message) => {
+                const planPath = message.planFile?.path;
+                if (!planPath) {
+                  return message;
+                }
+                const shouldReplace =
+                  planPath === targetPath ||
+                  planPath === nextPlan.path;
+                if (!shouldReplace) {
+                  return message;
+                }
+                replaced = true;
+                return {
+                  ...message,
+                  timestamp: Date.now(),
+                  planFile: nextPlan,
+                };
+              });
+              if (!replaced) {
+                nextMessages.push({
+                  id: `plan-${crypto.randomUUID()}`,
+                  role: "assistant",
+                  content: "",
+                  timestamp: Date.now(),
+                  planFile: nextPlan,
+                });
+              }
+
+              return {
+                messages: nextMessages,
+                latestPlanContent: nextPlan.content,
+                activePlan: nextPlan,
+              };
             });
           },
         ),

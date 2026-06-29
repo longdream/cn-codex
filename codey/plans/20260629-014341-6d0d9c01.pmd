@@ -1,0 +1,112 @@
+# ISS.IPSA.OutputInvoice.Api Swagger 接口测试与报告生成计划
+
+## 项目概述
+
+这是一个基于 **.NET 8** 的 **ASP.NET Core Web API** 项目，提供发票管理（OutputInvoice）相关业务接口，包括：发票上传/下载、开票申请、批量开票、制单规则管理、税收分类编码维护、FP/TM 发票管理等模块。项目依赖 SQL Server、MySQL、Redis、RabbitMQ、OBS 等外部基础设施。
+
+## 克隆状态
+
+✅ 仓库已成功克隆至：`E:\work\RustWorks\psatest1\ISS.IPSA.OutputInvoice.Api`
+
+## 实现步骤
+
+### Step 1: 项目结构分析与接口清单整理
+**目标**：基于现有代码静态分析，整理所有 API 端点的完整清单（路由、方法、参数、响应）。
+
+**需要整理的 API 分组（共 13 个控制器，约 60+ 端点）**：
+
+| 控制器 | 路由前缀 | 端点数量 | 说明 |
+|---------|---------|---------|------|
+| ObsController | `/api/Obs` | 3 | OBS上传/下载授权 |
+| MenuRoleController | `/api/MenuRole` | 若干 | 菜单权限管理 |
+| BatchApplyController | `/api/BatchApply` | ~25 | 批量开票申请（核心业务） |
+| ApplyController | `/api/Apply` | 5 | 申请单发票关联服务 |
+| FPInvoiceController | `/api/FPInvoice` | 4 | FP发票管理 |
+| TMInvoiceController | `/api/TMInvoice` | 4 | TM发票管理 |
+| ConfigController | `/api/Config` | 4 | 字典/部门/组织配置 |
+| InvoiceAccountController | `/api/InvoiceAccount` | 2 | 发票台账 |
+| InvoiceDownloadController | `/api/InvoiceDownload` | 3 | 发票下载 |
+| InvoiceUploadController | `/api/InvoiceUpload` | 8 | 发票上传/验真/保存 |
+| SingleRuleController | `/api/SingleRule` | ~12 | 制单规则管理 |
+| TaxCodeController | `/api/TaxCode` | 8 | 税收分类编码 |
+
+### Step 2: 尝试构建并启动项目
+**目标**：尝试编译项目生成 Swagger JSON
+
+- **2a**：尝试 `dotnet restore` + `dotnet build`
+- **2b**：如构建成功，尝试 `dotnet run` 启动 API 服务
+- **2c**：访问 Swagger UI（`http://localhost:5000/swagger`），获取 swagger.json
+- **2d**：如因缺少数据库/Redis/RabbitMQ 等依赖无法启动，则进入 Step 3
+
+### Step 3: 静态代码分析与测试用例设计
+**目标**：无论项目是否能启动，都基于源码生成完整的测试用例
+
+- 对每个 Controller，提取：
+  - 路由、HTTP 方法
+  - 请求参数结构（DTO 字段定义）
+  - 响应数据结构
+  - 认证授权要求（`[NoAuth]` / `[MenuRole]` / `[Logger]`）
+  - 特殊逻辑（签名校验 `CheckSignature`、路由锁 `[RouteLock]`）
+- 编写针对每个端点的**业务功能测试用例**
+
+### Step 4: API 接口测试执行
+**目标**：对可测试的接口执行实际测试
+
+- **4a**：如果项目能启动，使用 Swagger UI 进行交互式端到端测试
+- **4b**：使用 `browser_run` 技能访问 Swagger UI，逐一测试端点
+- **4c**：记录每个端点的测试结果（通过/失败/无法测试）
+- **4d**：对于需要外部依赖（DB/Redis）的接口，标记为"环境依赖，需部署后验证"
+
+### Step 5: 生成测试报告
+**目标**：生成完整的 HTML/Markdown 测试报告
+
+- **报告包含**：
+  - 项目概述与架构图
+  - API 接口完整清单（含路由、方法、描述）
+  - 每个接口的测试结果（通过/失败/阻塞原因）
+  - 测试覆盖矩阵
+  - 发现的代码问题/风险（如硬编码密码、签名算法校验等）
+  - 测试结论与建议
+  - 部署测试环境所需的依赖清单
+
+## 关键技术评审发现（基于代码分析）
+
+### 安全关注点
+1. 配置文件 `appsettings.Development.json` 中暴露多个数据库连接密码、Redis 密码、OBS SecretKey
+2. 发票上传签名算法使用 MD5 + Base64，盐值硬编码在配置中
+3. 部分接口使用 `[NoAuth]` 跳过认证（Entity, Test, BaseOpenApi, ScheduleTask, CheckSign）
+
+### 架构关注点
+1. 所有业务接口（除 OBS 外）均使用 POST 方法
+2. 项目强依赖外部基础设施：SQL Server、MySQL、Redis、RabbitMQ、Jaeger、OBS、华为云 OCR、合合 OCR、钉钉 WebHook
+3. 使用 SqlSugar ORM 和 Repository 模式
+
+## 依赖清单（测试环境所需）
+
+| 依赖 | 用途 | 是否必须 |
+|------|------|---------|
+| SQL Server (PSAData) | 主业务数据库 | ✅ 必需 |
+| MySQL (output_invoice) | 发票数据库 | ✅ 必需 |
+| Redis | 缓存 | ✅ 必需 |
+| RabbitMQ | 消息队列 | ✅ 必需 |
+| Jaeger | 分布式追踪 | ⚠️ 可选（可禁用） |
+| OBS | 文件存储 | ⚠️ 需 Mock |
+| PSA 认证服务 | 用户认证 | ⚠️ 需 Mock |
+
+## 交付物
+
+| 文件 | 说明 |
+|------|------|
+| `test-report.md` | 详细测试报告（Markdown） |
+| `test-cases.json` | 结构化的测试用例清单 |
+| `test-summary.md` | 一页纸测试总结摘要 |
+
+## 风险评估
+
+1. **项目无法在无外部依赖的环境下启动** — 解决方案：基于静态代码分析进行测试设计，标注"需部署测试"
+2. **接口强依赖认证 Token** — 需通过 PSA 认证服务获取 Token 或 Mock
+3. **部分控制器使用了签名校验** — 需理解签名算法才能测试
+4. **配置文件中有内网 IP 地址** — 表明这是内部系统，外网无法直接访问
+5. **一个 .csproj 引用了不存在的路径（如 Removed 的目录）** — 构建可能报错
+
+</proposed_plan>

@@ -357,8 +357,9 @@ export function ChatPage() {
   const handleExecutePlan = useCallback(
     (planContent: string) => {
       useAppStore.getState().setChatMode("goal");
+      const activePlanContent = useAppStore.getState().activePlan?.content;
       const prefix = "请根据以下计划执行实施：\n\n";
-      handleSend(`${prefix}${planContent}`, "goal");
+      handleSend(`${prefix}${activePlanContent ?? planContent}`, "goal");
     },
     [handleSend],
   );

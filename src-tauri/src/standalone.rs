@@ -4,14 +4,14 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::adapter;
 use crate::adapter::types::{InternalMessage, StreamEvent, text_content};
 use crate::agent::UserAttachment;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
-use crate::thread_store::ThreadGoalStatus;
+use crate::thread_store::{ThreadGoal, ThreadGoalStatus};
 
 pub struct StandaloneState {
     pub active: RwLock<bool>,
@@ -218,6 +218,27 @@ fn emit_fortune_detail_event(app_handle: &AppHandle, event_name: &str, payload: 
         tracing::warn!("[fortune_detail_stream] failed to emit {event_name}: {err}");
     }
     crate::mobile_server::broadcast(event_name, payload);
+}
+
+fn emit_goal_updated_event(app_handle: &AppHandle, thread_id: &str, goal: &ThreadGoal) {
+    let payload = serde_json::json!({
+        "threadId": thread_id,
+        "goal": goal,
+    });
+    if let Err(err) = app_handle.emit("thread-goal-updated", payload.clone()) {
+        warn!("failed to emit thread-goal-updated: {err}");
+    }
+    crate::mobile_server::broadcast("thread-goal-updated", payload);
+}
+
+fn emit_goal_cleared_event(app_handle: &AppHandle, thread_id: &str) {
+    let payload = serde_json::json!({
+        "threadId": thread_id,
+    });
+    if let Err(err) = app_handle.emit("thread-goal-cleared", payload.clone()) {
+        warn!("failed to emit thread-goal-cleared: {err}");
+    }
+    crate::mobile_server::broadcast("thread-goal-cleared", payload);
 }
 
 fn extract_non_streaming_fortune_text(raw_body: &str) -> AppResult<String> {
@@ -697,6 +718,8 @@ pub async fn standalone_thread_read(
         .get_thread(&thread_id)
         .await
         .ok_or_else(|| AppError::Custom(format!("Thread not found: {thread_id}")))?;
+    let workspace_cwd = state.cwd.read().await.clone();
+    let workspace_root = std::path::PathBuf::from(workspace_cwd);
     *state.current_thread_id.write().await = Some(thread_id.clone());
     crate::mobile_server::broadcast(
         "active-thread-changed",
@@ -764,12 +787,28 @@ pub async fn standalone_thread_read(
             })
         })
         .collect();
+    let active_plan_payload = thread.active_plan.as_ref().map(|plan| {
+        let candidate = std::path::PathBuf::from(&plan.path);
+        let resolved_path = if candidate.is_absolute() {
+            candidate
+        } else {
+            workspace_root.join(candidate)
+        };
+        let content = std::fs::read_to_string(&resolved_path).unwrap_or_default();
+        serde_json::json!({
+            "path": resolved_path.to_string_lossy(),
+            "content": content,
+            "revision": plan.revision,
+            "updatedAt": plan.updated_at,
+        })
+    });
 
     Ok(serde_json::json!({
         "thread": {
             "id": thread.id,
             "name": thread.name,
             "goal": thread.goal,
+            "activePlan": active_plan_payload,
             "turns": turns,
         }
     }))
@@ -777,6 +816,7 @@ pub async fn standalone_thread_read(
 
 #[tauri::command]
 pub async fn standalone_thread_goal_set(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     thread_id: String,
     objective: String,
@@ -788,12 +828,14 @@ pub async fn standalone_thread_goal_set(
         .thread_store
         .set_thread_goal(&thread_id, objective, status, goal_budget_tokens)
         .await?;
+    emit_goal_updated_event(&app_handle, &thread_id, &goal);
 
     Ok(serde_json::json!({ "goal": goal }))
 }
 
 #[tauri::command]
 pub async fn standalone_thread_goal_status(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     thread_id: String,
     status: String,
@@ -804,12 +846,14 @@ pub async fn standalone_thread_goal_status(
         .thread_store
         .set_thread_goal_status(&thread_id, status)
         .await?;
+    emit_goal_updated_event(&app_handle, &thread_id, &goal);
 
     Ok(serde_json::json!({ "goal": goal }))
 }
 
 #[tauri::command]
 pub async fn standalone_thread_goal_edit(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     thread_id: String,
     objective: String,
@@ -819,16 +863,19 @@ pub async fn standalone_thread_goal_edit(
         .thread_store
         .edit_thread_goal(&thread_id, objective, goal_budget_tokens)
         .await?;
+    emit_goal_updated_event(&app_handle, &thread_id, &goal);
 
     Ok(serde_json::json!({ "goal": goal }))
 }
 
 #[tauri::command]
 pub async fn standalone_thread_goal_clear(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     thread_id: String,
 ) -> AppResult<serde_json::Value> {
     state.thread_store.clear_thread_goal(&thread_id).await?;
+    emit_goal_cleared_event(&app_handle, &thread_id);
     Ok(serde_json::json!({ "goal": serde_json::Value::Null }))
 }
 
@@ -872,10 +919,13 @@ pub async fn standalone_chat(
         // Goal 模式下出错时将 goal 回退为 paused，避免前端状态卡死
         if is_goal_mode {
             info!("standalone_chat error in goal mode, reverting goal to paused: {err}");
-            let _ = state
+            if let Ok(goal) = state
                 .thread_store
                 .set_thread_goal_status(&thread_id, ThreadGoalStatus::Paused)
-                .await;
+                .await
+            {
+                emit_goal_updated_event(&app_handle, &thread_id, &goal);
+            }
         }
     }
 

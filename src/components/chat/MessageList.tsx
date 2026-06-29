@@ -1225,6 +1225,14 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
       : undefined;
   const patchProgress = item.patchProgress ?? [];
   const [outputCopied, setOutputCopied] = useState(false);
+  const [planCopied, setPlanCopied] = useState(false);
+  const planStepLines = planItems
+    .map((planItem) => {
+      const status = String(planItem.status ?? "pending").trim() || "pending";
+      const step = String(planItem.step ?? "").trim();
+      return step ? `- [${status}] ${step}` : null;
+    })
+    .filter((line): line is string => Boolean(line));
 
   const handleCopyOutput = useCallback(() => {
     if (!item.output) return;
@@ -1233,6 +1241,13 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
       setTimeout(() => setOutputCopied(false), 2000);
     });
   }, [item.output]);
+  const handleCopyPlanSteps = useCallback(() => {
+    if (planStepLines.length === 0) return;
+    navigator.clipboard.writeText(planStepLines.join("\n")).then(() => {
+      setPlanCopied(true);
+      setTimeout(() => setPlanCopied(false), 2000);
+    });
+  }, [planStepLines]);
 
   const imageSrc = item.name === "view_image" && path
     ? localImagePreviewSrc(path, workspaceCwd)
@@ -1349,13 +1364,25 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
           {typeof args.explanation === "string" && args.explanation.trim() && (
             <p className="text-xs text-[var(--chat-muted)]">{args.explanation.trim()}</p>
           )}
-          <div className="space-y-1">
+          {planStepLines.length > 0 && (
+            <div className="flex justify-end">
+              <button
+                onClick={handleCopyPlanSteps}
+                className="chat-copy-button flex items-center gap-1 rounded-[var(--radius-sm)] px-2 py-1 text-[11px] transition-[color,background] hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+                title={intl.formatMessage({ id: planCopied ? "chat.copied" : "chat.plan.copySteps" })}
+              >
+                {planCopied ? <IconCheck size={12} stroke={2} /> : <IconCopy size={12} stroke={2} />}
+                {intl.formatMessage({ id: planCopied ? "chat.copied" : "chat.plan.copySteps" })}
+              </button>
+            </div>
+          )}
+          <div className="space-y-1 select-text">
             {planItems.map((planItem, index) => (
-              <div key={`${index}:${String(planItem.step ?? "")}`} className="flex items-center gap-2">
+              <div key={`${index}:${String(planItem.step ?? "")}`} className="flex items-start gap-2">
                 <span className="rounded-[var(--radius-sm)] bg-[var(--chat-chip)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--chat-muted)]">
                   {String(planItem.status ?? "pending")}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[var(--chat-prose)]">
+                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[var(--chat-prose)]">
                   {String(planItem.step ?? "")}
                 </span>
               </div>

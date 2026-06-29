@@ -543,6 +543,12 @@ textarea:focus {
   -webkit-user-select: text;
 }
 
+.prose-plan,
+.prose-plan * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .chat-prose p {
   margin: 0.5rem 0;
 }

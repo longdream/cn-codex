@@ -33,6 +33,7 @@ interface MobileState {
   appendStreamingText: (delta: string) => void;
   clearStreamingText: () => void;
   setStreaming: (v: boolean) => void;
+  flushAndStopStreaming: () => void;
   setConnected: (v: boolean) => void;
   addMessage: (msg: MobileMessage) => void;
 }
@@ -56,6 +57,30 @@ export const useMobileStore = create<MobileState>((set) => ({
     set((s) => ({ streamingText: s.streamingText + delta })),
   clearStreamingText: () => set({ streamingText: "" }),
   setStreaming: (v) => set({ isStreaming: v }),
+  flushAndStopStreaming: () =>
+    set((state) => {
+      const text = state.streamingText;
+      if (!state.isStreaming && text.length === 0) {
+        return {};
+      }
+      return {
+        ...(text
+          ? {
+            messages: [
+              ...state.messages,
+              {
+                id: crypto.randomUUID(),
+                role: "assistant" as const,
+                content: text,
+                timestamp: Date.now(),
+              },
+            ],
+          }
+          : {}),
+        streamingText: "",
+        isStreaming: false,
+      };
+    }),
   setConnected: (v) => set({ connected: v }),
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
 }));

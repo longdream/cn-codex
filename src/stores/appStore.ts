@@ -29,6 +29,10 @@ export interface ChatSendOptions {
   goalBudgetTokens?: number;
 }
 
+interface StreamingConvergeOptions {
+  commitStreamingText?: boolean;
+}
+
 export interface FileChange {
   path: string;
   action: string;
@@ -105,6 +109,8 @@ export interface ToolCallItem {
 export interface PlanFile {
   path: string;
   content: string;
+  revision?: number;
+  updatedAt?: number;
 }
 
 export interface ChatMessage {
@@ -211,6 +217,12 @@ interface RawThread {
   id: string;
   name?: string;
   goal?: ApiThreadGoal | null;
+  activePlan?: {
+    path?: string;
+    content?: string;
+    revision?: number | null;
+    updatedAt?: number | null;
+  } | null;
   turns?: RawTurn[];
 }
 
@@ -499,7 +511,35 @@ function normalizeThreadGoal(goal?: ApiThreadGoal | null): ThreadGoal | null {
   };
 }
 
-function mapTurnsToMessages(turns: RawTurn[]): ChatMessage[] {
+function normalizePlanFile(
+  plan?: {
+    path?: string;
+    content?: string;
+    revision?: number | null;
+    updatedAt?: number | null;
+  } | null,
+): PlanFile | null {
+  const path = typeof plan?.path === "string" ? plan.path.trim() : "";
+  if (!path) {
+    return null;
+  }
+  const content = typeof plan?.content === "string" ? plan.content : "";
+  const revision = Number(plan?.revision ?? 0);
+  const updatedAt = Number(plan?.updatedAt ?? 0);
+
+  return {
+    path,
+    content,
+    ...(Number.isFinite(revision) && revision > 0
+      ? { revision: Math.floor(revision) }
+      : {}),
+    ...(Number.isFinite(updatedAt) && updatedAt > 0
+      ? { updatedAt }
+      : {}),
+  };
+}
+
+function mapTurnsToMessages(turns: RawTurn[], activePlan: PlanFile | null): ChatMessage[] {
   const messages: ChatMessage[] = [];
   const toolResultMap = new Map<string, string>();
 
@@ -571,6 +611,24 @@ function mapTurnsToMessages(turns: RawTurn[]): ChatMessage[] {
     const summary = normalizeRunSummary(turn);
     if (summary) {
       messages.push(createRunSummaryMessage(summary));
+    }
+  }
+
+  if (activePlan) {
+    const duplicated = messages.some(
+      (message) =>
+        message.planFile?.path === activePlan.path
+        && message.planFile?.content === activePlan.content
+        && message.planFile?.revision === activePlan.revision,
+    );
+    if (!duplicated) {
+      messages.push({
+        id: `plan-${crypto.randomUUID()}`,
+        role: "assistant",
+        content: "",
+        timestamp: activePlan.updatedAt ? toMillis(activePlan.updatedAt) : Date.now(),
+        planFile: activePlan,
+      });
     }
   }
 
@@ -1091,6 +1149,7 @@ interface AppState {
   isStreaming: boolean;
   chatMode: ChatMode;
   latestPlanContent: string | null;
+  activePlan: PlanFile | null;
   currentGoal: ThreadGoal | null;
   showSettings: boolean;
   rightPanelVisible: boolean;
@@ -1198,9 +1257,11 @@ interface AppState {
   appendStreamingText: (delta: string) => void;
   clearStreamingText: () => void;
   setStreaming: (v: boolean) => void;
+  flushAndStopStreaming: (options?: StreamingConvergeOptions) => void;
   setStreamingLabel: (label: string) => void;
   setChatMode: (mode: ChatMode) => void;
   setLatestPlanContent: (content: string | null) => void;
+  setActivePlan: (plan: PlanFile | null) => void;
   setCurrentGoal: (goal: ThreadGoal | null) => void;
   setShowSettings: (v: boolean) => void;
   setRightPanelVisible: (v: boolean) => void;
@@ -1263,6 +1324,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isStreaming: false,
   chatMode: "chat",
   latestPlanContent: null,
+  activePlan: null,
   currentGoal: null,
   showSettings: false,
   autoApprove: false,
@@ -1294,6 +1356,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       streamingText: "",
       streamingLabel: "",
       currentGoal: null,
+      latestPlanContent: null,
+      activePlan: null,
       selectedRobotId: null,
       robotCreateMode: false,
       pendingComposerInsert: null,
@@ -1309,6 +1373,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       streamingLabel: "",
       isStreaming: false,
       currentGoal: null,
+      latestPlanContent: null,
+      activePlan: null,
       pendingComposerInsert: null,
       pendingMessageQueue: [],
       pendingFileReviews: {},
@@ -1393,6 +1459,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentThreadId: null,
       messages: [],
       streamingText: "",
+      latestPlanContent: null,
+      activePlan: null,
       currentGoal: null,
     });
     return id;
@@ -1411,6 +1479,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       isStreaming: false,
       currentTurnId: null,
       currentGoal: null,
+      latestPlanContent: null,
+      activePlan: null,
       pendingMessageQueue: [],
     });
   },
@@ -1428,6 +1498,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentTurnId: null,
       currentGoal: null,
       latestPlanContent: null,
+      activePlan: null,
       pendingMessageQueue: [],
     });
   },
@@ -1462,6 +1533,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             messages: [],
             streamingText: "",
             currentGoal: null,
+            latestPlanContent: null,
+            activePlan: null,
           }
         : {}),
     });
@@ -1760,6 +1833,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           messages: [],
           streamingText: "",
           currentTurnId: null,
+          latestPlanContent: null,
+          activePlan: null,
           pendingFileReviews: {},
         }
         : {}),
@@ -1960,9 +2035,44 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ streamingText: s.streamingText + delta })),
   clearStreamingText: () => set({ streamingText: "", streamingLabel: "" }),
   setStreaming: (v) => set(v ? { isStreaming: true } : { isStreaming: false, streamingLabel: "" }),
+  flushAndStopStreaming: (options) =>
+    set((state) => {
+      const commitStreamingText = options?.commitStreamingText === true;
+      const text = state.streamingText;
+      const shouldCommit = commitStreamingText && text.length > 0;
+      if (
+        !shouldCommit &&
+        !state.isStreaming &&
+        text.length === 0 &&
+        state.streamingLabel.length === 0 &&
+        !state.currentTurnId
+      ) {
+        return {};
+      }
+      return {
+        ...(shouldCommit
+          ? {
+            messages: [
+              ...state.messages,
+              {
+                id: crypto.randomUUID(),
+                role: "assistant" as const,
+                content: text,
+                timestamp: Date.now(),
+              },
+            ],
+          }
+          : {}),
+        streamingText: "",
+        streamingLabel: "",
+        isStreaming: false,
+        currentTurnId: null,
+      };
+    }),
   setStreamingLabel: (label) => set({ streamingLabel: label }),
   setChatMode: (mode) => set({ chatMode: mode }),
   setLatestPlanContent: (content) => set({ latestPlanContent: content }),
+  setActivePlan: (plan) => set({ activePlan: plan }),
   setCurrentGoal: (goal) => set({ currentGoal: normalizeThreadGoal(goal) }),
   setShowSettings: (v) =>
     set((state) =>
@@ -2046,6 +2156,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           currentTurnId: null,
           currentGoal: null,
           latestPlanContent: null,
+          activePlan: null,
           pendingMessageQueue: [],
           pendingFileReviews: {},
         });
@@ -2107,7 +2218,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const resp = await standaloneThreadRead(threadId);
       const rawThread = resp?.thread as RawThread | undefined;
       const turns = rawThread?.turns ?? [];
-      const messages = mapTurnsToMessages(turns as RawTurn[]);
+      const activePlan = normalizePlanFile(rawThread?.activePlan);
+      const messages = mapTurnsToMessages(turns as RawTurn[], activePlan);
 
       set({
         currentThreadId: threadId,
@@ -2115,6 +2227,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages,
         streamingText: "",
         isStreaming: false,
+        latestPlanContent: activePlan?.content ?? null,
+        activePlan,
         currentGoal: normalizeThreadGoal(rawThread?.goal),
         pendingMessageQueue: [],
         pendingFileReviews: {},
@@ -2144,6 +2258,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamingText: "",
         isStreaming: false,
         currentGoal: null,
+        latestPlanContent: null,
+        activePlan: null,
         pendingMessageQueue: [],
         pendingFileReviews: {},
       });

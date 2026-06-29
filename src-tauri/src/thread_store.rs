@@ -80,6 +80,17 @@ pub struct ThreadRobotState {
     pub runtime_nodes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadActivePlan {
+    /// 当前线程关联的活动计划文件路径。
+    pub path: String,
+    /// 计划修订版本号（从 1 开始，后续每次更新递增）。
+    pub revision: u64,
+    /// 最近一次更新活动计划的时间戳（秒）。
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadMessage {
     pub id: String,
@@ -123,6 +134,8 @@ pub struct StoredThread {
     pub model: Option<String>,
     #[serde(default)]
     pub goal: Option<ThreadGoal>,
+    #[serde(default)]
+    pub active_plan: Option<ThreadActivePlan>,
     #[serde(default)]
     pub robot_state: Option<ThreadRobotState>,
     pub turns: Vec<StoredTurn>,
@@ -188,6 +201,12 @@ enum RolloutLine {
         goal: ThreadGoal,
     },
     ThreadGoalClear {
+        updated_at: i64,
+    },
+    ThreadPlanSet {
+        plan: ThreadActivePlan,
+    },
+    ThreadPlanClear {
         updated_at: i64,
     },
     ThreadRobotStateSet {
@@ -322,6 +341,7 @@ impl ThreadStore {
                         updated_at: created_at,
                         model,
                         goal: None,
+                        active_plan: None,
                         robot_state: None,
                         turns: Vec::new(),
                     });
@@ -390,6 +410,18 @@ impl ThreadStore {
                         t.goal = None;
                     }
                 }
+                RolloutLine::ThreadPlanSet { plan } => {
+                    if let Some(ref mut t) = thread {
+                        t.updated_at = plan.updated_at;
+                        t.active_plan = Some(plan);
+                    }
+                }
+                RolloutLine::ThreadPlanClear { updated_at } => {
+                    if let Some(ref mut t) = thread {
+                        t.updated_at = updated_at;
+                        t.active_plan = None;
+                    }
+                }
                 RolloutLine::ThreadRobotStateSet {
                     robot_state,
                     updated_at,
@@ -451,6 +483,16 @@ impl ThreadStore {
             writeln!(file, "{json}").map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
         }
 
+        // 在重写文件时同步持久化活动计划信息，保证线程重载后仍能恢复计划卡片。
+        if let Some(active_plan) = &thread.active_plan {
+            let line = RolloutLine::ThreadPlanSet {
+                plan: active_plan.clone(),
+            };
+            let json = serde_json::to_string(&line)
+                .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
+            writeln!(file, "{json}").map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+        }
+
         for turn in &thread.turns {
             let ts = RolloutLine::TurnStart {
                 turn_id: turn.turn_id.clone(),
@@ -502,6 +544,7 @@ impl ThreadStore {
             updated_at: now,
             model,
             goal: None,
+            active_plan: None,
             robot_state: None,
             turns: Vec::new(),
         };
@@ -762,6 +805,65 @@ impl ThreadStore {
             thread.updated_at = now;
         }
         Ok(())
+    }
+
+    pub async fn set_thread_active_plan(
+        &self,
+        thread_id: &str,
+        path: String,
+        revision: u64,
+    ) -> AppResult<ThreadActivePlan> {
+        self.ensure_loaded().await;
+        if path.trim().is_empty() {
+            return Err(AppError::Custom("Active plan path cannot be empty".to_string()));
+        }
+        if !self.threads.read().await.contains_key(thread_id) {
+            return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
+        }
+
+        let now = now_secs();
+        let plan = ThreadActivePlan {
+            path,
+            revision: revision.max(1),
+            updated_at: now,
+        };
+        self.append_line(
+            thread_id,
+            &RolloutLine::ThreadPlanSet { plan: plan.clone() },
+        )?;
+
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.active_plan = Some(plan.clone());
+            thread.updated_at = now;
+        }
+        Ok(plan)
+    }
+
+    pub async fn clear_thread_active_plan(&self, thread_id: &str) -> AppResult<()> {
+        self.ensure_loaded().await;
+        if !self.threads.read().await.contains_key(thread_id) {
+            return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
+        }
+
+        let now = now_secs();
+        self.append_line(thread_id, &RolloutLine::ThreadPlanClear { updated_at: now })?;
+
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(thread_id) {
+            thread.active_plan = None;
+            thread.updated_at = now;
+        }
+        Ok(())
+    }
+
+    pub async fn get_thread_active_plan(&self, thread_id: &str) -> Option<ThreadActivePlan> {
+        self.ensure_loaded().await;
+        self.threads
+            .read()
+            .await
+            .get(thread_id)
+            .and_then(|thread| thread.active_plan.clone())
     }
 
     pub async fn get_thread_robot_state(&self, thread_id: &str) -> Option<ThreadRobotState> {
@@ -1245,6 +1347,47 @@ mod tests {
         assert!(cleared.goal.is_none());
         assert!(cleared.robot_state.is_none());
         drop(runtime);
+
+        let _ = std::fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn thread_active_plan_persists_latest_revision() {
+        let workspace_dir =
+            std::env::temp_dir().join(format!("cn-codex-active-plan-{}", uuid::Uuid::new_v4()));
+        let store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let thread_id = runtime.block_on(async {
+            let thread = store.create_thread(None).await.unwrap();
+            let first = store
+                .set_thread_active_plan(&thread.id, "codey/plans/first.pmd".to_string(), 1)
+                .await
+                .unwrap();
+            assert_eq!(first.revision, 1);
+            assert_eq!(first.path, "codey/plans/first.pmd");
+
+            let second = store
+                .set_thread_active_plan(&thread.id, "codey/plans/first.pmd".to_string(), 2)
+                .await
+                .unwrap();
+            assert_eq!(second.revision, 2);
+
+            let loaded = store.get_thread(&thread.id).await.unwrap();
+            let active = loaded.active_plan.expect("active plan should exist");
+            assert_eq!(active.path, "codey/plans/first.pmd");
+            assert_eq!(active.revision, 2);
+            thread.id
+        });
+        drop(runtime);
+
+        let reloaded_store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let reloaded = runtime
+            .block_on(async { reloaded_store.get_thread(&thread_id).await })
+            .unwrap();
+        let active = reloaded.active_plan.expect("active plan should persist");
+        assert_eq!(active.path, "codey/plans/first.pmd");
+        assert_eq!(active.revision, 2);
 
         let _ = std::fs::remove_dir_all(workspace_dir);
     }

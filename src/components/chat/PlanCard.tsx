@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useIntl } from "react-intl";
 import {
+  IconCheck,
+  IconCopy,
   IconClipboardList,
   IconExternalLink,
   IconPlayerPlay,
@@ -35,6 +37,7 @@ const markdownComponents: Components = {
 export function PlanCard({ planFile, onExecute }: PlanCardProps) {
   const intl = useIntl();
   const [collapsed, setCollapsed] = useState(false);
+  const [copied, setCopied] = useState(false);
   const isStreaming = useAppStore((s) => s.isStreaming);
 
   const fileName = planFile.path.split(/[\\/]/).pop() ?? planFile.path;
@@ -45,6 +48,13 @@ export function PlanCard({ planFile, onExecute }: PlanCardProps) {
     } catch (err) {
       console.error("Failed to open plan file:", err);
     }
+  };
+
+  const handleCopyPlan = () => {
+    navigator.clipboard.writeText(planFile.content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   };
 
   return (
@@ -89,6 +99,15 @@ export function PlanCard({ planFile, onExecute }: PlanCardProps) {
             >
               <IconPlayerPlay size={14} stroke={2} />
               {intl.formatMessage({ id: "chat.plan.execute" })}
+            </button>
+            <button
+              type="button"
+              onClick={handleCopyPlan}
+              className="flex items-center gap-1.5 rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] px-3 py-1.5 text-[12px] font-medium text-[var(--chat-muted)] transition-colors hover:text-[var(--chat-prose)]"
+              title={intl.formatMessage({ id: copied ? "chat.copied" : "chat.copy" })}
+            >
+              {copied ? <IconCheck size={13} stroke={1.8} /> : <IconCopy size={13} stroke={1.8} />}
+              {intl.formatMessage({ id: copied ? "chat.copied" : "chat.plan.copy" })}
             </button>
             <button
               type="button"

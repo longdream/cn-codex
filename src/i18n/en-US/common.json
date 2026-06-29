@@ -59,6 +59,8 @@
   "chat.mode.goalActive": "Goal mode active",
   "chat.plan.generated": "Plan Generated",
   "chat.plan.execute": "Execute Plan",
+  "chat.plan.copy": "Copy Plan",
+  "chat.plan.copySteps": "Copy Steps",
   "chat.plan.openFile": "Open File",
   "chat.plan.executing": "Executing plan...",
   "chat.plan.title": "Implementation Plan",

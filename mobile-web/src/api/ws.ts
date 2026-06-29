@@ -77,6 +77,9 @@ function handleEvent(event: string, payload: Record<string, unknown>) {
       if (threadId && threadId !== store.currentThreadId) {
         break;
       }
+      if (!store.isStreaming) {
+        break;
+      }
       const delta = payload.delta as string;
       if (delta) {
         store.appendStreamingText(delta);
@@ -89,17 +92,19 @@ function handleEvent(event: string, payload: Record<string, unknown>) {
       if (tcThreadId && tcThreadId !== store.currentThreadId) {
         break;
       }
-      const text = store.streamingText;
-      if (text) {
-        store.addMessage({
-          id: genId(),
-          role: "assistant",
-          content: text,
-          timestamp: Date.now(),
-        });
+      store.flushAndStopStreaming();
+      break;
+    }
+
+    case "thread-goal-updated": {
+      const goalThreadId = payload.threadId as string | undefined;
+      if (goalThreadId && goalThreadId !== store.currentThreadId) {
+        break;
       }
-      store.clearStreamingText();
-      store.setStreaming(false);
+      const goal = payload.goal as { status?: string } | undefined;
+      if (goal?.status === "complete") {
+        store.flushAndStopStreaming();
+      }
       break;
     }
 

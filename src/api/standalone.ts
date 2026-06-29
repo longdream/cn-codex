@@ -78,6 +78,12 @@ export async function standaloneThreadRead(threadId: string): Promise<{
     id: string;
     name?: string;
     goal?: ThreadGoal | null;
+    activePlan?: {
+      path: string;
+      content: string;
+      revision?: number;
+      updatedAt?: number;
+    } | null;
     turns?: Array<{
       id: string;
       items?: Array<{

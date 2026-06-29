@@ -444,6 +444,7 @@ mod tests {
             updated_at,
             model: None,
             goal: None,
+            active_plan: None,
             robot_state: None,
             turns: vec![StoredTurn {
                 turn_id: "turn-1".to_string(),

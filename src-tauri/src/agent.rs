@@ -65,6 +65,11 @@ pub struct ToolCallRequest {
     pub arguments: String,
 }
 
+struct GoalUpdateOutcome {
+    message: String,
+    goal: ThreadGoal,
+}
+
 /// 记录单个文件在当前 turn 内的“修改前/修改后”文本快照。
 ///
 /// 说明：
@@ -480,6 +485,7 @@ impl AgentEngine {
         let mut stop_hooks_satisfied = false;
         let mut stop_hooks_ran_for_last_stop = false;
         let mut stop_hook_continuations = 0usize;
+        let mut goal_completed_now = false;
         let prompt_hook_results = hook_runtime
             .run_event(
                 app_handle,
@@ -604,9 +610,20 @@ impl AgentEngine {
         // 而非累加值，用于 mid-turn compaction 判断。
         let mut last_prompt_tokens: u64 = 0;
         let mut mid_turn_compacted = false;
-        let mut plan_card_emitted = false;
         let mut rate_limit_retry_count: u32 = 0;
         let mut terminated_by_error = false;
+        let mut force_new_plan_on_next_emit =
+            turn_mode == "plan" && user_requested_new_plan_file(user_input);
+        let mut active_plan_path: Option<String> = None;
+        let mut active_plan_revision: u64 = 0;
+        let mut active_plan_content: Option<String> = None;
+        if turn_mode == "plan" {
+            if let Some(active_plan) = self.thread_store.get_thread_active_plan(thread_id).await {
+                active_plan_revision = active_plan.revision.max(1);
+                active_plan_content = read_plan_file_content(&active_plan.path, &self.cwd);
+                active_plan_path = Some(active_plan.path);
+            }
+        }
 
         'goal_loop: loop {
             if !prompt_hook_blocked {
@@ -650,6 +667,21 @@ impl AgentEngine {
                     } else {
                         None
                     };
+                    let active_plan_context = if turn_mode == "plan" {
+                        if active_plan_content.is_none() {
+                            if let Some(path) = active_plan_path.as_deref() {
+                                active_plan_content = read_plan_file_content(path, &self.cwd);
+                            }
+                        }
+                        match (active_plan_path.as_deref(), active_plan_content.as_deref()) {
+                            (Some(path), Some(content)) => {
+                                Some((path, active_plan_revision.max(1), content))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
                     let internal_messages = self.build_internal_messages(
                         config,
                         &history,
@@ -659,6 +691,7 @@ impl AgentEngine {
                         Some(user_message_id.as_str()),
                         &attachments,
                         robot_overlay_prompt.as_deref(),
+                        active_plan_context,
                     );
                     let tools = if turn_mode == "robot-create" || turn_mode == "robot-modify" {
                         self.tool_executor
@@ -830,37 +863,93 @@ impl AgentEngine {
                                 &cleaned_text,
                             );
                             if let Some(ref plan_content) = effective_plan {
-                                if turn_mode != "plan" || !plan_card_emitted {
-                                    let plans_dir = self.cwd.join("codey").join("plans");
-                                    let _ = std::fs::create_dir_all(&plans_dir);
-                                    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-                                    let short_hash = &uuid::Uuid::new_v4().to_string()[..8];
-                                    let file_name = format!("{ts}-{short_hash}.pmd");
-                                    let plan_path = plans_dir.join(&file_name);
+                                let unchanged_active_plan = turn_mode == "plan"
+                                    && active_plan_content
+                                        .as_deref()
+                                        .is_some_and(|current| {
+                                            plan_contents_equivalent(current, plan_content)
+                                        });
+                                if unchanged_active_plan {
+                                    info!(
+                                        "Skipping plan update for thread {thread_id} because content is unchanged"
+                                    );
+                                } else {
+                                    let reuse_existing_plan = turn_mode == "plan"
+                                        && !force_new_plan_on_next_emit
+                                        && active_plan_path.is_some();
+                                    let (plan_path, plan_updated, next_revision) =
+                                        if reuse_existing_plan {
+                                            let existing_path = resolve_plan_storage_path(
+                                                active_plan_path.as_deref().unwrap_or_default(),
+                                                &self.cwd,
+                                            );
+                                            (
+                                                existing_path,
+                                                true,
+                                                active_plan_revision.saturating_add(1).max(1),
+                                            )
+                                        } else {
+                                            force_new_plan_on_next_emit = false;
+                                            let plans_dir = self.cwd.join("codey").join("plans");
+                                            let _ = std::fs::create_dir_all(&plans_dir);
+                                            let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                                            let short_hash = &uuid::Uuid::new_v4().to_string()[..8];
+                                            let file_name = format!("{ts}-{short_hash}.pmd");
+                                            (plans_dir.join(&file_name), false, 1_u64)
+                                        };
+                                    if let Some(parent) = plan_path.parent() {
+                                        let _ = std::fs::create_dir_all(parent);
+                                    }
                                     if let Err(err) = std::fs::write(&plan_path, plan_content) {
                                         warn!(
                                             "Failed to write plan file {}: {err}",
                                             plan_path.display()
                                         );
                                     } else {
-                                        info!("Plan file written: {}", plan_path.display());
+                                        let plan_path_string =
+                                            plan_path.to_string_lossy().to_string();
+                                        if turn_mode == "plan" {
+                                            active_plan_path = Some(plan_path_string.clone());
+                                            active_plan_revision = next_revision;
+                                            active_plan_content = Some(plan_content.clone());
+                                            if let Err(err) = self
+                                                .thread_store
+                                                .set_thread_active_plan(
+                                                    thread_id,
+                                                    plan_path_string.clone(),
+                                                    next_revision,
+                                                )
+                                                .await
+                                            {
+                                                warn!(
+                                                    "Failed to persist active plan metadata for thread {thread_id}: {err}"
+                                                );
+                                            }
+                                        }
+
+                                        let revision_payload = if turn_mode == "plan" {
+                                            serde_json::Value::from(next_revision)
+                                        } else {
+                                            serde_json::Value::Null
+                                        };
+                                        info!(
+                                            "Plan file written: {}, updated={}, revision={}",
+                                            plan_path.display(),
+                                            plan_updated,
+                                            next_revision
+                                        );
                                         emit_and_broadcast(
                                             app_handle,
                                             "plan-generated",
                                             serde_json::json!({
                                                 "threadId": thread_id,
-                                                "path": plan_path.to_string_lossy(),
+                                                "path": plan_path_string,
                                                 "content": plan_content,
+                                                "updated": plan_updated,
+                                                "revision": revision_payload,
                                             }),
                                         );
-                                        if turn_mode == "plan" {
-                                            plan_card_emitted = true;
-                                        }
                                     }
-                                } else {
-                                    info!(
-                                        "Skipping duplicate plan-generated event for turn {turn_id}"
-                                    );
                                 }
                             }
 
@@ -995,6 +1084,21 @@ impl AgentEngine {
                                     }
                                     NodeProgressResult::Completed => {
                                         robot_progress = None;
+                                        if let Some(goal) = self
+                                            .thread_store
+                                            .get_thread(thread_id)
+                                            .await
+                                            .and_then(|thread| thread.goal)
+                                        {
+                                            emit_and_broadcast(
+                                                app_handle,
+                                                "thread-goal-updated",
+                                                serde_json::json!({
+                                                    "threadId": thread_id,
+                                                    "goal": goal,
+                                                }),
+                                            );
+                                        }
                                         stop_hooks_satisfied = true;
                                         break;
                                     }
@@ -1083,6 +1187,41 @@ impl AgentEngine {
 
                             for mut call in calls {
                                 info!("Tool call: {} args={}", call.name, call.arguments);
+                                if goal_completed_now {
+                                    let skipped_call_id = call.id.clone();
+                                    let skipped_tool_name = call.name.clone();
+                                    let skipped_output =
+                                        "Tool execution skipped: goal already marked complete."
+                                            .to_string();
+                                    emit_and_broadcast(
+                                        app_handle,
+                                        "tool-exec-end",
+                                        serde_json::json!({
+                                            "threadId": thread_id,
+                                            "callId": skipped_call_id,
+                                            "tool": skipped_tool_name,
+                                            "exitCode": -1,
+                                            "output": skipped_output.clone(),
+                                        }),
+                                    );
+                                    results_json.push(serde_json::json!({
+                                        "id": call.id.clone(),
+                                        "tool": call.name.clone(),
+                                        "success": false,
+                                        "skippedAfterGoalComplete": true,
+                                    }));
+                                    let tool_msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "tool".to_string(),
+                                        content: skipped_output,
+                                        timestamp: now_secs(),
+                                        tool_call_id: Some(call.id.clone()),
+                                        tool_name: Some(call.name.clone()),
+                                        tool_calls: None,
+                                    };
+                                    self.thread_store.add_message(thread_id, tool_msg).await?;
+                                    continue;
+                                }
                                 // 若用户已点击停止，则跳过工具执行，并主动补发结束状态，
                                 // 防止前端工具卡片一直停留在 running。
                                 if self.is_cancelled() {
@@ -1173,12 +1312,18 @@ impl AgentEngine {
                                 let (mut result_content, success) = if call.name == "update_goal" {
                                     match handle_update_goal(
                                         &self.thread_store,
+                                        app_handle,
                                         thread_id,
                                         &call.arguments,
                                     )
                                     .await
                                     {
-                                        Ok(msg) => (msg, true),
+                                        Ok(outcome) => {
+                                            if outcome.goal.status == ThreadGoalStatus::Complete {
+                                                goal_completed_now = true;
+                                            }
+                                            (outcome.message, true)
+                                        }
                                         Err(e) => (format!("update_goal error: {e}"), false),
                                     }
                                 } else {
@@ -1291,6 +1436,11 @@ impl AgentEngine {
                                 }),
                             );
                             stop_hooks_ran_for_last_stop = false;
+
+                            if goal_completed_now {
+                                stop_hooks_satisfied = true;
+                                break;
+                            }
 
                             if !mid_turn_compacted
                                 && crate::compaction::should_compact(last_prompt_tokens, config)
@@ -1417,6 +1567,7 @@ impl AgentEngine {
                 && !stop_hooks_ran_for_last_stop
                 && !prompt_hook_blocked
                 && !terminated_by_error
+                && !goal_completed_now
             {
                 if let Some(progress) = robot_progress.as_ref() {
                     // 机器人强约束模式下，如果节点未完成，不允许退化为“直接总结”。
@@ -1462,6 +1613,21 @@ impl AgentEngine {
                     } else {
                         None
                     };
+                    let summary_plan_context = if turn_mode == "plan" {
+                        if active_plan_content.is_none() {
+                            if let Some(path) = active_plan_path.as_deref() {
+                                active_plan_content = read_plan_file_content(path, &self.cwd);
+                            }
+                        }
+                        match (active_plan_path.as_deref(), active_plan_content.as_deref()) {
+                            (Some(path), Some(content)) => {
+                                Some((path, active_plan_revision.max(1), content))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
                     let internal_messages = self.build_internal_messages(
                         config,
                         &history,
@@ -1471,6 +1637,7 @@ impl AgentEngine {
                         Some(user_message_id.as_str()),
                         &[],
                         robot_overlay_prompt.as_deref(),
+                        summary_plan_context,
                     );
                     let summary_result = self
                         .stream_completion(
@@ -1830,6 +1997,8 @@ impl AgentEngine {
         } else if mode == "plan" {
             "\n\nPlan mode is active. You are in planning-only mode. \
              Your task is to analyze the user's request and produce a detailed implementation plan. \
+             If an active plan already exists in this thread, treat follow-up user messages as plan revisions by default. \
+             Only create a brand-new plan when the user explicitly asks for a new plan/version. \
              Do NOT execute any mutating actions (no file writes, no shell commands that modify state). \
              You MAY read files, search code, and explore the codebase to understand context. \
              \n\nIMPORTANT: You MUST wrap your final plan inside <proposed_plan> tags. \
@@ -2661,6 +2830,7 @@ impl AgentEngine {
         current_user_message_id: Option<&str>,
         attachments: &[UserAttachment],
         robot_overlay_prompt: Option<&str>,
+        active_plan_context: Option<(&str, u64, &str)>,
     ) -> Vec<InternalMessage> {
         let mut messages = Vec::new();
         let sanitized_history = sanitize_history_for_model(history);
@@ -2680,6 +2850,18 @@ impl AgentEngine {
                 messages.push(InternalMessage {
                     role: "system".to_string(),
                     content: text_content(overlay_prompt.to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                });
+            }
+        }
+
+        if mode == "plan" {
+            if let Some((path, revision, content)) = active_plan_context {
+                messages.push(InternalMessage {
+                    role: "system".to_string(),
+                    content: text_content(build_active_plan_context_prompt(path, revision, content)),
                     tool_calls: None,
                     tool_call_id: None,
                     name: None,
@@ -3592,6 +3774,92 @@ fn resolve_effective_plan_content(
         .or_else(|| non_empty_trimmed(cleaned_text))
 }
 
+fn user_requested_new_plan_file(user_input: &str) -> bool {
+    let normalized = user_input.trim().to_lowercase();
+    let en_patterns = [
+        "new plan",
+        "new implementation plan",
+        "create a new plan",
+        "start a new plan",
+        "write a new plan",
+        "generate a new plan",
+        "new version of plan",
+        "another plan",
+    ];
+    if en_patterns.iter().any(|pattern| normalized.contains(pattern)) {
+        return true;
+    }
+
+    let zh_patterns = [
+        "新计划",
+        "新建计划",
+        "重新生成计划",
+        "重新做计划",
+        "重新写计划",
+        "再来一份计划",
+        "再生成一份计划",
+        "换一份计划",
+        "新版本计划",
+    ];
+    zh_patterns
+        .iter()
+        .any(|pattern| user_input.trim().contains(pattern))
+}
+
+fn resolve_plan_storage_path(stored_path: &str, workspace_root: &Path) -> PathBuf {
+    let candidate = PathBuf::from(stored_path);
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        workspace_root.join(candidate)
+    }
+}
+
+fn read_plan_file_content(stored_path: &str, workspace_root: &Path) -> Option<String> {
+    let path = resolve_plan_storage_path(stored_path, workspace_root);
+    match std::fs::read_to_string(&path) {
+        Ok(content) => non_empty_trimmed(&content),
+        Err(err) => {
+            warn!("Failed to read active plan file {}: {err}", path.display());
+            None
+        }
+    }
+}
+
+fn plan_contents_equivalent(left: &str, right: &str) -> bool {
+    normalize_plan_content_for_compare(left) == normalize_plan_content_for_compare(right)
+}
+
+fn normalize_plan_content_for_compare(text: &str) -> String {
+    text.replace("\r\n", "\n").trim().to_string()
+}
+
+fn build_active_plan_context_prompt(path: &str, revision: u64, content: &str) -> String {
+    const MAX_PLAN_CONTEXT_CHARS: usize = 12_000;
+    let total_chars = content.chars().count();
+    let truncated_content: String = if total_chars > MAX_PLAN_CONTEXT_CHARS {
+        content.chars().take(MAX_PLAN_CONTEXT_CHARS).collect()
+    } else {
+        content.to_string()
+    };
+    let truncation_note = if total_chars > MAX_PLAN_CONTEXT_CHARS {
+        "\n\nNOTE: The active plan content was truncated for context size. \
+         Keep revisions compatible with the visible content and preserve existing structure."
+    } else {
+        ""
+    };
+
+    format!(
+        "An active implementation plan already exists in this thread. \
+         Unless the user explicitly requests a new plan/version, revise this plan in place. \
+         Return the fully revised plan (not just a delta) inside <proposed_plan> tags.\n\
+         \nActive plan path: {path}\n\
+         Active plan revision: {}\n\
+         \n<current_active_plan>\n{truncated_content}\n</current_active_plan>{truncation_note}",
+        revision.max(1)
+    )
+}
+
 fn is_retryable_rate_limit_error(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("429")
@@ -4315,9 +4583,10 @@ fn read_text_file_snapshot(cwd: &Path, path: &str) -> Option<String> {
 
 async fn handle_update_goal(
     thread_store: &ThreadStore,
+    app_handle: &AppHandle,
     thread_id: &str,
     arguments: &str,
-) -> Result<String, String> {
+) -> Result<GoalUpdateOutcome, String> {
     let args: serde_json::Value =
         serde_json::from_str(arguments).map_err(|e| format!("invalid arguments: {e}"))?;
     let status_str = args
@@ -4329,11 +4598,22 @@ async fn handle_update_goal(
         "blocked" => ThreadGoalStatus::Blocked,
         other => return Err(format!("unknown status: {other}")),
     };
-    thread_store
+    let goal = thread_store
         .set_thread_goal_status(thread_id, goal_status)
         .await
         .map_err(|e| format!("failed to update goal status: {e}"))?;
-    Ok(format!("Goal status updated to '{status_str}'."))
+    emit_and_broadcast(
+        app_handle,
+        "thread-goal-updated",
+        serde_json::json!({
+            "threadId": thread_id,
+            "goal": goal.clone(),
+        }),
+    );
+    Ok(GoalUpdateOutcome {
+        message: format!("Goal status updated to '{status_str}'."),
+        goal,
+    })
 }
 
 fn file_changes_from_tool_call(call: &ToolCallRequest) -> Vec<FileChange> {
