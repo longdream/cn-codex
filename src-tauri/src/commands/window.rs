@@ -182,6 +182,7 @@ pub async fn window_open_browser(
     y: Option<f64>,
     width: Option<f64>,
     height: Option<f64>,
+    workspace_root: Option<String>,
 ) -> AppResult<BrowserWindowInfo> {
     if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
         window.close()?;
@@ -203,6 +204,10 @@ pub async fn window_open_browser(
     {
         let mut guard = state.browser_last_url.write().await;
         *guard = Some(info.url.clone());
+    }
+    {
+        let mut guard = state.browser_active_root.write().await;
+        *guard = normalize_workspace_root_hint(workspace_root);
     }
     Ok(info)
 }
@@ -227,6 +232,7 @@ pub async fn window_navigate_browser(
     app: AppHandle,
     state: State<'_, AppState>,
     url: String,
+    workspace_root: Option<String>,
 ) -> AppResult<()> {
     let browser_url = normalize_browser_url(Some(&url))?;
     let mut navigated = false;
@@ -254,6 +260,10 @@ pub async fn window_navigate_browser(
         let mut guard = state.browser_last_url.write().await;
         *guard = Some(url);
     }
+    if workspace_root.is_some() {
+        let mut guard = state.browser_active_root.write().await;
+        *guard = normalize_workspace_root_hint(workspace_root);
+    }
     Ok(())
 }
 
@@ -269,6 +279,8 @@ pub async fn window_close_browser(app: AppHandle, state: State<'_, AppState>) ->
         let mut guard = state.browser_last_url.write().await;
         *guard = None;
     }
+    let mut guard = state.browser_active_root.write().await;
+    *guard = None;
     emit_browser_detached_state(&app, false, None);
     Ok(())
 }
@@ -312,6 +324,7 @@ pub async fn window_attach_browser(
     y: Option<f64>,
     width: Option<f64>,
     height: Option<f64>,
+    workspace_root: Option<String>,
 ) -> AppResult<BrowserWindowInfo> {
     if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
         window.close()?;
@@ -339,6 +352,10 @@ pub async fn window_attach_browser(
     {
         let mut guard = state.browser_last_url.write().await;
         *guard = Some(info.url.clone());
+    }
+    if workspace_root.is_some() {
+        let mut guard = state.browser_active_root.write().await;
+        *guard = normalize_workspace_root_hint(workspace_root);
     }
     emit_browser_detached_state(&app, false, Some(info.url.clone()));
     Ok(info)
@@ -974,10 +991,13 @@ async fn resolve_browser_edit_context(
         }
     };
 
-    let workspace_root = workspace_root_from_state(state).await?;
-    let Some(source_path) = resolve_workspace_web_source_path(&workspace_root, &parsed_url) else {
-        let reason = if !matches!(parsed_url.scheme(), "http" | "https") {
-            "Only http/https local pages can enter edit mode.".to_string()
+    let workspace_roots = browser_workspace_roots_from_state(state).await?;
+    let Some(source_path) = workspace_roots
+        .iter()
+        .find_map(|root| resolve_workspace_web_source_path(root, &parsed_url))
+    else {
+        let reason = if !matches!(parsed_url.scheme(), "http" | "https" | "file") {
+            "Only http/https/file local pages can enter edit mode.".to_string()
         } else {
             "Current page cannot be mapped to a workspace web file.".to_string()
         };
@@ -1013,72 +1033,90 @@ async fn workspace_root_from_state(state: &State<'_, AppState>) -> AppResult<Pat
     )))
 }
 
-fn resolve_workspace_web_source_path(workspace_root: &Path, browser_url: &Url) -> Option<PathBuf> {
-    let scheme = browser_url.scheme();
-    if scheme != "http" && scheme != "https" {
-        return None;
-    }
-    let host = browser_url.host_str()?.to_ascii_lowercase();
-    if !is_local_browser_host(&host) {
-        return None;
-    }
-
-    let mut candidates = Vec::new();
-    if let Some(file_query) = browser_url
-        .query_pairs()
-        .find_map(|(key, value)| {
-            if key == "file" || key == "path" {
-                Some(value.to_string())
-            } else {
-                None
-            }
-        })
-        .map(|value| value.trim().to_string())
-    {
-        if !file_query.is_empty() {
-            let query_path = PathBuf::from(file_query);
-            if query_path.is_absolute() {
-                candidates.push(query_path);
-            } else {
-                candidates.push(workspace_root.join(query_path));
+async fn browser_workspace_roots_from_state(state: &State<'_, AppState>) -> AppResult<Vec<PathBuf>> {
+    let mut roots = vec![workspace_root_from_state(state).await?];
+    if let Some(active_root) = state.browser_active_root.read().await.clone() {
+        if let Some(root) = resolve_workspace_root_candidate(&active_root) {
+            if !roots.iter().any(|item| item == &root) {
+                roots.push(root);
             }
         }
     }
+    Ok(roots)
+}
 
-    let mut relative_path = browser_url
-        .path()
-        .trim()
-        .trim_start_matches('/')
-        .to_string();
-    if relative_path.is_empty() {
-        relative_path = "index.html".to_string();
-    }
-    if relative_path.ends_with('/') {
-        relative_path.push_str("index.html");
-    }
+fn resolve_workspace_web_source_path(workspace_root: &Path, browser_url: &Url) -> Option<PathBuf> {
+    let root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let scheme = browser_url.scheme();
+    let mut candidates = Vec::new();
+    if scheme == "file" {
+        if let Ok(file_path) = browser_url.to_file_path() {
+            candidates.push(file_path);
+        }
+    } else {
+        if scheme != "http" && scheme != "https" {
+            return None;
+        }
+        let host = browser_url.host_str()?.to_ascii_lowercase();
+        if !is_local_browser_host(&host) {
+            return None;
+        }
 
-    candidates.push(workspace_root.join(&relative_path));
-    candidates.push(workspace_root.join("public").join(&relative_path));
+        if let Some(file_query) = browser_url
+            .query_pairs()
+            .find_map(|(key, value)| {
+                if key == "file" || key == "path" {
+                    Some(value.to_string())
+                } else {
+                    None
+                }
+            })
+            .map(|value| value.trim().to_string())
+        {
+            if !file_query.is_empty() {
+                let query_path = PathBuf::from(file_query);
+                if query_path.is_absolute() {
+                    candidates.push(query_path);
+                } else {
+                    candidates.push(workspace_root.join(query_path));
+                }
+            }
+        }
 
-    let relative_no_suffix = relative_path.trim_end_matches('/');
-    if Path::new(relative_no_suffix).extension().is_none() {
-        candidates.push(workspace_root.join(format!("{relative_no_suffix}.html")));
-        candidates.push(workspace_root.join(relative_no_suffix).join("index.html"));
-        candidates.push(
-            workspace_root
-                .join("public")
-                .join(relative_no_suffix)
-                .join("index.html"),
-        );
+        let mut relative_path = browser_url
+            .path()
+            .trim()
+            .trim_start_matches('/')
+            .to_string();
+        if relative_path.is_empty() {
+            relative_path = "index.html".to_string();
+        }
+        if relative_path.ends_with('/') {
+            relative_path.push_str("index.html");
+        }
+
+        candidates.push(workspace_root.join(&relative_path));
+        candidates.push(workspace_root.join("public").join(&relative_path));
+
+        let relative_no_suffix = relative_path.trim_end_matches('/');
+        if Path::new(relative_no_suffix).extension().is_none() {
+            candidates.push(workspace_root.join(format!("{relative_no_suffix}.html")));
+            candidates.push(workspace_root.join(relative_no_suffix).join("index.html"));
+            candidates.push(
+                workspace_root
+                    .join("public")
+                    .join(relative_no_suffix)
+                    .join("index.html"),
+            );
+        }
     }
 
     candidates.into_iter().find_map(|candidate| {
         if !candidate.is_file() || !has_editable_web_extension(&candidate) {
             return None;
         }
-        let root = workspace_root
-            .canonicalize()
-            .unwrap_or_else(|_| workspace_root.to_path_buf());
         let canonical = candidate.canonicalize().ok()?;
         if canonical.starts_with(&root) {
             Some(canonical)
@@ -1447,6 +1485,8 @@ fn normalize_browser_url(raw: Option<&str>) -> AppResult<Url> {
     let trimmed = raw.unwrap_or("").trim();
     let candidate = if trimmed.is_empty() {
         "about:blank".to_string()
+    } else if let Some(local_file_url) = local_file_url_from_input(trimmed) {
+        local_file_url.to_string()
     } else if looks_like_local_dev_host(trimmed) {
         format!("http://{trimmed}")
     } else if has_explicit_scheme(trimmed) {
@@ -1458,11 +1498,23 @@ fn normalize_browser_url(raw: Option<&str>) -> AppResult<Url> {
     let parsed = Url::parse(&candidate)
         .map_err(|e| AppError::Custom(format!("Invalid browser URL '{candidate}': {e}")))?;
     match parsed.scheme() {
-        "http" | "https" | "about" => Ok(parsed),
+        "http" | "https" | "file" | "about" => Ok(parsed),
         scheme => Err(AppError::Custom(format!(
-            "Unsupported browser URL scheme '{scheme}'. Use http, https, or about."
+            "Unsupported browser URL scheme '{scheme}'. Use http, https, file, or about."
         ))),
     }
+}
+
+fn local_file_url_from_input(raw: &str) -> Option<Url> {
+    if has_explicit_scheme(raw) {
+        return None;
+    }
+    let normalized = normalize_windows_verbatim_prefix(raw);
+    let path = PathBuf::from(normalized);
+    if !path.is_absolute() {
+        return None;
+    }
+    Url::from_file_path(path).ok()
 }
 
 fn has_explicit_scheme(value: &str) -> bool {
@@ -2051,8 +2103,25 @@ mod tests {
     }
 
     #[test]
+    fn normalize_browser_url_accepts_file_scheme() {
+        let parsed = normalize_browser_url(Some("file:///C:/secret/index.html")).unwrap();
+        assert_eq!(parsed.scheme(), "file");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalize_browser_url_converts_windows_absolute_path_to_file_url() {
+        let parsed = normalize_browser_url(Some(r"D:\cn-codex\index.html")).unwrap();
+        assert_eq!(parsed.scheme(), "file");
+        assert_eq!(
+            parsed.to_file_path().unwrap(),
+            std::path::PathBuf::from(r"D:\cn-codex\index.html")
+        );
+    }
+
+    #[test]
     fn normalize_browser_url_rejects_unsupported_schemes() {
-        let err = normalize_browser_url(Some("file:///C:/secret.txt")).unwrap_err();
+        let err = normalize_browser_url(Some("ftp://example.com/resource")).unwrap_err();
         assert!(err.to_string().contains("Unsupported browser URL scheme"));
     }
 
@@ -2133,6 +2202,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_workspace_web_source_path_accepts_file_scheme_url() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cn_codex_window_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let html_path = temp_dir.join("index.html");
+        fs::write(&html_path, "<html><body>ok</body></html>").unwrap();
+
+        let parsed = Url::from_file_path(&html_path).unwrap();
+        let resolved = resolve_workspace_web_source_path(&temp_dir, &parsed).unwrap();
+        assert!(resolved.ends_with("index.html"));
+
+        fs::remove_file(&html_path).unwrap();
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
     fn resolve_workspace_web_source_path_rejects_remote_host() {
         let temp_dir = std::env::temp_dir().join(format!(
             "cn_codex_window_test_{}",
@@ -2147,6 +2237,33 @@ mod tests {
         let parsed = Url::parse("https://example.com/").unwrap();
         assert!(resolve_workspace_web_source_path(&temp_dir, &parsed).is_none());
 
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_workspace_web_source_path_rejects_outside_workspace_file_url() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cn_codex_window_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let outside_file = std::env::temp_dir().join(format!(
+            "cn_codex_window_outside_file_{}.html",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::write(&outside_file, "<html></html>").unwrap();
+
+        let parsed = Url::from_file_path(&outside_file).unwrap();
+        assert!(resolve_workspace_web_source_path(&temp_dir, &parsed).is_none());
+
+        fs::remove_file(outside_file).unwrap();
         fs::remove_dir_all(&temp_dir).unwrap();
     }
 

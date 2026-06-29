@@ -174,7 +174,7 @@ export function RightPanel() {
       y: Math.round(rect.y),
       width: Math.max(Math.round(rect.width), 200),
       height: Math.max(Math.round(rect.height), 200),
-    }).then(() => {
+    }, workspaceCwd ?? undefined).then(() => {
       setBrowserActive(true);
       setBrowserDetached(false);
       setTimeout(syncBrowserPosition, 100);
@@ -184,7 +184,7 @@ export function RightPanel() {
       setBrowserDetached(false);
       syncBrowserPosition();
     });
-  }, [setBrowserActive, setBrowserDetached, syncBrowserPosition]);
+  }, [workspaceCwd, setBrowserActive, setBrowserDetached, syncBrowserPosition]);
 
   const handleCloseBrowser = useCallback(() => {
     void browserStopPickMode().catch(() => undefined).finally(() => {
@@ -239,7 +239,7 @@ export function RightPanel() {
         height: Math.max(Math.round(rect.height), 200),
       }
       : undefined;
-    return windowAttachBrowser(nextUrl, safeRect)
+    return windowAttachBrowser(nextUrl, safeRect, workspaceCwd ?? undefined)
       .then((info) => {
         setBrowserDetached(false);
         setBrowserActive(true);
@@ -257,7 +257,7 @@ export function RightPanel() {
       .finally(() => {
         attachingBackRef.current = false;
       });
-  }, [setBrowserDetached, setBrowserActive, setBrowserPanelState, syncBrowserPosition, refreshEditContext]);
+  }, [workspaceCwd, setBrowserDetached, setBrowserActive, setBrowserPanelState, syncBrowserPosition, refreshEditContext]);
 
   const handleToggleDetachMode = useCallback(() => {
     if (browserDetached) {
@@ -625,9 +625,8 @@ export function RightPanel() {
                   if (e.key === "Enter") {
                     const url = (e.target as HTMLInputElement).value.trim();
                     if (!url) return;
-                    const normalizedUrl = /^https?:\/\//i.test(url) ? url : `https://${url}`;
                     if (browserActive || browserDetached) {
-                      void windowNavigateBrowser(normalizedUrl).then(() => {
+                      void windowNavigateBrowser(url, workspaceCwd ?? undefined).then(() => {
                         setBrowserEditMode(false);
                         setPickedElement(null);
                         if (!browserDetached) {
@@ -635,7 +634,7 @@ export function RightPanel() {
                         }
                       });
                     } else {
-                      handleOpenBrowser(normalizedUrl);
+                      handleOpenBrowser(url);
                     }
                   }
                 }}

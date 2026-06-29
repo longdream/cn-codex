@@ -97,6 +97,13 @@ pub struct AppState {
     pub runsummary_diff_payload: Arc<RwLock<Option<RunSummaryDiffPayload>>>,
     /// 浏览器最近一次已知 URL（用于嵌入/独立窗口模式切换时恢复页面）。
     pub browser_last_url: Arc<RwLock<Option<String>>>,
+    /// 当前浏览器会话对应的工作区根目录（可选）。
+    ///
+    /// 说明：
+    /// - 右侧地址栏可直接打开本地文件 URL；
+    /// - 该状态用于网页定位/编辑时补充可访问根目录；
+    /// - 关闭浏览器后清空，避免后续会话误复用。
+    pub browser_active_root: Arc<RwLock<Option<String>>>,
     pub external_browser: Arc<crate::external_browser::ExternalBrowser>,
     pub recorder: Arc<crate::recording::Recorder>,
 }
@@ -277,6 +284,7 @@ impl AppState {
             document_detail_active_root: Arc::new(RwLock::new(None)),
             runsummary_diff_payload: Arc::new(RwLock::new(None)),
             browser_last_url: Arc::new(RwLock::new(None)),
+            browser_active_root: Arc::new(RwLock::new(None)),
             external_browser: Arc::new(crate::external_browser::ExternalBrowser::new()),
             recorder: Arc::new(crate::recording::Recorder::new()),
         }

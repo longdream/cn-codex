@@ -96,15 +96,21 @@ export async function windowShowMain(): Promise<void> {
 export async function windowOpenBrowser(
   url?: string,
   rect?: { x: number; y: number; width: number; height: number },
+  workspaceRoot?: string,
 ): Promise<BrowserWindowInfo> {
   const trimmed = url?.trim();
-  return invoke<BrowserWindowInfo>("window_open_browser", {
+  const payload: Record<string, unknown> = {
     url: trimmed ? trimmed : null,
     x: rect?.x ?? null,
     y: rect?.y ?? null,
     width: rect?.width ?? null,
     height: rect?.height ?? null,
-  });
+  };
+  if (workspaceRoot !== undefined) {
+    const trimmedRoot = workspaceRoot.trim();
+    payload.workspaceRoot = trimmedRoot ? trimmedRoot : null;
+  }
+  return invoke<BrowserWindowInfo>("window_open_browser", payload);
 }
 
 export async function windowResizeBrowser(
@@ -116,8 +122,16 @@ export async function windowResizeBrowser(
   await invoke("window_resize_browser", { x, y, width, height });
 }
 
-export async function windowNavigateBrowser(url: string): Promise<void> {
-  await invoke("window_navigate_browser", { url });
+export async function windowNavigateBrowser(
+  url: string,
+  workspaceRoot?: string,
+): Promise<void> {
+  const payload: Record<string, unknown> = { url };
+  if (workspaceRoot !== undefined) {
+    const trimmedRoot = workspaceRoot.trim();
+    payload.workspaceRoot = trimmedRoot ? trimmedRoot : null;
+  }
+  await invoke("window_navigate_browser", payload);
 }
 
 export async function windowCloseBrowser(): Promise<void> {
@@ -136,15 +150,21 @@ export async function windowDetachBrowser(
 export async function windowAttachBrowser(
   url?: string,
   rect?: { x: number; y: number; width: number; height: number },
+  workspaceRoot?: string,
 ): Promise<BrowserWindowInfo> {
   const trimmed = url?.trim();
-  return invoke<BrowserWindowInfo>("window_attach_browser", {
+  const payload: Record<string, unknown> = {
     url: trimmed ? trimmed : null,
     x: rect?.x ?? null,
     y: rect?.y ?? null,
     width: rect?.width ?? null,
     height: rect?.height ?? null,
-  });
+  };
+  if (workspaceRoot !== undefined) {
+    const trimmedRoot = workspaceRoot.trim();
+    payload.workspaceRoot = trimmedRoot ? trimmedRoot : null;
+  }
+  return invoke<BrowserWindowInfo>("window_attach_browser", payload);
 }
 
 export async function browserGetEditContext(): Promise<BrowserEditContext> {
