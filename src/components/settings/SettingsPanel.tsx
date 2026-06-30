@@ -308,7 +308,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             </button>
           </header>
 
-          <div className="thin-scrollbar flex-1 overflow-y-auto px-6 py-5">
+          <div className="settings-panel-body thin-scrollbar flex-1 overflow-y-auto px-6 py-5">
             {tab === "general" && (
               <div className="space-y-5">
                 <section className="settings-card space-y-3">

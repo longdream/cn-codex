@@ -17,7 +17,7 @@ import {
   type ChatMode,
   type ThreadGoal,
 } from "../../stores/appStore";
-import type { AttachedFile } from "../../types/provider";
+import type { BinaryAttachedFile } from "../../types/provider";
 import { ChatInput, type ParsedGoalCommand, type ChatSendExtendedOptions } from "./ChatInput";
 import { MessageList } from "./MessageList";
 
@@ -37,7 +37,7 @@ export function ChatPage() {
     async (
       text: string,
       mode: ChatMode,
-      attachments: AttachedFile[] = [],
+      attachments: BinaryAttachedFile[] = [],
       options: ChatSendExtendedOptions = {},
     ) => {
       const state = useAppStore.getState();
@@ -52,6 +52,8 @@ export function ChatPage() {
       const goalRunning = actualMode === "goal" && state.currentGoal?.status === "active";
       if (goalRunning && state.isStreaming) return;
       const displayText = formatUserMessageDisplay(text, attachments);
+      const previewText = buildUserMessagePreview(displayText, attachments);
+      const persistedAttachments = attachments.map((file) => ({ ...file }));
 
       let threadId = currentThreadId;
       const userMessage = {
@@ -59,6 +61,7 @@ export function ChatPage() {
         role: "user" as const,
         content: displayText,
         timestamp: Date.now(),
+        ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {}),
       };
 
       if (!threadId) {
@@ -70,7 +73,7 @@ export function ChatPage() {
             useAppStore.getState().addThread({
               id: threadId,
               // 新线程在创建当次就写入 preview，确保侧边栏能立即显示主题。
-              preview: displayText.slice(0, 60),
+              preview: previewText.slice(0, 60),
               updatedAt: Date.now(),
               projectId: useAppStore.getState().currentProjectId ?? undefined,
             });
@@ -91,7 +94,7 @@ export function ChatPage() {
           // 1) 修复实时标题显示；
           // 2) 避免批量改动历史会话（按需求仅修复未来会话）。
           useAppStore.getState().updateThreadSummary(threadId, {
-            preview: displayText.slice(0, 60),
+            preview: previewText.slice(0, 60),
             updatedAt: Date.now(),
           });
         }
@@ -400,7 +403,7 @@ export function ChatPage() {
         <div className="flex items-center justify-end gap-2 px-4 py-1.5 border-b border-[var(--chat-line)]">
           {elapsedMs > 0 && (
             <span
-              className="flex items-center gap-1 font-mono text-[11px] text-[var(--chat-muted)] select-none"
+              className="flex items-center gap-1 font-mono text-[11px] text-[var(--chat-muted)]"
               title={intl.formatMessage({ id: "chat.elapsedTooltip" })}
             >
               <IconClock size={12} stroke={1.5} />
@@ -445,17 +448,35 @@ export function ChatPage() {
   );
 }
 
-function formatUserMessageDisplay(text: string, attachments: AttachedFile[]): string {
-  if (attachments.length === 0) {
-    return text;
+function formatUserMessageDisplay(text: string, attachments: BinaryAttachedFile[]): string {
+  const trimmedText = text.trim();
+  const nonImageAttachments = attachments.filter((file) => !file.type.startsWith("image/"));
+  if (nonImageAttachments.length === 0) {
+    return trimmedText;
   }
 
-  const attachmentLines = attachments.map((file) => {
-    const kind = file.type.startsWith("image/") ? "Image" : "File";
-    return `- ${kind}: ${file.name}`;
-  });
+  const attachmentLines = nonImageAttachments.map((file) => `- File: ${file.name}`);
   const attachmentText = `Attachments:\n${attachmentLines.join("\n")}`;
-  return text.trim() ? `${text}\n\n${attachmentText}` : attachmentText;
+  return trimmedText ? `${trimmedText}\n\n${attachmentText}` : attachmentText;
+}
+
+function buildUserMessagePreview(displayText: string, attachments: BinaryAttachedFile[]): string {
+  if (displayText.trim()) {
+    return displayText;
+  }
+  if (attachments.length === 0) {
+    return "";
+  }
+  const imageCount = attachments.filter((file) => file.type.startsWith("image/")).length;
+  const fileCount = attachments.length - imageCount;
+  const summaryParts: string[] = [];
+  if (imageCount > 0) {
+    summaryParts.push(`${imageCount} image${imageCount > 1 ? "s" : ""}`);
+  }
+  if (fileCount > 0) {
+    summaryParts.push(`${fileCount} file${fileCount > 1 ? "s" : ""}`);
+  }
+  return `Attachments: ${summaryParts.join(", ")}`;
 }
 
 interface GoalSummaryLabels {

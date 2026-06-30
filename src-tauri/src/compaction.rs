@@ -106,6 +106,7 @@ pub fn build_compacted_history(user_messages: &[String], summary_text: &str) -> 
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            attachments: Vec::new(),
         });
     }
 
@@ -123,6 +124,7 @@ pub fn build_compacted_history(user_messages: &[String], summary_text: &str) -> 
         tool_call_id: None,
         tool_name: None,
         tool_calls: None,
+        attachments: Vec::new(),
     });
 
     messages

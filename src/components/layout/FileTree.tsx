@@ -1,4 +1,5 @@
 import {
+  IconBrowser,
   IconChevronDown,
   IconChevronRight,
   IconFile,
@@ -21,9 +22,9 @@ import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
 import {
   readDirectory,
-  readFileForAttach,
   revealInExplorer,
   type FileEntry,
+  windowNavigateBrowser,
   windowOpenDocumentDetail,
 } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
@@ -86,6 +87,26 @@ function fileIcon(name: string, size: number) {
   }
 }
 
+function isWebPreviewFile(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return ext === "html" || ext === "htm";
+}
+
+const PATH_REF_MIME = "application/x-cn-codex-path-ref";
+
+function buildPathRefAttachment(path: string, name?: string) {
+  const sourcePath = path.trim();
+  const fallbackName = sourcePath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
+  const normalizedName = (name ?? "").trim();
+  return {
+    kind: "pathRef" as const,
+    name: normalizedName || fallbackName,
+    type: PATH_REF_MIME,
+    size: 0,
+    sourcePath,
+  };
+}
+
 interface FileTreeProps {
   rootPath: string | null;
   refreshKey?: number;
@@ -93,6 +114,9 @@ interface FileTreeProps {
 
 export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   const intl = useIntl();
+  const setRightPanelTab = useAppStore((state) => state.setRightPanelTab);
+  const setBrowserPanelState = useAppStore((state) => state.setBrowserPanelState);
+  const addAttachedFile = useAppStore((state) => state.addAttachedFile);
   const [nodes, setNodes] = useState<TreeNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -215,17 +239,27 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                 label: intl.formatMessage({ id: "fileTree.addToChat" }),
                 icon: <IconMessagePlus size={14} stroke={1.8} />,
                 onClick: () => {
-                  void readFileForAttach(contextMenu.node.path).then((result) => {
-                    useAppStore.getState().addAttachedFile({
-                      name: result.name,
-                      type: result.mimeType,
-                      dataUrl: result.dataUrl,
-                      size: result.size,
-                      sourcePath: result.sourcePath,
-                    });
-                  });
+                  addAttachedFile(buildPathRefAttachment(contextMenu.node.path, contextMenu.node.name));
                 },
               } satisfies ContextMenuEntry,
+              ...(isWebPreviewFile(contextMenu.node.name)
+                ? [
+                    {
+                      id: "open-in-browser",
+                      label: intl.formatMessage({ id: "fileTree.openInBrowser" }),
+                      icon: <IconBrowser size={14} stroke={1.8} />,
+                      onClick: () => {
+                        const filePath = contextMenu.node.path;
+                        setRightPanelTab("browser");
+                        setBrowserPanelState({
+                          url: filePath,
+                          status: "success",
+                        });
+                        void windowNavigateBrowser(filePath, rootPath ?? undefined);
+                      },
+                    } satisfies ContextMenuEntry,
+                  ]
+                : []),
             ]
           : []),
         ...(contextMenu.node.isDir

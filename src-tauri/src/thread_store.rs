@@ -92,6 +92,16 @@ pub struct ThreadActivePlan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadMessageAttachment {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub mime_type: String,
+    pub data_url: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadMessage {
     pub id: String,
     pub role: String,
@@ -103,6 +113,7 @@ pub struct ThreadMessage {
     pub tool_name: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<ToolCallInfo>>,
+    pub attachments: Vec<ThreadMessageAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

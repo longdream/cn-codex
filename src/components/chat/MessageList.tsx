@@ -36,6 +36,7 @@ import { useIntl } from "react-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage, RunSummary, ToolCallItem } from "../../stores/appStore";
+import type { BinaryAttachedFile } from "../../types/provider";
 import { useAppStore } from "../../stores/appStore";
 import { formatDuration } from "../../utils/formatDuration";
 import { ChartBlock } from "./ChartBlock";
@@ -199,11 +200,16 @@ function MessageRow({
   }
 
   if (message.role === "user") {
+    const hasContent = message.content.trim().length > 0;
+    const attachments = message.attachments ?? [];
     return (
       <div className="flex justify-end py-1">
         <div className="chat-user-message group relative max-w-[min(88%,760px)] px-4 py-3 text-[13px] leading-relaxed">
-          <MessageContent content={message.content} />
-          <CopyButton text={message.content} />
+          {hasContent && <MessageContent content={message.content} />}
+          {attachments.length > 0 && (
+            <UserMessageAttachments attachments={attachments} />
+          )}
+          {hasContent && <CopyButton text={message.content} />}
         </div>
       </div>
     );
@@ -239,6 +245,37 @@ function CopyButton({ text }: { text: string }) {
     >
       {copied ? <IconCheck size={14} stroke={2} /> : <IconCopy size={14} stroke={2} />}
     </button>
+  );
+}
+
+function UserMessageAttachments({ attachments }: { attachments: BinaryAttachedFile[] }) {
+  return (
+    <div className="mt-2 space-y-2">
+      {attachments.map((attachment, index) => {
+        const isImage = attachment.type.startsWith("image/")
+          && attachment.dataUrl.startsWith("data:");
+        if (isImage) {
+          return (
+            <div key={`${attachment.name}:${index}`} className="space-y-1">
+              <img
+                src={attachment.dataUrl}
+                alt={attachment.name}
+                className="max-h-[280px] max-w-full rounded-[var(--radius-sm)] border border-[var(--chat-line)] object-contain"
+              />
+              <p className="text-[11px] text-[var(--chat-faint)]">{attachment.name}</p>
+            </div>
+          );
+        }
+        return (
+          <div
+            key={`${attachment.name}:${index}`}
+            className="rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-chip)] px-2 py-1 text-[11px] text-[var(--chat-muted)]"
+          >
+            {attachment.name}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

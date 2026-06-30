@@ -272,6 +272,12 @@ body.app-resizing * {
   box-shadow: var(--shadow-soft);
 }
 
+.settings-panel-body,
+.settings-panel-body * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .settings-card {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
@@ -510,6 +516,12 @@ textarea:focus {
   background: var(--chat-canvas);
 }
 
+.chat-dialog-surface,
+.chat-dialog-surface * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .chat-answer {
   border-top: 1px solid var(--chat-line);
   padding-top: 1rem;
@@ -664,6 +676,12 @@ textarea:focus {
   box-shadow: var(--shadow-strong);
 }
 
+.patch-diff-dialog,
+.patch-diff-dialog * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .patch-diff-header {
   display: flex;
   align-items: center;
@@ -800,7 +818,6 @@ textarea:focus {
   padding: 1px 8px 1px 4px;
   color: var(--chat-faint);
   opacity: 0.6;
-  user-select: none;
 }
 
 .patch-diff-line-prefix {
@@ -808,7 +825,6 @@ textarea:focus {
   justify-content: center;
   padding: 1px 0;
   color: var(--chat-faint);
-  user-select: none;
 }
 
 .patch-diff-line-text {
@@ -860,6 +876,20 @@ textarea:focus {
   border: 1px solid var(--chat-line);
   border-radius: var(--radius-sm);
   background: var(--chat-paper);
+}
+
+.runsummary-diff-window,
+.runsummary-diff-window * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.runsummary-diff-window .runsummary-diff-window-drag,
+.runsummary-diff-window .runsummary-diff-window-drag *,
+.runsummary-diff-window .runsummary-diff-window-controls,
+.runsummary-diff-window .runsummary-diff-window-controls * {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .detail-code-editor-layer {

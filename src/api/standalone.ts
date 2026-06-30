@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AttachedFile } from "../types/provider";
+import type { BinaryAttachedFile } from "../types/provider";
 
 export interface ServerStatus {
   initialized: boolean;
@@ -182,7 +182,7 @@ export async function standaloneChat(
   message: string,
   cwd?: string,
   mode?: "chat" | "plan" | "goal" | "robot-create" | "robot-modify",
-  attachments?: AttachedFile[],
+  attachments?: BinaryAttachedFile[],
   goalBudgetTokens?: number,
   robotId?: string,
 ): Promise<{ status: string }> {

@@ -52,8 +52,8 @@ use crate::robot_orchestrator::{
     should_enable_robot_orchestration, strip_robot_node_done_marker,
 };
 use crate::thread_store::{
-    FileChange, ThreadGoal, ThreadGoalStatus, ThreadMessage, ThreadRobotState, ThreadStore,
-    ToolCallInfo, TurnUsage,
+    FileChange, ThreadGoal, ThreadGoalStatus, ThreadMessage, ThreadMessageAttachment,
+    ThreadRobotState, ThreadStore, ToolCallInfo, TurnUsage,
 };
 use crate::tool_executor::ToolExecutor;
 use crate::usage::UsageRecorder;
@@ -315,6 +315,16 @@ impl AgentEngine {
             let key = provider.resolve_api_key().unwrap_or_default();
             (url, key, provider_wire_api.clone(), None)
         };
+        let persisted_image_attachments: Vec<ThreadMessageAttachment> = attachments
+            .iter()
+            .filter(|attachment| attachment.mime_type.starts_with("image/"))
+            .map(|attachment| ThreadMessageAttachment {
+                name: attachment.name.clone(),
+                mime_type: attachment.mime_type.clone(),
+                data_url: attachment.data_url.clone(),
+                size: attachment.size,
+            })
+            .collect();
         let (attachments, vision_fallback_context) = self
             .resolve_image_context_with_fallback(config, user_input, &model, &attachments)
             .await;
@@ -408,6 +418,7 @@ impl AgentEngine {
             tool_call_id: None,
             tool_name: None,
             tool_calls: None,
+            attachments: persisted_image_attachments,
         };
         self.thread_store.add_message(thread_id, user_msg).await?;
 
@@ -521,6 +532,7 @@ impl AgentEngine {
                 tool_call_id: None,
                 tool_name: None,
                 tool_calls: None,
+                attachments: Vec::new(),
             };
             self.thread_store.add_message(thread_id, msg).await?;
         }
@@ -594,6 +606,7 @@ impl AgentEngine {
                             tool_call_id: None,
                             tool_name: None,
                             tool_calls: None,
+                            attachments: Vec::new(),
                         };
                         self.thread_store.add_message(thread_id, sb_msg).await?;
                     }
@@ -833,6 +846,7 @@ impl AgentEngine {
                                     tool_call_id: None,
                                     tool_name: None,
                                     tool_calls: None,
+                                    attachments: Vec::new(),
                                 };
                                 self.thread_store.add_message(thread_id, nudge_msg).await?;
                                 continue;
@@ -852,6 +866,7 @@ impl AgentEngine {
                                     tool_call_id: None,
                                     tool_name: None,
                                     tool_calls: None,
+                                    attachments: Vec::new(),
                                 };
                                 self.thread_store.add_message(thread_id, msg).await?;
                             }
@@ -978,6 +993,7 @@ impl AgentEngine {
                                     tool_call_id: None,
                                     tool_name: None,
                                     tool_calls: None,
+                                    attachments: Vec::new(),
                                 };
                                 self.thread_store.add_message(thread_id, pause_hint).await?;
                                 stop_hooks_satisfied = true;
@@ -1036,6 +1052,7 @@ impl AgentEngine {
                                         tool_call_id: None,
                                         tool_name: None,
                                         tool_calls: None,
+                                        attachments: Vec::new(),
                                     };
                                     self.thread_store.add_message(thread_id, msg).await?;
                                     continue;
@@ -1062,6 +1079,7 @@ impl AgentEngine {
                                             tool_call_id: None,
                                             tool_name: None,
                                             tool_calls: None,
+                                            attachments: Vec::new(),
                                         };
                                         self.thread_store.add_message(thread_id, msg).await?;
                                         continue;
@@ -1076,6 +1094,7 @@ impl AgentEngine {
                                             tool_call_id: None,
                                             tool_name: None,
                                             tool_calls: None,
+                                            attachments: Vec::new(),
                                         };
                                         self.thread_store.add_message(thread_id, msg).await?;
                                         continue;
@@ -1137,6 +1156,7 @@ impl AgentEngine {
                                     tool_call_id: None,
                                     tool_name: None,
                                     tool_calls: None,
+                                    attachments: Vec::new(),
                                 };
                                 self.thread_store.add_message(thread_id, text_msg).await?;
                             }
@@ -1157,6 +1177,7 @@ impl AgentEngine {
                                 tool_call_id: None,
                                 tool_name: None,
                                 tool_calls: Some(tc_infos),
+                                attachments: Vec::new(),
                             };
                             self.thread_store
                                 .add_message(thread_id, assistant_tc_msg)
@@ -1216,6 +1237,7 @@ impl AgentEngine {
                                         tool_call_id: Some(call.id.clone()),
                                         tool_name: Some(call.name.clone()),
                                         tool_calls: None,
+                                        attachments: Vec::new(),
                                     };
                                     self.thread_store.add_message(thread_id, tool_msg).await?;
                                     continue;
@@ -1252,6 +1274,7 @@ impl AgentEngine {
                                         tool_call_id: Some(call.id.clone()),
                                         tool_name: Some(call.name.clone()),
                                         tool_calls: None,
+                                        attachments: Vec::new(),
                                     };
                                     self.thread_store.add_message(thread_id, tool_msg).await?;
                                     continue;
@@ -1286,6 +1309,7 @@ impl AgentEngine {
                                         tool_call_id: Some(call.id.clone()),
                                         tool_name: Some(call.name.clone()),
                                         tool_calls: None,
+                                        attachments: Vec::new(),
                                     };
                                     self.thread_store.add_message(thread_id, tool_msg).await?;
                                     continue;
@@ -1421,6 +1445,7 @@ impl AgentEngine {
                                     tool_call_id: Some(call.id.clone()),
                                     tool_name: Some(call.name.clone()),
                                     tool_calls: None,
+                                    attachments: Vec::new(),
                                 };
                                 self.thread_store.add_message(thread_id, tool_msg).await?;
                             }
@@ -1581,6 +1606,7 @@ impl AgentEngine {
                         tool_call_id: None,
                         tool_name: None,
                         tool_calls: None,
+                        attachments: Vec::new(),
                     };
                     self.thread_store
                         .add_message(thread_id, pending_msg)
@@ -1600,6 +1626,7 @@ impl AgentEngine {
                     tool_call_id: None,
                     tool_name: None,
                     tool_calls: None,
+                    attachments: Vec::new(),
                 };
                     self.thread_store
                         .add_message(thread_id, summary_nudge)
@@ -1691,6 +1718,7 @@ impl AgentEngine {
                             tool_call_id: None,
                             tool_name: None,
                             tool_calls: None,
+                            attachments: Vec::new(),
                         };
                         self.thread_store.add_message(thread_id, msg).await?;
                     }
@@ -1725,6 +1753,7 @@ impl AgentEngine {
                 tool_call_id: None,
                 tool_name: None,
                 tool_calls: None,
+                attachments: Vec::new(),
             };
             self.thread_store
                 .add_message(thread_id, continuation_msg)
@@ -2869,7 +2898,10 @@ impl AgentEngine {
             }
         }
 
-        for msg in &sanitized_history {
+        // 某些 chat 网关要求 system 消息必须位于开头，历史中的 system 统一前置。
+        let reordered_history = reorder_history_system_messages_for_model(&sanitized_history);
+
+        for msg in reordered_history {
             let internal_tool_calls = msg.tool_calls.as_ref().map(|tcs| {
                 tcs.iter()
                     .map(|tc| InternalToolCall {
@@ -4174,6 +4206,22 @@ fn sanitize_tool_name(name: &str) -> String {
     }
 }
 
+fn reorder_history_system_messages_for_model<'a>(
+    history: &'a [ThreadMessage],
+) -> Vec<&'a ThreadMessage> {
+    let mut system_messages = Vec::new();
+    let mut non_system_messages = Vec::new();
+    for msg in history {
+        if msg.role == "system" {
+            system_messages.push(msg);
+        } else {
+            non_system_messages.push(msg);
+        }
+    }
+    system_messages.extend(non_system_messages);
+    system_messages
+}
+
 fn sanitize_history_for_model(history: &[ThreadMessage]) -> Vec<ThreadMessage> {
     let mut seen_tool_call_ids: HashSet<String> = HashSet::new();
     let mut sanitized = Vec::with_capacity(history.len());
@@ -5200,6 +5248,19 @@ mod tests {
         }
     }
 
+    fn test_thread_message(id: &str, role: &str, content: &str) -> ThreadMessage {
+        ThreadMessage {
+            id: id.to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            timestamp: 0,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+            attachments: Vec::new(),
+        }
+    }
+
     #[test]
     fn extract_proposed_plan_supports_inline_tags() {
         let text = "intro<proposed_plan>\n# Plan\n- step 1\n</proposed_plan>tail";
@@ -5728,6 +5789,68 @@ mod tests {
     }
 
     #[test]
+    fn reorder_history_system_messages_for_model_moves_system_to_front() {
+        let history = vec![
+            test_thread_message("u1", "user", "hi"),
+            test_thread_message("s1", "system", "note-a"),
+            test_thread_message("a1", "assistant", "hello"),
+            test_thread_message("s2", "system", "note-b"),
+            test_thread_message("t1", "tool", "ok"),
+        ];
+
+        let reordered = reorder_history_system_messages_for_model(&history);
+        let roles: Vec<&str> = reordered.iter().map(|msg| msg.role.as_str()).collect();
+        assert_eq!(roles, vec!["system", "system", "user", "assistant", "tool"]);
+        assert_eq!(reordered[0].id, "s1");
+        assert_eq!(reordered[1].id, "s2");
+    }
+
+    #[test]
+    fn build_internal_messages_keeps_system_messages_before_non_system_roles() {
+        let workspace_dir =
+            std::env::temp_dir().join(format!("cn-codex-agent-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace_dir).expect("create temp workspace");
+
+        let thread_store = Arc::new(ThreadStore::new(&workspace_dir.join("codey")));
+        let tool_executor = ToolExecutor::new(workspace_dir.clone());
+        let engine =
+            AgentEngine::new(thread_store, tool_executor, workspace_dir.clone()).expect("engine");
+        let config = ConfigToml::default();
+        let history = vec![
+            test_thread_message("u1", "user", "hello"),
+            test_thread_message("s1", "system", "runtime note"),
+            test_thread_message("a1", "assistant", "reply"),
+        ];
+
+        let messages = engine.build_internal_messages(
+            &config,
+            &history,
+            &workspace_dir,
+            "chat",
+            None,
+            None,
+            &[],
+            None,
+            None,
+        );
+
+        let first_non_system = messages
+            .iter()
+            .position(|msg| msg.role != "system")
+            .expect("should contain non-system messages");
+        assert!(messages[first_non_system..]
+            .iter()
+            .all(|msg| msg.role != "system"));
+        assert!(messages.iter().any(|msg| {
+            msg.role == "system"
+                && matches!(
+                    msg.content.as_ref(),
+                    Some(serde_json::Value::String(content)) if content == "runtime note"
+                )
+        }));
+    }
+
+    #[test]
     fn sanitize_history_for_model_skips_orphan_tool_messages() {
         let history = vec![
             ThreadMessage {
@@ -5738,6 +5861,7 @@ mod tests {
                 tool_call_id: Some("call-missing".to_string()),
                 tool_name: Some("shell".to_string()),
                 tool_calls: None,
+                attachments: Vec::new(),
             },
             ThreadMessage {
                 id: "assistant-call".to_string(),
@@ -5751,6 +5875,7 @@ mod tests {
                     name: "shell".to_string(),
                     arguments: "{}".to_string(),
                 }]),
+                attachments: Vec::new(),
             },
             ThreadMessage {
                 id: "tool-ok".to_string(),
@@ -5760,6 +5885,7 @@ mod tests {
                 tool_call_id: Some("call-ok".to_string()),
                 tool_name: Some("shell".to_string()),
                 tool_calls: None,
+                attachments: Vec::new(),
             },
         ];
 
@@ -5784,6 +5910,7 @@ mod tests {
                     name: "list_directory".to_string(),
                     arguments: "{}".to_string(),
                 }]),
+                attachments: Vec::new(),
             },
             ThreadMessage {
                 id: "tool-bad".to_string(),
@@ -5793,6 +5920,7 @@ mod tests {
                 tool_call_id: Some(String::new()),
                 tool_name: Some("list_directory".to_string()),
                 tool_calls: None,
+                attachments: Vec::new(),
             },
             ThreadMessage {
                 id: "assistant-ok".to_string(),
@@ -5806,6 +5934,7 @@ mod tests {
                     name: "list_directory".to_string(),
                     arguments: "{}".to_string(),
                 }]),
+                attachments: Vec::new(),
             },
             ThreadMessage {
                 id: "tool-ok".to_string(),
@@ -5815,6 +5944,7 @@ mod tests {
                 tool_call_id: Some("call-ok".to_string()),
                 tool_name: Some("list_directory".to_string()),
                 tool_calls: None,
+                attachments: Vec::new(),
             },
         ];
 

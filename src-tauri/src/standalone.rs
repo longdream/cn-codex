@@ -739,6 +739,12 @@ pub async fn standalone_thread_read(
                         "id": m.id,
                         "text": m.content,
                         "content": [{ "type": "text", "text": m.content }],
+                        "attachments": m.attachments.iter().map(|attachment| serde_json::json!({
+                            "name": attachment.name,
+                            "type": attachment.mime_type,
+                            "dataUrl": attachment.data_url,
+                            "size": attachment.size,
+                        })).collect::<Vec<_>>(),
                     })),
                     "assistant" if m.tool_calls.is_some() => {
                         let tcs = m.tool_calls.as_ref().unwrap();

@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -11,6 +11,7 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl,
     WebviewWindowBuilder, Window, webview::WebviewBuilder,
 };
+use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::error::{AppError, AppResult};
@@ -31,6 +32,8 @@ const MAX_PICKED_ELEMENT_QUEUE: usize = 24;
 const WEB_EDITABLE_EXTENSIONS: &[&str] = &[
     "html", "htm", "css", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte",
 ];
+const CDP_EVALUATE_MAX_ATTEMPTS: usize = 3;
+const CDP_RETRY_BASE_DELAY_MS: u64 = 120;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +131,12 @@ struct BrowserDetachedChangedEvent {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteTabInfo {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
     #[serde(default, rename = "type")]
     kind: String,
     #[serde(default, rename = "webSocketDebuggerUrl")]
@@ -292,7 +301,7 @@ pub async fn window_detach_browser(
     width: Option<f64>,
     height: Option<f64>,
 ) -> AppResult<BrowserWindowInfo> {
-    let browser_url = resolve_active_browser_url(&state).await?;
+    let browser_url = resolve_detach_browser_url(&state).await?;
     if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
         webview.close()?;
     }
@@ -381,7 +390,8 @@ pub async fn browser_start_pick_mode(
         })));
     }
 
-    evaluate_browser_script(&pick_mode_start_script(), true).await?;
+    evaluate_browser_script(&pick_mode_start_script(), true, Some(context.current_url.as_str()))
+        .await?;
     Ok(context)
 }
 
@@ -402,6 +412,7 @@ pub async fn browser_stop_pick_mode(app: AppHandle) -> AppResult<()> {
         })()
         "#,
         true,
+        None,
     )
     .await?;
     Ok(())
@@ -431,6 +442,7 @@ pub async fn browser_poll_picked_element(
         })()
         "#,
         true,
+        Some(context.current_url.as_str()),
     )
     .await?;
 
@@ -510,6 +522,7 @@ pub async fn browser_apply_dom_edit(
             payload = payload
         ),
         true,
+        Some(context.current_url.as_str()),
     )
     .await?;
 
@@ -558,6 +571,7 @@ pub async fn browser_refresh_preview(app: AppHandle) -> AppResult<String> {
         })()
         "#,
         true,
+        None,
     )
     .await;
     if let Ok(mode) = mode {
@@ -928,13 +942,7 @@ fn open_browser_popup(
     Ok(info)
 }
 
-async fn resolve_active_browser_url(state: &State<'_, AppState>) -> AppResult<String> {
-    if let Ok(current_url) = current_browser_url().await {
-        let trimmed = current_url.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
+async fn resolve_detach_browser_url(state: &State<'_, AppState>) -> AppResult<String> {
     if let Some(url) = state.browser_last_url.read().await.clone() {
         let trimmed = url.trim();
         if !trimmed.is_empty() {
@@ -1297,16 +1305,40 @@ fn pick_mode_start_script() -> String {
 }
 
 async fn current_browser_url() -> AppResult<String> {
-    let value = evaluate_browser_script("(() => location.href || \"\")()", true).await?;
+    let value = evaluate_browser_script("(() => location.href || \"\")()", true, None).await?;
     Ok(value.as_str().unwrap_or("about:blank").to_string())
 }
 
 async fn evaluate_browser_script(
     script: &str,
     return_by_value: bool,
+    preferred_url: Option<&str>,
+) -> AppResult<serde_json::Value> {
+    let mut attempt = 0usize;
+    loop {
+        let result =
+            evaluate_browser_script_once(script, return_by_value, preferred_url).await;
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if attempt + 1 >= CDP_EVALUATE_MAX_ATTEMPTS || !is_transient_cdp_error(&error) {
+                    return Err(error);
+                }
+                attempt += 1;
+                let delay_ms = CDP_RETRY_BASE_DELAY_MS.saturating_mul(attempt as u64);
+                sleep(Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+}
+
+async fn evaluate_browser_script_once(
+    script: &str,
+    return_by_value: bool,
+    preferred_url: Option<&str>,
 ) -> AppResult<serde_json::Value> {
     let cdp_endpoint = browser_cdp_endpoint();
-    let ws_url = browser_tab_websocket_url(&cdp_endpoint).await?;
+    let ws_url = browser_tab_websocket_url(&cdp_endpoint, preferred_url).await?;
     let (mut stream, _) = connect_async(&ws_url)
         .await
         .map_err(|e| AppError::Custom(format!("CDP connect failed: {e}")))?;
@@ -1359,15 +1391,90 @@ async fn evaluate_browser_script(
     Ok(result)
 }
 
-async fn browser_tab_websocket_url(cdp_endpoint: &str) -> AppResult<String> {
+fn is_transient_cdp_error(error: &AppError) -> bool {
+    let AppError::Custom(message) = error else {
+        return false;
+    };
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("cdp connect failed")
+        || lowered.contains("cdp receive failed")
+        || lowered.contains("cdp websocket closed")
+        || lowered.contains("connection closed before receiving")
+        || lowered.contains("no browser tab exposes a cdp websocket endpoint")
+        || lowered.contains("failed to query browser tabs")
+        || lowered.contains("websocket protocol error")
+        || lowered.contains("connection reset")
+        || lowered.contains("broken pipe")
+}
+
+async fn browser_tab_websocket_url(
+    cdp_endpoint: &str,
+    preferred_url: Option<&str>,
+) -> AppResult<String> {
     let tabs = list_browser_tabs(cdp_endpoint).await?;
-    let target = tabs
+    let page_tabs: Vec<RemoteTabInfo> = tabs
         .into_iter()
-        .find(|tab| !tab.web_socket_debugger_url.is_empty())
-        .ok_or_else(|| {
-            AppError::Custom("No browser tab exposes a CDP websocket endpoint.".to_string())
-        })?;
-    Ok(target.web_socket_debugger_url)
+        .filter(|tab| {
+            (tab.kind.is_empty() || tab.kind == "page")
+                && !tab.web_socket_debugger_url.trim().is_empty()
+        })
+        .collect();
+    if page_tabs.is_empty() {
+        return Err(AppError::Custom(
+            "No browser tab exposes a CDP websocket endpoint.".to_string(),
+        ));
+    }
+
+    let normalized_preferred = preferred_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_tab_url_for_match);
+    if let Some(preferred) = normalized_preferred.as_deref() {
+        if let Some(tab) = page_tabs
+            .iter()
+            .find(|tab| tab_matches_preferred_url(tab, preferred))
+        {
+            return Ok(tab.web_socket_debugger_url.clone());
+        }
+    }
+
+    if let Some(tab) = page_tabs.iter().find(|tab| is_non_blank_browser_tab(tab)) {
+        return Ok(tab.web_socket_debugger_url.clone());
+    }
+
+    if let Some(tab) = page_tabs
+        .iter()
+        .find(|tab| !tab.id.trim().is_empty() && !tab.title.trim().is_empty())
+    {
+        return Ok(tab.web_socket_debugger_url.clone());
+    }
+
+    Ok(page_tabs
+        .first()
+        .map(|tab| tab.web_socket_debugger_url.clone())
+        .unwrap_or_default())
+}
+
+fn normalize_tab_url_for_match(raw: &str) -> String {
+    raw.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn tab_matches_preferred_url(tab: &RemoteTabInfo, preferred_url: &str) -> bool {
+    let tab_url = normalize_tab_url_for_match(&tab.url);
+    if tab_url.is_empty() {
+        return false;
+    }
+    tab_url == preferred_url
+        || tab_url.starts_with(preferred_url)
+        || preferred_url.starts_with(&tab_url)
+}
+
+fn is_non_blank_browser_tab(tab: &RemoteTabInfo) -> bool {
+    let url = tab.url.trim();
+    if url.is_empty() || url.eq_ignore_ascii_case("about:blank") {
+        return false;
+    }
+    !url.to_ascii_lowercase().starts_with("devtools://")
 }
 
 async fn list_browser_tabs(cdp_endpoint: &str) -> AppResult<Vec<RemoteTabInfo>> {
@@ -1386,10 +1493,7 @@ async fn list_browser_tabs(cdp_endpoint: &str) -> AppResult<Vec<RemoteTabInfo>> 
         .json::<Vec<RemoteTabInfo>>()
         .await
         .map_err(|e| AppError::Custom(format!("Failed to parse browser tabs: {e}")))?;
-    Ok(tabs
-        .into_iter()
-        .filter(|tab| tab.kind.is_empty() || tab.kind == "page")
-        .collect())
+    Ok(tabs)
 }
 
 async fn cdp_send_command(
@@ -1612,30 +1716,6 @@ async fn ensure_workspace_file_access(
         .canonicalize()
         .unwrap_or_else(|_| file_path.to_path_buf());
     if canonical_target.starts_with(&workspace_root) {
-        return Ok(());
-    }
-
-    Err(AppError::Custom(format!(
-        "File path is outside workspace and cannot be edited: {}",
-        normalize_windows_verbatim_prefix(&canonical_target.to_string_lossy())
-    )))
-}
-
-async fn ensure_document_detail_file_access(
-    state: &State<'_, AppState>,
-    file_path: &Path,
-) -> AppResult<()> {
-    let mut allowed_roots = vec![workspace_root_from_state(state).await?];
-    if let Some(active_root) = state.document_detail_active_root.read().await.clone() {
-        if let Some(root) = resolve_workspace_root_candidate(&active_root) {
-            allowed_roots.push(root);
-        }
-    }
-
-    let canonical_target = file_path
-        .canonicalize()
-        .unwrap_or_else(|_| file_path.to_path_buf());
-    if allowed_roots.iter().any(|root| canonical_target.starts_with(root)) {
         return Ok(());
     }
 
@@ -1975,11 +2055,9 @@ pub async fn read_file_for_attach(
 
 #[tauri::command]
 pub async fn read_text_file_preview(
-    state: State<'_, AppState>,
     path: String,
 ) -> AppResult<TextFilePreviewResult> {
     let (display_path, file_path) = resolve_existing_file_path(&path)?;
-    ensure_document_detail_file_access(&state, &file_path).await?;
 
     let metadata = fs::metadata(&file_path)
         .map_err(|e| AppError::Custom(format!("Failed to read file metadata: {e}")))?;
@@ -2040,12 +2118,10 @@ pub async fn read_text_file_preview(
 
 #[tauri::command]
 pub async fn write_text_file_preview(
-    state: State<'_, AppState>,
     path: String,
     content: String,
 ) -> AppResult<TextFileWriteResult> {
     let (display_path, file_path) = resolve_existing_file_path(&path)?;
-    ensure_document_detail_file_access(&state, &file_path).await?;
     let metadata = fs::metadata(&file_path)
         .map_err(|e| AppError::Custom(format!("Failed to read file metadata: {e}")))?;
     // 为防止“读取时已截断但保存时覆盖整文件”的误写，这里限制仅允许处理预览上限内的文本文件。

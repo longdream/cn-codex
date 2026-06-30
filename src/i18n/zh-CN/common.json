@@ -384,6 +384,7 @@
   "fileTree.refresh": "刷新文件树",
   "fileTree.openInExplorer": "在资源管理器中打开",
   "fileTree.addToChat": "加入对话",
+  "fileTree.openInBrowser": "加入到浏览器浏览",
   "fileTree.preview": "\u9884\u89c8",
   "fileTree.code": "\u4ee3\u7801",
   "fileTree.previewTruncated": "\u6587\u4ef6\u8f83\u5927\uff0c\u4ec5\u663e\u793a\u524d 512 KB \u5185\u5bb9\u3002",

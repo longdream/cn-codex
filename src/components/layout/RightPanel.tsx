@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import { useAppStore } from "../../stores/appStore";
 import { browserApplyDomEdit, browserGetEditContext, browserPollPickedElement, browserRefreshPreview, browserStartPickMode, browserStopPickMode, revealInExplorer, windowAttachBrowser, windowCloseBrowser, windowDetachBrowser, windowNavigateBrowser, windowOpenBrowser, windowResizeBrowser, type BrowserDomEditRequest, type BrowserEditContext, type BrowserPickedElement } from "../../api/window";
-import { formatWebSnippet } from "../../utils/formatWebSnippet";
 import { FileTree } from "./FileTree";
 import { GitPanel } from "./GitPanel";
 import { TerminalPanel } from "./TerminalPanel";
@@ -87,6 +86,33 @@ function normalizeLocalImagePath(raw: string): string {
   return trimmed;
 }
 
+const WEB_SNIPPET_MIME = "application/x-cn-codex-web-snippet";
+
+function safeInvokeUnlisten(unlisten: (() => void) | null | undefined): void {
+  if (!unlisten) {
+    return;
+  }
+  try {
+    const maybePromise = (unlisten as () => unknown)();
+    void Promise.resolve(maybePromise).catch(() => undefined);
+  } catch {
+    // callback 已失效时直接吞掉，避免 unhandled rejection 打断 UI 生命周期。
+  }
+}
+
+function buildWebSnippetName(picked: BrowserPickedElement): string {
+  const tag = picked.tagName?.trim().toLowerCase();
+  const normalizedTag = tag && tag.length > 0 ? tag : "element";
+  const normalizedText = picked.text?.trim() ?? "";
+  if (!normalizedText) {
+    return normalizedTag;
+  }
+  const clipped = normalizedText.length > 24
+    ? `${normalizedText.slice(0, 24)}...`
+    : normalizedText;
+  return `${normalizedTag}: ${clipped}`;
+}
+
 export function RightPanel() {
   const intl = useIntl();
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
@@ -100,13 +126,18 @@ export function RightPanel() {
   const setBrowserDetached = useAppStore((s) => s.setBrowserDetached);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const messages = useAppStore((s) => s.messages);
-  const queueComposerInsert = useAppStore((s) => s.queueComposerInsert);
+  const addAttachedFile = useAppStore((s) => s.addAttachedFile);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const setBrowserPanelState = useAppStore((s) => s.setBrowserPanelState);
   const browserContainerRef = useRef<HTMLDivElement>(null);
   const resizeTimerRef = useRef<number | null>(null);
   const pickedAtRef = useRef(0);
   const attachingBackRef = useRef(false);
+  const browserActiveRef = useRef(false);
+  const browserDetachedRef = useRef(false);
+  const rightPanelTabRef = useRef(rightPanelTab);
+  const syncBrowserPositionRef = useRef<() => void>(() => undefined);
+  const attachPopupBackToPanelRef = useRef<(nextUrl?: string) => Promise<void>>(() => Promise.resolve());
 
   const [browserEditContext, setBrowserEditContext] = useState<BrowserEditContext | null>(null);
   const [browserEditMode, setBrowserEditMode] = useState(false);
@@ -224,6 +255,16 @@ export function RightPanel() {
       });
   }, [browserActive, rightPanelTab, browserEditMode]);
 
+  const scheduleRefreshEditContext = useCallback(() => {
+    // attach 后 WebView/CDP 初始化存在短暂竞态；延迟 + 单次重试降低瞬时失败。
+    window.setTimeout(() => {
+      refreshEditContext();
+    }, 160);
+    window.setTimeout(() => {
+      refreshEditContext();
+    }, 520);
+  }, [refreshEditContext]);
+
   const attachPopupBackToPanel = useCallback((nextUrl?: string) => {
     if (attachingBackRef.current) {
       return Promise.resolve();
@@ -243,13 +284,14 @@ export function RightPanel() {
       .then((info) => {
         setBrowserDetached(false);
         setBrowserActive(true);
+        setBrowserEditError(null);
         setBrowserPanelState({
           url: info.url,
           status: "success",
         });
         requestAnimationFrame(syncBrowserPosition);
         setTimeout(syncBrowserPosition, 80);
-        refreshEditContext();
+        scheduleRefreshEditContext();
       })
       .catch((err) => {
         setBrowserEditError(String(err));
@@ -257,7 +299,21 @@ export function RightPanel() {
       .finally(() => {
         attachingBackRef.current = false;
       });
-  }, [workspaceCwd, setBrowserDetached, setBrowserActive, setBrowserPanelState, syncBrowserPosition, refreshEditContext]);
+  }, [workspaceCwd, setBrowserDetached, setBrowserActive, setBrowserPanelState, syncBrowserPosition, scheduleRefreshEditContext]);
+
+  useEffect(() => {
+    browserActiveRef.current = browserActive;
+    browserDetachedRef.current = browserDetached;
+    rightPanelTabRef.current = rightPanelTab;
+  }, [browserActive, browserDetached, rightPanelTab]);
+
+  useEffect(() => {
+    syncBrowserPositionRef.current = syncBrowserPosition;
+  }, [syncBrowserPosition]);
+
+  useEffect(() => {
+    attachPopupBackToPanelRef.current = attachPopupBackToPanel;
+  }, [attachPopupBackToPanel]);
 
   const handleToggleDetachMode = useCallback(() => {
     if (browserDetached) {
@@ -273,6 +329,7 @@ export function RightPanel() {
         .then((info) => {
           setBrowserDetached(true);
           setBrowserActive(false);
+          setBrowserEditError(null);
           setBrowserPanelState({
             url: info.url,
             status: "success",
@@ -314,11 +371,19 @@ export function RightPanel() {
   }, [browserDetached, browserEditMode, intl]);
 
   const appendPickedSnippetToComposer = useCallback((picked: BrowserPickedElement) => {
-    const snippet = formatWebSnippet({
+    const sourcePath = picked.sourcePath?.trim() || browserEditContext?.sourcePath?.trim() || undefined;
+    const selectorCandidates = Array.isArray(picked.selectorCandidates)
+      ? picked.selectorCandidates.map((item) => item.trim()).filter((item) => item.length > 0)
+      : [];
+    addAttachedFile({
+      kind: "webSnippet",
+      name: buildWebSnippetName(picked),
+      type: WEB_SNIPPET_MIME,
+      size: (picked.text ?? "").trim().length,
       url: picked.url,
       selector: picked.selector,
-      selectorCandidates: picked.selectorCandidates,
-      sourcePath: picked.sourcePath ?? browserEditContext?.sourcePath ?? null,
+      selectorCandidates,
+      sourcePath,
       tagName: picked.tagName,
       text: picked.text,
       rect: {
@@ -328,8 +393,7 @@ export function RightPanel() {
         height: picked.height,
       },
     });
-    queueComposerInsert(snippet.text);
-  }, [queueComposerInsert, browserEditContext?.sourcePath]);
+  }, [addAttachedFile, browserEditContext?.sourcePath]);
 
   const handleApplyDomEdit = useCallback(() => {
     if (!pickedElement) return;
@@ -389,14 +453,25 @@ export function RightPanel() {
 
   // 后端 CDP 就绪后重新定位 WebView（解决后端 -9999 覆盖前端定位的竞态）
   useEffect(() => {
-    const unlisten = listen("browser-webview-ready", () => {
-      if (browserActive && rightPanelTab === "browser") {
-        syncBrowserPosition();
-        setTimeout(syncBrowserPosition, 100);
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen("browser-webview-ready", () => {
+      if (browserActiveRef.current && rightPanelTabRef.current === "browser") {
+        syncBrowserPositionRef.current();
+        setTimeout(() => syncBrowserPositionRef.current(), 100);
       }
-    });
-    return () => { void unlisten.then((fn) => fn()); };
-  }, [browserActive, rightPanelTab, syncBrowserPosition]);
+    }).then((fn) => {
+      if (disposed) {
+        safeInvokeUnlisten(fn);
+        return;
+      }
+      unlisten = fn;
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+      safeInvokeUnlisten(unlisten);
+    };
+  }, []);
 
   // browserActive 变为 true 时延迟同步位置（确保 DOM 已布局）
   useEffect(() => {
@@ -419,6 +494,7 @@ export function RightPanel() {
   }, [refreshEditContext, browserPanelUrl, browserOutput?.finalUrl, browserSyncTrigger]);
 
   useEffect(() => {
+    let disposed = false;
     let offDetached: (() => void) | null = null;
     let offClosed: (() => void) | null = null;
     void listen<{ detached?: boolean; url?: string | null }>("browser-detached-changed", (event) => {
@@ -426,38 +502,45 @@ export function RightPanel() {
       setBrowserDetached(detached);
       if (detached) {
         setBrowserActive(false);
+        setBrowserEditError(null);
         setBrowserEditMode(false);
         setPickedElement(null);
-      } else if (rightPanelTab === "browser") {
+      } else if (rightPanelTabRef.current === "browser") {
         setBrowserActive(true);
-        requestAnimationFrame(syncBrowserPosition);
+        setBrowserEditError(null);
+        requestAnimationFrame(() => syncBrowserPositionRef.current());
       }
       if (typeof event.payload?.url === "string" && event.payload.url.trim()) {
         setBrowserPanelState({ url: event.payload.url.trim() });
       }
     }).then((fn) => {
+      if (disposed) {
+        safeInvokeUnlisten(fn);
+        return;
+      }
       offDetached = fn;
-    });
+    }).catch(() => undefined);
     void listen<{ url?: string | null }>("browser-popup-closed", (event) => {
-      if (!browserDetached || attachingBackRef.current || rightPanelTab !== "browser") {
+      if (!browserDetachedRef.current || attachingBackRef.current || rightPanelTabRef.current !== "browser") {
         return;
       }
       const nextUrl = typeof event.payload?.url === "string" && event.payload.url.trim()
         ? event.payload.url.trim()
         : undefined;
-      void attachPopupBackToPanel(nextUrl);
+      void attachPopupBackToPanelRef.current(nextUrl);
     }).then((fn) => {
+      if (disposed) {
+        safeInvokeUnlisten(fn);
+        return;
+      }
       offClosed = fn;
-    });
+    }).catch(() => undefined);
     return () => {
-      if (offDetached) {
-        void offDetached();
-      }
-      if (offClosed) {
-        void offClosed();
-      }
+      disposed = true;
+      safeInvokeUnlisten(offDetached);
+      safeInvokeUnlisten(offClosed);
     };
-  }, [browserDetached, rightPanelTab, attachPopupBackToPanel, setBrowserDetached, setBrowserActive, setBrowserPanelState, syncBrowserPosition]);
+  }, [setBrowserDetached, setBrowserActive, setBrowserPanelState]);
 
   useEffect(() => {
     if (!browserEditMode) {

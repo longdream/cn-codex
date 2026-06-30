@@ -275,11 +275,11 @@ export function RunSummaryDiffWindow() {
   }, [canWriteDisk, intl, payload, persistStatus]);
 
   return (
-    <div className="flex h-dvh w-screen flex-col bg-[var(--surface-panel)] text-[var(--text-base)]">
+    <div className="runsummary-diff-window flex h-dvh w-screen flex-col bg-[var(--surface-panel)] text-[var(--text-base)]">
       <div className="flex h-9 items-center border-b border-[var(--border-subtle)] bg-[var(--surface-sidebar)]">
         <div
           data-tauri-drag-region
-          className="flex min-w-0 flex-1 items-center gap-2 px-3"
+          className="runsummary-diff-window-drag flex min-w-0 flex-1 items-center gap-2 px-3"
         >
           <IconFileDiff size={14} stroke={1.8} className="text-[var(--accent)]" />
           <span className="truncate text-[12px] text-[var(--text-strong)]">
@@ -289,7 +289,7 @@ export function RunSummaryDiffWindow() {
             {diffSourceLabel(source, intl)}
           </span>
         </div>
-        <div className="flex h-full items-center">
+        <div className="runsummary-diff-window-controls flex h-full items-center">
           <button
             type="button"
             onClick={() => void handleRestore()}

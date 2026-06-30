@@ -1,5 +1,6 @@
 import {
   IconArrowUp,
+  IconBrowser,
   IconBrain,
   IconChevronDown,
   IconClipboardList,
@@ -31,18 +32,25 @@ import {
   getDefaultSlashCommands,
   type SlashCommand,
 } from "./SlashCommandPanel";
-import type { AttachedFile } from "../../types/provider";
+import {
+  type AttachedFile,
+  type BinaryAttachedFile,
+  isBinaryAttachedFile,
+  isPathRefAttachedFile,
+  isWebSnippetAttachedFile,
+} from "../../types/provider";
 import { invoke } from "@tauri-apps/api/core";
-import { readFileForAttach } from "../../api/window";
 import { robotList } from "../../api/robot";
 import type { RobotSummary } from "../../types/robot";
 import { skillList } from "../../api/skill";
 import type { SkillSummary } from "../../types/skill";
+import { formatWebSnippet } from "../../utils/formatWebSnippet";
 
 /** 支持的文档 MIME 类型和扩展名 */
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
 const IMAGE_ACCEPT = "image/*";
 const ALL_ACCEPT = `${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`;
+const PATH_REF_MIME = "application/x-cn-codex-path-ref";
 
 interface ClipboardImageItemLike {
   type: string;
@@ -52,6 +60,56 @@ interface ClipboardImageItemLike {
 interface BrowserFileAttachmentInput {
   file: File;
   fallbackName?: string;
+}
+
+interface PreparedSendPayload {
+  text: string;
+  attachments: BinaryAttachedFile[];
+}
+
+function buildAttachedPathBlock(files: AttachedFile[]): string {
+  const uniquePaths = Array.from(
+    new Set(
+      files
+        .filter(isPathRefAttachedFile)
+        .map((file) => file.sourcePath.trim())
+        .filter(Boolean),
+    ),
+  );
+  if (uniquePaths.length === 0) {
+    return "";
+  }
+  return `AttachedPaths:\n${uniquePaths.map((sourcePath) => `- ${sourcePath}`).join("\n")}`;
+}
+
+function buildWebSnippetBlock(files: AttachedFile[]): string {
+  const blocks = files
+    .filter(isWebSnippetAttachedFile)
+    .map((file) => formatWebSnippet({
+      url: file.url,
+      selector: file.selector,
+      selectorCandidates: file.selectorCandidates ?? [],
+      sourcePath: file.sourcePath ?? null,
+      tagName: file.tagName,
+      text: file.text,
+      rect: file.rect,
+    }).text.trim())
+    .filter(Boolean);
+  return blocks.join("\n\n");
+}
+
+function prepareSendPayload(rawText: string, files: AttachedFile[]): PreparedSendPayload {
+  const text = rawText.trim();
+  const attachments = files.filter(isBinaryAttachedFile);
+  const extraBlocks = [buildAttachedPathBlock(files), buildWebSnippetBlock(files)].filter((block) => block.length > 0);
+  if (extraBlocks.length === 0) {
+    return { text, attachments };
+  }
+  const snippetBlock = extraBlocks.join("\n\n");
+  return {
+    text: text ? `${text}\n\n${snippetBlock}` : snippetBlock,
+    attachments,
+  };
 }
 
 function guessTypeFromExt(name: string): string {
@@ -137,7 +195,7 @@ interface ChatInputProps {
   onSend: (
     text: string,
     mode: ChatMode,
-    attachments: AttachedFile[],
+    attachments: BinaryAttachedFile[],
     options?: ChatSendExtendedOptions,
   ) => void;
   onInterrupt?: () => void;
@@ -482,6 +540,19 @@ export function ChatInput({
     }
   }, []);
 
+  const sendPrepared = useCallback(
+    (
+      rawText: string,
+      sendMode: ChatMode,
+      filesToSend: AttachedFile[],
+      options?: ChatSendExtendedOptions,
+    ) => {
+      const payload = prepareSendPayload(rawText, filesToSend);
+      onSend(payload.text, sendMode, payload.attachments, options);
+    },
+    [onSend],
+  );
+
   const handleSkillCommandSubmit = useCallback((trimmed: string, filesToSend: AttachedFile[]) => {
     const skillCommand = parseSkillCommand(trimmed);
     if (skillCommand) {
@@ -494,7 +565,7 @@ export function ChatInput({
         { id: "chat.skillPrompt" },
         { skillId: skillCommand.skillId, objective: skillCommand.objective },
       );
-      onSend(payload, mode, filesToSend);
+      sendPrepared(payload, mode, filesToSend);
       resetComposerAfterSubmit();
       return true;
     }
@@ -511,7 +582,7 @@ export function ChatInput({
     }
 
     return false;
-  }, [appendSystemMessage, intl, mode, onSend, resetComposerAfterSubmit, skills.length]);
+  }, [appendSystemMessage, intl, mode, resetComposerAfterSubmit, sendPrepared, skills.length]);
 
   const handleModifyRobotCommandSubmit = useCallback((trimmed: string, filesToSend: AttachedFile[]) => {
     const modifyCommand = parseModifyRobotCommand(trimmed);
@@ -533,14 +604,14 @@ export function ChatInput({
       return true;
     }
 
-    onSend(modifyCommand.objective, mode, filesToSend, {
+    sendPrepared(modifyCommand.objective, mode, filesToSend, {
       robotModifyMode: true,
       robotId: selectedRobotId!,
     });
     setRobotModifyMode(false);
     resetComposerAfterSubmit();
     return true;
-  }, [activateRobotModifyMode, mode, onSend, resetComposerAfterSubmit, selectedRobotId]);
+  }, [activateRobotModifyMode, mode, resetComposerAfterSubmit, selectedRobotId, sendPrepared]);
 
   const handleSubmit = useCallback(() => {
     const trimmed = text.trim();
@@ -549,11 +620,12 @@ export function ChatInput({
 
     // AI 回复中或目标运行中时，将消息加入排队队列而非直接发送
     if (isStreaming || goalRunning) {
+      const queuedPayload = prepareSendPayload(trimmed, filesToSend);
       const queuedMsg: QueuedMessage = {
         id: crypto.randomUUID(),
-        text: trimmed,
+        text: queuedPayload.text,
         mode,
-        attachments: [...filesToSend],
+        attachments: [...queuedPayload.attachments],
         options: robotModifyMode && selectedRobotId
           ? { robotModifyMode: true, robotId: selectedRobotId }
           : selectedRobotId
@@ -604,7 +676,7 @@ export function ChatInput({
       if (goalCommand.action !== "set") {
         onGoalCommand?.(goalCommand);
       } else if (goalCommand.objective) {
-        onSend(goalCommand.objective, "goal", filesToSend, {
+        sendPrepared(goalCommand.objective, "goal", filesToSend, {
           goalBudgetTokens: goalCommand.goalBudgetTokens,
         });
       }
@@ -612,14 +684,14 @@ export function ChatInput({
         useAppStore.getState().clearAttachedFiles();
       }
     } else if (robotCreateMode) {
-      onSend(trimmed, mode, filesToSend, { robotCreateMode: true });
+      sendPrepared(trimmed, mode, filesToSend, { robotCreateMode: true });
     } else if (robotModifyMode && selectedRobotId) {
-      onSend(trimmed, mode, filesToSend, { robotModifyMode: true, robotId: selectedRobotId });
+      sendPrepared(trimmed, mode, filesToSend, { robotModifyMode: true, robotId: selectedRobotId });
       setRobotModifyMode(false);
     } else if (selectedRobotId) {
-      onSend(trimmed, "goal", filesToSend, { robotId: selectedRobotId });
+      sendPrepared(trimmed, "goal", filesToSend, { robotId: selectedRobotId });
     } else {
-      onSend(trimmed, mode, filesToSend);
+      sendPrepared(trimmed, mode, filesToSend);
     }
     resetComposerAfterSubmit();
   }, [
@@ -632,11 +704,11 @@ export function ChatInput({
     isStreaming,
     mode,
     onGoalCommand,
-    onSend,
     resetComposerAfterSubmit,
     robotCreateMode,
     robotModifyMode,
     selectedRobotId,
+    sendPrepared,
     text,
   ]);
 
@@ -719,6 +791,7 @@ export function ChatInput({
     const reader = new FileReader();
     reader.onload = () => {
       const attached: AttachedFile = {
+        kind: "binary",
         name: resolvedName,
         type: resolvedType,
         dataUrl: reader.result as string,
@@ -749,7 +822,7 @@ export function ChatInput({
   const [smartBrainAdded, setSmartBrainAdded] = useState<Set<number>>(new Set());
 
   const handleAddToSmartBrain = useCallback(async (file: AttachedFile, index: number) => {
-    if (!file.sourcePath || smartBrainAdded.has(index)) return;
+    if (isWebSnippetAttachedFile(file) || !file.sourcePath || smartBrainAdded.has(index)) return;
     try {
       await invoke("smartbrain_upload_knowledge", { filePath: file.sourcePath });
       setSmartBrainAdded((prev) => new Set(prev).add(index));
@@ -796,18 +869,20 @@ export function ChatInput({
     if (projectFileData) {
       try {
         const { path, name } = JSON.parse(projectFileData) as { path: string; name: string };
-        void readFileForAttach(path).then((result) => {
-          const attached: AttachedFile = {
-            name: result.name || name,
-            type: result.mimeType,
-            dataUrl: result.dataUrl,
-            size: result.size,
-            sourcePath: result.sourcePath,
-          };
-          useAppStore.getState().addAttachedFile(attached);
-        }).catch((err) => {
-          console.error("Failed to read project file:", err);
-        });
+        const sourcePath = typeof path === "string" ? path.trim() : "";
+        if (!sourcePath) {
+          console.error("Project file path is empty");
+          return;
+        }
+        const fallbackName = sourcePath.split(/[\\/]/).filter(Boolean).pop() ?? sourcePath;
+        const attached: AttachedFile = {
+          kind: "pathRef",
+          name: (name || "").trim() || fallbackName,
+          type: PATH_REF_MIME,
+          size: 0,
+          sourcePath,
+        };
+        useAppStore.getState().addAttachedFile(attached);
       } catch {
         console.error("Failed to parse project file data");
       }
@@ -1153,43 +1228,69 @@ export function ChatInput({
         {/* 附件预览区 */}
         {attachedFiles.length > 0 && (
           <div className="mb-2 flex flex-wrap items-center gap-2">
-            {attachedFiles.map((file, idx) => (
-              <div key={idx} className="group relative flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-chip)] px-2 py-1.5">
-                {file.type.startsWith("image/") ? (
-                  <div className="h-10 w-10 overflow-hidden rounded-[var(--radius-sm)]">
-                    <img src={file.dataUrl} alt="" className="h-full w-full object-cover" />
+            {attachedFiles.map((file, idx) => {
+              const isImageAttachment = isBinaryAttachedFile(file) && file.type.startsWith("image/");
+              const isPathRefAttachment = isPathRefAttachedFile(file);
+              const isWebSnippetAttachment = isWebSnippetAttachedFile(file);
+              const chipTitle = isPathRefAttachment
+                ? file.sourcePath
+                : isWebSnippetAttachment
+                  ? `${file.url}\n${file.selector}`
+                  : undefined;
+              const secondaryText = isPathRefAttachment
+                ? file.sourcePath
+                : isWebSnippetAttachment
+                  ? file.selector || file.url
+                  : formatSize(file.size);
+              const canAddToSmartBrain = !isWebSnippetAttachment && !!file.sourcePath && !file.type.startsWith("image/");
+              return (
+                <div
+                  key={idx}
+                  className="group relative flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-chip)] px-2 py-1.5"
+                  title={chipTitle}
+                >
+                  {isImageAttachment ? (
+                    <div className="h-10 w-10 overflow-hidden rounded-[var(--radius-sm)]">
+                      <img src={file.dataUrl} alt="" className="h-full w-full object-cover" />
+                    </div>
+                  ) : isWebSnippetAttachment ? (
+                    <IconBrowser size={16} stroke={1.5} className="text-[var(--accent)]" />
+                  ) : isPathRefAttachment ? (
+                    <IconFolder size={16} stroke={1.5} className="text-[var(--accent)]" />
+                  ) : (
+                    <IconFile size={16} stroke={1.5} className="text-[var(--chat-muted)]" />
+                  )}
+                  <div className="max-w-[220px]">
+                    <p className="truncate text-[11px] text-[var(--chat-prose)]">{file.name}</p>
+                    <p className="truncate text-[11px] text-[var(--chat-faint)]">
+                      {secondaryText}
+                    </p>
                   </div>
-                ) : (
-                  <IconFile size={16} stroke={1.5} className="text-[var(--chat-muted)]" />
-                )}
-                <div className="max-w-[150px]">
-                  <p className="truncate text-[11px] text-[var(--chat-prose)]">{file.name}</p>
-                  <p className="text-[11px] text-[var(--chat-faint)]">{formatSize(file.size)}</p>
-                </div>
-                {file.sourcePath && !file.type.startsWith("image/") && (
+                  {canAddToSmartBrain && (
+                    <button
+                      type="button"
+                      onClick={() => handleAddToSmartBrain(file, idx)}
+                      disabled={smartBrainAdded.has(idx)}
+                      className={`absolute -left-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full shadow transition-opacity group-hover:opacity-100 ${
+                        smartBrainAdded.has(idx)
+                          ? "bg-[var(--accent)] text-white opacity-100"
+                          : "bg-[var(--chat-card-solid)] text-[var(--chat-faint)] opacity-0 hover:text-[var(--accent)]"
+                      }`}
+                      title={intl.formatMessage({ id: smartBrainAdded.has(idx) ? "chat.addedToSmartBrain" : "chat.addToSmartBrain" })}
+                    >
+                      <IconBrain size={10} stroke={2} />
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => handleAddToSmartBrain(file, idx)}
-                    disabled={smartBrainAdded.has(idx)}
-                    className={`absolute -left-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full shadow transition-opacity group-hover:opacity-100 ${
-                      smartBrainAdded.has(idx)
-                        ? "bg-[var(--accent)] text-white opacity-100"
-                        : "bg-[var(--chat-card-solid)] text-[var(--chat-faint)] opacity-0 hover:text-[var(--accent)]"
-                    }`}
-                    title={intl.formatMessage({ id: smartBrainAdded.has(idx) ? "chat.addedToSmartBrain" : "chat.addToSmartBrain" })}
+                    onClick={() => handleRemoveFile(idx)}
+                    className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--chat-card-solid)] text-[var(--chat-faint)] opacity-0 shadow transition-opacity group-hover:opacity-100 hover:text-[var(--danger)]"
                   >
-                    <IconBrain size={10} stroke={2} />
+                    <IconX size={10} stroke={2} />
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => handleRemoveFile(idx)}
-                  className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--chat-card-solid)] text-[var(--chat-faint)] opacity-0 shadow transition-opacity group-hover:opacity-100 hover:text-[var(--danger)]"
-                >
-                  <IconX size={10} stroke={2} />
-                </button>
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         )}
 

@@ -102,16 +102,60 @@ export interface ProviderConfig {
   createdAt: number;
 }
 
-/** 附件文件（输入框增强用） */
-export interface AttachedFile {
+/** 附件公共字段 */
+interface AttachedFileBase {
   /** 文件名 */
   name: string;
   /** MIME 类型 */
   type: string;
-  /** Base64 DataURL */
-  dataUrl: string;
   /** 文件大小（字节） */
   size: number;
-  /** 项目内文件的绝对路径（来自文件树拖拽时设置） */
+}
+
+/** 二进制附件：会随请求上传 dataUrl */
+export interface BinaryAttachedFile extends AttachedFileBase {
+  kind: "binary";
+  /** Base64 DataURL */
+  dataUrl: string;
+  /** 项目内文件的绝对路径（可选，来自文件树“添加到聊天”） */
   sourcePath?: string;
+}
+
+/** 路径引用附件：仅在 prompt 中注入 sourcePath，不上传内容 */
+export interface PathRefAttachedFile extends AttachedFileBase {
+  kind: "pathRef";
+  /** 项目内文件的绝对路径（来自文件树拖拽） */
+  sourcePath: string;
+}
+
+/** 浏览器元素片段：仅在 prompt 中注入 web-snippet，不上传内容 */
+export interface WebSnippetAttachedFile extends AttachedFileBase {
+  kind: "webSnippet";
+  url: string;
+  selector: string;
+  selectorCandidates?: string[];
+  sourcePath?: string;
+  tagName?: string;
+  text?: string;
+  rect?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+}
+
+/** 输入框附件联合类型 */
+export type AttachedFile = BinaryAttachedFile | PathRefAttachedFile | WebSnippetAttachedFile;
+
+export function isBinaryAttachedFile(file: AttachedFile): file is BinaryAttachedFile {
+  return file.kind === "binary";
+}
+
+export function isPathRefAttachedFile(file: AttachedFile): file is PathRefAttachedFile {
+  return file.kind === "pathRef";
+}
+
+export function isWebSnippetAttachedFile(file: AttachedFile): file is WebSnippetAttachedFile {
+  return file.kind === "webSnippet";
 }

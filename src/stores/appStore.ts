@@ -12,6 +12,7 @@ import type {
 } from "../api";
 import type {
   AttachedFile,
+  BinaryAttachedFile,
   PoolModelEndpoint,
   ProviderConfig,
   ProviderModel,
@@ -119,6 +120,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: number;
+  attachments?: BinaryAttachedFile[];
   toolCalls?: ToolCallItem[];
   commandStatus?: string;
   fileChanges?: { path: string; action: string }[];
@@ -152,7 +154,7 @@ export interface QueuedMessage {
   id: string;
   text: string;
   mode: ChatMode;
-  attachments: AttachedFile[];
+  attachments: BinaryAttachedFile[];
   options?: {
     goalBudgetTokens?: number;
     robotId?: string;
@@ -194,6 +196,12 @@ interface RawThreadItem {
   id?: string;
   text?: string;
   content?: Array<{ type?: string; text?: string }>;
+  attachments?: Array<{
+    name?: string;
+    type?: string;
+    dataUrl?: string;
+    size?: number;
+  }>;
   toolName?: string;
   toolCallId?: string;
   calls?: RawToolCallInfo[];
@@ -607,18 +615,34 @@ function mapTurnsToMessages(
   for (const turn of turns) {
     for (const item of turn.items ?? []) {
       if (item.type === "userMessage") {
+        const attachments: BinaryAttachedFile[] = (item.attachments ?? [])
+          .filter((attachment) =>
+            typeof attachment?.name === "string"
+            && typeof attachment?.type === "string"
+            && typeof attachment?.dataUrl === "string"
+            && attachment.name.trim().length > 0
+            && attachment.type.trim().length > 0
+            && attachment.dataUrl.trim().length > 0)
+          .map((attachment) => ({
+            kind: "binary",
+            name: attachment.name!.trim(),
+            type: attachment.type!.trim(),
+            dataUrl: attachment.dataUrl!,
+            size: Number.isFinite(attachment.size) ? Number(attachment.size) : 0,
+          }));
         const text = (item.content ?? [])
           .filter((content) => content.type === "text" && content.text)
           .map((content) => content.text?.trim() ?? "")
           .filter(Boolean)
           .join("\n\n");
 
-        if (text) {
+        if (text || attachments.length > 0) {
           messages.push({
             id: item.id ?? crypto.randomUUID(),
             role: "user",
             content: text,
             timestamp: toMillis(turn.startedAt),
+            ...(attachments.length > 0 ? { attachments } : {}),
           });
         }
       }
