@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { appStateGet, appStateSet } from "../api/app_state";
 
 const SETTINGS_KEY = "settings";
+const SETTINGS_SNAPSHOT_STORAGE_KEY = "cn-codex:settings-snapshot";
 
 export interface BaziProfile {
   name: string;
@@ -21,8 +22,46 @@ interface PersistedSettings {
   baziProfile: BaziProfile | null;
 }
 
+function normalizeThemeMode(value: unknown): "dark" | "light" | "system" {
+  if (value === "light" || value === "system") {
+    return value;
+  }
+  return "dark";
+}
+
+function readSettingsSnapshotFromStorage(): Partial<PersistedSettings> | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_SNAPSHOT_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSettingsSnapshotToStorage(state: PersistedSettings): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      SETTINGS_SNAPSHOT_STORAGE_KEY,
+      JSON.stringify(state),
+    );
+  } catch {
+    // Ignore localStorage failures and keep SQLite as source of truth.
+  }
+}
+
 function persist(state: PersistedSettings) {
   void appStateSet(SETTINGS_KEY, JSON.stringify(state));
+  writeSettingsSnapshotToStorage(state);
 }
 
 function getPersistedSnapshot(s: SettingsState): PersistedSettings {
@@ -50,12 +89,20 @@ interface SettingsState {
   triggerFortuneRefresh: () => void;
 }
 
+const initialSettingsSnapshot = readSettingsSnapshotFromStorage();
+
 export const useSettingsStore = create<SettingsState>((set, get) => ({
-  locale: "zh-CN",
-  theme: "dark",
-  fortuneEnabled: true,
-  backgroundImagePath: null,
-  baziProfile: null,
+  locale:
+    typeof initialSettingsSnapshot?.locale === "string"
+      ? initialSettingsSnapshot.locale
+      : "zh-CN",
+  theme: normalizeThemeMode(initialSettingsSnapshot?.theme),
+  fortuneEnabled: initialSettingsSnapshot?.fortuneEnabled ?? true,
+  backgroundImagePath:
+    typeof initialSettingsSnapshot?.backgroundImagePath === "string"
+      ? initialSettingsSnapshot.backgroundImagePath
+      : null,
+  baziProfile: initialSettingsSnapshot?.baziProfile ?? null,
   fortuneRefreshTrigger: 0,
   setLocale: (locale) => {
     set({ locale });
@@ -93,7 +140,7 @@ export async function initSettingsFromDb(): Promise<void> {
       const parsed = JSON.parse(raw);
       useSettingsStore.setState({
         locale: parsed.locale ?? "zh-CN",
-        theme: parsed.theme ?? "dark",
+        theme: normalizeThemeMode(parsed.theme),
         fortuneEnabled: parsed.fortuneEnabled ?? true,
         backgroundImagePath:
           typeof parsed.backgroundImagePath === "string"
@@ -101,6 +148,7 @@ export async function initSettingsFromDb(): Promise<void> {
             : null,
         baziProfile: parsed.baziProfile ?? null,
       });
+      persist(getPersistedSnapshot(useSettingsStore.getState()));
     }
   } catch {
     // 首次使用，无数据，使用默认值

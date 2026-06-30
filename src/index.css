@@ -480,6 +480,7 @@ textarea:focus {
 }
 
 .thin-scrollbar {
+  scrollbar-gutter: stable both-edges;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
@@ -789,11 +790,13 @@ textarea:focus {
 .patch-diff-preview-scroll {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable both-edges;
 }
 
 .patch-diff-lines-scroll {
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable both-edges;
   font-family:
     "JetBrains Mono",
     "Cascadia Code",

@@ -35,6 +35,7 @@ const messages: Record<string, Record<string, string>> = {
   "zh-CN": zhCN,
   "en-US": enUS,
 };
+const STARTUP_STABLE_EVENT = "cn-codex:startup-stable";
 
 // 聊天主区域最小可用宽度：拖拽时始终保留该空间，避免输入区/消息区被压坏。
 const MAIN_PANEL_MIN_WIDTH = 560;
@@ -53,8 +54,11 @@ function AppContent() {
 function App() {
   const locale = useSettingsStore((s) => s.locale);
   const theme = useSettingsStore((s) => s.theme);
+  const initialized = useAppStore((s) => s.initialized);
+  const initError = useAppStore((s) => s.initError);
   const initStarted = useRef(false);
   const initRunSeq = useRef(0);
+  const startupStableNotified = useRef(false);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: light)");
@@ -202,6 +206,15 @@ function App() {
     }
   }, []);
 
+  const emitStartupStable = useCallback(() => {
+    if (startupStableNotified.current) {
+      return;
+    }
+    startupStableNotified.current = true;
+    document.documentElement.dataset.startupStable = "1";
+    window.dispatchEvent(new Event(STARTUP_STABLE_EVENT));
+  }, []);
+
   useEffect(() => {
     useAppStore.getState().setRetryInit(() => {
       initStarted.current = false;
@@ -214,6 +227,18 @@ function App() {
     initStarted.current = true;
     void doInit();
   }, [doInit]);
+
+  useEffect(() => {
+    if (!initialized && !initError) {
+      return;
+    }
+    // 启动稳定信号：关键初始化结束后再通知主窗显示，减少可见中间态。
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        emitStartupStable();
+      });
+    });
+  }, [emitStartupStable, initError, initialized]);
 
   const showSettings = useAppStore((s) => s.showSettings);
   const setShowSettings = useAppStore((s) => s.setShowSettings);

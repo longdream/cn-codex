@@ -1,0 +1,2 @@
+# Direct download URL for Microsoft.WebView2.FixedVersionRuntime.<version>.x64.cab
+# Fill this file with one non-comment line, or pass -RuntimeCabUrl in scripts/release-portable.ps1.

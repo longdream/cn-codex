@@ -182,8 +182,51 @@ export const RIGHT_PANEL_WIDTH_MAX = 760;
 export const DEFAULT_RIGHT_PANEL_WIDTH = 384;
 export const DEFAULT_MODEL_CONTEXT_LENGTH = 128000;
 export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 65535;
+const LAYOUT_SNAPSHOT_STORAGE_KEY = "cn-codex:layout-snapshot";
 export const VISION_FALLBACK_KIND_MULTIMODAL: VisionFallbackKind = "multimodal";
 export const VISION_FALLBACK_KIND_LOCAL_OCR: VisionFallbackKind = "local_ocr";
+
+interface LayoutSnapshot {
+  sidebarWidth?: number;
+  rightPanelWidth?: number;
+}
+
+function readLayoutSnapshotFromStorage(): LayoutSnapshot | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_SNAPSHOT_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as LayoutSnapshot;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLayoutSnapshotToStorage(next: LayoutSnapshot): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(LAYOUT_SNAPSHOT_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Ignore localStorage failures and keep SQLite as source of truth.
+  }
+}
+
+function mergeLayoutSnapshotToStorage(patch: LayoutSnapshot): void {
+  const current = readLayoutSnapshotFromStorage() ?? {};
+  writeLayoutSnapshotToStorage({
+    ...current,
+    ...patch,
+  });
+}
+
+const initialLayoutSnapshot = readLayoutSnapshotFromStorage();
 
 interface RawToolCallInfo {
   id: string;
@@ -1197,14 +1240,18 @@ function clampPanelWidth(value: number, min: number, max: number): number {
 }
 
 function saveSidebarWidth(width: number) {
-  void appStateSet(SIDEBAR_WIDTH_KEY, String(clampPanelWidth(width, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)));
+  const clamped = clampPanelWidth(width, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
+  void appStateSet(SIDEBAR_WIDTH_KEY, String(clamped));
+  mergeLayoutSnapshotToStorage({ sidebarWidth: clamped });
 }
 
 function saveRightPanelWidth(width: number) {
+  const clamped = clampPanelWidth(width, RIGHT_PANEL_WIDTH_MIN, RIGHT_PANEL_WIDTH_MAX);
   void appStateSet(
     RIGHT_PANEL_WIDTH_KEY,
-    String(clampPanelWidth(width, RIGHT_PANEL_WIDTH_MIN, RIGHT_PANEL_WIDTH_MAX)),
+    String(clamped),
   );
+  mergeLayoutSnapshotToStorage({ rightPanelWidth: clamped });
 }
 
 function getLeafName(path: string): string {
@@ -1439,8 +1486,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   workflowExtractThreadId: null,
   rightPanelVisible: false,
   rightPanelTab: "browser",
-  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
-  rightPanelWidth: DEFAULT_RIGHT_PANEL_WIDTH,
+  sidebarWidth: clampPanelWidth(
+    initialLayoutSnapshot?.sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH,
+    SIDEBAR_WIDTH_MIN,
+    SIDEBAR_WIDTH_MAX,
+  ),
+  rightPanelWidth: clampPanelWidth(
+    initialLayoutSnapshot?.rightPanelWidth ?? DEFAULT_RIGHT_PANEL_WIDTH,
+    RIGHT_PANEL_WIDTH_MIN,
+    RIGHT_PANEL_WIDTH_MAX,
+  ),
   browserPanelUrl: null,
   browserPanelTitle: null,
   browserPanelStatus: "idle",
@@ -2479,4 +2534,6 @@ export async function initStoreFromDb(): Promise<void> {
     currentProjectId,
     workspaceCwd,
   });
+
+  writeLayoutSnapshotToStorage({ sidebarWidth, rightPanelWidth });
 }

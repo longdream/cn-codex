@@ -6,10 +6,41 @@ import { windowShowMain } from "./api/window";
 import "./index.css";
 
 const startupScriptStart = performance.now();
+const STARTUP_STABLE_EVENT = "cn-codex:startup-stable";
 
 function logStartupPhase(phase: string): void {
   const elapsedMs = (performance.now() - startupScriptStart).toFixed(1);
   console.info(`[startup][web] ${phase} (+${elapsedMs} ms)`);
+}
+
+async function waitForStartupStable(timeoutMs = 4500): Promise<void> {
+  if (document.documentElement.dataset.startupStable === "1") {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    let resolved = false;
+    const cleanup = () => {
+      window.removeEventListener(STARTUP_STABLE_EVENT, onStable);
+      window.clearTimeout(timeoutHandle);
+    };
+    const finish = () => {
+      if (resolved) {
+        return;
+      }
+      resolved = true;
+      cleanup();
+      resolve();
+    };
+    const onStable = () => {
+      logStartupPhase("startup_stable_event");
+      finish();
+    };
+    const timeoutHandle = window.setTimeout(() => {
+      logStartupPhase("startup_stable_timeout");
+      finish();
+    }, timeoutMs);
+    window.addEventListener(STARTUP_STABLE_EVENT, onStable, { once: true });
+  });
 }
 
 // F12+D 组合键打开 DevTools（任何环境均可用）
@@ -50,17 +81,11 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 
 logStartupPhase("react_root_render_called");
 
-// 延迟两帧再显示主窗口：
-// 1) 让 React 首次挂载先完成，避免用户看到中间态白窗；
-// 2) 若前端资源较慢，至少会看到 index.html 的深色启动占位而不是纯白。
-requestAnimationFrame(() => {
-  requestAnimationFrame(() => {
-    void windowShowMain()
-      .then(() => {
-        logStartupPhase("main_window_shown");
-      })
-      .catch((err) => {
-        console.warn("windowShowMain failed:", err);
-      });
+void waitForStartupStable()
+  .then(() => windowShowMain())
+  .then(() => {
+    logStartupPhase("main_window_shown");
+  })
+  .catch((err) => {
+    console.warn("windowShowMain failed:", err);
   });
-});

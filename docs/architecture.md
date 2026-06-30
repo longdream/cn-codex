@@ -456,12 +456,27 @@ enum CompletionResult {
 
 ## 发布流程
 
-通过 `publish.bat` 脚本：
+通过 `scripts/release-portable.bat`（x64 免安装包，双轨发布）：
 
-1. 清理 `publish/` 目录
-2. 安装前端依赖（pnpm install）
-3. Tauri Release 构建（`pnpm tauri build --no-bundle`）
-4. 复制产物：`CN-Codex.exe` + DLL
-5. 复制运行时资源：skills、plugins（排除敏感配置）
-6. 打包 Node.js 便携版（用于 shell 工具）
-7. 生成可分发的 `publish/` 目录
+### normal 模式（默认，小包）
+
+1. 执行 Tauri Release 构建（`pnpm tauri build --no-bundle`）
+2. 复制产物：`CN-Codex.exe` + 依赖 DLL
+3. 打包 `codey/` 运行时资源（skills/plugins/robots/node）并清理敏感文件（如 `usage.db` / `config.toml`）
+4. 打包 `mobile-dist/` 移动端静态资源
+5. 输出 ZIP：`CN-Codex-portable-x64-<appVersion>.zip`
+
+### fixed 模式（`--fixed`，大包）
+
+1. 读取固定 WebView2 版本：`release/webview2-runtime.version`
+2. 解析 Fixed Runtime 包来源（优先本地 CAB，其次 `release/webview2-runtime.url`，也可命令行传参）
+3. 解压到 `publish/webview2-fixed-runtime/<version>/`
+4. 执行 Tauri Release 构建（`pnpm tauri build --no-bundle`）
+5. 复制产物：`CN-Codex.exe` + 依赖 DLL + 调试符号
+6. 复制 `webview2-runtime.version` 到发布目录用于核对
+7. 打包 `codey/` 运行时资源（skills/plugins/robots/node）并清理敏感文件
+8. 打包 `mobile-dist/` 移动端静态资源
+9. 输出 ZIP：`CN-Codex-portable-x64-fixed-webview2-<appVersion>.zip`
+
+> `release-portable.bat` 是发布入口，内部调用 `scripts/release-portable.ps1` 执行具体步骤。  
+> 启动阶段会在 Windows 发布版优先探测包内 `webview2-fixed-runtime`，存在则设置 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`；不存在时自动回退系统 WebView2，不阻断启动。

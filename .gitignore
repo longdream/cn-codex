@@ -51,12 +51,17 @@ codey/skills/**/.skill.env
 
 # Windows batch scripts (local dev only)
 *.bat
+!scripts/release-portable.bat
 
 # VS Code workspace (references local paths)
 *.code-workspace
 
 # Mobile dist (build artifact)
 mobile-dist/
+
+# Portable release artifacts (can exceed Gitee size limits)
+.tmp/
+CN-Codex-portable-*.zip
 
 # Private skills (not for public repo)
 codey/skills/tender-document-parsing/

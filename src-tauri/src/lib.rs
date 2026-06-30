@@ -35,6 +35,11 @@ use state::AppState;
 use tauri::Manager;
 
 use std::time::{Duration, Instant};
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
@@ -46,6 +51,99 @@ pub struct MobileServerInfo {
 
 pub static MOBILE_SERVER: std::sync::OnceLock<MobileServerInfo> = std::sync::OnceLock::new();
 
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+const WEBVIEW2_RUNTIME_VERSION: &str = include_str!("../../release/webview2-runtime.version");
+
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+fn parse_webview2_runtime_version() -> Result<String, String> {
+    let version = WEBVIEW2_RUNTIME_VERSION.trim();
+    if version.is_empty() {
+        return Err(
+            "release/webview2-runtime.version is empty; cannot resolve bundled WebView2 runtime."
+                .to_string(),
+        );
+    }
+    Ok(version.to_string())
+}
+
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+fn resolve_fixed_webview2_runtime_dir(exe_dir: &Path, version: &str) -> Option<PathBuf> {
+    let runtime_root = exe_dir.join("webview2-fixed-runtime");
+    let candidate_dirs = [
+        runtime_root.join(version),
+        runtime_root.join(format!(
+            "Microsoft.WebView2.FixedVersionRuntime.{version}.x64"
+        )),
+    ];
+    candidate_dirs.into_iter().find(|candidate| {
+        candidate.is_dir() && candidate.join("msedgewebview2.exe").is_file()
+    })
+}
+
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+fn ensure_fixed_runtime_acl(runtime_dir: &Path, version: &str) -> Result<(), String> {
+    let major = version
+        .split('.')
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    if major < 120 {
+        return Ok(());
+    }
+
+    for sid in ["*S-1-15-2-2", "*S-1-15-2-1"] {
+        let grant = format!("{sid}:(OI)(CI)(RX)");
+        let output = Command::new("icacls")
+            .arg(runtime_dir)
+            .arg("/grant")
+            .arg(&grant)
+            .output()
+            .map_err(|error| {
+                format!("Failed to run icacls for fixed WebView2 runtime ACL setup: {error}")
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Err(format!(
+                "icacls failed while granting '{grant}' on '{}'. stdout: {stdout}; stderr: {stderr}",
+                runtime_dir.to_string_lossy()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
+fn configure_bundled_webview2_runtime() -> Result<bool, String> {
+    let version = parse_webview2_runtime_version()?;
+    let exe_path = std::env::current_exe()
+        .map_err(|error| format!("Failed to resolve current executable path: {error}"))?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| format!("Failed to resolve executable parent directory: {}", exe_path.display()))?;
+    let Some(runtime_dir) = resolve_fixed_webview2_runtime_dir(exe_dir, &version) else {
+        info!(
+            "[startup][rust] bundled fixed WebView2 runtime not found (version {}, exe: {}), fallback to system runtime",
+            version,
+            exe_path.display()
+        );
+        return Ok(false);
+    };
+
+    ensure_fixed_runtime_acl(&runtime_dir, &version)?;
+    // SAFETY: process-wide environment is set before any webview is created.
+    unsafe {
+        std::env::set_var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", runtime_dir.as_os_str());
+    }
+    info!(
+        "[startup][rust] using bundled WebView2 runtime {} at {}",
+        version,
+        runtime_dir.display()
+    );
+    Ok(true)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -54,6 +152,20 @@ pub fn run() {
                 .unwrap_or_else(|_| "cn_codex_lib=info".into()),
         )
         .init();
+
+    #[cfg(all(target_os = "windows", not(debug_assertions)))]
+    match configure_bundled_webview2_runtime() {
+        Ok(true) => {}
+        Ok(false) => {
+            info!("[startup][rust] using system WebView2 runtime");
+        }
+        Err(error) => {
+            warn!(
+                "[startup][rust] failed to configure bundled WebView2 runtime: {}; fallback to system runtime",
+                error
+            );
+        }
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

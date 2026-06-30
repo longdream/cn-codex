@@ -23,7 +23,11 @@
 
 ## 下载安装
 
-前往 **[GitHub Releases](https://github.com/longdream/cn-codex/releases)** 下载最新版本，解压后双击 `CN-Codex.exe` 即可启动，无需安装。
+前往 **[GitHub Releases](https://github.com/longdream/cn-codex/releases)** 下载最新版本，解压后双击 `CN-Codex.exe` 即可启动，无需安装。  
+Windows 发布包分为两种：
+
+- **默认小包（推荐）**：不内置 fixed WebView2 Runtime，体积更小，优先使用系统已安装的 WebView2。
+- **fixed WebView2 包**：内置固定版 WebView2 Runtime（x64），仅在企业受限环境或系统无法安装 WebView2 时使用。
 
 ---
 
@@ -111,7 +115,13 @@ AI 自动创建专业角色，绑定技能和工作流节点，实现自动化�
 
 ### 1. 下载并启动
 
-从 [GitHub Releases](https://github.com/longdream/cn-codex/releases) 下载最新版本，解压后双击 `CN-Codex.exe` 启动。首次启动会在同目录创建 `codey/` 运行时文件夹。
+从 [GitHub Releases](https://github.com/longdream/cn-codex/releases) 下载最新版本，解压后双击 `CN-Codex.exe` 启动。发布包已内置基础 `codey/` 运行时资源（skills/plugins/robots/node）和 `mobile-dist/` 静态资源，首次启动会自动补齐其余运行时目录。  
+若目录内存在 `webview2-fixed-runtime`（fixed 包），程序会优先使用该运行时；否则自动回退系统 WebView2。
+
+发布维护者可直接执行：
+
+- `scripts\\release-portable.bat`：生成默认小包（normal 模式）
+- `scripts\\release-portable.bat --fixed`：生成内置 fixed WebView2 大包（fixed 模式）
 
 ### 2. 配置供应商
 
