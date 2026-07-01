@@ -37,6 +37,8 @@ use tauri::Manager;
 use std::time::{Duration, Instant};
 #[cfg(all(target_os = "windows", not(debug_assertions)))]
 use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -81,6 +83,20 @@ fn resolve_fixed_webview2_runtime_dir(exe_dir: &Path, version: &str) -> Option<P
 }
 
 #[cfg(all(target_os = "windows", not(debug_assertions)))]
+fn fixed_runtime_acl_marker_path(runtime_dir: &Path, version: &str) -> Option<PathBuf> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")?;
+    let mut hasher = DefaultHasher::new();
+    runtime_dir.to_string_lossy().hash(&mut hasher);
+    let runtime_hash = hasher.finish();
+    Some(
+        PathBuf::from(local_app_data)
+            .join("CN-Codex")
+            .join("webview2-acl")
+            .join(format!("{version}-{runtime_hash:016x}.ok")),
+    )
+}
+
+#[cfg(all(target_os = "windows", not(debug_assertions)))]
 fn ensure_fixed_runtime_acl(runtime_dir: &Path, version: &str) -> Result<(), String> {
     let major = version
         .split('.')
@@ -91,6 +107,18 @@ fn ensure_fixed_runtime_acl(runtime_dir: &Path, version: &str) -> Result<(), Str
         return Ok(());
     }
 
+    let marker_path = fixed_runtime_acl_marker_path(runtime_dir, version);
+    if let Some(marker_path) = marker_path.as_ref() {
+        if marker_path.is_file() {
+            info!(
+                "[startup][rust] fixed WebView2 ACL already ensured, skipping icacls ({})",
+                marker_path.display()
+            );
+            return Ok(());
+        }
+    }
+
+    let acl_started_at = Instant::now();
     for sid in ["*S-1-15-2-2", "*S-1-15-2-1"] {
         let grant = format!("{sid}:(OI)(CI)(RX)");
         let output = Command::new("icacls")
@@ -111,11 +139,41 @@ fn ensure_fixed_runtime_acl(runtime_dir: &Path, version: &str) -> Result<(), Str
         }
     }
 
+    if let Some(marker_path) = marker_path.as_ref() {
+        if let Some(parent) = marker_path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            warn!(
+                "[startup][rust] failed to create WebView2 ACL marker directory '{}': {}",
+                parent.display(),
+                error
+            );
+        }
+        if let Err(error) = std::fs::write(
+            marker_path,
+            format!(
+                "version={version}\nruntime_dir={}\n",
+                runtime_dir.to_string_lossy()
+            ),
+        ) {
+            warn!(
+                "[startup][rust] failed to write WebView2 ACL marker '{}': {}",
+                marker_path.display(),
+                error
+            );
+        }
+    }
+
+    info!(
+        "[startup][rust] fixed WebView2 ACL ensured in {} ms",
+        acl_started_at.elapsed().as_millis()
+    );
     Ok(())
 }
 
 #[cfg(all(target_os = "windows", not(debug_assertions)))]
 fn configure_bundled_webview2_runtime() -> Result<bool, String> {
+    let configured_started_at = Instant::now();
     let version = parse_webview2_runtime_version()?;
     let exe_path = std::env::current_exe()
         .map_err(|error| format!("Failed to resolve current executable path: {error}"))?;
@@ -127,6 +185,10 @@ fn configure_bundled_webview2_runtime() -> Result<bool, String> {
             "[startup][rust] bundled fixed WebView2 runtime not found (version {}, exe: {}), fallback to system runtime",
             version,
             exe_path.display()
+        );
+        info!(
+            "[startup][rust] bundled WebView2 runtime configure finished in {} ms",
+            configured_started_at.elapsed().as_millis()
         );
         return Ok(false);
     };
@@ -141,6 +203,10 @@ fn configure_bundled_webview2_runtime() -> Result<bool, String> {
         version,
         runtime_dir.display()
     );
+    info!(
+        "[startup][rust] bundled WebView2 runtime configure finished in {} ms",
+        configured_started_at.elapsed().as_millis()
+    );
     Ok(true)
 }
 
@@ -152,6 +218,9 @@ pub fn run() {
                 .unwrap_or_else(|_| "cn_codex_lib=info".into()),
         )
         .init();
+
+    #[cfg(all(target_os = "windows", not(debug_assertions)))]
+    let webview2_config_started_at = Instant::now();
 
     #[cfg(all(target_os = "windows", not(debug_assertions)))]
     match configure_bundled_webview2_runtime() {
@@ -166,6 +235,11 @@ pub fn run() {
             );
         }
     }
+    #[cfg(all(target_os = "windows", not(debug_assertions)))]
+    info!(
+        "[startup][rust] webview2_runtime_config done in {} ms",
+        webview2_config_started_at.elapsed().as_millis()
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

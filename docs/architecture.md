@@ -462,9 +462,11 @@ enum CompletionResult {
 
 1. 执行 Tauri Release 构建（`pnpm tauri build --no-bundle`）
 2. 复制产物：`CN-Codex.exe` + 依赖 DLL
-3. 打包 `codey/` 运行时资源（skills/plugins/robots/node）并清理敏感文件（如 `usage.db` / `config.toml`）
-4. 打包 `mobile-dist/` 移动端静态资源
-5. 输出 ZIP：`CN-Codex-portable-x64-<appVersion>.zip`
+3. 复制 OCR 运行时资源：`src-tauri/resources/ocr/` -> `publish/resources/ocr/`
+4. 校验 OCR 关键文件（det/rec/vocab/onnxruntime）已进入 `publish/resources/ocr/`
+5. 打包 `codey/` 运行时资源（skills/plugins/robots/node）并清理敏感文件（如 `usage.db` / `config.toml`）
+6. 打包 `mobile-dist/` 移动端静态资源
+7. 输出 ZIP：`CN-Codex-portable-x64-<appVersion>.zip`
 
 ### fixed 模式（`--fixed`，大包）
 
@@ -474,9 +476,11 @@ enum CompletionResult {
 4. 执行 Tauri Release 构建（`pnpm tauri build --no-bundle`）
 5. 复制产物：`CN-Codex.exe` + 依赖 DLL + 调试符号
 6. 复制 `webview2-runtime.version` 到发布目录用于核对
-7. 打包 `codey/` 运行时资源（skills/plugins/robots/node）并清理敏感文件
-8. 打包 `mobile-dist/` 移动端静态资源
-9. 输出 ZIP：`CN-Codex-portable-x64-fixed-webview2-<appVersion>.zip`
+7. 复制 OCR 运行时资源：`src-tauri/resources/ocr/` -> `publish/resources/ocr/`
+8. 校验 OCR 关键文件（det/rec/vocab/onnxruntime）已进入 `publish/resources/ocr/`
+9. 打包 `codey/` 运行时资源（skills/plugins/robots/node）并清理敏感文件
+10. 打包 `mobile-dist/` 移动端静态资源
+11. 输出 ZIP：`CN-Codex-portable-x64-fixed-webview2-<appVersion>.zip`
 
 > `release-portable.bat` 是发布入口，内部调用 `scripts/release-portable.ps1` 执行具体步骤。  
 > 启动阶段会在 Windows 发布版优先探测包内 `webview2-fixed-runtime`，存在则设置 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`；不存在时自动回退系统 WebView2，不阻断启动。

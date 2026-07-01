@@ -7,13 +7,18 @@ import "./index.css";
 
 const startupScriptStart = performance.now();
 const STARTUP_STABLE_EVENT = "cn-codex:startup-stable";
+// 启动可见性等待上限：超过该时间仍未收到稳定信号也先显示主窗，
+// 避免发布版在慢机器上长时间“黑屏但进程已启动”。
+const STARTUP_SHOW_WINDOW_TIMEOUT_MS = 1500;
 
 function logStartupPhase(phase: string): void {
   const elapsedMs = (performance.now() - startupScriptStart).toFixed(1);
   console.info(`[startup][web] ${phase} (+${elapsedMs} ms)`);
 }
 
-async function waitForStartupStable(timeoutMs = 4500): Promise<void> {
+async function waitForStartupStable(
+  timeoutMs = STARTUP_SHOW_WINDOW_TIMEOUT_MS,
+): Promise<void> {
   if (document.documentElement.dataset.startupStable === "1") {
     return;
   }
@@ -36,7 +41,7 @@ async function waitForStartupStable(timeoutMs = 4500): Promise<void> {
       finish();
     };
     const timeoutHandle = window.setTimeout(() => {
-      logStartupPhase("startup_stable_timeout");
+      logStartupPhase(`startup_stable_timeout_${timeoutMs}ms`);
       finish();
     }, timeoutMs);
     window.addEventListener(STARTUP_STABLE_EVENT, onStable, { once: true });

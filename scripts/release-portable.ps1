@@ -452,6 +452,35 @@ if ($IsFixedMode) {
   }
 }
 
+Write-Step "Copying OCR runtime resources"
+$ResourcesDestDir = Join-Path $PublishRootDir "resources"
+$OcrSourceDir = Join-Path $RepoRoot "src-tauri/resources/ocr"
+Ensure-Directory -Path $ResourcesDestDir
+Copy-DirectoryToParent -SourceDir $OcrSourceDir -DestinationParent $ResourcesDestDir -DisplayName "resources/ocr" -Required
+
+Write-Step "Validating OCR runtime resources"
+$OcrDestDir = Join-Path $ResourcesDestDir "ocr"
+$RequiredOcrFiles = @(
+  "ppocrv5_mobile_det.onnx",
+  "ppocrv5_mobile_rec.onnx",
+  "ppocrv5_mobile_vocab.txt",
+  "onnxruntime.dll",
+  "onnxruntime_providers_shared.dll"
+)
+foreach ($ocrFile in $RequiredOcrFiles) {
+  $ocrFilePath = Join-Path $OcrDestDir $ocrFile
+  if ($DryRun) {
+    Write-Host "[dry-run] would verify OCR file exists: $ocrFilePath"
+    continue
+  }
+  if (-not (Test-Path -LiteralPath $ocrFilePath -PathType Leaf)) {
+    throw "Required OCR resource missing in publish output: $ocrFilePath"
+  }
+}
+if (-not $DryRun) {
+  Write-Host " - OCR runtime resources verified"
+}
+
 Write-Step "Copying workspace runtime resources"
 $CodeySourceDir = Join-Path $RepoRoot "codey"
 $CodeyDestDir = Join-Path $PublishRootDir "codey"
