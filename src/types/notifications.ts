@@ -120,9 +120,18 @@ export interface ThreadNameUpdatedNotification {
 
 export interface ThreadTokenUsageUpdatedNotification {
   threadId: string;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    callCount?: number;
+    lastSinglePromptTokens?: number;
+  };
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  callCount?: number;
+  lastSinglePromptTokens?: number;
 }
 
 export interface AccountUpdatedNotification {

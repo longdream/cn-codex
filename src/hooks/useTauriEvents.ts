@@ -60,6 +60,16 @@ interface ThreadGoalClearedPayload {
   threadId?: string;
 }
 
+interface ThreadTokenUsageUpdatedPayload {
+  threadId?: string;
+  usage?: TokenUsage | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  callCount?: number;
+  lastSinglePromptTokens?: number;
+}
+
 interface SmartbrainExtractionStartedPayload {
   source?: string;
   total?: number;
@@ -154,6 +164,23 @@ function normalizeTokenBudget(value?: number | null): number | undefined {
     return undefined;
   }
   return Math.floor(budget);
+}
+
+function normalizeRealtimeTokenUsage(
+  payload: ThreadTokenUsageUpdatedPayload,
+): TokenUsage | undefined {
+  if (payload.usage) {
+    return normalizeTokenUsage(payload.usage);
+  }
+  return normalizeTokenUsage({
+    promptTokens: Number(payload.inputTokens ?? 0),
+    completionTokens: Number(payload.outputTokens ?? 0),
+    totalTokens: Number(payload.totalTokens ?? 0),
+    ...(typeof payload.callCount === "number" ? { callCount: payload.callCount } : {}),
+    ...(typeof payload.lastSinglePromptTokens === "number"
+      ? { lastSinglePromptTokens: payload.lastSinglePromptTokens }
+      : {}),
+  });
 }
 
 function hasWebFileChanges(changedFiles?: FileChange[] | null): boolean {
@@ -531,6 +558,7 @@ export function useTauriEvents() {
             store.setCurrentTurnId(e.payload.turn?.id ?? null);
             store.setStreaming(true);
             store.clearStreamingText();
+            store.setLiveTurnUsage(null);
             store.setStreamingLabel(intl.formatMessage({ id: "streaming.processing" }));
             if (e.payload.threadId) {
               reasoningByThread.set(e.payload.threadId, "");
@@ -540,6 +568,15 @@ export function useTauriEvents() {
             }
           },
         ),
+
+        listen<ThreadTokenUsageUpdatedPayload>("thread-token-usage-updated", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
+          const usage = normalizeRealtimeTokenUsage(e.payload);
+          store.setLiveTurnUsage(usage ?? null);
+        }),
 
         listen<TurnEventPayload>(
           "turn-completed",
@@ -595,6 +632,7 @@ export function useTauriEvents() {
             if ("goal" in e.payload) {
               store.setCurrentGoal(e.payload.goal ?? null);
             }
+            store.setLiveTurnUsage(null);
             const latestStore = useAppStore.getState();
             const currentSummary = latestStore.threads.find((thread) => thread.id === e.payload.threadId);
             if (currentSummary && currentSummary.preview.trim().length === 0) {
@@ -935,6 +973,7 @@ export function useTauriEvents() {
             if (e.payload.threadId) {
               reasoningByThread.delete(e.payload.threadId);
             }
+            store.setLiveTurnUsage(null);
             store.markRunningToolCallsInterrupted(msg);
             store.flushAndStopStreaming();
             store.addMessage({

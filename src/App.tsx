@@ -24,6 +24,7 @@ import zhCN from "./i18n/zh-CN/common.json";
 import {
   useAppStore,
   initStoreFromDb,
+  normalizeImageGenerationSettings,
   SIDEBAR_WIDTH_MIN,
   SIDEBAR_WIDTH_MAX,
   RIGHT_PANEL_WIDTH_MIN,
@@ -187,6 +188,20 @@ function App() {
           const activeEpIdx = cfg?.config?.active_endpoint_index;
           if (typeof activeEpIdx === "number" && isLatestRun()) {
             useAppStore.setState({ activeEndpointIndex: activeEpIdx });
+          }
+          if (isLatestRun()) {
+            const rawImageGeneration = cfg?.config?.image_generation;
+            const imageConfig =
+              rawImageGeneration && typeof rawImageGeneration === "object"
+                ? (rawImageGeneration as Record<string, unknown>)
+                : null;
+            useAppStore.getState().setImageGenerationSettings(
+              normalizeImageGenerationSettings({
+                model: typeof imageConfig?.model === "string" ? imageConfig.model : undefined,
+                baseUrl: typeof imageConfig?.base_url === "string" ? imageConfig.base_url : undefined,
+                apiKey: typeof imageConfig?.api_key === "string" ? imageConfig.api_key : undefined,
+              }),
+            );
           }
           if (isLatestRun()) {
             logInitPhase("model_config_restored");

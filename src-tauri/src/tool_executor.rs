@@ -29,7 +29,7 @@ impl CommandNoConsole for Command {
 }
 
 use crate::commands::plugin as plugin_commands;
-use crate::config_system::McpServerConfig;
+use crate::config_system::{ConfigToml, McpServerConfig};
 use crate::error::AppResult;
 use crate::git_service::{GitCommandOutput, GitService};
 use crate::plugin_loader;
@@ -539,6 +539,13 @@ struct ImageGenerateArgs {
     base_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ImageGenerationSettingsResolved {
+    model: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct EchartsReportArgs {
     #[serde(default)]
@@ -679,7 +686,7 @@ impl ToolExecutor {
 
     pub fn with_workspace_config_dir(cwd: PathBuf, workspace_config_dir: PathBuf) -> Self {
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(180))
             .user_agent("CN-Codex/0.1")
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
@@ -1634,7 +1641,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "image_generate",
-                    "description": "Generate an image through an OpenAI Images API-compatible backend, save it as a local file, and return its path, format, dimensions, and size. Requires CN_CODEX_IMAGE_API_KEY or OPENAI_API_KEY.",
+                    "description": "Generate an image through an OpenAI Images API-compatible backend, save it as a local file, and return its path, format, dimensions, and size. Resolution order: tool args > image_generation settings > env vars > defaults.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1644,7 +1651,7 @@ impl ToolExecutor {
                             },
                             "model": {
                                 "type": "string",
-                                "description": "Optional image model. Defaults to CN_CODEX_IMAGE_MODEL or gpt-image-1."
+                                "description": "Optional image model. Defaults to image_generation.model, then CN_CODEX_IMAGE_MODEL, then gpt-image-2."
                             },
                             "size": {
                                 "type": "string",
@@ -1670,7 +1677,7 @@ impl ToolExecutor {
                             },
                             "base_url": {
                                 "type": "string",
-                                "description": "Optional OpenAI-compatible base URL or full /images/generations endpoint. Defaults to CN_CODEX_IMAGE_BASE_URL or https://api.openai.com/v1."
+                                "description": "Optional OpenAI-compatible base URL or full /images/generations endpoint. Defaults to image_generation.base_url, then CN_CODEX_IMAGE_BASE_URL, then https://api.openai.com/v1."
                             }
                         },
                         "required": ["prompt"]
@@ -4034,18 +4041,24 @@ impl ToolExecutor {
             return Ok(msg);
         }
 
-        let api_key = match image_generation_api_key() {
+        let image_defaults = self.read_image_generation_settings();
+        let api_key = match image_generation_api_key(image_defaults.api_key.as_deref()) {
             Some(value) => value,
             None => {
-                let msg =
-                    "image_generate requires CN_CODEX_IMAGE_API_KEY or OPENAI_API_KEY".to_string();
+                let msg = "image_generate requires an API key. Configure it in Settings > 文生图, or set CN_CODEX_IMAGE_API_KEY / OPENAI_API_KEY.".to_string();
                 self.emit_tool_end(app_handle, thread_id, call_id, "image_generate", -1, &msg);
                 return Ok(msg);
             }
         };
 
-        let model = image_generation_model(args.model.as_deref());
-        let api_url = image_generation_api_url(args.base_url.as_deref());
+        let model = image_generation_model(
+            args.model.as_deref(),
+            image_defaults.model.as_deref(),
+        );
+        let api_url = image_generation_api_url(
+            args.base_url.as_deref(),
+            image_defaults.base_url.as_deref(),
+        );
         let body = image_generation_request_body(
             prompt,
             &model,
@@ -4119,7 +4132,7 @@ impl ToolExecutor {
                     }
                 }
             } else if let Some(url) = item.url.as_deref().filter(|value| !value.trim().is_empty()) {
-                match self.fetch_generated_image_url(url).await {
+                match self.fetch_generated_image_url(url, &api_url).await {
                     Ok(bytes) => bytes,
                     Err(msg) => {
                         self.emit_tool_end(
@@ -4244,18 +4257,25 @@ impl ToolExecutor {
         Ok(output)
     }
 
-    async fn fetch_generated_image_url(&self, url: &str) -> Result<Vec<u8>, String> {
+    async fn fetch_generated_image_url(
+        &self,
+        url: &str,
+        reference_endpoint: &str,
+    ) -> Result<Vec<u8>, String> {
+        let resolved_url = Self::resolve_generated_image_url(url, reference_endpoint)?;
         let response = self
             .http
-            .get(url)
+            .get(&resolved_url)
             .send()
             .await
-            .map_err(|e| format!("image_generate could not fetch generated image URL: {e}"))?;
+            .map_err(|e| {
+                format!("image_generate could not fetch generated image URL {resolved_url}: {e}")
+            })?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!(
-                "image_generate image URL fetch failed with HTTP {}",
-                status.as_u16()
+                "image_generate image URL fetch failed with HTTP {} ({resolved_url})",
+                status.as_u16(),
             ));
         }
         let bytes = response
@@ -4263,6 +4283,29 @@ impl ToolExecutor {
             .await
             .map_err(|e| format!("image_generate could not read generated image bytes: {e}"))?;
         Ok(bytes.to_vec())
+    }
+
+    fn resolve_generated_image_url(url: &str, reference_endpoint: &str) -> Result<String, String> {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return Err("image_generate response contained an empty image URL".to_string());
+        }
+
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return Ok(trimmed.to_string());
+        }
+
+        let base = reqwest::Url::parse(reference_endpoint).map_err(|e| {
+            format!(
+                "image_generate could not parse API endpoint '{reference_endpoint}' while resolving image URL '{trimmed}': {e}"
+            )
+        })?;
+
+        base.join(trimmed).map(|value| value.to_string()).map_err(|e| {
+            format!(
+                "image_generate returned relative image URL '{trimmed}' that could not be resolved from '{reference_endpoint}': {e}"
+            )
+        })
     }
 
     async fn exec_browser_run(
@@ -7869,9 +7912,23 @@ impl ToolExecutor {
 
     fn smartbrain_is_active(&self) -> bool {
         let config_path = self.workspace_config_dir.join("config.toml");
-        crate::config_system::ConfigToml::load(&config_path)
+        ConfigToml::load(&config_path)
             .map(|config| config.smartbrain_config().is_active())
             .unwrap_or(false)
+    }
+
+    fn read_image_generation_settings(&self) -> ImageGenerationSettingsResolved {
+        let config_path = self.workspace_config_dir.join("config.toml");
+        let config = match ConfigToml::load(&config_path) {
+            Ok(config) => config,
+            Err(_) => return ImageGenerationSettingsResolved::default(),
+        };
+        let image_generation = config.image_generation_config();
+        ImageGenerationSettingsResolved {
+            model: image_generation.model.and_then(non_empty_string),
+            base_url: image_generation.base_url.and_then(non_empty_string),
+            api_key: image_generation.api_key.and_then(non_empty_string),
+        }
     }
 
     fn resolve_memory_path(&self, path: &str) -> Result<PathBuf, String> {
@@ -10700,10 +10757,14 @@ fn echarts_report_display(args: &EchartsReportArgs) -> String {
     "echarts_report".to_string()
 }
 
-fn image_generation_api_key() -> Option<String> {
-    std::env::var("CN_CODEX_IMAGE_API_KEY")
-        .ok()
-        .and_then(non_empty_string)
+fn image_generation_api_key(settings_api_key: Option<&str>) -> Option<String> {
+    settings_api_key
+        .and_then(|value| non_empty_string(value.to_string()))
+        .or_else(|| {
+            std::env::var("CN_CODEX_IMAGE_API_KEY")
+                .ok()
+                .and_then(non_empty_string)
+        })
         .or_else(|| {
             std::env::var("OPENAI_API_KEY")
                 .ok()
@@ -10711,20 +10772,22 @@ fn image_generation_api_key() -> Option<String> {
         })
 }
 
-fn image_generation_model(model: Option<&str>) -> String {
+fn image_generation_model(model: Option<&str>, settings_model: Option<&str>) -> String {
     model
         .and_then(|value| non_empty_string(value.to_string()))
+        .or_else(|| settings_model.and_then(|value| non_empty_string(value.to_string())))
         .or_else(|| {
             std::env::var("CN_CODEX_IMAGE_MODEL")
                 .ok()
                 .and_then(non_empty_string)
         })
-        .unwrap_or_else(|| "gpt-image-1".to_string())
+        .unwrap_or_else(|| "gpt-image-2".to_string())
 }
 
-fn image_generation_api_url(base_url: Option<&str>) -> String {
+fn image_generation_api_url(base_url: Option<&str>, settings_base_url: Option<&str>) -> String {
     let base = base_url
         .and_then(|value| non_empty_string(value.to_string()))
+        .or_else(|| settings_base_url.and_then(|value| non_empty_string(value.to_string())))
         .or_else(|| {
             std::env::var("CN_CODEX_IMAGE_BASE_URL")
                 .ok()
@@ -10772,6 +10835,10 @@ fn image_generation_request_body(
     body.insert(
         "n".to_string(),
         serde_json::Value::Number(serde_json::Number::from(image_generation_count(n))),
+    );
+    body.insert(
+        "response_format".to_string(),
+        serde_json::Value::String("b64_json".to_string()),
     );
     serde_json::Value::Object(body)
 }
@@ -14672,12 +14739,28 @@ index 1111111..2222222 100644
     #[test]
     fn image_generation_helpers_build_request_and_paths() {
         assert_eq!(
-            image_generation_api_url(Some("https://example.test/v1/")),
+            image_generation_api_url(Some("https://example.test/v1/"), None),
             "https://example.test/v1/images/generations"
         );
         assert_eq!(
-            image_generation_api_url(Some("https://example.test/v1/images/generations/")),
+            image_generation_api_url(Some("https://example.test/v1/images/generations/"), None),
             "https://example.test/v1/images/generations"
+        );
+        assert_eq!(
+            image_generation_api_url(None, Some("https://settings.test/v1/")),
+            "https://settings.test/v1/images/generations"
+        );
+        assert_eq!(
+            image_generation_model(Some("tool-override"), Some("settings-default")),
+            "tool-override"
+        );
+        assert_eq!(
+            image_generation_model(None, Some("settings-default")),
+            "settings-default"
+        );
+        assert_eq!(
+            image_generation_api_key(Some("sk-settings")),
+            Some("sk-settings".to_string())
         );
 
         let body = image_generation_request_body(
@@ -14704,9 +14787,37 @@ index 1111111..2222222 100644
             body.pointer("/n").and_then(serde_json::Value::as_u64),
             Some(3)
         );
+        assert_eq!(
+            body.pointer("/response_format")
+                .and_then(serde_json::Value::as_str),
+            Some("b64_json")
+        );
         assert!(body.pointer("/background").is_none());
         assert_eq!(image_generation_count(Some(0)), 1);
         assert_eq!(image_generation_count(Some(99)), 10);
+        assert_eq!(
+            ToolExecutor::resolve_generated_image_url(
+                "/v1/files/image/example.png",
+                "https://rayplus.site/v1/images/generations",
+            )
+            .unwrap(),
+            "https://rayplus.site/v1/files/image/example.png"
+        );
+        assert_eq!(
+            ToolExecutor::resolve_generated_image_url(
+                "https://cdn.example.test/image.png",
+                "https://rayplus.site/v1/images/generations",
+            )
+            .unwrap(),
+            "https://cdn.example.test/image.png"
+        );
+        assert!(
+            ToolExecutor::resolve_generated_image_url(
+                "",
+                "https://rayplus.site/v1/images/generations"
+            )
+            .is_err()
+        );
 
         assert_eq!(
             decode_image_base64("data:image/png;base64, aGk=\n").unwrap(),

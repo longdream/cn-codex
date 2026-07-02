@@ -126,6 +126,16 @@ impl SmartBrainConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ImageGenerationConfig {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
 /// 资源池模型的单个后端端点
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEndpointInfo {
@@ -180,6 +190,8 @@ pub struct ConfigToml {
     pub relay_server_url: Option<String>,
     #[serde(default, alias = "experience")]
     pub smartbrain: Option<SmartBrainConfig>,
+    #[serde(default)]
+    pub image_generation: Option<ImageGenerationConfig>,
     /// 当前选中的 local-pool 模型的端点列表（仅 local-pool 类型供应商使用）
     #[serde(default)]
     pub model_endpoints: Vec<ModelEndpointInfo>,
@@ -387,6 +399,17 @@ fn normalize_relay_server_url(value: &str) -> Option<String> {
     }
 }
 
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 impl ConfigToml {
     pub fn load(path: &Path) -> AppResult<Self> {
         if !path.exists() {
@@ -458,6 +481,39 @@ impl ConfigToml {
                     .smartbrain
                     .get_or_insert_with(SmartBrainConfig::default);
                 sb.extraction_start_at = value.as_i64();
+            }
+            "image_generation" => {
+                if value.is_null() {
+                    self.image_generation = None;
+                } else if let Ok(mut image_generation) =
+                    serde_json::from_value::<ImageGenerationConfig>(value.clone())
+                {
+                    image_generation.model = normalize_optional_string(image_generation.model);
+                    image_generation.base_url = normalize_optional_string(image_generation.base_url);
+                    image_generation.api_key = normalize_optional_string(image_generation.api_key);
+                    self.image_generation = Some(image_generation);
+                }
+            }
+            "image_generation.model" => {
+                let image_generation = self
+                    .image_generation
+                    .get_or_insert_with(ImageGenerationConfig::default);
+                image_generation.model =
+                    normalize_optional_string(value.as_str().map(ToString::to_string));
+            }
+            "image_generation.base_url" => {
+                let image_generation = self
+                    .image_generation
+                    .get_or_insert_with(ImageGenerationConfig::default);
+                image_generation.base_url =
+                    normalize_optional_string(value.as_str().map(ToString::to_string));
+            }
+            "image_generation.api_key" => {
+                let image_generation = self
+                    .image_generation
+                    .get_or_insert_with(ImageGenerationConfig::default);
+                image_generation.api_key =
+                    normalize_optional_string(value.as_str().map(ToString::to_string));
             }
             other if other.starts_with("model_providers.") => {
                 let provider_key = &other["model_providers.".len()..];
@@ -577,6 +633,10 @@ impl ConfigToml {
 
     pub fn smartbrain_config(&self) -> SmartBrainConfig {
         self.smartbrain.clone().unwrap_or_default()
+    }
+
+    pub fn image_generation_config(&self) -> ImageGenerationConfig {
+        self.image_generation.clone().unwrap_or_default()
     }
 
     pub fn web_search_enabled(&self) -> bool {
@@ -923,6 +983,37 @@ mod tests {
         assert!(config.vision_fallback_kind.is_none());
         assert!(config.vision_fallback_provider.is_none());
         assert!(config.vision_fallback_model.is_none());
+    }
+
+    #[test]
+    fn apply_edit_image_generation_fields() {
+        let mut config = ConfigToml::default();
+        config
+            .apply_edit("image_generation.model", &serde_json::json!("gpt-image-2"))
+            .expect("set image_generation.model");
+        config
+            .apply_edit(
+                "image_generation.base_url",
+                &serde_json::json!("https://api.openai.com/v1/"),
+            )
+            .expect("set image_generation.base_url");
+        config
+            .apply_edit("image_generation.api_key", &serde_json::json!("sk-test"))
+            .expect("set image_generation.api_key");
+
+        let image_generation = config.image_generation_config();
+        assert_eq!(image_generation.model.as_deref(), Some("gpt-image-2"));
+        assert_eq!(
+            image_generation.base_url.as_deref(),
+            Some("https://api.openai.com/v1/")
+        );
+        assert_eq!(image_generation.api_key.as_deref(), Some("sk-test"));
+
+        config
+            .apply_edit("image_generation.api_key", &serde_json::Value::Null)
+            .expect("clear image_generation.api_key");
+        let image_generation = config.image_generation_config();
+        assert!(image_generation.api_key.is_none());
     }
 
     #[test]

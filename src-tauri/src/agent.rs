@@ -805,6 +805,9 @@ impl AgentEngine {
                             if let Some(u) = usage {
                                 add_turn_usage(&mut turn_usage, u);
                                 last_prompt_tokens = u.prompt_tokens;
+                                turn_usage.call_count = llm_call_count;
+                                turn_usage.last_single_prompt_tokens = last_prompt_tokens;
+                                emit_turn_usage_updated(app_handle, thread_id, &turn_usage);
                                 if let Some(ref recorder) = self.usage_recorder {
                                     recorder.record(&provider_id, &model, thread_id, u);
                                 }
@@ -1142,6 +1145,9 @@ impl AgentEngine {
                             if let Some(ref u) = usage {
                                 add_turn_usage(&mut turn_usage, u);
                                 last_prompt_tokens = u.prompt_tokens;
+                                turn_usage.call_count = llm_call_count;
+                                turn_usage.last_single_prompt_tokens = last_prompt_tokens;
+                                emit_turn_usage_updated(app_handle, thread_id, &turn_usage);
                                 if let Some(ref recorder) = self.usage_recorder {
                                     recorder.record(&provider_id, &model, thread_id, u);
                                 }
@@ -1684,6 +1690,10 @@ impl AgentEngine {
                             llm_call_count = llm_call_count.saturating_add(1);
                             if let Some(u) = usage {
                                 add_turn_usage(&mut turn_usage, &u);
+                                last_prompt_tokens = u.prompt_tokens;
+                                turn_usage.call_count = llm_call_count;
+                                turn_usage.last_single_prompt_tokens = last_prompt_tokens;
+                                emit_turn_usage_updated(app_handle, thread_id, &turn_usage);
                                 if let Some(ref recorder) = self.usage_recorder {
                                     recorder.record(&provider_id, &model, thread_id, &u);
                                 }
@@ -1698,6 +1708,10 @@ impl AgentEngine {
                             llm_call_count = llm_call_count.saturating_add(1);
                             if let Some(u) = usage {
                                 add_turn_usage(&mut turn_usage, &u);
+                                last_prompt_tokens = u.prompt_tokens;
+                                turn_usage.call_count = llm_call_count;
+                                turn_usage.last_single_prompt_tokens = last_prompt_tokens;
+                                emit_turn_usage_updated(app_handle, thread_id, &turn_usage);
                                 if let Some(ref recorder) = self.usage_recorder {
                                     recorder.record(&provider_id, &model, thread_id, &u);
                                 }
@@ -2141,6 +2155,9 @@ impl AgentEngine {
              - mcp_list_prompts: List prompts exposed by configured MCP servers.\n\
              - mcp_get_prompt: Get a prompt by name from a configured MCP server.\n\
              {web_tool_instructions}\
+             \n\
+             IMAGE TOOL RULE: When the user asks to generate/create/draw an image, call `image_generate` directly instead of only describing the image. \
+             Use configured image-generation defaults unless the user explicitly asks for a different model or base URL.\n\
              \n\
              IMPORTANT: Before using any tools, always briefly explain what you are about to do and why. \
              This helps the user understand your reasoning and plan.\n\
@@ -3988,6 +4005,30 @@ fn nonzero_turn_usage(usage: &TurnUsage) -> Option<TurnUsage> {
         None
     } else {
         Some(usage.clone())
+    }
+}
+
+fn emit_turn_usage_updated(app_handle: &AppHandle, thread_id: &str, usage: &TurnUsage) {
+    if let Some(current) = nonzero_turn_usage(usage) {
+        let prompt_tokens = current.prompt_tokens;
+        let completion_tokens = current.completion_tokens;
+        let total_tokens = current.total_tokens;
+        let call_count = current.call_count;
+        let last_single_prompt_tokens = current.last_single_prompt_tokens;
+        emit_and_broadcast(
+            app_handle,
+            "thread-token-usage-updated",
+            serde_json::json!({
+                "threadId": thread_id,
+                "usage": current,
+                // Backward-compatible flat fields for existing consumers.
+                "inputTokens": prompt_tokens,
+                "outputTokens": completion_tokens,
+                "totalTokens": total_tokens,
+                "callCount": call_count,
+                "lastSinglePromptTokens": last_single_prompt_tokens,
+            }),
+        );
     }
 }
 

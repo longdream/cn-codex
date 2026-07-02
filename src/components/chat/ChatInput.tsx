@@ -256,6 +256,7 @@ export function ChatInput({
   const robotCreateMode = useAppStore((s) => s.robotCreateMode);
   const setSelectedRobotId = useAppStore((s) => s.setSelectedRobotId);
   const setRobotCreateMode = useAppStore((s) => s.setRobotCreateMode);
+  const liveTurnUsage = useAppStore((s) => s.liveTurnUsage);
   const pendingMessageQueue = useAppStore((s) => s.pendingMessageQueue);
   const removeQueuedMessage = useAppStore((s) => s.removeQueuedMessage);
   // 目标模式运行态：只在 goal + active 时视为“整体执行中”。
@@ -318,6 +319,14 @@ export function ChatInput({
   }, [activeEntry, currentModel, providerModels, providers]);
 
   const contextUsedTokens = useMemo(() => {
+    if (liveTurnUsage) {
+      const liveUsed = liveTurnUsage.lastSinglePromptTokens && liveTurnUsage.lastSinglePromptTokens > 0
+        ? liveTurnUsage.lastSinglePromptTokens
+        : liveTurnUsage.promptTokens;
+      if (liveUsed > 0) {
+        return liveUsed;
+      }
+    }
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const usage = messages[index].runSummary?.usage;
       if (!usage) {
@@ -331,7 +340,7 @@ export function ChatInput({
       }
     }
     return 0;
-  }, [messages]);
+  }, [liveTurnUsage, messages]);
 
   useEffect(() => {
     robotList().then(setRobots).catch(() => setRobots([]));

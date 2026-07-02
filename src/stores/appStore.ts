@@ -171,6 +171,12 @@ export interface SmartbrainExtractionProgress {
   total: number;
 }
 
+export interface ImageGenerationSettings {
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
 // 左侧栏宽度边界：保持目录可读，并避免过宽挤占聊天区。
 export const SIDEBAR_WIDTH_MIN = 220;
 export const SIDEBAR_WIDTH_MAX = 520;
@@ -182,6 +188,8 @@ export const RIGHT_PANEL_WIDTH_MAX = 760;
 export const DEFAULT_RIGHT_PANEL_WIDTH = 384;
 export const DEFAULT_MODEL_CONTEXT_LENGTH = 128000;
 export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 65535;
+export const DEFAULT_IMAGE_GENERATION_MODEL = "gpt-image-2";
+export const DEFAULT_IMAGE_GENERATION_BASE_URL = "https://api.openai.com/v1";
 const LAYOUT_SNAPSHOT_STORAGE_KEY = "cn-codex:layout-snapshot";
 export const VISION_FALLBACK_KIND_MULTIMODAL: VisionFallbackKind = "multimodal";
 export const VISION_FALLBACK_KIND_LOCAL_OCR: VisionFallbackKind = "local_ocr";
@@ -227,6 +235,19 @@ function mergeLayoutSnapshotToStorage(patch: LayoutSnapshot): void {
 }
 
 const initialLayoutSnapshot = readLayoutSnapshotFromStorage();
+
+export function normalizeImageGenerationSettings(
+  value?: Partial<ImageGenerationSettings> | null,
+): ImageGenerationSettings {
+  const model = typeof value?.model === "string" ? value.model.trim() : "";
+  const baseUrl = typeof value?.baseUrl === "string" ? value.baseUrl.trim() : "";
+  const apiKey = typeof value?.apiKey === "string" ? value.apiKey.trim() : "";
+  return {
+    model: model || DEFAULT_IMAGE_GENERATION_MODEL,
+    baseUrl: (baseUrl || DEFAULT_IMAGE_GENERATION_BASE_URL).replace(/\/+$/, ""),
+    apiKey,
+  };
+}
 
 interface RawToolCallInfo {
   id: string;
@@ -791,6 +812,7 @@ const ACTIVE_MODEL_KEY = "active-model";
 const PROVIDERS_KEY = "providers";
 const ACTIVE_PROVIDER_KEY = "active-provider";
 const AUTO_APPROVE_KEY = "auto-approve";
+const IMAGE_GENERATION_SETTINGS_KEY = "image-generation-settings";
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const RIGHT_PANEL_WIDTH_KEY = "right-panel-width";
 
@@ -1254,6 +1276,13 @@ function saveRightPanelWidth(width: number) {
   mergeLayoutSnapshotToStorage({ rightPanelWidth: clamped });
 }
 
+function saveImageGenerationSettings(settings: ImageGenerationSettings) {
+  void appStateSet(
+    IMAGE_GENERATION_SETTINGS_KEY,
+    JSON.stringify(settings),
+  );
+}
+
 function getLeafName(path: string): string {
   const parts = path.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || path;
@@ -1278,6 +1307,8 @@ interface AppState {
   activeProviderId: string | null;
   /** 当前正在使用的资源池端点索引 */
   activeEndpointIndex: number | null;
+  /** 文生图内置工具的独立配置 */
+  imageGenerationSettings: ImageGenerationSettings;
 
   /** 输入框附件列表 */
   attachedFiles: AttachedFile[];
@@ -1297,6 +1328,7 @@ interface AppState {
   streamingText: string;
   streamingLabel: string;
   isStreaming: boolean;
+  liveTurnUsage: TokenUsage | null;
   chatMode: ChatMode;
   latestPlanContent: string | null;
   activePlan: PlanFile | null;
@@ -1344,6 +1376,7 @@ interface AppState {
 
   /** 供应商管理 */
   setProviders: (providers: ProviderConfig[]) => void;
+  setImageGenerationSettings: (settings: Partial<ImageGenerationSettings>) => void;
   activateProvider: (providerId: string) => void;
   updateProvider: (providerId: string, updates: Partial<ProviderConfig>) => void;
   addCustomProvider: (provider: ProviderConfig) => void;
@@ -1391,6 +1424,7 @@ interface AppState {
   deleteThread: (threadId: string) => void;
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (message: ChatMessage) => void;
+  setLiveTurnUsage: (usage: TokenUsage | null) => void;
   updateToolCallStatus: (toolId: string, status: "success" | "failed", output?: string) => void;
   updateToolCallPatchProgress: (toolId: string, changes: PatchProgressChange[]) => void;
   upsertPendingFileReview: (review: PendingFileReview) => void;
@@ -1454,6 +1488,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   providers: [],
   activeProviderId: null,
   activeEndpointIndex: null,
+  imageGenerationSettings: normalizeImageGenerationSettings(),
   attachedFiles: [],
   pendingComposerInsert: null,
   pendingMessageQueue: [],
@@ -1474,6 +1509,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   streamingText: "",
   streamingLabel: "",
   isStreaming: false,
+  liveTurnUsage: null,
   chatMode: "chat",
   latestPlanContent: null,
   activePlan: null,
@@ -1516,6 +1552,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       messages: [],
       streamingText: "",
       streamingLabel: "",
+      liveTurnUsage: null,
       currentGoal: null,
       latestPlanContent: null,
       activePlan: null,
@@ -1533,6 +1570,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       streamingText: "",
       streamingLabel: "",
       isStreaming: false,
+      liveTurnUsage: null,
       currentGoal: null,
       latestPlanContent: null,
       activePlan: null,
@@ -1620,6 +1658,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentThreadId: null,
       messages: [],
       streamingText: "",
+      liveTurnUsage: null,
       latestPlanContent: null,
       activePlan: null,
       currentGoal: null,
@@ -1638,6 +1677,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       messages: [],
       streamingText: "",
       isStreaming: false,
+      liveTurnUsage: null,
       currentTurnId: null,
       currentGoal: null,
       latestPlanContent: null,
@@ -1656,6 +1696,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       messages: [],
       streamingText: "",
       isStreaming: false,
+      liveTurnUsage: null,
       currentTurnId: null,
       currentGoal: null,
       latestPlanContent: null,
@@ -1693,6 +1734,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             currentThreadId: null,
             messages: [],
             streamingText: "",
+            liveTurnUsage: null,
             currentGoal: null,
             latestPlanContent: null,
             activePlan: null,
@@ -1705,6 +1747,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   setProviders: (providers) => {
     saveProviders(providers);
     set({ providers });
+  },
+
+  setImageGenerationSettings: (settings) => {
+    const normalized = normalizeImageGenerationSettings({
+      ...get().imageGenerationSettings,
+      ...settings,
+    });
+    saveImageGenerationSettings(normalized);
+    set({ imageGenerationSettings: normalized });
   },
 
   activateProvider: (providerId: string) => {
@@ -1993,6 +2044,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           currentThreadId: null,
           messages: [],
           streamingText: "",
+          liveTurnUsage: null,
           currentTurnId: null,
           latestPlanContent: null,
           activePlan: null,
@@ -2007,6 +2059,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   addMessage: (message) => {
     set((s) => ({ messages: [...s.messages, message] }));
   },
+  setLiveTurnUsage: (usage) => set({ liveTurnUsage: usage }),
   updateToolCallStatus: (toolId, status, output?) =>
     set((s) => {
       const msgs = [...s.messages];
@@ -2228,6 +2281,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamingLabel: "",
         isStreaming: false,
         currentTurnId: null,
+        liveTurnUsage: null,
       };
     }),
   setStreamingLabel: (label) => set({ streamingLabel: label }),
@@ -2315,6 +2369,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           messages: [],
           streamingText: "",
           isStreaming: false,
+          liveTurnUsage: null,
           currentTurnId: null,
           currentGoal: null,
           latestPlanContent: null,
@@ -2392,6 +2447,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages,
         streamingText: "",
         isStreaming: false,
+        liveTurnUsage: null,
         latestPlanContent: hydratedActivePlan?.content ?? null,
         activePlan: hydratedActivePlan,
         currentGoal: normalizeThreadGoal(rawThread?.goal),
@@ -2422,6 +2478,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: [],
         streamingText: "",
         isStreaming: false,
+        liveTurnUsage: null,
         currentGoal: null,
         latestPlanContent: null,
         activePlan: null,
@@ -2450,6 +2507,7 @@ export async function initStoreFromDb(): Promise<void> {
   let sidebarTab: SidebarTab = "chats";
   let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
   let rightPanelWidth = DEFAULT_RIGHT_PANEL_WIDTH;
+  let imageGenerationSettings = normalizeImageGenerationSettings();
   let currentProjectId: string | null = null;
   let workspaceCwd: string | null = null;
 
@@ -2506,6 +2564,13 @@ export async function initStoreFromDb(): Promise<void> {
       rightPanelWidth = clampPanelWidth(parsed, RIGHT_PANEL_WIDTH_MIN, RIGHT_PANEL_WIDTH_MAX);
     }
   }
+  try {
+    if (all[IMAGE_GENERATION_SETTINGS_KEY]) {
+      imageGenerationSettings = normalizeImageGenerationSettings(
+        JSON.parse(all[IMAGE_GENERATION_SETTINGS_KEY]) as Partial<ImageGenerationSettings>,
+      );
+    }
+  } catch { /* ignore */ }
 
   try {
     if (all[ACTIVE_PROJECT_KEY]) {
@@ -2528,6 +2593,7 @@ export async function initStoreFromDb(): Promise<void> {
     configuredModels,
     activeModelId,
     autoApprove,
+    imageGenerationSettings,
     sidebarTab,
     sidebarWidth,
     rightPanelWidth,

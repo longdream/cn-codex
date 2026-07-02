@@ -14,11 +14,12 @@ import { WorkflowsPanel } from "./WorkflowsPanel";
 import { UsageDashboard } from "./UsageDashboard";
 import { ExperiencePanel } from "./ExperiencePanel";
 import { KnowledgePanel } from "./KnowledgePanel";
+import { ImageGenerationPanel } from "./ImageGenerationPanel";
 interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "usage" | "integration" | "plugins" | "skills" | "robots" | "workflows" | "hooks" | "experience" | "knowledge" | "rules";
+type SettingsTab = "general" | "provider" | "image" | "usage" | "integration" | "plugins" | "skills" | "robots" | "workflows" | "hooks" | "experience" | "knowledge" | "rules";
 
 function displayFileName(path: string): string {
   const normalized = path.replace(/\\/g, "/");
@@ -213,6 +214,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       id: "provider",
       label: intl.formatMessage({ id: "settings.provider" }),
       detail: intl.formatMessage({ id: "settings.provider.description" }),
+    },
+    {
+      id: "image",
+      label: intl.formatMessage({ id: "settings.image" }),
+      detail: intl.formatMessage({ id: "settings.image.description" }),
     },
     {
       id: "usage",
@@ -718,6 +724,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             )}
 
             {tab === "provider" && <ProviderPanel />}
+            {tab === "image" && <ImageGenerationPanel />}
             {tab === "usage" && <UsageDashboard />}
             {tab === "integration" && <IntegrationPanel />}
             {tab === "plugins" && <PluginsPanel />}
