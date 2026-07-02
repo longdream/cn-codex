@@ -390,8 +390,12 @@ pub async fn browser_start_pick_mode(
         })));
     }
 
-    evaluate_browser_script(&pick_mode_start_script(), true, Some(context.current_url.as_str()))
-        .await?;
+    evaluate_browser_script(
+        &pick_mode_start_script(),
+        true,
+        Some(context.current_url.as_str()),
+    )
+    .await?;
     Ok(context)
 }
 
@@ -1041,7 +1045,9 @@ async fn workspace_root_from_state(state: &State<'_, AppState>) -> AppResult<Pat
     )))
 }
 
-async fn browser_workspace_roots_from_state(state: &State<'_, AppState>) -> AppResult<Vec<PathBuf>> {
+async fn browser_workspace_roots_from_state(
+    state: &State<'_, AppState>,
+) -> AppResult<Vec<PathBuf>> {
     let mut roots = vec![workspace_root_from_state(state).await?];
     if let Some(active_root) = state.browser_active_root.read().await.clone() {
         if let Some(root) = resolve_workspace_root_candidate(&active_root) {
@@ -1316,8 +1322,7 @@ async fn evaluate_browser_script(
 ) -> AppResult<serde_json::Value> {
     let mut attempt = 0usize;
     loop {
-        let result =
-            evaluate_browser_script_once(script, return_by_value, preferred_url).await;
+        let result = evaluate_browser_script_once(script, return_by_value, preferred_url).await;
         match result {
             Ok(value) => return Ok(value),
             Err(error) => {
@@ -2054,9 +2059,7 @@ pub async fn read_file_for_attach(
 }
 
 #[tauri::command]
-pub async fn read_text_file_preview(
-    path: String,
-) -> AppResult<TextFilePreviewResult> {
+pub async fn read_text_file_preview(path: String) -> AppResult<TextFilePreviewResult> {
     let (display_path, file_path) = resolve_existing_file_path(&path)?;
 
     let metadata = fs::metadata(&file_path)

@@ -77,9 +77,9 @@ fn resolve_fixed_webview2_runtime_dir(exe_dir: &Path, version: &str) -> Option<P
             "Microsoft.WebView2.FixedVersionRuntime.{version}.x64"
         )),
     ];
-    candidate_dirs.into_iter().find(|candidate| {
-        candidate.is_dir() && candidate.join("msedgewebview2.exe").is_file()
-    })
+    candidate_dirs
+        .into_iter()
+        .find(|candidate| candidate.is_dir() && candidate.join("msedgewebview2.exe").is_file())
 }
 
 #[cfg(all(target_os = "windows", not(debug_assertions)))]
@@ -177,9 +177,12 @@ fn configure_bundled_webview2_runtime() -> Result<bool, String> {
     let version = parse_webview2_runtime_version()?;
     let exe_path = std::env::current_exe()
         .map_err(|error| format!("Failed to resolve current executable path: {error}"))?;
-    let exe_dir = exe_path
-        .parent()
-        .ok_or_else(|| format!("Failed to resolve executable parent directory: {}", exe_path.display()))?;
+    let exe_dir = exe_path.parent().ok_or_else(|| {
+        format!(
+            "Failed to resolve executable parent directory: {}",
+            exe_path.display()
+        )
+    })?;
     let Some(runtime_dir) = resolve_fixed_webview2_runtime_dir(exe_dir, &version) else {
         info!(
             "[startup][rust] bundled fixed WebView2 runtime not found (version {}, exe: {}), fallback to system runtime",
@@ -196,7 +199,10 @@ fn configure_bundled_webview2_runtime() -> Result<bool, String> {
     ensure_fixed_runtime_acl(&runtime_dir, &version)?;
     // SAFETY: process-wide environment is set before any webview is created.
     unsafe {
-        std::env::set_var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", runtime_dir.as_os_str());
+        std::env::set_var(
+            "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
+            runtime_dir.as_os_str(),
+        );
     }
     info!(
         "[startup][rust] using bundled WebView2 runtime {} at {}",
@@ -283,9 +289,11 @@ pub fn run() {
 
                     let experiences_dir = smartbrain::experiences_dir(&workspace_config_dir);
                     let knowledge_dir = smartbrain::knowledge_dir(&workspace_config_dir);
+                    let knowledge_sources_dir =
+                        smartbrain::knowledge_sources_dir(&workspace_config_dir);
                     let bm25_path = smartbrain::bm25_index_path(&workspace_config_dir);
                     let _ = std::fs::create_dir_all(experiences_dir.join("raw"));
-                    let _ = std::fs::create_dir_all(knowledge_dir.join("sources"));
+                    let _ = std::fs::create_dir_all(knowledge_sources_dir);
                     let _ = std::fs::create_dir_all(knowledge_dir.join("docs"));
 
                     let http = reqwest::Client::builder()
@@ -495,6 +503,7 @@ pub fn run() {
             smartbrain::commands::smartbrain_read_knowledge,
             smartbrain::commands::smartbrain_delete_knowledge,
             smartbrain::commands::smartbrain_upload_knowledge,
+            smartbrain::commands::smartbrain_upload_knowledge_folder,
             smartbrain::commands::smartbrain_search,
             smartbrain::commands::smartbrain_rebuild_index,
             smartbrain::commands::smartbrain_migrate_to_okf,

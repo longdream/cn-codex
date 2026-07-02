@@ -172,6 +172,7 @@ export interface SmartbrainExtractionProgress {
 }
 
 export interface ImageGenerationSettings {
+  enabled: boolean;
   model: string;
   baseUrl: string;
   apiKey: string;
@@ -239,10 +240,12 @@ const initialLayoutSnapshot = readLayoutSnapshotFromStorage();
 export function normalizeImageGenerationSettings(
   value?: Partial<ImageGenerationSettings> | null,
 ): ImageGenerationSettings {
+  const enabled = typeof value?.enabled === "boolean" ? value.enabled : true;
   const model = typeof value?.model === "string" ? value.model.trim() : "";
   const baseUrl = typeof value?.baseUrl === "string" ? value.baseUrl.trim() : "";
   const apiKey = typeof value?.apiKey === "string" ? value.apiKey.trim() : "";
   return {
+    enabled,
     model: model || DEFAULT_IMAGE_GENERATION_MODEL,
     baseUrl: (baseUrl || DEFAULT_IMAGE_GENERATION_BASE_URL).replace(/\/+$/, ""),
     apiKey,

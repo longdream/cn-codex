@@ -465,6 +465,7 @@ mod tests {
                         tool_call_id: None,
                         tool_name: None,
                         tool_calls: None,
+                        attachments: Vec::new(),
                     },
                     ThreadMessage {
                         id: "m-assistant".to_string(),
@@ -478,6 +479,7 @@ mod tests {
                             name: "shell".to_string(),
                             arguments: "cargo check".to_string(),
                         }]),
+                        attachments: Vec::new(),
                     },
                 ],
             }],

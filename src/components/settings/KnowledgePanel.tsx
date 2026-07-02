@@ -1,4 +1,4 @@
-import { IconChevronDown, IconChevronRight, IconTrash, IconUpload, IconAlertCircle, IconRefresh } from "@tabler/icons-react";
+import { IconChevronDown, IconChevronRight, IconTrash, IconUpload, IconAlertCircle, IconRefresh, IconFolder } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
@@ -12,6 +12,9 @@ interface KnowledgeEntry {
   added_at: number;
   chunk_count: number;
   categories: string[];
+  domain?: string;
+  relative_path?: string;
+  source_group?: string;
 }
 
 interface OkfFrontmatter {
@@ -21,6 +24,39 @@ interface OkfFrontmatter {
   tags?: string[];
   timestamp?: string;
 }
+
+interface FolderUploadFailure {
+  relative_path: string;
+  error: string;
+}
+
+interface FolderUploadResponse {
+  status: string;
+  requires_confirmation?: boolean;
+  candidate_count?: number;
+  skipped_count?: number;
+  threshold?: number;
+  preview_paths?: string[];
+  imported_count?: number;
+  failed_count?: number;
+  failures?: FolderUploadFailure[];
+}
+
+const KNOWLEDGE_ALLOWED_EXTENSIONS = [
+  "pdf",
+  "docx",
+  "xlsx",
+  "xls",
+  "md",
+  "txt",
+  "json",
+  "yaml",
+  "yml",
+  "toml",
+  "csv",
+  "html",
+  "xml",
+];
 
 function formatDate(ts: number): string {
   if (ts <= 0) return "-";
@@ -37,7 +73,12 @@ export function KnowledgePanel() {
   const [knowContent, setKnowContent] = useState<Record<string, string>>({});
   const [knowFrontmatter, setKnowFrontmatter] = useState<Record<string, OkfFrontmatter | null>>({});
   const [uploading, setUploading] = useState(false);
+  const [uploadingFolder, setUploadingFolder] = useState(false);
   const [migrating, setMigrating] = useState(false);
+  const [notice, setNotice] = useState<{
+    kind: "success" | "error" | "warning" | "info";
+    text: string;
+  } | null>(null);
 
   useEffect(() => {
     invoke<{ config?: { smartbrain?: { enabled?: boolean } } }>("standalone_config_read")
@@ -102,6 +143,7 @@ export function KnowledgePanel() {
   const handleUploadKnowledge = useCallback(async () => {
     if (uploading) return;
     try {
+      setNotice(null);
       const selected = await open({
         multiple: false,
         filters: [
@@ -115,12 +157,95 @@ export function KnowledgePanel() {
       setUploading(true);
       await invoke("smartbrain_upload_knowledge", { filePath });
       await loadKnowledge();
+      setNotice({
+        kind: "success",
+        text: intl.formatMessage({ id: "settings.smartbrain.knowledge.singleUploadSuccess" }),
+      });
     } catch (err) {
       console.error("Upload knowledge failed:", err);
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage({ id: "settings.smartbrain.knowledge.singleUploadFailed" }),
+      });
     } finally {
       setUploading(false);
     }
-  }, [uploading, loadKnowledge]);
+  }, [intl, loadKnowledge, uploading]);
+
+  const handleUploadKnowledgeFolder = useCallback(async () => {
+    if (uploadingFolder) return;
+    try {
+      setNotice(null);
+      const selected = await open({ directory: true, multiple: false });
+      if (!selected || typeof selected !== "string") return;
+
+      setUploadingFolder(true);
+      let response = await invoke<FolderUploadResponse>("smartbrain_upload_knowledge_folder", {
+        folderPath: selected,
+        recursive: true,
+        allowedExtensions: KNOWLEDGE_ALLOWED_EXTENSIONS,
+        confirmed: false,
+      });
+
+      if (response.requires_confirmation) {
+        const preview = (response.preview_paths ?? []).slice(0, 6);
+        const previewText = preview.length > 0 ? `\n- ${preview.join("\n- ")}` : "";
+        const shouldContinue = confirm(
+          intl.formatMessage(
+            { id: "settings.smartbrain.knowledge.folderConfirm" },
+            {
+              count: response.candidate_count ?? 0,
+              threshold: response.threshold ?? 0,
+              preview: previewText,
+            },
+          ),
+        );
+        if (!shouldContinue) {
+          setNotice({
+            kind: "info",
+            text: intl.formatMessage({ id: "settings.smartbrain.knowledge.folderCancelled" }),
+          });
+          return;
+        }
+
+        response = await invoke<FolderUploadResponse>("smartbrain_upload_knowledge_folder", {
+          folderPath: selected,
+          recursive: true,
+          allowedExtensions: KNOWLEDGE_ALLOWED_EXTENSIONS,
+          confirmed: true,
+        });
+      }
+
+      if (response.status !== "ok") {
+        setNotice({
+          kind: "error",
+          text: intl.formatMessage({ id: "settings.smartbrain.knowledge.folderUploadFailed" }),
+        });
+        return;
+      }
+
+      await loadKnowledge();
+      setNotice({
+        kind: (response.failed_count ?? 0) > 0 ? "warning" : "success",
+        text: intl.formatMessage(
+          { id: "settings.smartbrain.knowledge.folderResult" },
+          {
+            imported: response.imported_count ?? 0,
+            skipped: response.skipped_count ?? 0,
+            failed: response.failed_count ?? 0,
+          },
+        ),
+      });
+    } catch (err) {
+      console.error("Upload folder failed:", err);
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage({ id: "settings.smartbrain.knowledge.folderUploadFailed" }),
+      });
+    } finally {
+      setUploadingFolder(false);
+    }
+  }, [intl, loadKnowledge, uploadingFolder]);
 
   return (
     <div className="space-y-5">
@@ -169,6 +294,16 @@ export function KnowledgePanel() {
                   : intl.formatMessage({ id: "settings.smartbrain.knowledge.upload" })}
               </button>
               <button
+                onClick={handleUploadKnowledgeFolder}
+                disabled={uploadingFolder}
+                className="app-button-secondary flex items-center gap-1.5 text-xs"
+              >
+                <IconFolder size={13} stroke={1.8} />
+                {uploadingFolder
+                  ? intl.formatMessage({ id: "settings.smartbrain.knowledge.uploadingFolder" })
+                  : intl.formatMessage({ id: "settings.smartbrain.knowledge.uploadFolder" })}
+              </button>
+              <button
                 onClick={handleMigrateToOkf}
                 disabled={migrating}
                 className="app-button-secondary flex items-center gap-1.5 text-xs"
@@ -178,6 +313,21 @@ export function KnowledgePanel() {
                 {migrating ? "Migrating..." : "Migrate to OKF"}
               </button>
             </div>
+            {notice && (
+              <p
+                className={`rounded px-2 py-1 text-xs ${
+                  notice.kind === "success"
+                    ? "bg-green-500/10 text-green-400"
+                    : notice.kind === "warning"
+                      ? "bg-amber-500/10 text-amber-400"
+                      : notice.kind === "info"
+                        ? "bg-blue-500/10 text-blue-400"
+                        : "bg-red-500/10 text-red-400"
+                }`}
+              >
+                {notice.text}
+              </p>
+            )}
 
             {knowledge.length === 0 ? (
               <p className="py-4 text-center text-xs text-[var(--text-faint)]">
@@ -231,6 +381,14 @@ export function KnowledgePanel() {
                           </span>
                         ))}
                       </div>
+                    )}
+                    {doc.domain && (
+                      <span className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] text-purple-400">
+                        {intl.formatMessage(
+                          { id: "settings.smartbrain.knowledge.domainLabel" },
+                          { domain: doc.domain },
+                        )}
+                      </span>
                     )}
                   </div>
                   {expandedKnow === doc.doc_id && knowContent[doc.doc_id] && (

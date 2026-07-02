@@ -726,6 +726,7 @@ impl AgentEngine {
                             "memory_list",
                             "memory_read",
                             "memory_search",
+                            "smartbrain_search",
                             "view_image",
                             "ocr_image",
                             "web_search",
@@ -2075,9 +2076,19 @@ impl AgentEngine {
                 if !hier_text.is_empty() {
                     parts.push(format!(
                         "You also have access to a knowledge base with these categories:\n{hier_text}\n\n\
-                         Use `smartbrain_search` to find relevant knowledge, then `memory_read` to read full content."
+                         Use `smartbrain_search` to find relevant knowledge first, then `memory_read` with pagination \
+                         (`line_offset` and `max_lines`) to read only the needed sections."
                     ));
                 }
+            }
+
+            if config.smartbrain_config().is_active() {
+                parts.push(
+                    "Knowledge retrieval policy: prefer `smartbrain_search` for large or structured knowledge queries. \
+                     Use `memory_read` pagination (`line_offset`, `max_lines`) for targeted reading, and avoid \
+                     broad `memory_search` or shell/python scans over large documents unless explicitly required."
+                        .to_string(),
+                );
             }
 
             if parts.is_empty() {
@@ -5879,9 +5890,11 @@ mod tests {
             .iter()
             .position(|msg| msg.role != "system")
             .expect("should contain non-system messages");
-        assert!(messages[first_non_system..]
-            .iter()
-            .all(|msg| msg.role != "system"));
+        assert!(
+            messages[first_non_system..]
+                .iter()
+                .all(|msg| msg.role != "system")
+        );
         assert!(messages.iter().any(|msg| {
             msg.role == "system"
                 && matches!(

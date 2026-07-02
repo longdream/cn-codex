@@ -7,6 +7,9 @@ use super::bm25_index::{BM25Index, SearchFilter, SourceType};
 use super::index::ExperienceIndex;
 use super::knowledge::KnowledgeIndex;
 
+const FOLDER_IMPORT_CONFIRM_THRESHOLD: usize = 200;
+const FOLDER_IMPORT_PREVIEW_LIMIT: usize = 8;
+
 #[tauri::command]
 pub async fn smartbrain_list_experiences(
     state: State<'_, AppState>,
@@ -105,6 +108,9 @@ pub async fn smartbrain_list_knowledge(state: State<'_, AppState>) -> AppResult<
                 "added_at": e.added_at,
                 "chunk_count": e.chunk_count,
                 "categories": e.categories,
+                "domain": e.domain,
+                "relative_path": e.relative_path,
+                "source_group": e.source_group,
             })
         })
         .collect();
@@ -185,6 +191,80 @@ pub async fn smartbrain_upload_knowledge(
 }
 
 #[tauri::command]
+pub async fn smartbrain_upload_knowledge_folder(
+    state: State<'_, AppState>,
+    folder_path: String,
+    recursive: Option<bool>,
+    allowed_extensions: Option<Vec<String>>,
+    confirmed: Option<bool>,
+) -> AppResult<serde_json::Value> {
+    let config = state.config_manager.read()?;
+    let knowledge_dir = super::knowledge_dir(&state.workspace_config_dir);
+    let bm25_path = super::bm25_index_path(&state.workspace_config_dir);
+    let root_path = std::path::PathBuf::from(&folder_path);
+    let recursive = recursive.unwrap_or(true);
+    let confirmed = confirmed.unwrap_or(false);
+    let allowed_extensions =
+        allowed_extensions.unwrap_or_else(super::knowledge::default_folder_upload_extensions);
+    let normalized_extensions = super::knowledge::normalize_allowed_extensions(&allowed_extensions);
+    let collection =
+        super::knowledge::collect_folder_candidates(&root_path, recursive, &normalized_extensions)
+            .map_err(crate::error::AppError::Custom)?;
+    let candidate_count = collection.candidates.len();
+    let preview_paths: Vec<String> = collection
+        .candidates
+        .iter()
+        .take(FOLDER_IMPORT_PREVIEW_LIMIT)
+        .map(|candidate| candidate.relative_path.clone())
+        .collect();
+
+    if candidate_count > FOLDER_IMPORT_CONFIRM_THRESHOLD && !confirmed {
+        return Ok(serde_json::json!({
+            "status": "needs_confirmation",
+            "requires_confirmation": true,
+            "candidate_count": candidate_count,
+            "skipped_count": collection.skipped_count,
+            "threshold": FOLDER_IMPORT_CONFIRM_THRESHOLD,
+            "preview_paths": preview_paths,
+        }));
+    }
+
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(300))
+        .build()
+        .unwrap_or_default();
+    let domain = root_path
+        .file_name()
+        .map(|name| name.to_string_lossy().trim().to_string())
+        .filter(|value| !value.is_empty());
+    let source_group = Some(format!("folder-{}", super::index::now_secs()));
+    let summary = super::knowledge::ingest_folder_candidates(
+        &http,
+        &config,
+        &knowledge_dir,
+        &bm25_path,
+        collection.candidates,
+        collection.skipped_count,
+        domain.clone(),
+        source_group.clone(),
+    )
+    .await;
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "requires_confirmation": false,
+        "candidate_count": candidate_count,
+        "domain": domain,
+        "source_group": source_group,
+        "imported_count": summary.imported_count,
+        "skipped_count": summary.skipped_count,
+        "failed_count": summary.failed_count,
+        "failures": summary.failures,
+    }))
+}
+
+#[tauri::command]
 pub async fn smartbrain_search(
     state: State<'_, AppState>,
     query: String,
@@ -192,6 +272,7 @@ pub async fn smartbrain_search(
     concept_type: Option<String>,
     tags: Option<Vec<String>>,
     source_type: Option<String>,
+    domain: Option<String>,
 ) -> AppResult<serde_json::Value> {
     let config = state.config_manager.read()?;
     let sb_config = config.smartbrain_config();
@@ -206,12 +287,14 @@ pub async fn smartbrain_search(
 
     let has_filter = concept_type.is_some()
         || tags.as_ref().is_some_and(|t| !t.is_empty())
-        || source_type.is_some();
+        || source_type.is_some()
+        || domain.is_some();
 
     let results = if has_filter {
         let filter = SearchFilter {
             concept_type,
             tags: tags.unwrap_or_default(),
+            domain,
             source_type: source_type.as_deref().map(|s| match s {
                 "experience" => SourceType::Experience,
                 _ => SourceType::Knowledge,
@@ -259,6 +342,21 @@ pub async fn smartbrain_migrate_to_okf(state: State<'_, AppState>) -> AppResult<
                 .with_extension("source_file", serde_json::json!(entry.source_file))
                 .with_extension("source_type", serde_json::json!(entry.source_type))
                 .with_extension("chunk_count", serde_json::json!(entry.chunk_count));
+            let frontmatter = if let Some(domain) = &entry.domain {
+                frontmatter.with_extension("domain", serde_json::json!(domain))
+            } else {
+                frontmatter
+            };
+            let frontmatter = if let Some(relative_path) = &entry.relative_path {
+                frontmatter.with_extension("relative_path", serde_json::json!(relative_path))
+            } else {
+                frontmatter
+            };
+            let frontmatter = if let Some(source_group) = &entry.source_group {
+                frontmatter.with_extension("source_group", serde_json::json!(source_group))
+            } else {
+                frontmatter
+            };
 
             let okf_doc = OkfDocument::new(frontmatter, &content);
             if okf_doc.write_to(&doc_path).is_ok() {

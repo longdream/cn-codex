@@ -19,6 +19,7 @@ function readImageGenerationFromConfig(
   }
   const record = raw as Record<string, unknown>;
   return normalizeImageGenerationSettings({
+    enabled: typeof record.enabled === "boolean" ? record.enabled : undefined,
     model: typeof record.model === "string" ? record.model : undefined,
     baseUrl: typeof record.base_url === "string" ? record.base_url : undefined,
     apiKey: typeof record.api_key === "string" ? record.api_key : undefined,
@@ -71,6 +72,7 @@ export function ImageGenerationPanel() {
     }
     const normalized = normalizeImageGenerationSettings(draft);
     return (
+      normalized.enabled !== imageSettings.enabled ||
       normalized.model !== imageSettings.model ||
       normalized.baseUrl !== imageSettings.baseUrl ||
       normalized.apiKey !== imageSettings.apiKey
@@ -83,6 +85,11 @@ export function ImageGenerationPanel() {
     setFeedback(null);
     try {
       await standaloneConfigWrite([
+        {
+          keyPath: "image_generation.enabled",
+          value: normalized.enabled,
+          mergeStrategy: "replace",
+        },
         {
           keyPath: "image_generation.model",
           value: normalized.model,
@@ -126,6 +133,32 @@ export function ImageGenerationPanel() {
         </p>
         <p className="text-[11px] text-[var(--text-muted)]">
           {intl.formatMessage({ id: "settings.image.priorityHint" })}
+        </p>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() =>
+              setDraft((prev) => ({ ...prev, enabled: !prev.enabled }))
+            }
+            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+              draft.enabled ? "bg-[var(--accent)]" : "bg-[var(--border-subtle)]"
+            }`}
+            aria-label={intl.formatMessage({ id: "settings.image.toggle" })}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+                draft.enabled ? "translate-x-[18px]" : "translate-x-[3px]"
+              }`}
+            />
+          </button>
+          <span className="text-xs text-[var(--text-muted)]">
+            {draft.enabled
+              ? intl.formatMessage({ id: "settings.image.enabled" })
+              : intl.formatMessage({ id: "settings.image.disabled" })}
+          </span>
+        </div>
+        <p className="text-[11px] text-[var(--text-muted)]">
+          {intl.formatMessage({ id: "settings.image.toggleHint" })}
         </p>
 
         <div className="grid gap-3 md:grid-cols-2">

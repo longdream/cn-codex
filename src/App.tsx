@@ -197,6 +197,10 @@ function App() {
                 : null;
             useAppStore.getState().setImageGenerationSettings(
               normalizeImageGenerationSettings({
+                enabled:
+                  typeof imageConfig?.enabled === "boolean"
+                    ? imageConfig.enabled
+                    : undefined,
                 model: typeof imageConfig?.model === "string" ? imageConfig.model : undefined,
                 baseUrl: typeof imageConfig?.base_url === "string" ? imageConfig.base_url : undefined,
                 apiKey: typeof imageConfig?.api_key === "string" ? imageConfig.api_key : undefined,

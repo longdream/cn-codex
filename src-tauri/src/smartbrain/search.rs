@@ -19,15 +19,17 @@ pub struct SmartBrainSearchResult {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub concept_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 impl SmartBrainSearchResult {
     fn from_result(r: SearchResult, index: &BM25Index) -> Self {
-        let (tags, concept_type) = index
+        let (tags, concept_type, domain) = index
             .documents
             .iter()
             .find(|d| d.doc_id == r.doc_id)
-            .map(|d| (d.tags.clone(), d.concept_type.clone()))
+            .map(|d| (d.tags.clone(), d.concept_type.clone(), d.domain.clone()))
             .unwrap_or_default();
 
         Self {
@@ -41,6 +43,7 @@ impl SmartBrainSearchResult {
             score: r.score,
             tags,
             concept_type,
+            domain,
         }
     }
 }
@@ -185,6 +188,7 @@ pub fn rebuild_index(workspace_config_dir: &Path, bm25_index_path: &Path) {
                     entry.extracted_at,
                     entry.categories.clone(),
                     Some("Experience".to_string()),
+                    None,
                 );
                 bm25.add_document(doc);
             }
@@ -192,6 +196,7 @@ pub fn rebuild_index(workspace_config_dir: &Path, bm25_index_path: &Path) {
     }
 
     let knowledge_dir = super::knowledge_dir(workspace_config_dir);
+    let _ = super::knowledge::backfill_legacy_metadata(&knowledge_dir);
     let know_index = KnowledgeIndex::load(&knowledge_dir);
     let docs_dir = knowledge_dir.join("docs");
 
@@ -209,6 +214,7 @@ pub fn rebuild_index(workspace_config_dir: &Path, bm25_index_path: &Path) {
                     entry.added_at,
                     entry.categories.clone(),
                     Some("Knowledge".to_string()),
+                    entry.domain.clone(),
                 );
                 bm25.add_document(doc);
             }
@@ -337,5 +343,51 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].doc_id, "exp:thread-high");
         assert_eq!(results[1].doc_id, "exp:thread-low");
+    }
+
+    #[test]
+    fn rebuild_index_backfills_legacy_domain_metadata_for_knowledge() {
+        let (_temp_dir, workspace_config_dir, bm25_path) = setup_workspace();
+        let knowledge_dir = crate::smartbrain::knowledge_dir(&workspace_config_dir);
+        std::fs::create_dir_all(knowledge_dir.join("docs")).unwrap();
+
+        let mut know_index = crate::smartbrain::knowledge::KnowledgeIndex::default();
+        know_index
+            .entries
+            .push(crate::smartbrain::knowledge::KnowledgeEntry {
+                doc_id: "legacy-knowledge".to_string(),
+                source_file: "legacy.md".to_string(),
+                source_type: "md".to_string(),
+                title: "Legacy knowledge".to_string(),
+                added_at: 1_700_000_000,
+                chunk_count: 1,
+                categories: vec!["legacy".to_string()],
+                domain: None,
+                relative_path: None,
+                source_group: None,
+            });
+        know_index.save(&knowledge_dir).unwrap();
+        std::fs::write(
+            knowledge_dir.join("docs").join("legacy-knowledge.md"),
+            "legacy content for rebuild test",
+        )
+        .unwrap();
+
+        rebuild_index(&workspace_config_dir, &bm25_path);
+
+        let reloaded = crate::smartbrain::knowledge::KnowledgeIndex::load(&knowledge_dir);
+        assert_eq!(reloaded.entries[0].domain.as_deref(), Some("legacy"));
+        assert_eq!(
+            reloaded.entries[0].relative_path.as_deref(),
+            Some("legacy.md")
+        );
+
+        let rebuilt_bm25 = BM25Index::load(&bm25_path);
+        let rebuilt_doc = rebuilt_bm25
+            .documents
+            .iter()
+            .find(|doc| doc.doc_id == "know:legacy-knowledge")
+            .unwrap();
+        assert_eq!(rebuilt_doc.domain.as_deref(), Some("legacy"));
     }
 }

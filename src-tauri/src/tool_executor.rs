@@ -539,11 +539,23 @@ struct ImageGenerateArgs {
     base_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct ImageGenerationSettingsResolved {
+    enabled: bool,
     model: Option<String>,
     base_url: Option<String>,
     api_key: Option<String>,
+}
+
+impl Default for ImageGenerationSettingsResolved {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: None,
+            base_url: None,
+            api_key: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2343,6 +2355,14 @@ impl ToolExecutor {
             }),
         ];
 
+        if !self.image_generation_is_enabled() {
+            tools.retain(|tool| {
+                tool.pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("image_generate")
+            });
+        }
+
         if web_search_enabled {
             tools.push(serde_json::json!({
                 "type": "function",
@@ -2392,14 +2412,12 @@ impl ToolExecutor {
             }));
         }
 
-        if self.smartbrain_is_active()
-            && crate::smartbrain::bm25_index_path(&self.workspace_config_dir).exists()
-        {
+        if self.smartbrain_is_active() {
             tools.push(serde_json::json!({
                 "type": "function",
                 "function": {
                     "name": "smartbrain_search",
-                    "description": "Search the SmartBrain knowledge base using BM25 relevance ranking. Returns the most relevant documents (experiences and uploaded knowledge) matching the query. Use memory_read to read full content of results.",
+                    "description": "Search the SmartBrain knowledge base using BM25 relevance ranking. Returns the most relevant documents (experiences and uploaded knowledge) matching the query. Use paged memory_read (line_offset/max_lines) to inspect result sections.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -2412,6 +2430,10 @@ impl ToolExecutor {
                                 "minimum": 1,
                                 "maximum": 20,
                                 "description": "Maximum number of results. Defaults to 5."
+                            },
+                            "domain": {
+                                "type": "string",
+                                "description": "Optional domain filter for SmartBrain knowledge (for example: database, backend, devops)."
                             }
                         },
                         "required": ["query"]
@@ -4042,6 +4064,11 @@ impl ToolExecutor {
         }
 
         let image_defaults = self.read_image_generation_settings();
+        if !image_defaults.enabled {
+            let msg = "image_generate is disabled in Settings > 文生图. Enable the 文生图开关 to use this tool.".to_string();
+            self.emit_tool_end(app_handle, thread_id, call_id, "image_generate", -1, &msg);
+            return Ok(msg);
+        }
         let api_key = match image_generation_api_key(image_defaults.api_key.as_deref()) {
             Some(value) => value,
             None => {
@@ -4051,14 +4078,9 @@ impl ToolExecutor {
             }
         };
 
-        let model = image_generation_model(
-            args.model.as_deref(),
-            image_defaults.model.as_deref(),
-        );
-        let api_url = image_generation_api_url(
-            args.base_url.as_deref(),
-            image_defaults.base_url.as_deref(),
-        );
+        let model = image_generation_model(args.model.as_deref(), image_defaults.model.as_deref());
+        let api_url =
+            image_generation_api_url(args.base_url.as_deref(), image_defaults.base_url.as_deref());
         let body = image_generation_request_body(
             prompt,
             &model,
@@ -4263,14 +4285,9 @@ impl ToolExecutor {
         reference_endpoint: &str,
     ) -> Result<Vec<u8>, String> {
         let resolved_url = Self::resolve_generated_image_url(url, reference_endpoint)?;
-        let response = self
-            .http
-            .get(&resolved_url)
-            .send()
-            .await
-            .map_err(|e| {
-                format!("image_generate could not fetch generated image URL {resolved_url}: {e}")
-            })?;
+        let response = self.http.get(&resolved_url).send().await.map_err(|e| {
+            format!("image_generate could not fetch generated image URL {resolved_url}: {e}")
+        })?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!(
@@ -6120,6 +6137,8 @@ impl ToolExecutor {
             query: String,
             #[serde(default)]
             top_k: Option<usize>,
+            #[serde(default)]
+            domain: Option<String>,
         }
 
         let args: Args = serde_json::from_str(arguments).map_err(|e| {
@@ -6157,7 +6176,50 @@ impl ToolExecutor {
 
         let top_k = args.top_k.unwrap_or(5).clamp(1, 20);
         let bm25_path = crate::smartbrain::bm25_index_path(&self.workspace_config_dir);
-        let results = crate::smartbrain::search::unified_search(&bm25_path, query, top_k);
+        if !bm25_path.exists() {
+            let msg = "SmartBrain index is not ready yet. Upload knowledge files or run `smartbrain_rebuild_index`, then retry `smartbrain_search`.".to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_search",
+                -1,
+                &msg,
+            );
+            return Ok(msg);
+        }
+        let bm25 = crate::smartbrain::bm25_index::BM25Index::load(&bm25_path);
+        if bm25.document_count() == 0 {
+            let msg = "SmartBrain index is empty. Upload knowledge content first, then run `smartbrain_rebuild_index` if needed.".to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_search",
+                -1,
+                &msg,
+            );
+            return Ok(msg);
+        }
+        let domain = args
+            .domain
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let results = if let Some(ref domain) = domain {
+            crate::smartbrain::search::unified_search_with_filter(
+                &bm25_path,
+                query,
+                top_k,
+                crate::smartbrain::bm25_index::SearchFilter {
+                    domain: Some(domain.clone()),
+                    ..crate::smartbrain::bm25_index::SearchFilter::default()
+                },
+            )
+        } else {
+            crate::smartbrain::search::unified_search(&bm25_path, query, top_k)
+        };
 
         let output = if results.is_empty() {
             "No matching documents found in SmartBrain knowledge base.".to_string()
@@ -6170,9 +6232,12 @@ impl ToolExecutor {
             ));
             for (i, r) in results.iter().enumerate() {
                 lines.push(format!(
-                    "{}. [{}] {} (score: {:.3})\n   Path: {}\n   Use `memory_read` with path \"{}\" to read full content.",
+                    "{}. [{}] {} (score: {:.3})\n   Path: {}\n   Use `memory_read` with path \"{}\" and small windows (for example `line_offset: 1`, `max_lines: 120`) to read relevant sections.",
                     i + 1, r.source_type, r.title, r.score, r.file_path, r.file_path
                 ));
+                if let Some(result_domain) = r.domain.as_deref().filter(|value| !value.is_empty()) {
+                    lines.push(format!("   Domain: {result_domain}"));
+                }
             }
             lines.join("\n")
         };
@@ -7917,6 +7982,10 @@ impl ToolExecutor {
             .unwrap_or(false)
     }
 
+    fn image_generation_is_enabled(&self) -> bool {
+        self.read_image_generation_settings().enabled
+    }
+
     fn read_image_generation_settings(&self) -> ImageGenerationSettingsResolved {
         let config_path = self.workspace_config_dir.join("config.toml");
         let config = match ConfigToml::load(&config_path) {
@@ -7925,6 +7994,7 @@ impl ToolExecutor {
         };
         let image_generation = config.image_generation_config();
         ImageGenerationSettingsResolved {
+            enabled: image_generation.is_enabled(),
             model: image_generation.model.and_then(non_empty_string),
             base_url: image_generation.base_url.and_then(non_empty_string),
             api_key: image_generation.api_key.and_then(non_empty_string),
@@ -13156,7 +13226,11 @@ mod tests {
 
     #[test]
     fn tool_specs_include_web_tools_only_when_enabled() {
-        let executor = ToolExecutor::new(PathBuf::from("."));
+        let temp_dir = tempfile::tempdir().expect("should create temp dir");
+        let root = temp_dir.path().join("workspace");
+        let config_dir = root.join("codey");
+        std::fs::create_dir_all(&config_dir).expect("should create config dir");
+        let executor = ToolExecutor::with_workspace_config_dir(root, config_dir);
         let disabled = executor.tool_specs(false);
         let enabled = executor.tool_specs(true);
 
@@ -13270,6 +13344,41 @@ mod tests {
             .filter_map(|tool| tool.get("function")?.get("name")?.as_str())
             .collect();
         assert!(enabled_names.contains(&"smartbrain_search"));
+    }
+
+    #[test]
+    fn image_generate_tool_is_hidden_when_disabled_in_settings() {
+        let temp_dir = tempfile::tempdir().expect("should create temp dir");
+        let root = temp_dir.path().join("workspace");
+        let config_dir = root.join("codey");
+        std::fs::create_dir_all(&config_dir).expect("should create config dir");
+
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[image_generation]\nenabled = false\n",
+        )
+        .expect("should write config");
+
+        let executor = ToolExecutor::with_workspace_config_dir(root.clone(), config_dir.clone());
+        let disabled_tools = executor.tool_specs(false);
+        let disabled_names: Vec<_> = disabled_tools
+            .iter()
+            .filter_map(|tool| tool.get("function")?.get("name")?.as_str())
+            .collect();
+        assert!(!disabled_names.contains(&"image_generate"));
+
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[image_generation]\nenabled = true\n",
+        )
+        .expect("should update config");
+
+        let enabled_tools = executor.tool_specs(false);
+        let enabled_names: Vec<_> = enabled_tools
+            .iter()
+            .filter_map(|tool| tool.get("function")?.get("name")?.as_str())
+            .collect();
+        assert!(enabled_names.contains(&"image_generate"));
     }
 
     #[test]

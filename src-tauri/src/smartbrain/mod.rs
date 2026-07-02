@@ -25,6 +25,16 @@ pub fn knowledge_dir(workspace_config_dir: &Path) -> PathBuf {
     workspace_config_dir.join("memories").join("knowledge")
 }
 
+/// Directory for raw uploaded knowledge sources.
+///
+/// This lives outside `knowledge/` so non-OKF source markdown files do not
+/// become concept documents inside the OKF bundle tree.
+pub fn knowledge_sources_dir(workspace_config_dir: &Path) -> PathBuf {
+    workspace_config_dir
+        .join("memories")
+        .join("knowledge_sources")
+}
+
 /// Path to the experience summary injected into sessions.
 pub fn summary_path(workspace_config_dir: &Path) -> PathBuf {
     experiences_dir(workspace_config_dir).join("experience_summary.md")

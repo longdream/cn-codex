@@ -23,6 +23,8 @@ pub struct IndexedDocument {
     pub tags: Vec<String>,
     #[serde(default)]
     pub concept_type: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
 }
 
 /// Filter criteria for structured search on OKF metadata.
@@ -30,6 +32,7 @@ pub struct IndexedDocument {
 pub struct SearchFilter {
     pub concept_type: Option<String>,
     pub tags: Vec<String>,
+    pub domain: Option<String>,
     pub source_type: Option<SourceType>,
     pub timestamp_after: Option<i64>,
     pub timestamp_before: Option<i64>,
@@ -39,6 +42,7 @@ impl SearchFilter {
     pub fn is_empty(&self) -> bool {
         self.concept_type.is_none()
             && self.tags.is_empty()
+            && self.domain.is_none()
             && self.source_type.is_none()
             && self.timestamp_after.is_none()
             && self.timestamp_before.is_none()
@@ -58,6 +62,11 @@ impl SearchFilter {
         if !self.tags.is_empty() {
             let has_match = self.tags.iter().any(|t| doc.tags.contains(t));
             if !has_match {
+                return false;
+            }
+        }
+        if let Some(domain) = &self.domain {
+            if doc.domain.as_deref() != Some(domain.as_str()) {
                 return false;
             }
         }
@@ -424,6 +433,7 @@ pub fn build_document(
         updated_at,
         tags: Vec::new(),
         concept_type: None,
+        domain: None,
     }
 }
 
@@ -437,6 +447,7 @@ pub fn build_document_with_metadata(
     updated_at: i64,
     tags: Vec<String>,
     concept_type: Option<String>,
+    domain: Option<String>,
 ) -> IndexedDocument {
     let tokens = tokenize(content);
     let token_count = tokens.len();
@@ -450,6 +461,7 @@ pub fn build_document_with_metadata(
         updated_at,
         tags,
         concept_type,
+        domain,
     }
 }
 
@@ -498,6 +510,71 @@ mod tests {
         let results = index.search("react router", 10);
         assert!(!results.is_empty());
         assert_eq!(results[0].doc_id, "d1");
+    }
+
+    #[test]
+    fn search_with_filter_can_filter_by_domain() {
+        let mut index = BM25Index::default();
+        index.add_document(build_document_with_metadata(
+            "k1".to_string(),
+            SourceType::Knowledge,
+            "docs/k1.md".to_string(),
+            "Database schema".to_string(),
+            "postgres schema table index",
+            100,
+            vec!["database".to_string()],
+            Some("Knowledge".to_string()),
+            Some("db-export".to_string()),
+        ));
+        index.add_document(build_document_with_metadata(
+            "k2".to_string(),
+            SourceType::Knowledge,
+            "docs/k2.md".to_string(),
+            "Frontend guide".to_string(),
+            "react component styling guide",
+            100,
+            vec!["frontend".to_string()],
+            Some("Knowledge".to_string()),
+            Some("frontend".to_string()),
+        ));
+
+        let filtered = index.search_with_filter(
+            "schema",
+            10,
+            &SearchFilter {
+                domain: Some("db-export".to_string()),
+                ..SearchFilter::default()
+            },
+        );
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].doc_id, "k1");
+    }
+
+    #[test]
+    fn search_with_filter_domain_is_backward_compatible_with_missing_domain() {
+        let mut index = BM25Index::default();
+        index.add_document(build_document(
+            "legacy-doc".to_string(),
+            SourceType::Knowledge,
+            "docs/legacy.md".to_string(),
+            "Legacy doc".to_string(),
+            "legacy content",
+            100,
+        ));
+
+        let filtered = index.search_with_filter(
+            "legacy",
+            10,
+            &SearchFilter {
+                domain: Some("legacy".to_string()),
+                ..SearchFilter::default()
+            },
+        );
+        assert!(filtered.is_empty());
+
+        let no_filter = index.search_with_filter("legacy", 10, &SearchFilter::default());
+        assert_eq!(no_filter.len(), 1);
+        assert_eq!(no_filter[0].doc_id, "legacy-doc");
     }
 
     #[test]

@@ -129,11 +129,19 @@ impl SmartBrainConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImageGenerationConfig {
     #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
+}
+
+impl ImageGenerationConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
 }
 
 /// 资源池模型的单个后端端点
@@ -489,7 +497,8 @@ impl ConfigToml {
                     serde_json::from_value::<ImageGenerationConfig>(value.clone())
                 {
                     image_generation.model = normalize_optional_string(image_generation.model);
-                    image_generation.base_url = normalize_optional_string(image_generation.base_url);
+                    image_generation.base_url =
+                        normalize_optional_string(image_generation.base_url);
                     image_generation.api_key = normalize_optional_string(image_generation.api_key);
                     self.image_generation = Some(image_generation);
                 }
@@ -507,6 +516,16 @@ impl ConfigToml {
                     .get_or_insert_with(ImageGenerationConfig::default);
                 image_generation.base_url =
                     normalize_optional_string(value.as_str().map(ToString::to_string));
+            }
+            "image_generation.enabled" => {
+                let image_generation = self
+                    .image_generation
+                    .get_or_insert_with(ImageGenerationConfig::default);
+                image_generation.enabled = if value.is_null() {
+                    None
+                } else {
+                    value.as_bool()
+                };
             }
             "image_generation.api_key" => {
                 let image_generation = self
@@ -989,6 +1008,9 @@ mod tests {
     fn apply_edit_image_generation_fields() {
         let mut config = ConfigToml::default();
         config
+            .apply_edit("image_generation.enabled", &serde_json::json!(false))
+            .expect("set image_generation.enabled");
+        config
             .apply_edit("image_generation.model", &serde_json::json!("gpt-image-2"))
             .expect("set image_generation.model");
         config
@@ -1002,6 +1024,8 @@ mod tests {
             .expect("set image_generation.api_key");
 
         let image_generation = config.image_generation_config();
+        assert_eq!(image_generation.enabled, Some(false));
+        assert!(!image_generation.is_enabled());
         assert_eq!(image_generation.model.as_deref(), Some("gpt-image-2"));
         assert_eq!(
             image_generation.base_url.as_deref(),
@@ -1012,7 +1036,11 @@ mod tests {
         config
             .apply_edit("image_generation.api_key", &serde_json::Value::Null)
             .expect("clear image_generation.api_key");
+        config
+            .apply_edit("image_generation.enabled", &serde_json::Value::Null)
+            .expect("clear image_generation.enabled");
         let image_generation = config.image_generation_config();
+        assert!(image_generation.is_enabled());
         assert!(image_generation.api_key.is_none());
     }
 
