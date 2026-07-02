@@ -1,12 +1,19 @@
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::Path;
 
 use serde::Serialize;
 
-use super::bm25_index::{BM25Index, SearchFilter, SearchResult, SourceType};
+use super::bm25_index::{BM25Index, IndexedDocument, SearchFilter, SearchResult, SourceType};
 
 const RECALL_MULTIPLIER: usize = 3;
 const MIN_CANDIDATE_K: usize = 10;
+const STAGE1_MIN_RECALL_K: usize = 20;
+const STAGE2_MAX_CANDIDATES: usize = 50;
+const STAGE2_MAX_ANCHORS: usize = 5;
+const DOMAIN_EXPANSION_LIMIT_PER_ANCHOR: usize = 8;
+const TAG_EXPANSION_LIMIT_PER_ANCHOR: usize = 6;
+const SOURCE_TYPE_EXPANSION_LIMIT_PER_ANCHOR: usize = 4;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SmartBrainSearchResult {
@@ -53,6 +60,145 @@ fn expanded_candidate_k(top_k: usize) -> usize {
         0
     } else {
         top_k.saturating_mul(RECALL_MULTIPLIER).max(MIN_CANDIDATE_K)
+    }
+}
+
+fn stage1_recall_k(top_k: usize) -> usize {
+    expanded_candidate_k(top_k).max(STAGE1_MIN_RECALL_K)
+}
+
+fn find_document_by_id<'a>(index: &'a BM25Index, doc_id: &str) -> Option<&'a IndexedDocument> {
+    index.documents.iter().find(|doc| doc.doc_id == doc_id)
+}
+
+fn extend_candidates_by_predicate<F>(
+    index: &BM25Index,
+    candidate_doc_ids: &mut HashSet<String>,
+    limit: usize,
+    mut predicate: F,
+) -> usize
+where
+    F: FnMut(&IndexedDocument) -> bool,
+{
+    if limit == 0 || candidate_doc_ids.len() >= STAGE2_MAX_CANDIDATES {
+        return 0;
+    }
+
+    let mut added = 0usize;
+    for doc in &index.documents {
+        if candidate_doc_ids.len() >= STAGE2_MAX_CANDIDATES || added >= limit {
+            break;
+        }
+        if !predicate(doc) {
+            continue;
+        }
+        if candidate_doc_ids.insert(doc.doc_id.clone()) {
+            added += 1;
+        }
+    }
+    added
+}
+
+fn build_second_stage_candidate_pool(
+    index: &BM25Index,
+    stage1_results: &[SearchResult],
+) -> (HashSet<String>, bool) {
+    let mut candidate_doc_ids: HashSet<String> = stage1_results
+        .iter()
+        .take(STAGE2_MAX_CANDIDATES)
+        .map(|result| result.doc_id.clone())
+        .collect();
+    let base_count = candidate_doc_ids.len();
+
+    // 两阶段策略核心：
+    // 1) 先用第一阶段高分结果作为“锚点”；
+    // 2) 再从锚点的结构化元信息扩展候选；
+    // 3) 只扩展局部邻域，避免逐层全扫导致噪音上升。
+    for anchor in stage1_results.iter().take(STAGE2_MAX_ANCHORS) {
+        if candidate_doc_ids.len() >= STAGE2_MAX_CANDIDATES {
+            break;
+        }
+
+        let Some(anchor_doc) = find_document_by_id(index, &anchor.doc_id) else {
+            continue;
+        };
+
+        // 优先级 1：同 domain（最强语义邻域）。
+        if let Some(anchor_domain) = anchor_doc
+            .domain
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            extend_candidates_by_predicate(
+                index,
+                &mut candidate_doc_ids,
+                DOMAIN_EXPANSION_LIMIT_PER_ANCHOR,
+                |doc| {
+                    doc.doc_id != anchor_doc.doc_id && doc.domain.as_deref() == Some(anchor_domain)
+                },
+            );
+        }
+
+        // 优先级 2：共享 tags（补齐同主题横向文档）。
+        if !anchor_doc.tags.is_empty() {
+            let anchor_tags: HashSet<&str> = anchor_doc.tags.iter().map(String::as_str).collect();
+            extend_candidates_by_predicate(
+                index,
+                &mut candidate_doc_ids,
+                TAG_EXPANSION_LIMIT_PER_ANCHOR,
+                |doc| {
+                    doc.doc_id != anchor_doc.doc_id
+                        && doc
+                            .tags
+                            .iter()
+                            .any(|tag| anchor_tags.contains(tag.as_str()))
+                },
+            );
+        }
+
+        // 优先级 3：同 source_type（弱扩展，主要用于稀疏元数据兜底）。
+        extend_candidates_by_predicate(
+            index,
+            &mut candidate_doc_ids,
+            SOURCE_TYPE_EXPANSION_LIMIT_PER_ANCHOR,
+            |doc| doc.doc_id != anchor_doc.doc_id && doc.source_type == anchor_doc.source_type,
+        );
+    }
+
+    let expanded = candidate_doc_ids.len() > base_count;
+    (candidate_doc_ids, expanded)
+}
+
+fn two_stage_recall(
+    index: &BM25Index,
+    query: &str,
+    top_k: usize,
+    stage1_results: Vec<SearchResult>,
+    filter: Option<&SearchFilter>,
+) -> Vec<SearchResult> {
+    if stage1_results.len() <= 1 {
+        return stage1_results;
+    }
+
+    let (candidate_doc_ids, expanded) = build_second_stage_candidate_pool(index, &stage1_results);
+    if !expanded {
+        // 元信息不足导致无法扩展时，回退到第一阶段结果，保证行为稳定。
+        return stage1_results;
+    }
+
+    let stage2_k = stage1_results.len().min(STAGE2_MAX_CANDIDATES).max(top_k);
+    let stage2_results = match filter {
+        Some(active_filter) => {
+            index.search_subset_with_filter(query, stage2_k, &candidate_doc_ids, active_filter)
+        }
+        None => index.search_subset(query, stage2_k, &candidate_doc_ids),
+    };
+
+    if stage2_results.is_empty() {
+        // 二阶段异常退化（例如 query 极短）时，继续使用第一阶段结果兜底。
+        stage1_results
+    } else {
+        stage2_results
     }
 }
 
@@ -129,7 +275,10 @@ pub fn unified_search(
     }
 
     let index = BM25Index::load(bm25_index_path);
-    let recalled = index.search(query, expanded_candidate_k(top_k));
+    // 第一阶段：全局高召回，确保不会错过明显相关文档。
+    let stage1_results = index.search(query, stage1_recall_k(top_k));
+    // 第二阶段：局部结构化扩展 + 候选池重排。
+    let recalled = two_stage_recall(&index, query, top_k, stage1_results, None);
     rerank_experience_candidates(bm25_index_path, recalled)
         .into_iter()
         .take(top_k)
@@ -149,7 +298,9 @@ pub fn unified_search_with_filter(
     }
 
     let index = BM25Index::load(bm25_index_path);
-    let recalled = index.search_with_filter(query, expanded_candidate_k(top_k), &filter);
+    // 过滤场景仍走两阶段，但二阶段会继续应用同一个 filter，避免行为漂移。
+    let stage1_results = index.search_with_filter(query, stage1_recall_k(top_k), &filter);
+    let recalled = two_stage_recall(&index, query, top_k, stage1_results, Some(&filter));
     rerank_experience_candidates(bm25_index_path, recalled)
         .into_iter()
         .take(top_k)
@@ -235,10 +386,11 @@ pub fn rebuild_index(workspace_config_dir: &Path, bm25_index_path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::smartbrain::bm25_index::build_document;
+    use crate::smartbrain::bm25_index::{build_document, build_document_with_metadata};
     use crate::smartbrain::index::{ExperienceEntry, ExperienceIndex};
 
     fn setup_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -389,5 +541,121 @@ mod tests {
             .find(|doc| doc.doc_id == "know:legacy-knowledge")
             .unwrap();
         assert_eq!(rebuilt_doc.domain.as_deref(), Some("legacy"));
+    }
+
+    #[test]
+    fn second_stage_candidate_pool_expands_by_domain_and_tags() {
+        let mut bm25 = BM25Index::default();
+        bm25.add_document(build_document_with_metadata(
+            "know:anchor".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/anchor.md".to_string(),
+            "Anchor".to_string(),
+            "database migration rollback strategy",
+            1_700_000_000,
+            vec!["db".to_string(), "migration".to_string()],
+            Some("Knowledge".to_string()),
+            Some("backend".to_string()),
+        ));
+        bm25.add_document(build_document_with_metadata(
+            "know:domain-sibling".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/domain-sibling.md".to_string(),
+            "Domain sibling".to_string(),
+            "high availability replication notes",
+            1_700_000_000,
+            vec!["ops".to_string()],
+            Some("Knowledge".to_string()),
+            Some("backend".to_string()),
+        ));
+        bm25.add_document(build_document_with_metadata(
+            "know:tag-sibling".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/tag-sibling.md".to_string(),
+            "Tag sibling".to_string(),
+            "schema evolution and checklist",
+            1_700_000_000,
+            vec!["db".to_string()],
+            Some("Knowledge".to_string()),
+            Some("storage".to_string()),
+        ));
+        bm25.add_document(build_document_with_metadata(
+            "know:unrelated".to_string(),
+            SourceType::Experience,
+            "knowledge/docs/unrelated.md".to_string(),
+            "Unrelated".to_string(),
+            "frontend css animation guide",
+            1_700_000_000,
+            vec!["ui".to_string()],
+            Some("Knowledge".to_string()),
+            Some("frontend".to_string()),
+        ));
+
+        let stage1_results = bm25.search("database migration", stage1_recall_k(2));
+        let stage1_ids: HashSet<String> = stage1_results
+            .iter()
+            .map(|result| result.doc_id.clone())
+            .collect();
+        let (candidate_pool, expanded) = build_second_stage_candidate_pool(&bm25, &stage1_results);
+
+        assert!(expanded, "存在同 domain / tag 文档时应触发扩展");
+        assert!(
+            candidate_pool.contains("know:domain-sibling"),
+            "同 domain 文档应进入候选池"
+        );
+        assert!(
+            candidate_pool.contains("know:tag-sibling"),
+            "共享 tag 文档应进入候选池"
+        );
+        assert!(
+            !candidate_pool.contains("know:unrelated") || stage1_ids.contains("know:unrelated"),
+            "无关联文档不应被扩展逻辑引入（除非它本来就在 stage1）"
+        );
+    }
+
+    #[test]
+    fn two_stage_recall_falls_back_to_stage1_when_metadata_is_sparse() {
+        let mut bm25 = BM25Index::default();
+        bm25.add_document(build_document(
+            "d1".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/d1.md".to_string(),
+            "Doc 1".to_string(),
+            "rust ownership lifetime borrow checker",
+            100,
+        ));
+        bm25.add_document(build_document(
+            "d2".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/d2.md".to_string(),
+            "Doc 2".to_string(),
+            "rust trait object generic bounds",
+            100,
+        ));
+        bm25.add_document(build_document(
+            "d3".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/d3.md".to_string(),
+            "Doc 3".to_string(),
+            "rust async await pin future",
+            100,
+        ));
+
+        let stage1_results = bm25.search("rust", stage1_recall_k(2));
+        let stage1_ids: Vec<String> = stage1_results
+            .iter()
+            .map(|result| result.doc_id.clone())
+            .collect();
+
+        let recalled = two_stage_recall(&bm25, "rust", 2, stage1_results, None);
+        let recalled_ids: Vec<String> = recalled
+            .iter()
+            .map(|result| result.doc_id.clone())
+            .collect();
+
+        assert_eq!(
+            recalled_ids, stage1_ids,
+            "元信息无法扩展时应回退到第一阶段结果，保持检索稳定"
+        );
     }
 }

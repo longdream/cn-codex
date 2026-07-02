@@ -28,7 +28,7 @@ pub async fn workflow_save(
     workflow: WorkflowDef,
 ) -> Result<String, String> {
     let workspace_config_dir = &state.workspace_config_dir;
-    let path = super::save_workflow(workspace_config_dir, &workflow)?;
+    let path = super::save_workflow(workspace_config_dir, &state.project_root, &workflow)?;
     Ok(path.to_string_lossy().to_string())
 }
 

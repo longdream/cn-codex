@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -269,6 +269,151 @@ impl BM25Index {
         scored.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored.truncate(top_k);
+        scored
+    }
+
+    /// 在候选集合内执行 BM25 检索（不做额外结构化过滤）。
+    ///
+    /// 设计目的：
+    /// - 第一阶段通常先做全局召回；
+    /// - 第二阶段只在“扩展后的候选池”里重排；
+    /// - 这样能保持召回稳定，同时避免全量文档再次扫描带来的噪音。
+    pub fn search_subset(
+        &self,
+        query: &str,
+        top_k: usize,
+        candidate_doc_ids: &HashSet<String>,
+    ) -> Vec<SearchResult> {
+        if self.documents.is_empty() || candidate_doc_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let query_tokens = tokenize(query);
+        if query_tokens.is_empty() {
+            return Vec::new();
+        }
+
+        // 仅保留候选池中的文档参与打分，确保二阶段重排的范围可控。
+        let candidate_docs: Vec<&IndexedDocument> = self
+            .documents
+            .iter()
+            .filter(|doc| candidate_doc_ids.contains(&doc.doc_id))
+            .collect();
+        if candidate_docs.is_empty() {
+            return Vec::new();
+        }
+
+        // 在候选子集上重新计算统计量（平均长度、IDF）。
+        // 这是“二阶段重排”的关键：分值反映的是局部竞争关系，而不是全局竞争关系。
+        let total_docs = candidate_docs.len() as f64;
+        let avg_doc_length = candidate_docs
+            .iter()
+            .map(|doc| doc.token_count as f64)
+            .sum::<f64>()
+            / total_docs;
+        let idf = compute_idf_from_refs(&query_tokens, &candidate_docs);
+
+        let mut scored: Vec<SearchResult> = candidate_docs
+            .iter()
+            .map(|doc| {
+                let score = bm25_score(&query_tokens, &doc.tokens, avg_doc_length, &idf);
+                SearchResult {
+                    doc_id: doc.doc_id.clone(),
+                    source_type: doc.source_type,
+                    file_path: doc.file_path.clone(),
+                    title: doc.title.clone(),
+                    score,
+                }
+            })
+            .filter(|result| result.score > 0.0)
+            .collect();
+
+        scored.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        scored.truncate(top_k);
+        scored
+    }
+
+    /// 在候选集合内执行 BM25 检索，并应用结构化过滤条件。
+    ///
+    /// 该方法用于“二阶段重排 + 过滤”场景，避免扩展候选时打破过滤约束。
+    pub fn search_subset_with_filter(
+        &self,
+        query: &str,
+        top_k: usize,
+        candidate_doc_ids: &HashSet<String>,
+        filter: &SearchFilter,
+    ) -> Vec<SearchResult> {
+        if self.documents.is_empty() || candidate_doc_ids.is_empty() {
+            return Vec::new();
+        }
+
+        // 第一步：先做候选池过滤；
+        // 第二步：再叠加结构化过滤；
+        // 两层过滤都通过的文档才进入二阶段重排。
+        let candidate_docs: Vec<&IndexedDocument> = self
+            .documents
+            .iter()
+            .filter(|doc| candidate_doc_ids.contains(&doc.doc_id))
+            .filter(|doc| filter.is_empty() || filter.matches(doc))
+            .collect();
+        if candidate_docs.is_empty() {
+            return Vec::new();
+        }
+
+        if query.trim().is_empty() {
+            return candidate_docs
+                .into_iter()
+                .take(top_k)
+                .map(|doc| SearchResult {
+                    doc_id: doc.doc_id.clone(),
+                    source_type: doc.source_type,
+                    file_path: doc.file_path.clone(),
+                    title: doc.title.clone(),
+                    score: 1.0,
+                })
+                .collect();
+        }
+
+        let query_tokens = tokenize(query);
+        if query_tokens.is_empty() {
+            return Vec::new();
+        }
+
+        let total_docs = candidate_docs.len() as f64;
+        let avg_doc_length = candidate_docs
+            .iter()
+            .map(|doc| doc.token_count as f64)
+            .sum::<f64>()
+            / total_docs;
+        let idf = compute_idf_from_refs(&query_tokens, &candidate_docs);
+
+        let mut scored: Vec<SearchResult> = candidate_docs
+            .iter()
+            .map(|doc| {
+                let score = bm25_score(&query_tokens, &doc.tokens, avg_doc_length, &idf);
+                SearchResult {
+                    doc_id: doc.doc_id.clone(),
+                    source_type: doc.source_type,
+                    file_path: doc.file_path.clone(),
+                    title: doc.title.clone(),
+                    score,
+                }
+            })
+            .filter(|result| result.score > 0.0)
+            .collect();
+
+        scored.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         scored.truncate(top_k);
@@ -618,5 +763,84 @@ mod tests {
     fn empty_query_returns_empty() {
         let index = BM25Index::default();
         assert!(index.search("", 10).is_empty());
+    }
+
+    #[test]
+    fn search_subset_only_scores_documents_inside_candidate_pool() {
+        let mut index = BM25Index::default();
+        index.add_document(build_document(
+            "d1".to_string(),
+            SourceType::Knowledge,
+            "docs/d1.md".to_string(),
+            "React routing fix".to_string(),
+            "react router navigation fix useeffect",
+            100,
+        ));
+        index.add_document(build_document(
+            "d2".to_string(),
+            SourceType::Knowledge,
+            "docs/d2.md".to_string(),
+            "React testing".to_string(),
+            "react component test mocking",
+            100,
+        ));
+        index.add_document(build_document(
+            "d3".to_string(),
+            SourceType::Knowledge,
+            "docs/d3.md".to_string(),
+            "High score out-of-pool".to_string(),
+            "react router react router react router",
+            100,
+        ));
+
+        let mut candidate_ids = HashSet::new();
+        candidate_ids.insert("d1".to_string());
+        candidate_ids.insert("d2".to_string());
+
+        let subset_results = index.search_subset("react router", 10, &candidate_ids);
+        assert_eq!(subset_results.len(), 2);
+        assert_eq!(subset_results[0].doc_id, "d1");
+        assert!(
+            subset_results.iter().all(|result| result.doc_id != "d3"),
+            "不在候选池的文档不应进入结果"
+        );
+    }
+
+    #[test]
+    fn search_subset_with_filter_respects_filter_inside_candidate_pool() {
+        let mut index = BM25Index::default();
+        index.add_document(build_document_with_metadata(
+            "db-doc".to_string(),
+            SourceType::Knowledge,
+            "docs/db-doc.md".to_string(),
+            "DB doc".to_string(),
+            "schema migration index",
+            100,
+            vec!["database".to_string()],
+            Some("Knowledge".to_string()),
+            Some("database".to_string()),
+        ));
+        index.add_document(build_document_with_metadata(
+            "web-doc".to_string(),
+            SourceType::Knowledge,
+            "docs/web-doc.md".to_string(),
+            "Web doc".to_string(),
+            "react router ui",
+            100,
+            vec!["frontend".to_string()],
+            Some("Knowledge".to_string()),
+            Some("frontend".to_string()),
+        ));
+
+        let candidate_ids = HashSet::from(["db-doc".to_string(), "web-doc".to_string()]);
+        let filter = SearchFilter {
+            domain: Some("database".to_string()),
+            ..SearchFilter::default()
+        };
+
+        let filtered_results = index.search_subset_with_filter("", 10, &candidate_ids, &filter);
+        assert_eq!(filtered_results.len(), 1);
+        assert_eq!(filtered_results[0].doc_id, "db-doc");
+        assert_eq!(filtered_results[0].score, 1.0);
     }
 }

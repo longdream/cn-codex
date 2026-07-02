@@ -2,7 +2,7 @@ use super::WorkflowDef;
 
 /// Generate SKILL.md content from a workflow definition.
 /// This file enables the workflow to be discovered and triggered like a skill.
-pub fn generate_skill_md(def: &WorkflowDef) -> String {
+pub fn generate_skill_md(def: &WorkflowDef, snapshot_paths: &[String]) -> String {
     let mut out = String::new();
 
     // YAML frontmatter
@@ -48,6 +48,18 @@ pub fn generate_skill_md(def: &WorkflowDef) -> String {
         out.push_str("\n");
     }
 
+    // 脚本快照 section：
+    // - 保存 workflow 时会自动把命中的脚本复制到 workflow 目录下的 scripts/；
+    // - 在 SKILL 中显式列出，提示执行时优先复用，避免重复造轮子。
+    if !snapshot_paths.is_empty() {
+        out.push_str("## 脚本快照\n\n");
+        out.push_str("以下脚本已在保存时自动快照，执行时请优先复用这些脚本：\n");
+        for snapshot_path in snapshot_paths {
+            out.push_str(&format!("- `{snapshot_path}`\n"));
+        }
+        out.push_str("\n");
+    }
+
     // Nodes section
     out.push_str("## 执行节点\n\n");
     for (i, node) in def.nodes.iter().enumerate() {
@@ -85,6 +97,7 @@ pub fn generate_skill_md(def: &WorkflowDef) -> String {
     out.push_str("- 按节点顺序逐个执行，不要跳过\n");
     out.push_str("- 每个节点只使用该节点列出的工具\n");
     out.push_str("- 将变量 `{{...}}` 替换为用户提供的实际值（或使用默认值）\n");
+    out.push_str("- 如果 `scripts/` 下已有对应脚本，优先直接复用，避免重复编写同类脚本\n");
     out.push_str("- 保持输出简洁，节约 token\n");
 
     out
