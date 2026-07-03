@@ -14,12 +14,18 @@ use super::index::now_secs;
 use super::okf::{self, OkfDocument, OkfFrontmatter};
 use super::prompts;
 
+const CHUNK_FILE_SEPARATOR: &str = "__chunk_";
+const CHUNK_BM25_SEPARATOR: &str = "::chunk:";
+const EFFECTIVE_CHUNK_TOKEN_FALLBACK: usize = 500;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeEntry {
     pub doc_id: String,
     pub source_file: String,
     pub source_type: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub added_at: i64,
     pub chunk_count: usize,
     #[serde(default)]
@@ -63,6 +69,15 @@ pub struct FolderIngestSummary {
     pub skipped_count: usize,
     pub failed_count: usize,
     pub failures: Vec<FolderIngestFailure>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct KnowledgeMetadataUpdate {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub domain: Option<String>,
+    pub source_group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -331,7 +346,7 @@ async fn ingest_document_inner(
     }
 
     let sb_config = config.smartbrain_config();
-    let domain = normalize_optional_text(context.domain.clone())
+    let inferred_domain = normalize_optional_text(context.domain.clone())
         .or_else(|| infer_domain_from_relative_path(relative_path.as_deref()))
         .or_else(|| {
             source_path
@@ -341,25 +356,66 @@ async fn ingest_document_inner(
                 .and_then(|name| normalize_optional_text(Some(name)))
         });
     let source_group = normalize_optional_text(context.source_group.clone());
-    let source_label =
-        build_source_label_for_prompt(&file_name, domain.as_deref(), relative_path.as_deref());
-    let (organized_text, hierarchy_fragment) = if sb_config.auto_organize {
-        match organize_via_llm(http, config, &raw_text, &source_label).await {
-            Ok((text, hier)) => (text, hier),
-            Err(e) => {
-                warn!("LLM organization failed for {file_name}, using raw text: {e}");
-                (raw_text.clone(), None)
-            }
+    let source_label = build_source_label_for_prompt(
+        &file_name,
+        inferred_domain.as_deref(),
+        relative_path.as_deref(),
+    );
+    let llm_output = match organize_via_llm(http, config, &raw_text, &source_label).await {
+        Ok(parsed) => Some(parsed),
+        Err(e) => {
+            warn!("LLM knowledge enrichment failed for {file_name}, using fallback metadata: {e}");
+            None
         }
-    } else {
-        (raw_text.clone(), None)
     };
+    let (organized_text, hierarchy_fragment, metadata_fragment) = if let Some(parsed) = llm_output {
+        let prompts::ParsedKnowledgeOrganizeOutput {
+            organized_markdown,
+            hierarchy,
+            metadata,
+        } = parsed;
+        let organized = if sb_config.auto_organize {
+            organized_markdown
+        } else {
+            raw_text.clone()
+        };
+        (organized, hierarchy, metadata)
+    } else {
+        (raw_text.clone(), None, None)
+    };
+    if !sb_config.auto_organize {
+        info!(
+            "smartbrain.auto_organize=false for {file_name}; keeping raw text while still applying AI metadata when available"
+        );
+    }
+
+    let ai_title = metadata_fragment
+        .as_ref()
+        .and_then(|metadata| normalize_optional_text(metadata.title.clone()));
+    let ai_description = metadata_fragment
+        .as_ref()
+        .and_then(|metadata| normalize_optional_text(metadata.description.clone()));
+    let ai_domain = metadata_fragment
+        .as_ref()
+        .and_then(|metadata| normalize_optional_text(metadata.domain.clone()));
+    let resolved_title = ai_title.unwrap_or_else(|| file_stem.clone());
+    let resolved_description = ai_description;
+    let domain = ai_domain.or(inferred_domain);
 
     let normalized_text = okf::extract_body(&organized_text);
-    let chunks = chunk_text(&normalized_text, sb_config.max_chunk_tokens);
+    let effective_chunk_tokens = if sb_config.max_chunk_tokens == 0 {
+        info!(
+            "smartbrain.max_chunk_tokens=0 for {file_name}; using fallback chunk size {}",
+            EFFECTIVE_CHUNK_TOKEN_FALLBACK
+        );
+        EFFECTIVE_CHUNK_TOKEN_FALLBACK
+    } else {
+        sb_config.max_chunk_tokens
+    };
+    let chunks = chunk_text(&normalized_text, effective_chunk_tokens);
     let chunk_count = chunks.len().max(1);
 
-    let categories = hierarchy_fragment
+    let mut categories = hierarchy_fragment
         .as_ref()
         .and_then(|v| v.get("categories"))
         .and_then(|v| v.as_array())
@@ -370,15 +426,24 @@ async fn ingest_document_inner(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    if let Some(metadata) = metadata_fragment.as_ref() {
+        categories.extend(metadata.tags.clone());
+    }
+    let categories = normalize_tag_list(categories);
 
     let timestamp = now_secs();
     let mut frontmatter = OkfFrontmatter::new("Knowledge")
-        .with_title(&file_stem)
+        .with_title(&resolved_title)
         .with_tags(categories.clone())
         .with_timestamp(timestamp)
+        .with_extension("okf_profile", serde_json::json!("smartbrain-knowledge-v1"))
         .with_extension("source_file", serde_json::json!(source_file))
         .with_extension("source_type", serde_json::json!(extension))
+        .with_extension("is_chunk", serde_json::json!(false))
         .with_extension("chunk_count", serde_json::json!(chunk_count));
+    if let Some(value) = resolved_description.clone() {
+        frontmatter.description = Some(value);
+    }
     if let Some(value) = domain.clone() {
         frontmatter = frontmatter.with_extension("domain", serde_json::json!(value));
     }
@@ -390,16 +455,57 @@ async fn ingest_document_inner(
     }
 
     let doc_path = docs_dir.join(format!("{doc_id}.md"));
+    remove_chunk_files(&docs_dir, &doc_id)
+        .map_err(|e| format!("Failed to cleanup previous chunk files: {e}"))?;
     let okf_doc = OkfDocument::new(frontmatter, &normalized_text);
     okf_doc
         .write_to(&doc_path)
         .map_err(|e| format!("Failed to write knowledge doc: {e}"))?;
 
+    let split_into_chunk_files = sb_config.knowledge_chunk_files_enabled && chunk_count > 1;
+    if split_into_chunk_files {
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let chunk_index = idx + 1;
+            let chunk_file_name = chunk_file_name(&doc_id, chunk_index);
+            let chunk_doc_path = docs_dir.join(&chunk_file_name);
+            let mut chunk_frontmatter = OkfFrontmatter::new("Knowledge")
+                .with_title(format!("{resolved_title} [{chunk_index}/{chunk_count}]"))
+                .with_tags(categories.clone())
+                .with_timestamp(timestamp)
+                .with_extension("okf_profile", serde_json::json!("smartbrain-knowledge-v1"))
+                .with_extension("source_file", serde_json::json!(source_file))
+                .with_extension("source_type", serde_json::json!(extension))
+                .with_extension("chunk_count", serde_json::json!(chunk_count))
+                .with_extension("is_chunk", serde_json::json!(true))
+                .with_extension("parent_doc_id", serde_json::json!(doc_id.clone()))
+                .with_extension("chunk_index", serde_json::json!(chunk_index))
+                .with_extension("chunk_total", serde_json::json!(chunk_count));
+            if let Some(value) = resolved_description.clone() {
+                chunk_frontmatter.description = Some(value);
+            }
+            if let Some(value) = domain.clone() {
+                chunk_frontmatter = chunk_frontmatter.with_extension("domain", serde_json::json!(value));
+            }
+            if let Some(value) = relative_path.clone() {
+                chunk_frontmatter =
+                    chunk_frontmatter.with_extension("relative_path", serde_json::json!(value));
+            }
+            if let Some(value) = source_group.clone() {
+                chunk_frontmatter =
+                    chunk_frontmatter.with_extension("source_group", serde_json::json!(value));
+            }
+            OkfDocument::new(chunk_frontmatter, chunk.as_str())
+                .write_to(&chunk_doc_path)
+                .map_err(|e| format!("Failed to write chunk knowledge doc: {e}"))?;
+        }
+    }
+
     knowledge_index.add_entry(KnowledgeEntry {
         doc_id: doc_id.clone(),
         source_file: source_file.clone(),
         source_type: extension.clone(),
-        title: file_stem.clone(),
+        title: resolved_title.clone(),
+        description: resolved_description.clone(),
         added_at: timestamp,
         chunk_count,
         categories: categories.clone(),
@@ -413,18 +519,54 @@ async fn ingest_document_inner(
 
     let mut bm25 = BM25Index::load(bm25_index_path);
     bm25.remove_document(&format!("know:{doc_id}"));
-    let indexed_doc = bm25_index::build_document_with_metadata(
-        format!("know:{doc_id}"),
-        SourceType::Knowledge,
-        format!("knowledge/docs/{doc_id}.md"),
-        file_stem,
-        &normalized_text,
-        timestamp,
-        categories.clone(),
-        Some("Knowledge".to_string()),
-        domain.clone(),
-    );
-    bm25.add_document(indexed_doc);
+    remove_chunk_docs_from_bm25(&mut bm25, &doc_id);
+    if split_into_chunk_files {
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let chunk_index = idx + 1;
+            let chunk_doc_id = chunk_bm25_doc_id(&doc_id, chunk_index);
+            let chunk_title = format!("{resolved_title} [{chunk_index}/{chunk_count}]");
+            let chunk_path = format!("knowledge/docs/{}", chunk_file_name(&doc_id, chunk_index));
+            let indexed_doc = bm25_index::build_document_with_locator_metadata(
+                chunk_doc_id,
+                SourceType::Knowledge,
+                chunk_path,
+                chunk_title,
+                chunk,
+                timestamp,
+                categories.clone(),
+                Some("Knowledge".to_string()),
+                domain.clone(),
+                source_group.clone(),
+                relative_path.clone(),
+                Some(source_file.clone()),
+                Some(doc_id.clone()),
+                Some(chunk_index),
+                Some(chunk_count),
+                true,
+            );
+            bm25.add_document(indexed_doc);
+        }
+    } else {
+        let indexed_doc = bm25_index::build_document_with_locator_metadata(
+            format!("know:{doc_id}"),
+            SourceType::Knowledge,
+            format!("knowledge/docs/{doc_id}.md"),
+            resolved_title.clone(),
+            &normalized_text,
+            timestamp,
+            categories.clone(),
+            Some("Knowledge".to_string()),
+            domain.clone(),
+            source_group.clone(),
+            relative_path.clone(),
+            Some(source_file.clone()),
+            None,
+            None,
+            None,
+            false,
+        );
+        bm25.add_document(indexed_doc);
+    }
     if let Err(e) = bm25.save(bm25_index_path) {
         error!("Failed to save BM25 index after knowledge ingest: {e}");
     }
@@ -570,6 +712,300 @@ pub fn backfill_legacy_metadata(knowledge_dir: &Path) -> usize {
     changed_count
 }
 
+/// Update knowledge metadata (title/description/tags/domain/source_group) in place
+/// and keep BM25 index synchronized.
+pub fn update_knowledge_metadata(
+    knowledge_dir: &Path,
+    bm25_index_path: &Path,
+    doc_id: &str,
+    update: KnowledgeMetadataUpdate,
+) -> Result<(), String> {
+    let docs_dir = knowledge_dir.join("docs");
+    let parent_doc_path = docs_dir.join(format!("{doc_id}.md"));
+
+    let update_title = update.title.is_some();
+    let update_description = update.description.is_some();
+    let update_domain = update.domain.is_some();
+    let update_source_group = update.source_group.is_some();
+
+    let normalized_title = if let Some(title) = update.title {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return Err("title must not be empty".to_string());
+        }
+        Some(trimmed.to_string())
+    } else {
+        None
+    };
+    let normalized_description = normalize_optional_text(update.description);
+    let normalized_tags = update.tags.map(normalize_tag_list);
+    let normalized_domain = normalize_optional_text(update.domain);
+    let normalized_source_group = normalize_optional_text(update.source_group);
+
+    let mut knowledge_index = KnowledgeIndex::load(knowledge_dir);
+    let updated_entry = {
+        let Some(entry) = knowledge_index
+            .entries
+            .iter_mut()
+            .find(|entry| entry.doc_id == doc_id)
+        else {
+            return Err(format!("Knowledge document not found: {doc_id}"));
+        };
+
+        if let Some(title) = normalized_title.clone() {
+            entry.title = title;
+        }
+        if update_description {
+            entry.description = normalized_description.clone();
+        }
+        if let Some(tags) = normalized_tags.clone() {
+            entry.categories = tags;
+        }
+        if update_domain {
+            entry.domain = normalized_domain.clone();
+        }
+        if update_source_group {
+            entry.source_group = normalized_source_group.clone();
+        }
+        entry.clone()
+    };
+
+    knowledge_index.save(knowledge_dir)?;
+
+    let mut doc_paths = vec![parent_doc_path.clone()];
+    doc_paths.extend(list_chunk_doc_paths(&docs_dir, doc_id));
+    let chunk_total_fallback = updated_entry
+        .chunk_count
+        .max(doc_paths.len().saturating_sub(1))
+        .max(1);
+
+    for path in &doc_paths {
+        if !path.exists() {
+            continue;
+        }
+        let raw_content =
+            std::fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        let mut parsed = if let Some(doc) = okf::parse_document(&raw_content) {
+            doc
+        } else {
+            OkfDocument::new(OkfFrontmatter::new("Knowledge"), okf::extract_body(&raw_content))
+        };
+
+        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let chunk_index = okf_extension_usize(&parsed.frontmatter, "chunk_index")
+            .or_else(|| chunk_index_from_file_name(doc_id, file_name))
+            .unwrap_or(1);
+        let chunk_total = okf_extension_usize(&parsed.frontmatter, "chunk_total")
+            .unwrap_or(chunk_total_fallback);
+        let is_chunk_doc = path != &parent_doc_path || parsed.frontmatter.extensions.get("is_chunk").and_then(serde_json::Value::as_bool).unwrap_or(false);
+
+        parsed.frontmatter.concept_type = "Knowledge".to_string();
+        parsed.frontmatter.tags = updated_entry.categories.clone();
+        parsed.frontmatter
+            .extensions
+            .insert("okf_profile".to_string(), serde_json::json!("smartbrain-knowledge-v1"));
+        parsed.frontmatter.extensions.insert(
+            "source_file".to_string(),
+            serde_json::json!(updated_entry.source_file.clone()),
+        );
+        parsed.frontmatter.extensions.insert(
+            "source_type".to_string(),
+            serde_json::json!(updated_entry.source_type.clone()),
+        );
+        parsed.frontmatter.extensions.insert(
+            "chunk_count".to_string(),
+            serde_json::json!(updated_entry.chunk_count.max(1)),
+        );
+
+        set_optional_extension(&mut parsed.frontmatter, "domain", updated_entry.domain.clone());
+        set_optional_extension(
+            &mut parsed.frontmatter,
+            "relative_path",
+            updated_entry.relative_path.clone(),
+        );
+        set_optional_extension(
+            &mut parsed.frontmatter,
+            "source_group",
+            updated_entry.source_group.clone(),
+        );
+
+        if is_chunk_doc {
+            parsed
+                .frontmatter
+                .extensions
+                .insert("is_chunk".to_string(), serde_json::json!(true));
+            parsed.frontmatter.extensions.insert(
+                "parent_doc_id".to_string(),
+                serde_json::json!(doc_id.to_string()),
+            );
+            parsed
+                .frontmatter
+                .extensions
+                .insert("chunk_index".to_string(), serde_json::json!(chunk_index));
+            parsed
+                .frontmatter
+                .extensions
+                .insert("chunk_total".to_string(), serde_json::json!(chunk_total));
+            if update_title {
+                parsed.frontmatter.title =
+                    Some(format!("{} [{}/{}]", updated_entry.title, chunk_index, chunk_total));
+            }
+        } else {
+            parsed
+                .frontmatter
+                .extensions
+                .insert("is_chunk".to_string(), serde_json::json!(false));
+            parsed.frontmatter.extensions.remove("parent_doc_id");
+            parsed.frontmatter.extensions.remove("chunk_index");
+            parsed.frontmatter.extensions.remove("chunk_total");
+            if update_title {
+                parsed.frontmatter.title = Some(updated_entry.title.clone());
+            }
+        }
+        if update_description {
+            parsed.frontmatter.description = updated_entry.description.clone();
+        }
+
+        parsed
+            .write_to(path)
+            .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+    }
+
+    let mut bm25 = BM25Index::load(bm25_index_path);
+    bm25.remove_document(&format!("know:{doc_id}"));
+    remove_chunk_docs_from_bm25(&mut bm25, doc_id);
+
+    let chunk_paths = list_chunk_doc_paths(&docs_dir, doc_id);
+    if !chunk_paths.is_empty() {
+        let chunk_total = updated_entry.chunk_count.max(chunk_paths.len()).max(1);
+        for (pos, chunk_path) in chunk_paths.iter().enumerate() {
+            let raw_content = std::fs::read_to_string(chunk_path)
+                .map_err(|e| format!("Failed to read {}: {e}", chunk_path.display()))?;
+            if raw_content.trim().is_empty() {
+                continue;
+            }
+            let (body, frontmatter) = if let Some(doc) = okf::parse_document(&raw_content) {
+                (doc.body, Some(doc.frontmatter))
+            } else {
+                (raw_content, None)
+            };
+            let file_name = chunk_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("Invalid chunk file name: {}", chunk_path.display()))?;
+            let chunk_index = frontmatter
+                .as_ref()
+                .and_then(|fm| okf_extension_usize(fm, "chunk_index"))
+                .or_else(|| chunk_index_from_file_name(doc_id, file_name))
+                .unwrap_or(pos + 1);
+            let indexed_doc = bm25_index::build_document_with_locator_metadata(
+                chunk_bm25_doc_id(doc_id, chunk_index),
+                SourceType::Knowledge,
+                format!("knowledge/docs/{file_name}"),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| fm.title.clone())
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        format!("{} [{}/{}]", updated_entry.title, chunk_index, chunk_total)
+                    }),
+                &body,
+                updated_entry.added_at,
+                frontmatter
+                    .as_ref()
+                    .map(|fm| fm.tags.clone())
+                    .filter(|tags| !tags.is_empty())
+                    .unwrap_or_else(|| updated_entry.categories.clone()),
+                Some("Knowledge".to_string()),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| okf_extension_string(fm, "domain"))
+                    .or_else(|| updated_entry.domain.clone()),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| okf_extension_string(fm, "source_group"))
+                    .or_else(|| updated_entry.source_group.clone()),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| okf_extension_string(fm, "relative_path"))
+                    .or_else(|| updated_entry.relative_path.clone()),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| okf_extension_string(fm, "source_file"))
+                    .or_else(|| Some(updated_entry.source_file.clone())),
+                Some(doc_id.to_string()),
+                Some(chunk_index),
+                Some(chunk_total),
+                true,
+            );
+            bm25.add_document(indexed_doc);
+        }
+    } else if parent_doc_path.exists() {
+        let parent_content = std::fs::read_to_string(&parent_doc_path)
+            .map_err(|e| format!("Failed to read {}: {e}", parent_doc_path.display()))?;
+        if !parent_content.trim().is_empty() {
+            let (body, frontmatter) = if let Some(doc) = okf::parse_document(&parent_content) {
+                (doc.body, Some(doc.frontmatter))
+            } else {
+                (parent_content, None)
+            };
+            let indexed_doc = bm25_index::build_document_with_locator_metadata(
+                format!("know:{doc_id}"),
+                SourceType::Knowledge,
+                format!("knowledge/docs/{doc_id}.md"),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| fm.title.clone())
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| updated_entry.title.clone()),
+                &body,
+                updated_entry.added_at,
+                frontmatter
+                    .as_ref()
+                    .map(|fm| fm.tags.clone())
+                    .filter(|tags| !tags.is_empty())
+                    .unwrap_or_else(|| updated_entry.categories.clone()),
+                Some("Knowledge".to_string()),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| okf_extension_string(fm, "domain"))
+                    .or_else(|| updated_entry.domain.clone()),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| okf_extension_string(fm, "source_group"))
+                    .or_else(|| updated_entry.source_group.clone()),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| okf_extension_string(fm, "relative_path"))
+                    .or_else(|| updated_entry.relative_path.clone()),
+                frontmatter
+                    .as_ref()
+                    .and_then(|fm| okf_extension_string(fm, "source_file"))
+                    .or_else(|| Some(updated_entry.source_file.clone())),
+                None,
+                None,
+                None,
+                false,
+            );
+            bm25.add_document(indexed_doc);
+        }
+    }
+
+    if let Err(e) = bm25.save(bm25_index_path) {
+        error!("Failed to save BM25 index after metadata update: {e}");
+    }
+
+    let workspace_config_dir = workspace_config_dir_from_knowledge_dir(knowledge_dir);
+    super::regenerate_knowledge_index_md(&workspace_config_dir);
+    super::append_log(
+        knowledge_dir,
+        "Update",
+        &format!("Updated knowledge metadata `{doc_id}`"),
+    );
+
+    Ok(())
+}
+
 /// Remove a knowledge document and all its artifacts.
 pub fn remove_knowledge(
     knowledge_dir: &Path,
@@ -594,12 +1030,14 @@ pub fn remove_knowledge(
 
     let doc_path = knowledge_dir.join("docs").join(format!("{doc_id}.md"));
     let _ = std::fs::remove_file(&doc_path);
+    remove_chunk_files(&knowledge_dir.join("docs"), doc_id)?;
 
     knowledge_index.remove_entry(doc_id);
     knowledge_index.save(knowledge_dir)?;
 
     let mut bm25 = BM25Index::load(bm25_index_path);
     bm25.remove_document(&format!("know:{doc_id}"));
+    remove_chunk_docs_from_bm25(&mut bm25, doc_id);
     if let Err(e) = bm25.save(bm25_index_path) {
         error!("Failed to save BM25 index after knowledge removal: {e}");
     }
@@ -825,6 +1263,50 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
     })
 }
 
+fn normalize_tag_list(tags: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut normalized = Vec::new();
+    for tag in tags {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lowered = trimmed.to_ascii_lowercase();
+        if seen.insert(lowered) {
+            normalized.push(trimmed.to_string());
+        }
+    }
+    normalized
+}
+
+fn okf_extension_string(frontmatter: &OkfFrontmatter, key: &str) -> Option<String> {
+    frontmatter
+        .extensions
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn okf_extension_usize(frontmatter: &OkfFrontmatter, key: &str) -> Option<usize> {
+    frontmatter
+        .extensions
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+}
+
+fn set_optional_extension(frontmatter: &mut OkfFrontmatter, key: &str, value: Option<String>) {
+    if let Some(value) = value {
+        frontmatter
+            .extensions
+            .insert(key.to_string(), serde_json::json!(value));
+    } else {
+        frontmatter.extensions.remove(key);
+    }
+}
+
 fn normalize_relative_display_path(input: &str) -> Option<String> {
     let raw = input.trim();
     if raw.is_empty() {
@@ -972,12 +1454,70 @@ fn slug_from_name(name: &str) -> String {
     }
 }
 
+pub(crate) fn chunk_file_prefix(doc_id: &str) -> String {
+    format!("{doc_id}{CHUNK_FILE_SEPARATOR}")
+}
+
+pub(crate) fn chunk_file_name(doc_id: &str, chunk_index: usize) -> String {
+    format!("{}{:04}.md", chunk_file_prefix(doc_id), chunk_index)
+}
+
+fn chunk_index_from_file_name(doc_id: &str, file_name: &str) -> Option<usize> {
+    let prefix = chunk_file_prefix(doc_id);
+    let suffix = file_name.strip_prefix(&prefix)?.strip_suffix(".md")?;
+    suffix.parse::<usize>().ok()
+}
+
+pub(crate) fn chunk_bm25_doc_prefix(doc_id: &str) -> String {
+    format!("know:{doc_id}{CHUNK_BM25_SEPARATOR}")
+}
+
+pub(crate) fn chunk_bm25_doc_id(doc_id: &str, chunk_index: usize) -> String {
+    format!("{}{:04}", chunk_bm25_doc_prefix(doc_id), chunk_index)
+}
+
+pub(crate) fn list_chunk_doc_paths(docs_dir: &Path, doc_id: &str) -> Vec<PathBuf> {
+    if !docs_dir.exists() {
+        return Vec::new();
+    }
+    let prefix = chunk_file_prefix(doc_id);
+    let mut paths = std::fs::read_dir(docs_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".md"))
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn remove_chunk_files(docs_dir: &Path, doc_id: &str) -> Result<(), String> {
+    for path in list_chunk_doc_paths(docs_dir, doc_id) {
+        if let Err(e) = std::fs::remove_file(&path) {
+            return Err(format!("Failed to remove chunk file {}: {e}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn remove_chunk_docs_from_bm25(bm25: &mut BM25Index, doc_id: &str) {
+    let prefix = chunk_bm25_doc_prefix(doc_id);
+    bm25.documents.retain(|doc| !doc.doc_id.starts_with(&prefix));
+}
+
 fn chunk_text(text: &str, max_chunk_tokens: usize) -> Vec<String> {
     if max_chunk_tokens == 0 {
         return vec![text.to_string()];
     }
 
-    let paragraphs: Vec<&str> = text.split("\n\n").collect();
+    let normalized_text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let paragraphs: Vec<&str> = normalized_text.split("\n\n").collect();
     let mut chunks = Vec::new();
     let mut current_chunk = String::new();
     let mut current_tokens = 0usize;
@@ -1001,7 +1541,7 @@ fn chunk_text(text: &str, max_chunk_tokens: usize) -> Vec<String> {
     }
 
     if chunks.is_empty() {
-        chunks.push(text.to_string());
+        chunks.push(normalized_text);
     }
 
     chunks
@@ -1016,7 +1556,7 @@ async fn organize_via_llm(
     config: &ConfigToml,
     raw_text: &str,
     source_name: &str,
-) -> Result<(String, Option<serde_json::Value>), String> {
+) -> Result<prompts::ParsedKnowledgeOrganizeOutput, String> {
     let (_, provider) = config.resolve_provider();
     let base_url = provider
         .resolve_base_url()
@@ -1140,6 +1680,9 @@ fn update_hierarchy(knowledge_dir: &Path, doc_id: &str, hierarchy_fragment: &ser
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_system::{ConfigToml, SmartBrainConfig};
+    use crate::smartbrain::bm25_index::{build_document, SourceType};
+    use reqwest::Client;
 
     #[test]
     fn collect_folder_candidates_respects_recursive_and_extension_filter() {
@@ -1192,6 +1735,7 @@ mod tests {
             source_file: "legacy.txt".to_string(),
             source_type: "txt".to_string(),
             title: "Legacy".to_string(),
+            description: None,
             added_at: 1_700_000_000,
             chunk_count: 1,
             categories: Vec::new(),
@@ -1241,6 +1785,341 @@ mod tests {
             !sources_dir.starts_with(&knowledge_dir),
             "raw source store should be outside knowledge bundle: {}",
             sources_dir.display()
+        );
+    }
+
+    #[tokio::test]
+    async fn ingest_document_splits_long_text_into_chunk_files_when_enabled() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_dir = temp_dir.path().join("workspace");
+        let memories_dir = workspace_dir.join("codey").join("memories");
+        let knowledge_dir = memories_dir.join("knowledge");
+        let bm25_path = memories_dir.join("smartbrain_index.json");
+        std::fs::create_dir_all(&knowledge_dir).unwrap();
+
+        let source_path = temp_dir.path().join("long-note.txt");
+        std::fs::write(
+            &source_path,
+            "第一段 alpha beta gamma\n\n第二段 delta epsilon zeta\n\n第三段 eta theta iota",
+        )
+        .unwrap();
+
+        let mut config = ConfigToml::default();
+        config.smartbrain = Some(SmartBrainConfig {
+            auto_organize: false,
+            max_chunk_tokens: 3,
+            knowledge_chunk_files_enabled: true,
+            ..SmartBrainConfig::default()
+        });
+
+        let http = Client::new();
+        let doc_id = ingest_document(&http, &config, &knowledge_dir, &bm25_path, &source_path)
+            .await
+            .expect("ingest should succeed");
+
+        let docs_dir = knowledge_dir.join("docs");
+        let parent_doc = docs_dir.join(format!("{doc_id}.md"));
+        assert!(parent_doc.exists(), "parent doc should be kept for compatibility");
+
+        let chunk_prefix = format!("{doc_id}__chunk_");
+        let chunk_files = std::fs::read_dir(&docs_dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(ToString::to_string))
+            .filter(|name| name.starts_with(&chunk_prefix))
+            .collect::<Vec<_>>();
+        assert!(
+            !chunk_files.is_empty(),
+            "expected chunk files with prefix {chunk_prefix}"
+        );
+        let first_chunk_path = docs_dir.join(&chunk_files[0]);
+        let first_chunk_content = std::fs::read_to_string(&first_chunk_path).unwrap();
+        let parsed_chunk = okf::parse_document(&first_chunk_content)
+            .expect("chunk file should be valid OKF markdown");
+        assert_eq!(
+            parsed_chunk
+                .frontmatter
+                .extensions
+                .get("okf_profile")
+                .and_then(serde_json::Value::as_str),
+            Some("smartbrain-knowledge-v1")
+        );
+        assert_eq!(
+            parsed_chunk
+                .frontmatter
+                .extensions
+                .get("is_chunk")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let bm25 = BM25Index::load(&bm25_path);
+        let chunk_doc_prefix = format!("know:{doc_id}::chunk:");
+        assert!(
+            bm25.documents
+                .iter()
+                .any(|doc| doc.doc_id.starts_with(&chunk_doc_prefix)),
+            "expected chunk docs to be indexed with prefix {chunk_doc_prefix}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ingest_document_uses_chunk_fallback_when_max_chunk_tokens_is_zero() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_dir = temp_dir.path().join("workspace");
+        let memories_dir = workspace_dir.join("codey").join("memories");
+        let knowledge_dir = memories_dir.join("knowledge");
+        let bm25_path = memories_dir.join("smartbrain_index.json");
+        std::fs::create_dir_all(&knowledge_dir).unwrap();
+
+        let source_path = temp_dir.path().join("long-note.txt");
+        let paragraph = (0..260)
+            .map(|idx| format!("token-{idx}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let content = format!("{paragraph}\n\n{paragraph}\n\n{paragraph}");
+        std::fs::write(&source_path, content).unwrap();
+
+        let mut config = ConfigToml::default();
+        config.smartbrain = Some(SmartBrainConfig {
+            auto_organize: false,
+            max_chunk_tokens: 0,
+            knowledge_chunk_files_enabled: true,
+            ..SmartBrainConfig::default()
+        });
+
+        let http = Client::new();
+        let doc_id = ingest_document(&http, &config, &knowledge_dir, &bm25_path, &source_path)
+            .await
+            .expect("ingest should succeed");
+
+        let docs_dir = knowledge_dir.join("docs");
+        let chunk_prefix = format!("{doc_id}__chunk_");
+        let chunk_files = std::fs::read_dir(&docs_dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(ToString::to_string))
+            .filter(|name| name.starts_with(&chunk_prefix))
+            .collect::<Vec<_>>();
+        assert!(
+            !chunk_files.is_empty(),
+            "fallback chunk size should split long doc even when max_chunk_tokens is zero"
+        );
+
+        let index = KnowledgeIndex::load(&knowledge_dir);
+        let entry = index
+            .entries
+            .iter()
+            .find(|item| item.doc_id == doc_id)
+            .expect("knowledge entry should exist");
+        assert!(
+            entry.chunk_count > 1,
+            "chunk_count should be greater than 1 when fallback splitting is active"
+        );
+    }
+
+    #[test]
+    fn chunk_text_handles_crlf_paragraph_breaks() {
+        let text = "第一段 alpha beta gamma\r\n\r\n第二段 delta epsilon zeta\r\n\r\n第三段 eta theta iota";
+        let chunks = chunk_text(text, 3);
+        assert!(chunks.len() > 1, "CRLF paragraph breaks should be chunked");
+        assert!(chunks.iter().all(|chunk| !chunk.contains('\r')));
+    }
+
+    #[test]
+    fn chunk_text_splits_crlf_separated_paragraphs() {
+        let text = "first one two\r\n\r\nsecond three four\r\n\r\nthird five six";
+        let chunks = chunk_text(text, 4);
+        assert!(
+            chunks.len() >= 2,
+            "crlf paragraphs should be split into multiple chunks"
+        );
+        assert!(chunks.iter().any(|chunk| chunk.contains("second")));
+        assert!(chunks.iter().all(|chunk| !chunk.contains('\r')));
+    }
+
+    #[test]
+    fn remove_knowledge_removes_chunk_files_and_chunk_bm25_docs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_dir = temp_dir.path().join("workspace");
+        let memories_dir = workspace_dir.join("codey").join("memories");
+        let knowledge_dir = memories_dir.join("knowledge");
+        let docs_dir = knowledge_dir.join("docs");
+        let sources_dir = memories_dir.join("knowledge_sources");
+        let bm25_path = memories_dir.join("smartbrain_index.json");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+        std::fs::create_dir_all(&sources_dir).unwrap();
+
+        let mut index = KnowledgeIndex::default();
+        index.entries.push(KnowledgeEntry {
+            doc_id: "test-doc".to_string(),
+            source_file: "test-doc.txt".to_string(),
+            source_type: "txt".to_string(),
+            title: "Test Doc".to_string(),
+            description: None,
+            added_at: 1_700_000_000,
+            chunk_count: 2,
+            categories: vec!["alpha".to_string()],
+            domain: Some("knowledge".to_string()),
+            relative_path: Some("test-doc.txt".to_string()),
+            source_group: Some("group-a".to_string()),
+        });
+        index.save(&knowledge_dir).unwrap();
+
+        std::fs::write(docs_dir.join("test-doc.md"), "parent").unwrap();
+        std::fs::write(docs_dir.join("test-doc__chunk_0001.md"), "chunk 1").unwrap();
+        std::fs::write(docs_dir.join("test-doc__chunk_0002.md"), "chunk 2").unwrap();
+        std::fs::write(sources_dir.join("test-doc.txt"), "source content").unwrap();
+
+        let mut bm25 = BM25Index::default();
+        bm25.add_document(build_document(
+            "know:test-doc".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/test-doc.md".to_string(),
+            "test-doc".to_string(),
+            "parent body",
+            1_700_000_000,
+        ));
+        bm25.add_document(build_document(
+            "know:test-doc::chunk:0001".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/test-doc__chunk_0001.md".to_string(),
+            "test-doc chunk 1".to_string(),
+            "chunk body 1",
+            1_700_000_000,
+        ));
+        bm25.add_document(build_document(
+            "know:test-doc::chunk:0002".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/test-doc__chunk_0002.md".to_string(),
+            "test-doc chunk 2".to_string(),
+            "chunk body 2",
+            1_700_000_000,
+        ));
+        bm25.save(&bm25_path).unwrap();
+
+        remove_knowledge(&knowledge_dir, &bm25_path, "test-doc").expect("remove should succeed");
+
+        assert!(!docs_dir.join("test-doc.md").exists());
+        assert!(!docs_dir.join("test-doc__chunk_0001.md").exists());
+        assert!(!docs_dir.join("test-doc__chunk_0002.md").exists());
+
+        let bm25_after = BM25Index::load(&bm25_path);
+        assert!(
+            bm25_after
+                .documents
+                .iter()
+                .all(|doc| !doc.doc_id.starts_with("know:test-doc")),
+            "all parent and chunk docs should be removed"
+        );
+    }
+
+    #[test]
+    fn update_knowledge_metadata_updates_index_and_preserves_body() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_dir = temp_dir.path().join("workspace");
+        let memories_dir = workspace_dir.join("codey").join("memories");
+        let knowledge_dir = memories_dir.join("knowledge");
+        let docs_dir = knowledge_dir.join("docs");
+        let bm25_path = memories_dir.join("smartbrain_index.json");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+
+        let mut index = KnowledgeIndex::default();
+        index.entries.push(KnowledgeEntry {
+            doc_id: "meta-doc".to_string(),
+            source_file: "meta-doc.txt".to_string(),
+            source_type: "txt".to_string(),
+            title: "Old Title".to_string(),
+            description: None,
+            added_at: 1_700_000_000,
+            chunk_count: 2,
+            categories: vec!["old".to_string()],
+            domain: Some("legacy".to_string()),
+            relative_path: Some("meta-doc.txt".to_string()),
+            source_group: Some("legacy-group".to_string()),
+        });
+        index.save(&knowledge_dir).unwrap();
+
+        std::fs::write(
+            docs_dir.join("meta-doc.md"),
+            "---\ntype: Knowledge\ntitle: Old Title\ntags: [old]\nsource_file: meta-doc.txt\nsource_type: txt\ndomain: legacy\nsource_group: legacy-group\nis_chunk: false\nchunk_count: 2\n---\n\nparent body unchanged",
+        )
+        .unwrap();
+        std::fs::write(
+            docs_dir.join("meta-doc__chunk_0001.md"),
+            "---\ntype: Knowledge\ntitle: Old Title [1/2]\ntags: [old]\nsource_file: meta-doc.txt\nsource_type: txt\ndomain: legacy\nsource_group: legacy-group\nis_chunk: true\nparent_doc_id: meta-doc\nchunk_index: 1\nchunk_total: 2\n---\n\nchunk body 1",
+        )
+        .unwrap();
+        std::fs::write(
+            docs_dir.join("meta-doc__chunk_0002.md"),
+            "---\ntype: Knowledge\ntitle: Old Title [2/2]\ntags: [old]\nsource_file: meta-doc.txt\nsource_type: txt\ndomain: legacy\nsource_group: legacy-group\nis_chunk: true\nparent_doc_id: meta-doc\nchunk_index: 2\nchunk_total: 2\n---\n\nchunk body 2",
+        )
+        .unwrap();
+
+        update_knowledge_metadata(
+            &knowledge_dir,
+            &bm25_path,
+            "meta-doc",
+            KnowledgeMetadataUpdate {
+                title: Some("New Title".to_string()),
+                description: Some("updated description".to_string()),
+                tags: Some(vec!["updated".to_string(), "kb".to_string()]),
+                domain: Some("backend".to_string()),
+                source_group: Some("import-batch-1".to_string()),
+            },
+        )
+        .unwrap();
+
+        let refreshed = KnowledgeIndex::load(&knowledge_dir);
+        let entry = refreshed
+            .entries
+            .iter()
+            .find(|entry| entry.doc_id == "meta-doc")
+            .unwrap();
+        assert_eq!(entry.title, "New Title");
+        assert_eq!(entry.description.as_deref(), Some("updated description"));
+        assert_eq!(entry.categories, vec!["updated".to_string(), "kb".to_string()]);
+        assert_eq!(entry.domain.as_deref(), Some("backend"));
+        assert_eq!(entry.source_group.as_deref(), Some("import-batch-1"));
+
+        let parent = okf::parse_document(&std::fs::read_to_string(docs_dir.join("meta-doc.md")).unwrap())
+            .unwrap();
+        assert_eq!(parent.body, "parent body unchanged");
+        assert_eq!(parent.frontmatter.title.as_deref(), Some("New Title"));
+        assert_eq!(
+            parent.frontmatter.description.as_deref(),
+            Some("updated description")
+        );
+        assert_eq!(parent.frontmatter.tags, vec!["updated".to_string(), "kb".to_string()]);
+
+        let chunk = okf::parse_document(
+            &std::fs::read_to_string(docs_dir.join("meta-doc__chunk_0001.md")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(chunk.body, "chunk body 1");
+        assert_eq!(chunk.frontmatter.title.as_deref(), Some("New Title [1/2]"));
+        assert_eq!(chunk.frontmatter.tags, vec!["updated".to_string(), "kb".to_string()]);
+        assert_eq!(
+            chunk
+                .frontmatter
+                .extensions
+                .get("domain")
+                .and_then(serde_json::Value::as_str),
+            Some("backend")
+        );
+
+        let bm25 = BM25Index::load(&bm25_path);
+        assert!(
+            bm25.documents
+                .iter()
+                .any(|doc| doc.doc_id == "know:meta-doc::chunk:0001" && doc.title == "New Title [1/2]"),
+            "chunk-1 index should reflect updated title"
+        );
+        assert!(
+            bm25.documents
+                .iter()
+                .all(|doc| doc.doc_id != "know:meta-doc"),
+            "parent index should not be used when chunk docs exist"
         );
     }
 }

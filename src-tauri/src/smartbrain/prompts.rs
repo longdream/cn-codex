@@ -1,4 +1,5 @@
 use crate::thread_store::ThreadMessage;
+use serde::Deserialize;
 
 /// Maximum characters to include from a session transcript for extraction.
 const MAX_TRANSCRIPT_CHARS: usize = 60_000;
@@ -71,6 +72,7 @@ You are a knowledge organization system. You will receive raw text extracted fro
 1. Organize the content into a clear hierarchical structure with categories.
 2. Produce a clean markdown document with the organized knowledge.
 3. Produce a JSON category hierarchy for indexing.
+4. Extract normalized metadata for indexing and retrieval.
 
 Format your response as:
 
@@ -82,12 +84,38 @@ Format your response as:
 {\"categories\": [{\"name\": \"Category Name\", \"summary\": \"Brief summary\"}]}
 ---END hierarchy.json---
 
+---BEGIN metadata.json---
+{\"title\": \"Suggested title\", \"description\": \"Brief summary\", \"domain\": \"topic\", \"tags\": [\"tag1\", \"tag2\"]}
+---END metadata.json---
+
 Rules:
 - Group related information under clear category headers.
 - Preserve all technical details (code snippets, command syntax, configuration).
 - Use concise bullet points within each category.
 - Remove redundant or repeated information.
-- Categories should be descriptive and specific.";
+- Categories should be descriptive and specific.
+- metadata.title and metadata.description must be concise and searchable.
+- metadata.tags should contain 2-8 concrete tags when possible.
+- metadata.domain should be a short domain label (for example: backend, frontend, database, devops).";
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct KnowledgeOrganizeMetadata {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedKnowledgeOrganizeOutput {
+    pub organized_markdown: String,
+    pub hierarchy: Option<serde_json::Value>,
+    pub metadata: Option<KnowledgeOrganizeMetadata>,
+}
 
 pub fn build_extraction_messages(history: &[ThreadMessage]) -> Vec<(String, String)> {
     let mut transcript = String::new();
@@ -235,7 +263,7 @@ pub fn parse_consolidation_output(output: &str) -> (String, String) {
     (summary, handbook)
 }
 
-pub fn parse_knowledge_organize_output(output: &str) -> (String, Option<serde_json::Value>) {
+pub fn parse_knowledge_organize_output(output: &str) -> ParsedKnowledgeOrganizeOutput {
     let organized = extract_delimited(
         output,
         "---BEGIN organized_knowledge.md---",
@@ -248,7 +276,17 @@ pub fn parse_knowledge_organize_output(output: &str) -> (String, Option<serde_js
         "---END hierarchy.json---",
     )
     .and_then(|s| serde_json::from_str(&s).ok());
-    (organized, hierarchy)
+    let metadata = extract_delimited(
+        output,
+        "---BEGIN metadata.json---",
+        "---END metadata.json---",
+    )
+    .and_then(|s| serde_json::from_str::<KnowledgeOrganizeMetadata>(&s).ok());
+    ParsedKnowledgeOrganizeOutput {
+        organized_markdown: organized,
+        hierarchy,
+        metadata,
+    }
 }
 
 pub struct ParsedExtraction {
@@ -409,9 +447,39 @@ Some preamble text.
 ---BEGIN hierarchy.json---
 {\"categories\": [{\"name\": \"API Reference\", \"summary\": \"REST API endpoints\"}]}
 ---END hierarchy.json---
+
+---BEGIN metadata.json---
+{\"title\": \"API Guide\", \"description\": \"Core REST endpoints\", \"domain\": \"backend\", \"tags\": [\"api\", \"rest\"]}
+---END metadata.json---
 ";
-        let (organized, hierarchy) = parse_knowledge_organize_output(output);
-        assert!(organized.contains("API Reference"));
-        assert!(hierarchy.is_some());
+        let parsed = parse_knowledge_organize_output(output);
+        assert!(parsed.organized_markdown.contains("API Reference"));
+        assert!(parsed.hierarchy.is_some());
+        assert_eq!(
+            parsed.metadata.as_ref().and_then(|meta| meta.title.as_deref()),
+            Some("API Guide")
+        );
+        assert_eq!(
+            parsed.metadata.as_ref().map(|meta| meta.tags.clone()),
+            Some(vec!["api".to_string(), "rest".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_knowledge_organize_output_tolerates_missing_metadata_block() {
+        let output = "\
+---BEGIN organized_knowledge.md---
+## Notes
+- item
+---END organized_knowledge.md---
+
+---BEGIN hierarchy.json---
+{\"categories\": [{\"name\": \"Notes\", \"summary\": \"Simple notes\"}]}
+---END hierarchy.json---
+";
+        let parsed = parse_knowledge_organize_output(output);
+        assert!(parsed.organized_markdown.contains("## Notes"));
+        assert!(parsed.hierarchy.is_some());
+        assert!(parsed.metadata.is_none());
     }
 }

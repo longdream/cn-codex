@@ -572,23 +572,12 @@ impl AgentEngine {
                     let memories_dir = self.cwd.join("codey").join("memories");
                     let mut context_parts = Vec::new();
                     for r in &results {
-                        let doc_path = memories_dir.join(&r.file_path);
-                        if let Ok(raw_content) = std::fs::read_to_string(&doc_path) {
-                            let content = crate::smartbrain::okf::extract_body(&raw_content);
-                            let truncated = if content.len() > 2000 {
-                                let end = content
-                                    .char_indices()
-                                    .map(|(i, _)| i)
-                                    .take_while(|&i| i <= 2000)
-                                    .last()
-                                    .unwrap_or(0);
-                                format!("{}...(truncated)", &content[..end])
-                            } else {
-                                content
-                            };
+                        if let Some(recall_text) =
+                            build_smartbrain_recall_context(&memories_dir, r, 30, 2000)
+                        {
                             context_parts.push(format!(
                                 "### {} (score: {:.2})\n{}",
-                                r.title, r.score, truncated
+                                r.title, r.score, recall_text
                             ));
                         }
                     }
@@ -2076,8 +2065,9 @@ impl AgentEngine {
                 if !hier_text.is_empty() {
                     parts.push(format!(
                         "You also have access to a knowledge base with these categories:\n{hier_text}\n\n\
-                         Use `smartbrain_search` to find relevant knowledge first, then `memory_read` with pagination \
-                         (`line_offset` and `max_lines`) to read only the needed sections."
+                         Use `smartbrain_search` to find relevant knowledge first, then read with continuity: \
+                         always include previous/next sections around chunk hits and keep at least 30 lines overlap \
+                         to avoid cut-off context. If available, follow the `smartbrain-context-read` skill."
                     ));
                 }
             }
@@ -2085,7 +2075,7 @@ impl AgentEngine {
             if config.smartbrain_config().is_active() {
                 parts.push(
                     "Knowledge retrieval policy: prefer `smartbrain_search` for large or structured knowledge queries. \
-                     Use `memory_read` pagination (`line_offset`, `max_lines`) for targeted reading, and avoid \
+                     Use `memory_read` pagination (`line_offset`, `max_lines`) for targeted reading with >=30-line overlap windows, and avoid \
                      broad `memory_search` or shell/python scans over large documents unless explicitly required."
                         .to_string(),
                 );
@@ -4051,6 +4041,109 @@ fn estimate_tokens(text: &str) -> u64 {
 
 fn estimate_tokens_from_char_count(char_count: u64) -> u64 {
     (char_count / 3).max(1)
+}
+
+fn truncate_chars_with_marker(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let end = value
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .take_while(|idx| *idx <= max_chars)
+        .last()
+        .unwrap_or(0);
+    format!("{}...(truncated)", &value[..end])
+}
+
+fn read_okf_body_lines_for_recall(path: &Path) -> Option<Vec<String>> {
+    let raw_content = std::fs::read_to_string(path).ok()?;
+    let content = crate::smartbrain::okf::extract_body(&raw_content);
+    Some(content.lines().map(|line| line.to_string()).collect())
+}
+
+fn take_first_lines_for_recall(lines: &[String], count: usize) -> Vec<String> {
+    lines.iter().take(count).cloned().collect()
+}
+
+fn take_last_lines_for_recall(lines: &[String], count: usize) -> Vec<String> {
+    if lines.len() <= count {
+        return lines.to_vec();
+    }
+    lines[lines.len() - count..].to_vec()
+}
+
+fn build_smartbrain_recall_context(
+    memories_dir: &Path,
+    result: &crate::smartbrain::search::SmartBrainSearchResult,
+    overlap_lines: usize,
+    max_chars: usize,
+) -> Option<String> {
+    let overlap_lines = overlap_lines.max(30);
+    let doc_path = memories_dir.join(&result.file_path);
+    let current_lines = read_okf_body_lines_for_recall(&doc_path)?;
+    if current_lines.is_empty() {
+        return None;
+    }
+
+    if !result.is_chunk {
+        return Some(truncate_chars_with_marker(&current_lines.join("\n"), max_chars));
+    }
+
+    let parent_doc_id = result.parent_doc_id.as_deref()?.trim();
+    if parent_doc_id.is_empty() {
+        return Some(truncate_chars_with_marker(&current_lines.join("\n"), max_chars));
+    }
+    let chunk_index = result.chunk_index?;
+    let chunk_total = result.chunk_total.unwrap_or(chunk_index).max(chunk_index);
+    let docs_dir = memories_dir.join("knowledge").join("docs");
+    let previous_lines = if chunk_index > 1 {
+        let previous_file = crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index - 1);
+        read_okf_body_lines_for_recall(&docs_dir.join(previous_file))
+    } else {
+        None
+    };
+    let next_lines = if chunk_index < chunk_total {
+        let next_file = crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index + 1);
+        read_okf_body_lines_for_recall(&docs_dir.join(next_file))
+    } else {
+        None
+    };
+
+    if previous_lines.is_none() && next_lines.is_none() {
+        return Some(truncate_chars_with_marker(&current_lines.join("\n"), max_chars));
+    }
+
+    let mut sections = Vec::new();
+    if let Some(prev) = previous_lines {
+        let mut prev_bridge = Vec::new();
+        prev_bridge.push(format!("Previous chunk {} tail:", chunk_index.saturating_sub(1)));
+        prev_bridge.extend(take_last_lines_for_recall(&prev, overlap_lines));
+        prev_bridge.push(format!(
+            "Overlap with current chunk {} head ({} lines):",
+            chunk_index, overlap_lines
+        ));
+        prev_bridge.extend(take_first_lines_for_recall(&current_lines, overlap_lines));
+        sections.push(prev_bridge.join("\n"));
+    }
+    sections.push(format!(
+        "Current chunk {chunk_index}/{chunk_total}:\n{}",
+        current_lines.join("\n")
+    ));
+    if let Some(next) = next_lines {
+        let mut next_bridge = Vec::new();
+        next_bridge.push(format!(
+            "Overlap with current chunk {} tail ({} lines):",
+            chunk_index, overlap_lines
+        ));
+        next_bridge.extend(take_last_lines_for_recall(&current_lines, overlap_lines));
+        next_bridge.push(format!("Next chunk {} head:", chunk_index + 1));
+        next_bridge.extend(take_first_lines_for_recall(&next, overlap_lines));
+        sections.push(next_bridge.join("\n"));
+    }
+
+    let merged = sections.join("\n\n---\n\n");
+    Some(truncate_chars_with_marker(&merged, max_chars))
 }
 
 fn assistant_is_waiting_for_user(text: &str) -> bool {

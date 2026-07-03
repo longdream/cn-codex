@@ -56,7 +56,7 @@ impl ModelProviderInfo {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmartBrainConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -90,6 +90,14 @@ pub struct SmartBrainConfig {
     pub max_chunk_tokens: usize,
     #[serde(default = "default_true")]
     pub auto_organize: bool,
+    #[serde(default = "default_true")]
+    pub knowledge_chunk_files_enabled: bool,
+    #[serde(default = "default_true")]
+    pub search_okf_prefilter_enabled: bool,
+    #[serde(default = "default_search_okf_prefilter_order")]
+    pub search_okf_prefilter_order: Vec<String>,
+    #[serde(default = "default_search_locator_priority")]
+    pub search_locator_priority: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -118,6 +126,46 @@ fn default_max_knowledge_docs() -> usize {
 }
 fn default_max_chunk_tokens() -> usize {
     500
+}
+fn default_search_okf_prefilter_order() -> Vec<String> {
+    vec![
+        "domain".to_string(),
+        "tags".to_string(),
+        "source_type".to_string(),
+    ]
+}
+fn default_search_locator_priority() -> Vec<String> {
+    vec![
+        "domain".to_string(),
+        "source_group".to_string(),
+        "relative_path".to_string(),
+    ]
+}
+
+impl Default for SmartBrainConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            extraction_start_at: None,
+            auto_extract: default_true(),
+            auto_consolidate: default_true(),
+            inject_summary: default_true(),
+            max_raw_experiences: default_max_raw_experiences(),
+            max_consolidation_entries: default_max_consolidation_entries(),
+            max_unused_days: default_max_unused_days(),
+            max_rollouts_per_startup: default_max_rollouts_per_startup(),
+            min_session_messages: default_min_session_messages(),
+            summary_max_tokens: default_summary_max_tokens(),
+            knowledge_enabled: default_true(),
+            max_knowledge_docs: default_max_knowledge_docs(),
+            max_chunk_tokens: default_max_chunk_tokens(),
+            auto_organize: default_true(),
+            knowledge_chunk_files_enabled: default_true(),
+            search_okf_prefilter_enabled: default_true(),
+            search_okf_prefilter_order: default_search_okf_prefilter_order(),
+            search_locator_priority: default_search_locator_priority(),
+        }
+    }
 }
 
 impl SmartBrainConfig {
@@ -418,6 +466,18 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
     })
 }
 
+fn parse_json_string_list(value: &serde_json::Value) -> Option<Vec<String>> {
+    let array = value.as_array()?;
+    let values = array
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    Some(values)
+}
+
 impl ConfigToml {
     pub fn load(path: &Path) -> AppResult<Self> {
         if !path.exists() {
@@ -489,6 +549,42 @@ impl ConfigToml {
                     .smartbrain
                     .get_or_insert_with(SmartBrainConfig::default);
                 sb.extraction_start_at = value.as_i64();
+            }
+            "smartbrain.search_okf_prefilter_enabled" => {
+                let sb = self
+                    .smartbrain
+                    .get_or_insert_with(SmartBrainConfig::default);
+                sb.search_okf_prefilter_enabled = value.as_bool().unwrap_or(true);
+            }
+            "smartbrain.search_okf_prefilter_order" => {
+                let sb = self
+                    .smartbrain
+                    .get_or_insert_with(SmartBrainConfig::default);
+                sb.search_okf_prefilter_order = if value.is_null() {
+                    default_search_okf_prefilter_order()
+                } else {
+                    parse_json_string_list(value)
+                        .filter(|values| !values.is_empty())
+                        .unwrap_or_else(default_search_okf_prefilter_order)
+                };
+            }
+            "smartbrain.search_locator_priority" => {
+                let sb = self
+                    .smartbrain
+                    .get_or_insert_with(SmartBrainConfig::default);
+                sb.search_locator_priority = if value.is_null() {
+                    default_search_locator_priority()
+                } else {
+                    parse_json_string_list(value)
+                        .filter(|values| !values.is_empty())
+                        .unwrap_or_else(default_search_locator_priority)
+                };
+            }
+            "smartbrain.knowledge_chunk_files_enabled" => {
+                let sb = self
+                    .smartbrain
+                    .get_or_insert_with(SmartBrainConfig::default);
+                sb.knowledge_chunk_files_enabled = value.as_bool().unwrap_or(true);
             }
             "image_generation" => {
                 if value.is_null() {
@@ -1095,5 +1191,70 @@ mod tests {
                 .contains("expected non-empty 'command' or 'url'"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn smartbrain_policy_defaults_are_applied() {
+        let config = ConfigToml::default();
+        let smartbrain = config.smartbrain_config();
+        assert!(smartbrain.knowledge_chunk_files_enabled);
+        assert!(smartbrain.search_okf_prefilter_enabled);
+        assert_eq!(
+            smartbrain.search_okf_prefilter_order,
+            vec![
+                "domain".to_string(),
+                "tags".to_string(),
+                "source_type".to_string()
+            ]
+        );
+        assert_eq!(
+            smartbrain.search_locator_priority,
+            vec![
+                "domain".to_string(),
+                "source_group".to_string(),
+                "relative_path".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_edit_smartbrain_policy_fields() {
+        let mut config = ConfigToml::default();
+        config
+            .apply_edit(
+                "smartbrain.search_okf_prefilter_enabled",
+                &serde_json::json!(false),
+            )
+            .expect("set smartbrain.search_okf_prefilter_enabled");
+        config
+            .apply_edit(
+                "smartbrain.search_okf_prefilter_order",
+                &serde_json::json!(["tags", "domain"]),
+            )
+            .expect("set smartbrain.search_okf_prefilter_order");
+        config
+            .apply_edit(
+                "smartbrain.search_locator_priority",
+                &serde_json::json!(["relative_path", "domain"]),
+            )
+            .expect("set smartbrain.search_locator_priority");
+        config
+            .apply_edit(
+                "smartbrain.knowledge_chunk_files_enabled",
+                &serde_json::json!(false),
+            )
+            .expect("set smartbrain.knowledge_chunk_files_enabled");
+
+        let smartbrain = config.smartbrain_config();
+        assert!(!smartbrain.search_okf_prefilter_enabled);
+        assert_eq!(
+            smartbrain.search_okf_prefilter_order,
+            vec!["tags".to_string(), "domain".to_string()]
+        );
+        assert_eq!(
+            smartbrain.search_locator_priority,
+            vec!["relative_path".to_string(), "domain".to_string()]
+        );
+        assert!(!smartbrain.knowledge_chunk_files_enabled);
     }
 }

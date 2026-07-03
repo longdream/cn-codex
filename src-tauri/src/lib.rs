@@ -502,6 +502,7 @@ pub fn run() {
             smartbrain::commands::smartbrain_list_knowledge,
             smartbrain::commands::smartbrain_read_knowledge,
             smartbrain::commands::smartbrain_delete_knowledge,
+            smartbrain::commands::smartbrain_update_knowledge,
             smartbrain::commands::smartbrain_upload_knowledge,
             smartbrain::commands::smartbrain_upload_knowledge_folder,
             smartbrain::commands::smartbrain_search,

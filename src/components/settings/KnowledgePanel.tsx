@@ -1,4 +1,15 @@
-import { IconChevronDown, IconChevronRight, IconTrash, IconUpload, IconAlertCircle, IconRefresh, IconFolder } from "@tabler/icons-react";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconTrash,
+  IconUpload,
+  IconAlertCircle,
+  IconRefresh,
+  IconFolder,
+  IconPencil,
+  IconCheck,
+  IconX,
+} from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
@@ -9,6 +20,7 @@ interface KnowledgeEntry {
   source_file: string;
   source_type: string;
   title: string;
+  description?: string;
   added_at: number;
   chunk_count: number;
   categories: string[];
@@ -75,6 +87,15 @@ export function KnowledgePanel() {
   const [uploading, setUploading] = useState(false);
   const [uploadingFolder, setUploadingFolder] = useState(false);
   const [migrating, setMigrating] = useState(false);
+  const [editingDocId, setEditingDocId] = useState<string | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editForm, setEditForm] = useState({
+    title: "",
+    description: "",
+    tagsText: "",
+    domain: "",
+    sourceGroup: "",
+  });
   const [notice, setNotice] = useState<{
     kind: "success" | "error" | "warning" | "info";
     text: string;
@@ -109,6 +130,87 @@ export function KnowledgePanel() {
       console.error("Delete knowledge failed:", err);
     }
   }, [intl]);
+
+  const handleStartEditKnowledge = useCallback(async (doc: KnowledgeEntry) => {
+    let frontmatter = knowFrontmatter[doc.doc_id];
+    if (!frontmatter) {
+      try {
+        const result = await invoke<{ content: string; frontmatter?: OkfFrontmatter | null }>(
+          "smartbrain_read_knowledge",
+          { docId: doc.doc_id },
+        );
+        frontmatter = result.frontmatter ?? null;
+        if (result.frontmatter) {
+          setKnowFrontmatter((prev) => ({ ...prev, [doc.doc_id]: result.frontmatter ?? null }));
+        }
+      } catch {
+        frontmatter = null;
+      }
+    }
+    const tags = frontmatter?.tags?.length ? frontmatter.tags : doc.categories;
+    setEditForm({
+      title: doc.title ?? "",
+      description: frontmatter?.description ?? doc.description ?? "",
+      tagsText: tags.join(", "),
+      domain: doc.domain ?? "",
+      sourceGroup: doc.source_group ?? "",
+    });
+    setEditingDocId(doc.doc_id);
+  }, [knowFrontmatter]);
+
+  const handleCancelEditKnowledge = useCallback(() => {
+    setEditingDocId(null);
+    setSavingEdit(false);
+  }, []);
+
+  const handleSaveEditKnowledge = useCallback(async () => {
+    if (!editingDocId || savingEdit) return;
+    const normalizedTitle = editForm.title.trim();
+    if (!normalizedTitle) {
+      setNotice({
+        kind: "error",
+        text: "Title is required.",
+      });
+      return;
+    }
+    const tags = editForm.tagsText
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+    try {
+      setSavingEdit(true);
+      await invoke("smartbrain_update_knowledge", {
+        docId: editingDocId,
+        title: normalizedTitle,
+        description: editForm.description.trim(),
+        tags,
+        domain: editForm.domain.trim(),
+        sourceGroup: editForm.sourceGroup.trim(),
+      });
+      await loadKnowledge();
+      if (expandedKnow === editingDocId) {
+        const result = await invoke<{ content: string; frontmatter?: OkfFrontmatter | null }>(
+          "smartbrain_read_knowledge",
+          { docId: editingDocId },
+        );
+        setKnowContent((prev) => ({ ...prev, [editingDocId]: result.content }));
+        setKnowFrontmatter((prev) => ({ ...prev, [editingDocId]: result.frontmatter ?? null }));
+      }
+      setEditingDocId(null);
+      setNotice({
+        kind: "success",
+        text: "Knowledge metadata updated.",
+      });
+    } catch (err) {
+      console.error("Update knowledge metadata failed:", err);
+      setNotice({
+        kind: "error",
+        text: "Failed to update knowledge metadata.",
+      });
+    } finally {
+      setSavingEdit(false);
+    }
+  }, [editForm, editingDocId, expandedKnow, loadKnowledge, savingEdit]);
 
   const handleExpandKnowledge = useCallback(async (docId: string) => {
     if (expandedKnow === docId) {
@@ -356,13 +458,102 @@ export function KnowledgePanel() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleDeleteKnowledge(doc.doc_id);
+                        if (editingDocId === doc.doc_id) {
+                          handleCancelEditKnowledge();
+                        } else {
+                          void handleStartEditKnowledge(doc);
+                        }
                       }}
                       className="icon-button shrink-0 opacity-50 hover:opacity-100"
+                      title={editingDocId === doc.doc_id ? "Cancel edit" : "Edit metadata"}
+                    >
+                      {editingDocId === doc.doc_id ? (
+                        <IconX size={13} stroke={1.6} />
+                      ) : (
+                        <IconPencil size={13} stroke={1.6} />
+                      )}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (editingDocId !== doc.doc_id) {
+                          handleDeleteKnowledge(doc.doc_id);
+                        }
+                      }}
+                      className="icon-button shrink-0 opacity-50 hover:opacity-100 disabled:opacity-30"
+                      disabled={editingDocId === doc.doc_id}
                     >
                       <IconTrash size={13} stroke={1.6} />
                     </button>
                   </div>
+                  {editingDocId === doc.doc_id && (
+                    <div
+                      className="space-y-2 border-t border-[var(--border-subtle)] px-3 py-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <input
+                          value={editForm.title}
+                          onChange={(e) =>
+                            setEditForm((prev) => ({ ...prev, title: e.target.value }))
+                          }
+                          placeholder="Title"
+                          className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                        />
+                        <input
+                          value={editForm.tagsText}
+                          onChange={(e) =>
+                            setEditForm((prev) => ({ ...prev, tagsText: e.target.value }))
+                          }
+                          placeholder="Tags (comma separated)"
+                          className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                        />
+                        <input
+                          value={editForm.domain}
+                          onChange={(e) =>
+                            setEditForm((prev) => ({ ...prev, domain: e.target.value }))
+                          }
+                          placeholder="Domain"
+                          className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                        />
+                        <input
+                          value={editForm.sourceGroup}
+                          onChange={(e) =>
+                            setEditForm((prev) => ({ ...prev, sourceGroup: e.target.value }))
+                          }
+                          placeholder="Source group"
+                          className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                        />
+                      </div>
+                      <textarea
+                        value={editForm.description}
+                        onChange={(e) =>
+                          setEditForm((prev) => ({ ...prev, description: e.target.value }))
+                        }
+                        placeholder="Description"
+                        rows={3}
+                        className="w-full rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => void handleSaveEditKnowledge()}
+                          disabled={savingEdit}
+                          className="app-button-secondary flex items-center gap-1.5 text-xs"
+                        >
+                          <IconCheck size={13} stroke={1.8} />
+                          {savingEdit ? "Saving..." : "Save"}
+                        </button>
+                        <button
+                          onClick={handleCancelEditKnowledge}
+                          disabled={savingEdit}
+                          className="app-button-secondary flex items-center gap-1.5 text-xs"
+                        >
+                          <IconX size={13} stroke={1.8} />
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2 px-3 pb-1.5">
                     <span className="text-[10px] text-[var(--text-faint)]">
                       {intl.formatMessage(

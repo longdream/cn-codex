@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 
 #[cfg(windows)]
 trait CommandNoConsole {
@@ -2417,7 +2417,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "smartbrain_search",
-                    "description": "Search the SmartBrain knowledge base using BM25 relevance ranking. Returns the most relevant documents (experiences and uploaded knowledge) matching the query. Use paged memory_read (line_offset/max_lines) to inspect result sections.",
+                    "description": "Search the SmartBrain knowledge base using BM25 relevance ranking. Returns the most relevant documents (experiences and uploaded knowledge) matching the query. For chunk hits, results include bridged previous/current/next context with at least 30 lines of overlap to avoid cut-off sections.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -2434,6 +2434,34 @@ impl ToolExecutor {
                             "domain": {
                                 "type": "string",
                                 "description": "Optional domain filter for SmartBrain knowledge (for example: database, backend, devops)."
+                            },
+                            "concept_type": {
+                                "type": "string",
+                                "description": "Optional OKF type filter, for example Knowledge or Experience."
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Optional tag filters. Any matching tag will pass."
+                            },
+                            "source_type": {
+                                "type": "string",
+                                "enum": ["knowledge", "experience"],
+                                "description": "Optional source type filter."
+                            },
+                            "source_group": {
+                                "type": "string",
+                                "description": "Optional source group filter (for example folder import batch)."
+                            },
+                            "relative_path_prefix": {
+                                "type": "string",
+                                "description": "Optional relative path prefix filter under knowledge sources."
+                            },
+                            "source_file": {
+                                "type": "string",
+                                "description": "Optional exact source file filter."
                             }
                         },
                         "required": ["query"]
@@ -6139,6 +6167,18 @@ impl ToolExecutor {
             top_k: Option<usize>,
             #[serde(default)]
             domain: Option<String>,
+            #[serde(default)]
+            concept_type: Option<String>,
+            #[serde(default)]
+            tags: Option<Vec<String>>,
+            #[serde(default)]
+            source_type: Option<String>,
+            #[serde(default)]
+            source_group: Option<String>,
+            #[serde(default)]
+            relative_path_prefix: Option<String>,
+            #[serde(default)]
+            source_file: Option<String>,
         }
 
         let args: Args = serde_json::from_str(arguments).map_err(|e| {
@@ -6176,6 +6216,9 @@ impl ToolExecutor {
 
         let top_k = args.top_k.unwrap_or(5).clamp(1, 20);
         let bm25_path = crate::smartbrain::bm25_index_path(&self.workspace_config_dir);
+        let smartbrain_policy = ConfigToml::load(&self.workspace_config_dir.join("config.toml"))
+            .map(|config| config.smartbrain_config())
+            .unwrap_or_default();
         if !bm25_path.exists() {
             let msg = "SmartBrain index is not ready yet. Upload knowledge files or run `smartbrain_rebuild_index`, then retry `smartbrain_search`.".to_string();
             self.emit_tool_end(
@@ -6207,15 +6250,71 @@ impl ToolExecutor {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
-        let results = if let Some(ref domain) = domain {
-            crate::smartbrain::search::unified_search_with_filter(
+        let concept_type = args
+            .concept_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let tags = args
+            .tags
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect::<Vec<_>>();
+        let source_group = args
+            .source_group
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let relative_path_prefix = args
+            .relative_path_prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let source_file = args
+            .source_file
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let source_type = args
+            .source_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| match value.to_ascii_lowercase().as_str() {
+                "experience" => crate::smartbrain::bm25_index::SourceType::Experience,
+                _ => crate::smartbrain::bm25_index::SourceType::Knowledge,
+            });
+        let has_filter = concept_type.is_some()
+            || !tags.is_empty()
+            || source_type.is_some()
+            || domain.is_some()
+            || source_group.is_some()
+            || relative_path_prefix.is_some()
+            || source_file.is_some();
+        let results = if has_filter {
+            crate::smartbrain::search::unified_search_with_filter_with_policy(
                 &bm25_path,
                 query,
                 top_k,
                 crate::smartbrain::bm25_index::SearchFilter {
-                    domain: Some(domain.clone()),
-                    ..crate::smartbrain::bm25_index::SearchFilter::default()
+                    concept_type,
+                    tags,
+                    domain,
+                    source_group,
+                    relative_path_prefix,
+                    source_file,
+                    source_type,
+                    timestamp_after: None,
+                    timestamp_before: None,
                 },
+                smartbrain_policy.search_okf_prefilter_enabled,
+                Some(&smartbrain_policy.search_okf_prefilter_order),
             )
         } else {
             crate::smartbrain::search::unified_search(&bm25_path, query, top_k)
@@ -6225,6 +6324,7 @@ impl ToolExecutor {
             "No matching documents found in SmartBrain knowledge base.".to_string()
         } else {
             let mut lines = Vec::new();
+            let mut context_blocks_added = 0usize;
             lines.push(format!(
                 "Found {} results for \"{}\":\n",
                 results.len(),
@@ -6232,11 +6332,44 @@ impl ToolExecutor {
             ));
             for (i, r) in results.iter().enumerate() {
                 lines.push(format!(
-                    "{}. [{}] {} (score: {:.3})\n   Path: {}\n   Use `memory_read` with path \"{}\" and small windows (for example `line_offset: 1`, `max_lines: 120`) to read relevant sections.",
+                    "{}. [{}] {} (score: {:.3})\n   Path: {}\n   Use `memory_read` with path \"{}\" and small windows (for example `line_offset: 1`, `max_lines: 120`) to read relevant sections. For chunk hits, context bridge below keeps prev/current/next continuity with >=30-line overlap.",
                     i + 1, r.source_type, r.title, r.score, r.file_path, r.file_path
                 ));
                 if let Some(result_domain) = r.domain.as_deref().filter(|value| !value.is_empty()) {
                     lines.push(format!("   Domain: {result_domain}"));
+                }
+                if let Some(result_group) =
+                    r.source_group.as_deref().filter(|value| !value.is_empty())
+                {
+                    lines.push(format!("   Source Group: {result_group}"));
+                }
+                if let Some(relative_path) =
+                    r.relative_path.as_deref().filter(|value| !value.is_empty())
+                {
+                    lines.push(format!("   Relative Path: {relative_path}"));
+                }
+                if let Some(source_file) = r.source_file.as_deref().filter(|value| !value.is_empty())
+                {
+                    lines.push(format!("   Source File: {source_file}"));
+                }
+                if r.is_chunk {
+                    let chunk_index = r.chunk_index.unwrap_or(1);
+                    let chunk_total = r.chunk_total.unwrap_or(chunk_index);
+                    lines.push(format!("   Chunk: {chunk_index}/{chunk_total}"));
+                    if let Some(parent_doc_id) =
+                        r.parent_doc_id.as_deref().filter(|value| !value.is_empty())
+                    {
+                        lines.push(format!("   Parent Doc: {parent_doc_id}"));
+                    }
+                    if context_blocks_added < SMARTBRAIN_CONTEXT_RESULT_LIMIT {
+                        if let Some(context_block) = self.render_chunk_context_bridge(
+                            r,
+                            SMARTBRAIN_CONTEXT_OVERLAP_LINES,
+                        ) {
+                            lines.push(context_block);
+                            context_blocks_added += 1;
+                        }
+                    }
                 }
             }
             lines.join("\n")
@@ -6252,6 +6385,82 @@ impl ToolExecutor {
             &output,
         );
         Ok(output)
+    }
+
+    fn render_chunk_context_bridge(
+        &self,
+        result: &crate::smartbrain::search::SmartBrainSearchResult,
+        overlap_lines: usize,
+    ) -> Option<String> {
+        if !result.is_chunk {
+            return None;
+        }
+        let parent_doc_id = result.parent_doc_id.as_deref()?.trim();
+        if parent_doc_id.is_empty() {
+            return None;
+        }
+        let chunk_index = result.chunk_index?;
+        let chunk_total = result.chunk_total.unwrap_or(chunk_index).max(chunk_index);
+        let overlap_lines = overlap_lines.max(SMARTBRAIN_CONTEXT_OVERLAP_LINES);
+
+        let current_path = self.resolve_memory_path(&result.file_path).ok()?;
+        let current_lines = read_okf_body_lines(&current_path)?;
+        if current_lines.is_empty() {
+            return None;
+        }
+
+        let docs_dir = self.memories_dir().join("knowledge").join("docs");
+        let previous_lines = if chunk_index > 1 {
+            let previous_file = crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index - 1);
+            read_okf_body_lines(&docs_dir.join(previous_file))
+        } else {
+            None
+        };
+        let next_lines = if chunk_index < chunk_total {
+            let next_file = crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index + 1);
+            read_okf_body_lines(&docs_dir.join(next_file))
+        } else {
+            None
+        };
+
+        if previous_lines.is_none() && next_lines.is_none() {
+            return None;
+        }
+
+        let mut lines = vec![format!(
+            "   Context Bridge (上下文补齐, overlap >= {overlap_lines} lines):"
+        )];
+        if let Some(prev) = previous_lines {
+            lines.push(format!(
+                "   - Prev chunk {}/{} tail + current head overlap:",
+                chunk_index.saturating_sub(1),
+                chunk_total
+            ));
+            for line in take_last_lines(&prev, overlap_lines) {
+                lines.push(format!("     {line}"));
+            }
+            for line in take_first_lines(&current_lines, overlap_lines) {
+                lines.push(format!("     {line}"));
+            }
+        }
+        lines.push(format!("   - Current chunk {chunk_index}/{chunk_total}:"));
+        for line in &current_lines {
+            lines.push(format!("     {line}"));
+        }
+        if let Some(next) = next_lines {
+            lines.push(format!(
+                "   - Current tail overlap + next chunk {}/{} head:",
+                chunk_index + 1,
+                chunk_total
+            ));
+            for line in take_last_lines(&current_lines, overlap_lines) {
+                lines.push(format!("     {line}"));
+            }
+            for line in take_first_lines(&next, overlap_lines) {
+                lines.push(format!("     {line}"));
+            }
+        }
+        Some(lines.join("\n"))
     }
 
     async fn exec_memory_write(
@@ -7706,53 +7915,57 @@ impl ToolExecutor {
         }
 
         info!("Searching web: {query}");
+        let mut fallback_output =
+            format!("No web search results found for: {query} (tried Bing and DuckDuckGo)");
 
-        let search_url = format!(
-            "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
-            encode_query_component(query)
+        for provider in web_search_provider_order() {
+            match provider {
+                WebSearchProvider::BingBrowser => {
+                    if let Some(output) = self
+                        .search_bing_browser(query, max_results, call_id, app_handle, thread_id)
+                        .await
+                    {
+                        self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &output);
+                        return Ok(output);
+                    }
+                    info!("Bing browser returned no results, falling back to DuckDuckGo");
+                }
+                WebSearchProvider::DuckDuckGoApi => {
+                    let output = match self.search_duckduckgo_api(query, max_results).await {
+                        Ok(output) => output,
+                        Err(err) => {
+                            warn!("DuckDuckGo API search failed, trying browser fallback: {err}");
+                            continue;
+                        }
+                    };
+                    if web_search_output_has_results(&output) {
+                        self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &output);
+                        return Ok(output);
+                    }
+                    info!("DuckDuckGo API returned no results, trying browser fallback");
+                }
+                WebSearchProvider::DuckDuckGoBrowser => {
+                    let output = self
+                        .fallback_browser_search(query, max_results, call_id, app_handle, thread_id)
+                        .await;
+                    if web_search_output_has_results(&output) {
+                        self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &output);
+                        return Ok(output);
+                    }
+                    fallback_output = output;
+                }
+            }
+        }
+
+        self.emit_tool_end(
+            app_handle,
+            thread_id,
+            call_id,
+            "web_search",
+            0,
+            &fallback_output,
         );
-        let response = match self.http.get(search_url).send().await {
-            Ok(response) => response,
-            Err(e) => {
-                let msg = format!("Web search request failed: {e}");
-                self.emit_tool_end(app_handle, thread_id, call_id, "web_search", -1, &msg);
-                return Ok(msg);
-            }
-        };
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let msg = format!(
-                "Web search HTTP error {status}: {}",
-                truncate_output(&body, 1000)
-            );
-            self.emit_tool_end(app_handle, thread_id, call_id, "web_search", -1, &msg);
-            return Ok(msg);
-        }
-
-        let parsed = match response.json::<DuckDuckGoResponse>().await {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                let msg = format!("Web search response parse failed: {e}");
-                self.emit_tool_end(app_handle, thread_id, call_id, "web_search", -1, &msg);
-                return Ok(msg);
-            }
-        };
-
-        let output = format_duckduckgo_results(query, parsed, max_results);
-
-        if output.starts_with("No web search results found") {
-            info!("DDG API returned no results, falling back to browser search");
-            let fallback = self
-                .fallback_browser_search(query, max_results, call_id, app_handle, thread_id)
-                .await;
-            self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &fallback);
-            return Ok(fallback);
-        }
-
-        self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &output);
-        Ok(output)
+        Ok(fallback_output)
     }
 
     async fn fallback_browser_search(
@@ -7763,12 +7976,12 @@ impl ToolExecutor {
         app_handle: &AppHandle,
         thread_id: &str,
     ) -> String {
-        let bing_extract_script = r#"
+        let ddg_extract_script = r#"
             (() => {
                 const results = [];
-                document.querySelectorAll('li.b_algo').forEach(el => {
-                    const a = el.querySelector('h2 a');
-                    const snippet = el.querySelector('.b_caption p, .b_lineclamp2, .b_algoSlug');
+                document.querySelectorAll('.result, .nrn-react-div').forEach(el => {
+                    const a = el.querySelector('.result__a, a.result-link');
+                    const snippet = el.querySelector('.result__snippet, .result__body');
                     if (a) {
                         results.push({
                             title: a.innerText.trim(),
@@ -7781,12 +7994,57 @@ impl ToolExecutor {
             })()
         "#;
 
-        let ddg_extract_script = r#"
+        let ddg_url = format!(
+            "https://duckduckgo.com/?q={}",
+            encode_query_component(query)
+        );
+        let browser_args_ddg = serde_json::json!({
+            "engine": "webview-js-injection",
+            "url": ddg_url,
+            "waitUntil": "networkidle",
+            "use_visible_browser": true,
+            "actions": [
+                { "type": "wait_for_timeout", "ms": 3000 },
+                { "type": "eval", "script": ddg_extract_script },
+                { "type": "title" },
+                { "type": "url" }
+            ]
+        });
+
+        let ddg_output = self
+            .exec_browser_run(
+                &browser_args_ddg.to_string(),
+                call_id,
+                app_handle,
+                thread_id,
+            )
+            .await;
+
+        if let Ok(ref raw) = ddg_output {
+            if let Some(results) = parse_browser_search_results(raw, max_results) {
+                if !results.is_empty() {
+                    return format_browser_search_results(query, &results);
+                }
+            }
+        }
+
+        format!("No web search results found for: {query} (tried Bing and DuckDuckGo)")
+    }
+
+    async fn search_bing_browser(
+        &self,
+        query: &str,
+        max_results: usize,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> Option<String> {
+        let bing_extract_script = r#"
             (() => {
                 const results = [];
-                document.querySelectorAll('.result, .nrn-react-div').forEach(el => {
-                    const a = el.querySelector('.result__a, a.result-link');
-                    const snippet = el.querySelector('.result__snippet, .result__body');
+                document.querySelectorAll('li.b_algo').forEach(el => {
+                    const a = el.querySelector('h2 a');
+                    const snippet = el.querySelector('.b_caption p, .b_lineclamp2, .b_algoSlug');
                     if (a) {
                         results.push({
                             title: a.innerText.trim(),
@@ -7823,53 +8081,42 @@ impl ToolExecutor {
                 app_handle,
                 thread_id,
             )
-            .await;
+            .await
+            .ok()?;
 
-        if let Ok(ref raw) = bing_output {
-            if let Some(results) = parse_browser_search_results(raw, max_results) {
-                if !results.is_empty() {
-                    return format_browser_search_results(query, &results);
-                }
-            }
+        let results = parse_browser_search_results(&bing_output, max_results)?;
+        if results.is_empty() {
+            return None;
         }
+        Some(format_browser_search_results(query, &results))
+    }
 
-        let ddg_url = format!(
-            "https://duckduckgo.com/?q={}",
+    async fn search_duckduckgo_api(&self, query: &str, max_results: usize) -> Result<String, String> {
+        let search_url = format!(
+            "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
             encode_query_component(query)
         );
-        let browser_args_ddg = serde_json::json!({
-            "engine": "webview-js-injection",
-            "url": ddg_url,
-            "waitUntil": "networkidle",
-            "use_visible_browser": true,
-            "actions": [
-                { "type": "wait_for_timeout", "ms": 3000 },
-                { "type": "eval", "script": ddg_extract_script },
-                { "type": "title" },
-                { "type": "url" }
-            ]
-        });
+        let response = self
+            .http
+            .get(search_url)
+            .send()
+            .await
+            .map_err(|e| format!("Web search request failed: {e}"))?;
 
-        let ddg_output = self
-            .exec_browser_run(
-                &browser_args_ddg.to_string(),
-                call_id,
-                app_handle,
-                thread_id,
-            )
-            .await;
-
-        if let Ok(ref raw) = ddg_output {
-            if let Some(results) = parse_browser_search_results(raw, max_results) {
-                if !results.is_empty() {
-                    return format_browser_search_results(query, &results);
-                }
-            }
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "Web search HTTP error {status}: {}",
+                truncate_output(&body, 1000)
+            ));
         }
 
-        format!(
-            "No web search results found for: {query} (tried API, Bing, and DuckDuckGo browser search)"
-        )
+        let parsed = response
+            .json::<DuckDuckGoResponse>()
+            .await
+            .map_err(|e| format!("Web search response parse failed: {e}"))?;
+        Ok(format_duckduckgo_results(query, parsed, max_results))
     }
 
     async fn exec_web_fetch(
@@ -12323,6 +12570,45 @@ struct WebSearchResult {
     snippet: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebSearchProvider {
+    BingBrowser,
+    DuckDuckGoApi,
+    DuckDuckGoBrowser,
+}
+
+const SMARTBRAIN_CONTEXT_OVERLAP_LINES: usize = 30;
+const SMARTBRAIN_CONTEXT_RESULT_LIMIT: usize = 3;
+
+fn web_search_provider_order() -> [WebSearchProvider; 3] {
+    [
+        WebSearchProvider::BingBrowser,
+        WebSearchProvider::DuckDuckGoApi,
+        WebSearchProvider::DuckDuckGoBrowser,
+    ]
+}
+
+fn web_search_output_has_results(output: &str) -> bool {
+    !output.starts_with("No web search results found")
+}
+
+fn read_okf_body_lines(path: &Path) -> Option<Vec<String>> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let body = crate::smartbrain::okf::extract_body(&raw);
+    Some(body.lines().map(|line| line.to_string()).collect())
+}
+
+fn take_first_lines(lines: &[String], count: usize) -> Vec<String> {
+    lines.iter().take(count).cloned().collect()
+}
+
+fn take_last_lines(lines: &[String], count: usize) -> Vec<String> {
+    if lines.len() <= count {
+        return lines.to_vec();
+    }
+    lines[lines.len() - count..].to_vec()
+}
+
 fn resolve_memory_path(root: &Path, input: &str) -> Result<PathBuf, String> {
     let trimmed = input.trim().replace('\\', "/");
     if trimmed.contains(':') {
@@ -15949,6 +16235,98 @@ index 1111111..2222222 100644
         assert!(formatted.contains("CN-Codex"));
         assert!(formatted.contains("https://example.com/cn-codex"));
         assert!(formatted.contains("A local coding app"));
+    }
+
+    #[test]
+    fn web_search_provider_order_prefers_bing_before_duckduckgo() {
+        assert_eq!(
+            web_search_provider_order(),
+            [
+                WebSearchProvider::BingBrowser,
+                WebSearchProvider::DuckDuckGoApi,
+                WebSearchProvider::DuckDuckGoBrowser
+            ]
+        );
+    }
+
+    #[test]
+    fn web_search_output_has_results_detects_empty_marker() {
+        assert!(web_search_output_has_results("Web search results for \"cn codex\":\n1. Result"));
+        assert!(!web_search_output_has_results(
+            "No web search results found for: cn codex (tried Bing and DuckDuckGo)"
+        ));
+    }
+
+    #[test]
+    fn render_chunk_context_bridge_includes_neighbor_overlap_windows() {
+        let root =
+            std::env::temp_dir().join(format!("cn-codex-smartbrain-context-{}", uuid::Uuid::new_v4()));
+        let docs_dir = root.join("codey").join("memories").join("knowledge").join("docs");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+
+        let prev_content = (1..=40)
+            .map(|idx| format!("prev-{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let current_content = (1..=40)
+            .map(|idx| format!("current-{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let next_content = (1..=40)
+            .map(|idx| format!("next-{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(
+            docs_dir.join(crate::smartbrain::knowledge::chunk_file_name("doc", 1)),
+            &prev_content,
+        )
+        .unwrap();
+        std::fs::write(
+            docs_dir.join(crate::smartbrain::knowledge::chunk_file_name("doc", 2)),
+            &current_content,
+        )
+        .unwrap();
+        std::fs::write(
+            docs_dir.join(crate::smartbrain::knowledge::chunk_file_name("doc", 3)),
+            &next_content,
+        )
+        .unwrap();
+
+        let executor = ToolExecutor::new(root.clone());
+        let result = crate::smartbrain::search::SmartBrainSearchResult {
+            doc_id: "know:doc::chunk:0002".to_string(),
+            source_type: "knowledge".to_string(),
+            file_path: "knowledge/docs/doc__chunk_0002.md".to_string(),
+            title: "Doc chunk".to_string(),
+            score: 1.0,
+            tags: Vec::new(),
+            concept_type: None,
+            domain: None,
+            source_group: None,
+            relative_path: None,
+            source_file: None,
+            parent_doc_id: Some("doc".to_string()),
+            chunk_index: Some(2),
+            chunk_total: Some(3),
+            is_chunk: true,
+        };
+
+        let block = executor
+            .render_chunk_context_bridge(&result, 30)
+            .expect("chunk context bridge should be generated");
+
+        assert!(block.contains("overlap >= 30 lines"));
+        assert!(block.contains("Prev chunk 1/3"));
+        assert!(block.contains("Current chunk 2/3"));
+        assert!(block.contains("next chunk 3/3"));
+        assert!(block.contains("prev-11"));
+        assert!(!block.contains("prev-10"));
+        assert!(block.contains("next-30"));
+        assert!(!block.contains("next-31"));
+        assert!(block.contains("current-1"));
+        assert!(block.contains("current-40"));
+
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

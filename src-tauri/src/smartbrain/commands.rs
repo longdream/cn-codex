@@ -105,6 +105,7 @@ pub async fn smartbrain_list_knowledge(state: State<'_, AppState>) -> AppResult<
                 "source_file": e.source_file,
                 "source_type": e.source_type,
                 "title": e.title,
+                "description": e.description,
                 "added_at": e.added_at,
                 "chunk_count": e.chunk_count,
                 "categories": e.categories,
@@ -161,6 +162,38 @@ pub async fn smartbrain_delete_knowledge(
         .map_err(|e| crate::error::AppError::Custom(e))?;
 
     Ok(serde_json::json!({ "status": "ok" }))
+}
+
+#[tauri::command]
+pub async fn smartbrain_update_knowledge(
+    state: State<'_, AppState>,
+    doc_id: String,
+    title: Option<String>,
+    description: Option<String>,
+    tags: Option<Vec<String>>,
+    domain: Option<String>,
+    source_group: Option<String>,
+) -> AppResult<serde_json::Value> {
+    let knowledge_dir = super::knowledge_dir(&state.workspace_config_dir);
+    let bm25_path = super::bm25_index_path(&state.workspace_config_dir);
+    super::knowledge::update_knowledge_metadata(
+        &knowledge_dir,
+        &bm25_path,
+        &doc_id,
+        super::knowledge::KnowledgeMetadataUpdate {
+            title,
+            description,
+            tags,
+            domain,
+            source_group,
+        },
+    )
+    .map_err(crate::error::AppError::Custom)?;
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "doc_id": doc_id,
+    }))
 }
 
 #[tauri::command]
@@ -273,6 +306,9 @@ pub async fn smartbrain_search(
     tags: Option<Vec<String>>,
     source_type: Option<String>,
     domain: Option<String>,
+    source_group: Option<String>,
+    relative_path_prefix: Option<String>,
+    source_file: Option<String>,
 ) -> AppResult<serde_json::Value> {
     let config = state.config_manager.read()?;
     let sb_config = config.smartbrain_config();
@@ -284,17 +320,26 @@ pub async fn smartbrain_search(
     }
 
     let bm25_path = super::bm25_index_path(&state.workspace_config_dir);
+    let prefilter_enabled = sb_config.search_okf_prefilter_enabled;
+    let prefilter_order = sb_config.search_okf_prefilter_order.clone();
+    let top_k = top_k.unwrap_or(10);
 
     let has_filter = concept_type.is_some()
         || tags.as_ref().is_some_and(|t| !t.is_empty())
         || source_type.is_some()
-        || domain.is_some();
+        || domain.is_some()
+        || source_group.is_some()
+        || relative_path_prefix.is_some()
+        || source_file.is_some();
 
     let results = if has_filter {
         let filter = SearchFilter {
             concept_type,
             tags: tags.unwrap_or_default(),
             domain,
+            source_group,
+            relative_path_prefix,
+            source_file,
             source_type: source_type.as_deref().map(|s| match s {
                 "experience" => SourceType::Experience,
                 _ => SourceType::Knowledge,
@@ -302,9 +347,16 @@ pub async fn smartbrain_search(
             timestamp_after: None,
             timestamp_before: None,
         };
-        super::search::unified_search_with_filter(&bm25_path, &query, top_k.unwrap_or(10), filter)
+        super::search::unified_search_with_filter_with_policy(
+            &bm25_path,
+            &query,
+            top_k,
+            filter,
+            prefilter_enabled,
+            Some(&prefilter_order),
+        )
     } else {
-        super::search::unified_search(&bm25_path, &query, top_k.unwrap_or(10))
+        super::search::unified_search(&bm25_path, &query, top_k)
     };
 
     Ok(serde_json::json!({ "results": results }))

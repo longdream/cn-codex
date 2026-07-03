@@ -25,6 +25,20 @@ pub struct IndexedDocument {
     pub concept_type: Option<String>,
     #[serde(default)]
     pub domain: Option<String>,
+    #[serde(default)]
+    pub source_group: Option<String>,
+    #[serde(default)]
+    pub relative_path: Option<String>,
+    #[serde(default)]
+    pub source_file: Option<String>,
+    #[serde(default)]
+    pub parent_doc_id: Option<String>,
+    #[serde(default)]
+    pub chunk_index: Option<usize>,
+    #[serde(default)]
+    pub chunk_total: Option<usize>,
+    #[serde(default)]
+    pub is_chunk: bool,
 }
 
 /// Filter criteria for structured search on OKF metadata.
@@ -33,6 +47,9 @@ pub struct SearchFilter {
     pub concept_type: Option<String>,
     pub tags: Vec<String>,
     pub domain: Option<String>,
+    pub source_group: Option<String>,
+    pub relative_path_prefix: Option<String>,
+    pub source_file: Option<String>,
     pub source_type: Option<SourceType>,
     pub timestamp_after: Option<i64>,
     pub timestamp_before: Option<i64>,
@@ -43,12 +60,15 @@ impl SearchFilter {
         self.concept_type.is_none()
             && self.tags.is_empty()
             && self.domain.is_none()
+            && self.source_group.is_none()
+            && self.relative_path_prefix.is_none()
+            && self.source_file.is_none()
             && self.source_type.is_none()
             && self.timestamp_after.is_none()
             && self.timestamp_before.is_none()
     }
 
-    fn matches(&self, doc: &IndexedDocument) -> bool {
+    pub(crate) fn matches(&self, doc: &IndexedDocument) -> bool {
         if let Some(ct) = &self.concept_type {
             if doc.concept_type.as_deref() != Some(ct.as_str()) {
                 return false;
@@ -67,6 +87,25 @@ impl SearchFilter {
         }
         if let Some(domain) = &self.domain {
             if doc.domain.as_deref() != Some(domain.as_str()) {
+                return false;
+            }
+        }
+        if let Some(source_group) = &self.source_group {
+            if doc.source_group.as_deref() != Some(source_group.as_str()) {
+                return false;
+            }
+        }
+        if let Some(source_file) = &self.source_file {
+            if doc.source_file.as_deref() != Some(source_file.as_str()) {
+                return false;
+            }
+        }
+        if let Some(prefix) = &self.relative_path_prefix {
+            if doc
+                .relative_path
+                .as_deref()
+                .is_none_or(|path| !path.starts_with(prefix))
+            {
                 return false;
             }
         }
@@ -579,6 +618,13 @@ pub fn build_document(
         tags: Vec::new(),
         concept_type: None,
         domain: None,
+        source_group: None,
+        relative_path: None,
+        source_file: None,
+        parent_doc_id: None,
+        chunk_index: None,
+        chunk_total: None,
+        is_chunk: false,
     }
 }
 
@@ -594,6 +640,45 @@ pub fn build_document_with_metadata(
     concept_type: Option<String>,
     domain: Option<String>,
 ) -> IndexedDocument {
+    build_document_with_locator_metadata(
+        doc_id,
+        source_type,
+        file_path,
+        title,
+        content,
+        updated_at,
+        tags,
+        concept_type,
+        domain,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_document_with_locator_metadata(
+    doc_id: String,
+    source_type: SourceType,
+    file_path: String,
+    title: String,
+    content: &str,
+    updated_at: i64,
+    tags: Vec<String>,
+    concept_type: Option<String>,
+    domain: Option<String>,
+    source_group: Option<String>,
+    relative_path: Option<String>,
+    source_file: Option<String>,
+    parent_doc_id: Option<String>,
+    chunk_index: Option<usize>,
+    chunk_total: Option<usize>,
+    is_chunk: bool,
+) -> IndexedDocument {
     let tokens = tokenize(content);
     let token_count = tokens.len();
     IndexedDocument {
@@ -607,6 +692,13 @@ pub fn build_document_with_metadata(
         tags,
         concept_type,
         domain,
+        source_group,
+        relative_path,
+        source_file,
+        parent_doc_id,
+        chunk_index,
+        chunk_total,
+        is_chunk,
     }
 }
 
