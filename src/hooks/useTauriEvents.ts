@@ -17,6 +17,7 @@ import {
   type ToolCallItem,
 } from "../stores/appStore";
 import { resolveApproval } from "../api/approval";
+import { decodePathRefRangeSnippet, PATH_REF_MIME } from "../utils/pathRefSnippet";
 
 interface TurnEventPayload {
   threadId: string;
@@ -874,6 +875,20 @@ export function useTauriEvents() {
         listen<{ snippet?: string }>("document-detail-insert-snippet", (e) => {
           const snippet = e.payload.snippet;
           if (!snippet || !snippet.trim()) {
+            return;
+          }
+          const decodedPathRef = decodePathRefRangeSnippet(snippet);
+          if (decodedPathRef) {
+            // 行号引用走“附件标签”链路，这样聊天区只展示标签，不注入整段正文。
+            useAppStore.getState().addAttachedFile({
+              kind: "pathRef",
+              name: decodedPathRef.name,
+              type: PATH_REF_MIME,
+              size: 0,
+              sourcePath: decodedPathRef.sourcePath,
+              lineStart: decodedPathRef.lineStart,
+              lineEnd: decodedPathRef.lineEnd,
+            });
             return;
           }
           // 详情窗只负责产生片段，真正写入输入框仍复用主窗既有 queue/consume 链路。

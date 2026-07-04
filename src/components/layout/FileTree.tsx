@@ -21,6 +21,7 @@ import { useCallback, useEffect, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  readTextFilePreview,
   readDirectory,
   revealInExplorer,
   type FileEntry,
@@ -29,6 +30,7 @@ import {
 } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
 import { ContextMenu, type ContextMenuEntry } from "../common/ContextMenu";
+import { PATH_REF_MIME, supportsPathRefRangeByName } from "../../utils/pathRefSnippet";
 
 interface TreeNode extends FileEntry {
   children?: TreeNode[];
@@ -92,19 +94,38 @@ function isWebPreviewFile(name: string): boolean {
   return ext === "html" || ext === "htm";
 }
 
-const PATH_REF_MIME = "application/x-cn-codex-path-ref";
-
-function buildPathRefAttachment(path: string, name?: string) {
+function buildPathRefAttachment(
+  path: string,
+  name?: string,
+  lineStart?: number,
+  lineEnd?: number,
+) {
   const sourcePath = path.trim();
   const fallbackName = sourcePath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
   const normalizedName = (name ?? "").trim();
+  const safeLineStart = typeof lineStart === "number" && Number.isFinite(lineStart)
+    ? Math.max(1, Math.floor(lineStart))
+    : undefined;
+  const safeLineEnd = typeof lineEnd === "number" && Number.isFinite(lineEnd)
+    ? Math.max(safeLineStart ?? 1, Math.floor(lineEnd))
+    : undefined;
   return {
     kind: "pathRef" as const,
     name: normalizedName || fallbackName,
     type: PATH_REF_MIME,
     size: 0,
     sourcePath,
+    ...(safeLineStart && safeLineEnd ? { lineStart: safeLineStart, lineEnd: safeLineEnd } : {}),
   };
+}
+
+function resolveLineCount(content: string): number {
+  // 统一 \r\n/\r/\n 计数规则，确保标签中的行号范围与编辑器表现一致。
+  const normalized = content.replace(/\r\n?/g, "\n");
+  if (!normalized) {
+    return 1;
+  }
+  return normalized.split("\n").length;
 }
 
 interface FileTreeProps {
@@ -239,7 +260,26 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                 label: intl.formatMessage({ id: "fileTree.addToChat" }),
                 icon: <IconMessagePlus size={14} stroke={1.8} />,
                 onClick: () => {
-                  addAttachedFile(buildPathRefAttachment(contextMenu.node.path, contextMenu.node.name));
+                  const targetNode = contextMenu.node;
+                  if (!supportsPathRefRangeByName(targetNode.name)) {
+                    addAttachedFile(buildPathRefAttachment(targetNode.path, targetNode.name));
+                    return;
+                  }
+                  // txt/md 走“路径 + 行号范围”标签，不把正文内容塞进输入框。
+                  void readTextFilePreview(targetNode.path)
+                    .then((preview) => {
+                      if (preview.truncated) {
+                        addAttachedFile(buildPathRefAttachment(targetNode.path, targetNode.name));
+                        return;
+                      }
+                      const lineCount = resolveLineCount(preview.content);
+                      addAttachedFile(
+                        buildPathRefAttachment(targetNode.path, targetNode.name, 1, lineCount),
+                      );
+                    })
+                    .catch(() => {
+                      addAttachedFile(buildPathRefAttachment(targetNode.path, targetNode.name));
+                    });
                 },
               } satisfies ContextMenuEntry,
               ...(isWebPreviewFile(contextMenu.node.name)

@@ -9,6 +9,8 @@ import {
 } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -24,6 +26,8 @@ import {
   type TextFilePreviewResult,
 } from "../../api/window";
 import { formatCodeSnippet } from "../../utils/formatCodeSnippet";
+import { exportMarkdownAsDocxBytes, exportMarkdownAsPdfBytes } from "../../utils/markdownExport";
+import { encodePathRefRangeSnippet, supportsPathRefRangeByName } from "../../utils/pathRefSnippet";
 
 interface SelectionMeta {
   text: string;
@@ -158,6 +162,15 @@ function fileLanguage(name: string): string {
   }
 }
 
+function replaceExtension(path: string, extension: "docx" | "pdf"): string {
+  const normalizedExt = extension.toLowerCase();
+  // 仅替换最后一段扩展名，路径中的目录点号不参与替换。
+  if (/\.[^\\/]+$/.test(path)) {
+    return path.replace(/\.[^\\/]+$/, `.${normalizedExt}`);
+  }
+  return `${path}.${normalizedExt}`;
+}
+
 const IMAGE_EXTENSIONS = new Set([
   "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp",
 ]);
@@ -274,6 +287,7 @@ export function DocumentDetailWindow() {
   const [draftContent, setDraftContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<"docx" | "pdf" | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectionMeta, setSelectionMeta] = useState<SelectionMeta | null>(null);
   const [floatingPos, setFloatingPos] = useState<FloatingPosition | null>(null);
@@ -407,8 +421,91 @@ export function DocumentDetailWindow() {
     }
   }, [preview, draftContent, intl]);
 
+  const handleExportMarkdown = useCallback(
+    async (format: "docx" | "pdf") => {
+      if (!preview || !isMarkdownFile) {
+        return;
+      }
+      if (preview.truncated) {
+        setNotice({
+          kind: "error",
+          text: intl.formatMessage({ id: "docDetail.exportTruncatedBlocked" }),
+        });
+        return;
+      }
+
+      setExportingFormat(format);
+      setNotice(null);
+      try {
+        const targetPath = await save({
+          title: intl.formatMessage({
+            id: format === "docx" ? "docDetail.exportDocxTitle" : "docDetail.exportPdfTitle",
+          }),
+          defaultPath: replaceExtension(preview.path, format),
+          filters: [
+            {
+              name: format.toUpperCase(),
+              extensions: [format],
+            },
+          ],
+        });
+        if (!targetPath) {
+          return;
+        }
+        const bytes = format === "docx"
+          ? await exportMarkdownAsDocxBytes(draftContent)
+          : await exportMarkdownAsPdfBytes(draftContent);
+        await writeFile(targetPath, bytes);
+        setNotice({
+          kind: "success",
+          text: intl.formatMessage(
+            { id: "docDetail.exportSuccess" },
+            { format: format.toUpperCase(), path: targetPath },
+          ),
+        });
+      } catch (err) {
+        setNotice({
+          kind: "error",
+          text: intl.formatMessage(
+            { id: "docDetail.exportFailed" },
+            { format: format.toUpperCase(), error: String(err) },
+          ),
+        });
+      } finally {
+        setExportingFormat(null);
+      }
+    },
+    [preview, isMarkdownFile, draftContent, intl],
+  );
+
   const handleInsertSelection = useCallback(async () => {
     if (!preview || !selectionMeta) return;
+    if (supportsPathRefRangeByName(preview.name)) {
+      // txt/md 只插入“路径 + 行号范围”标签，避免把整段正文塞到输入框中。
+      const snippet = encodePathRefRangeSnippet({
+        kind: "pathRefRange",
+        sourcePath: preview.path,
+        name: preview.name,
+        lineStart: selectionMeta.startLine,
+        lineEnd: selectionMeta.endLine,
+      });
+      try {
+        await documentDetailInsertSnippet(snippet);
+        setNotice({
+          kind: "success",
+          text: intl.formatMessage(
+            { id: "docDetail.insertTagSuccess" },
+            { start: selectionMeta.startLine, end: selectionMeta.endLine },
+          ),
+        });
+      } catch (err) {
+        setNotice({
+          kind: "error",
+          text: intl.formatMessage({ id: "docDetail.insertFailed" }, { error: String(err) }),
+        });
+      }
+      return;
+    }
     const snippet = formatCodeSnippet({
       path: preview.path,
       startLine: selectionMeta.startLine,
@@ -521,6 +618,7 @@ export function DocumentDetailWindow() {
   );
 
   const canSave = Boolean(preview) && !saving && !loading && isDirty && !preview?.truncated;
+  const canExportMarkdown = Boolean(preview) && isMarkdownFile && !loading && !preview?.truncated;
 
   return (
     <div className="flex h-dvh w-screen flex-col bg-[var(--surface-panel)] text-[var(--text-base)]">
@@ -544,6 +642,36 @@ export function DocumentDetailWindow() {
           )}
         </div>
         <div className="flex h-full items-center">
+          {!isImage && isMarkdownFile && (
+            <>
+              <button
+                type="button"
+                disabled={!canExportMarkdown || exportingFormat !== null}
+                onClick={() => void handleExportMarkdown("docx")}
+                className="flex h-full items-center gap-1 px-3 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-45"
+                title={
+                  preview?.truncated
+                    ? intl.formatMessage({ id: "docDetail.exportTitleDisabled" })
+                    : intl.formatMessage({ id: "docDetail.exportDocxTitle" })
+                }
+              >
+                {intl.formatMessage({ id: "docDetail.exportDocx" })}
+              </button>
+              <button
+                type="button"
+                disabled={!canExportMarkdown || exportingFormat !== null}
+                onClick={() => void handleExportMarkdown("pdf")}
+                className="flex h-full items-center gap-1 px-3 text-[11px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-45"
+                title={
+                  preview?.truncated
+                    ? intl.formatMessage({ id: "docDetail.exportTitleDisabled" })
+                    : intl.formatMessage({ id: "docDetail.exportPdfTitle" })
+                }
+              >
+                {intl.formatMessage({ id: "docDetail.exportPdf" })}
+              </button>
+            </>
+          )}
           {!isImage && (
             <button
               type="button"

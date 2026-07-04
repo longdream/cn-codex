@@ -126,6 +126,10 @@ export interface PathRefAttachedFile extends AttachedFileBase {
   kind: "pathRef";
   /** 项目内文件的绝对路径（来自文件树拖拽） */
   sourcePath: string;
+  /** 可选：引用起始行（用于“行范围标签”注入） */
+  lineStart?: number;
+  /** 可选：引用结束行（用于“行范围标签”注入） */
+  lineEnd?: number;
 }
 
 /** 浏览器元素片段：仅在 prompt 中注入 web-snippet，不上传内容 */

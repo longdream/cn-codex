@@ -35,6 +35,7 @@ import {
 import {
   type AttachedFile,
   type BinaryAttachedFile,
+  type PathRefAttachedFile,
   isBinaryAttachedFile,
   isPathRefAttachedFile,
   isWebSnippetAttachedFile,
@@ -45,12 +46,16 @@ import type { RobotSummary } from "../../types/robot";
 import { skillList } from "../../api/skill";
 import type { SkillSummary } from "../../types/skill";
 import { formatWebSnippet } from "../../utils/formatWebSnippet";
+import {
+  buildPathRefPromptValue,
+  formatPathRefLineRange,
+  PATH_REF_MIME,
+} from "../../utils/pathRefSnippet";
 
 /** 支持的文档 MIME 类型和扩展名 */
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
 const IMAGE_ACCEPT = "image/*";
 const ALL_ACCEPT = `${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`;
-const PATH_REF_MIME = "application/x-cn-codex-path-ref";
 
 interface ClipboardImageItemLike {
   type: string;
@@ -72,7 +77,8 @@ function buildAttachedPathBlock(files: AttachedFile[]): string {
     new Set(
       files
         .filter(isPathRefAttachedFile)
-        .map((file) => file.sourcePath.trim())
+        // 路径引用允许携带行号范围，发送时统一编码为 path#Lx-Ly 形式，避免把正文塞入输入框。
+        .map((file) => buildPathRefPromptValue(file).trim())
         .filter(Boolean),
     ),
   );
@@ -159,6 +165,11 @@ function imageExtensionFromMimeType(mimeType: string): string {
 export function buildPastedImageName(mimeType: string, seed = Date.now(), sequence = 1): string {
   const safeSequence = Number.isFinite(sequence) && sequence > 0 ? Math.floor(sequence) : 1;
   return `pasted-image-${seed}-${safeSequence}.${imageExtensionFromMimeType(mimeType)}`;
+}
+
+function pathRefPrimaryText(file: PathRefAttachedFile): string {
+  const lineRange = formatPathRefLineRange(file);
+  return lineRange ? `${file.name} (${lineRange})` : file.name;
 }
 
 export function extractClipboardImageFiles(
@@ -1241,13 +1252,14 @@ export function ChatInput({
               const isImageAttachment = isBinaryAttachedFile(file) && file.type.startsWith("image/");
               const isPathRefAttachment = isPathRefAttachedFile(file);
               const isWebSnippetAttachment = isWebSnippetAttachedFile(file);
+              const pathRefLineRange = isPathRefAttachment ? formatPathRefLineRange(file) : null;
               const chipTitle = isPathRefAttachment
-                ? file.sourcePath
+                ? (pathRefLineRange ? `${file.sourcePath}\n${pathRefLineRange}` : file.sourcePath)
                 : isWebSnippetAttachment
                   ? `${file.url}\n${file.selector}`
                   : undefined;
               const secondaryText = isPathRefAttachment
-                ? file.sourcePath
+                ? (pathRefLineRange ? `${pathRefLineRange} · ${file.sourcePath}` : file.sourcePath)
                 : isWebSnippetAttachment
                   ? file.selector || file.url
                   : formatSize(file.size);
@@ -1270,7 +1282,9 @@ export function ChatInput({
                     <IconFile size={16} stroke={1.5} className="text-[var(--chat-muted)]" />
                   )}
                   <div className="max-w-[220px]">
-                    <p className="truncate text-[11px] text-[var(--chat-prose)]">{file.name}</p>
+                    <p className="truncate text-[11px] text-[var(--chat-prose)]">
+                      {isPathRefAttachment ? pathRefPrimaryText(file) : file.name}
+                    </p>
                     <p className="truncate text-[11px] text-[var(--chat-faint)]">
                       {secondaryText}
                     </p>
