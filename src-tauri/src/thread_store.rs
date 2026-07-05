@@ -113,6 +113,9 @@ pub struct ThreadMessage {
     pub tool_name: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<ToolCallInfo>>,
+    /// 兼容旧 rollout：历史消息里可能没有 attachments 字段。
+    /// 缺失时按空数组反序列化，避免启动时整条记录解析失败。
+    #[serde(default)]
     pub attachments: Vec<ThreadMessageAttachment>,
 }
 
@@ -448,6 +451,15 @@ impl ThreadStore {
                         t.robot_state = None;
                     }
                 }
+            }
+        }
+
+        // 应用崩溃或被强制关闭时 TurnEnd 可能未写入文件，
+        // 此时 current_turn 中仍有未闭合的消息。将其作为未完成 turn 保留，
+        // 避免历史消息丢失。
+        if let (Some(t), Some(orphan_turn)) = (&mut thread, current_turn) {
+            if !orphan_turn.messages.is_empty() {
+                t.turns.push(orphan_turn);
             }
         }
 

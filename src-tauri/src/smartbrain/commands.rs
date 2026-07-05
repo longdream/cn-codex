@@ -77,16 +77,37 @@ pub async fn smartbrain_delete_experience(
     let experiences_dir = super::experiences_dir(&state.workspace_config_dir);
     let bm25_path = super::bm25_index_path(&state.workspace_config_dir);
 
+    // 1. 删除 raw 源文件
     let raw_path = experiences_dir.join("raw").join(format!("{thread_id}.md"));
     let _ = std::fs::remove_file(&raw_path);
 
+    // 2. 从经验索引中移除并持久化
     let mut exp_index = ExperienceIndex::load(&experiences_dir);
     exp_index.remove_entry(&thread_id);
-    let _ = exp_index.save(&experiences_dir);
+    if let Err(e) = exp_index.save(&experiences_dir) {
+        tracing::warn!("Failed to save experience index after delete: {e}");
+    }
 
+    // 3. 从 BM25 搜索索引中移除
     let mut bm25 = BM25Index::load(&bm25_path);
     bm25.remove_document(&format!("exp:{thread_id}"));
-    let _ = bm25.save(&bm25_path);
+    if let Err(e) = bm25.save(&bm25_path) {
+        tracing::warn!("Failed to save BM25 index after delete: {e}");
+    }
+
+    // 4. 所有经验都删光后，清除 consolidation 产物，避免下次启动残留报错
+    if exp_index.entries.is_empty() {
+        for name in [
+            "experience_summary.md",
+            "experience_handbook.md",
+            "index.md",
+            "log.md",
+        ] {
+            let _ = std::fs::remove_file(experiences_dir.join(name));
+        }
+        exp_index.last_consolidated_at = None;
+        let _ = exp_index.save(&experiences_dir);
+    }
 
     Ok(serde_json::json!({ "status": "ok" }))
 }

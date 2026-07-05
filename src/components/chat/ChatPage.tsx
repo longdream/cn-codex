@@ -20,6 +20,8 @@ import {
 import type { BinaryAttachedFile } from "../../types/provider";
 import { ChatInput, type ParsedGoalCommand, type ChatSendExtendedOptions } from "./ChatInput";
 import { MessageList } from "./MessageList";
+import { resolveApproval } from "../../api/approval";
+import { RobotWaitBanner } from "./RobotWaitBanner";
 
 export function ChatPage() {
   const intl = useIntl();
@@ -41,6 +43,25 @@ export function ChatPage() {
       options: ChatSendExtendedOptions = {},
     ) => {
       const state = useAppStore.getState();
+
+      // 如果机器人倒计时正在等待，将用户输入作为回复发送给后端
+      if (state.robotWaitCountdown) {
+        const callId = state.robotWaitCountdown.callId;
+        state.setRobotWaitCountdown(null);
+        state.addMessage({
+          id: crypto.randomUUID(),
+          role: "user" as const,
+          content: text,
+          timestamp: Date.now(),
+        });
+        try {
+          await resolveApproval(callId, { userReply: text });
+        } catch (err) {
+          console.error("Failed to resolve robot wait:", err);
+        }
+        return;
+      }
+
       const cwd = state.workspaceCwd || state.projectRoot || state.userHomeDir;
       if (!cwd) return;
       let actualMode: ChatMode | "robot-create" | "robot-modify" = mode;
@@ -300,33 +321,37 @@ export function ChatPage() {
   // 注意：所有 Hook 必须在任何条件 return 之前声明，避免项目切换时触发 Hook 顺序错误。
   const [copyDone, setCopyDone] = useState(false);
 
+  // 当前会话计时：只在本次会话真正开始交互（首次 isStreaming=true）后才启动计时，
+  // 避免切入历史对话时立刻从第一条旧消息时间开始累计。
   const [elapsedMs, setElapsedMs] = useState(0);
   const timerRef = useRef<number | null>(null);
-  const lastTickRef = useRef<number>(0);
+  // 记录本次会话首次开始交互的时刻（Date.now()），切换对话时重置
+  const sessionStartRef = useRef<number>(0);
 
   useEffect(() => {
-    if (isStreaming) {
-      lastTickRef.current = Date.now();
-      timerRef.current = window.setInterval(() => {
-        const now = Date.now();
-        setElapsedMs((prev) => prev + (now - lastTickRef.current));
-        lastTickRef.current = now;
-      }, 1000);
-    } else if (timerRef.current !== null) {
+    // 切换对话时重置
+    setElapsedMs(0);
+    sessionStartRef.current = 0;
+    if (timerRef.current !== null) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-    return () => {
-      if (timerRef.current !== null) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, [isStreaming]);
+  }, [currentThreadId]);
 
   useEffect(() => {
-    setElapsedMs(0);
-  }, [currentThreadId]);
+    if (isStreaming && sessionStartRef.current === 0) {
+      // 首次开始交互，记录起点
+      sessionStartRef.current = Date.now();
+    }
+    if (sessionStartRef.current > 0 && timerRef.current === null) {
+      const start = sessionStartRef.current;
+      setElapsedMs(Date.now() - start);
+      timerRef.current = window.setInterval(() => {
+        setElapsedMs(Date.now() - start);
+      }, 1000);
+    }
+    // streaming 结束后保持计时不停止，让用户看到总耗时
+  }, [isStreaming]);
 
   const handleCopyAll = useCallback(() => {
     const userLabel = intl.formatMessage({ id: "chat.role.user" });
@@ -433,6 +458,8 @@ export function ChatPage() {
           />
         </>
       )}
+
+      <RobotWaitBanner />
 
       <ChatInput
         onSend={handleSend}

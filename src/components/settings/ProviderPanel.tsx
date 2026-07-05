@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useIntl } from "react-intl";
+import { invoke } from "@tauri-apps/api/core";
 import {
   IconCheck,
   IconPlus,
@@ -13,6 +14,8 @@ import {
   IconEyeOff,
   IconGripVertical,
   IconPencil,
+  IconPlayerPlay,
+  IconLoader2,
 } from "@tabler/icons-react";
 import {
   standaloneConfigWrite,
@@ -967,6 +970,59 @@ function ModelRow({
     setEditingEpId(null);
   }, []);
 
+  // 模型连接测试
+  const [testState, setTestState] = useState<{
+    status: "idle" | "testing" | "done";
+    result?: {
+      success: boolean;
+      statusCode?: number;
+      latencyMs?: number;
+      outputTokens?: number;
+      tokensPerSec?: number;
+      error?: string;
+    };
+  }>({ status: "idle" });
+
+  const handleTestModel = useCallback(async () => {
+    const provider = providers.find((p) => p.id === providerId);
+    if (!provider) return;
+
+    // local-pool 模式下，取第一个启用的端点作为测试目标
+    const ep = isPoolProvider
+      ? model.endpoints?.find((e) => e.enabled)
+      : null;
+    const baseUrl = ep?.url || provider.baseUrl;
+    const apiKey = ep?.apiKey || provider.apiKey;
+    const wireApi = ep?.wireApi || provider.wireApi || "chat";
+    const modelName = ep?.model || model.id;
+
+    setTestState({ status: "testing" });
+    try {
+      const result = await invoke<{
+        success: boolean;
+        statusCode?: number;
+        latencyMs?: number;
+        outputTokens?: number;
+        tokensPerSec?: number;
+        error?: string;
+      }>("test_model_connection", {
+        baseUrl,
+        apiKey,
+        model: modelName,
+        wireApi,
+      });
+      setTestState({ status: "done", result });
+    } catch (err) {
+      setTestState({
+        status: "done",
+        result: {
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  }, [providers, providerId, model, isPoolProvider]);
+
   return (
     <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)]">
       <div className="flex items-center justify-between gap-2 px-3 py-1.5">
@@ -1092,6 +1148,20 @@ function ModelRow({
             </div>
           )}
         </div>
+        {/* 测试按钮 */}
+        <button
+          type="button"
+          onClick={handleTestModel}
+          disabled={testState.status === "testing"}
+          className="shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-faint)] transition-colors hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-40"
+          title={intl.formatMessage({ id: "settings.provider.testModel" })}
+        >
+          {testState.status === "testing" ? (
+            <IconLoader2 size={12} stroke={2} className="animate-spin" />
+          ) : (
+            <IconPlayerPlay size={12} stroke={2} />
+          )}
+        </button>
         <button
           type="button"
           onClick={onRemove}
@@ -1100,6 +1170,44 @@ function ModelRow({
           <IconX size={12} stroke={2} />
         </button>
       </div>
+
+      {/* 测试结果 */}
+      {testState.status === "done" && testState.result && (
+        <div className={`mx-3 mb-2 flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1 text-[11px] ${
+          testState.result.success
+            ? "bg-green-500/10 text-green-600 dark:text-green-400"
+            : "bg-red-500/10 text-red-600 dark:text-red-400"
+        }`}>
+          {testState.result.success ? (
+            <>
+              <IconCheck size={12} stroke={2} />
+              <span>
+                {intl.formatMessage({ id: "settings.provider.testSuccess" })}
+                {" · "}
+                {testState.result.latencyMs}ms
+                {testState.result.tokensPerSec ? ` · ${testState.result.tokensPerSec} t/s` : ""}
+                {testState.result.outputTokens ? ` (${testState.result.outputTokens} tokens)` : ""}
+              </span>
+            </>
+          ) : (
+            <>
+              <IconX size={12} stroke={2} />
+              <span className="min-w-0 truncate">
+                {intl.formatMessage({ id: "settings.provider.testFailed" })}
+                {testState.result.statusCode ? ` [${testState.result.statusCode}]` : ""}
+                {testState.result.error ? ` — ${testState.result.error.slice(0, 120)}` : ""}
+              </span>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => setTestState({ status: "idle" })}
+            className="ml-auto shrink-0 opacity-60 hover:opacity-100"
+          >
+            <IconX size={10} stroke={2} />
+          </button>
+        </div>
+      )}
 
       {/* 端点列表（仅 local-pool） */}
       {isPoolProvider && showEndpoints && (

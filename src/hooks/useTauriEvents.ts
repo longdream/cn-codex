@@ -69,6 +69,10 @@ interface ThreadTokenUsageUpdatedPayload {
   totalTokens?: number;
   callCount?: number;
   lastSinglePromptTokens?: number;
+  // 统一后的上下文占用分子（单次 prompt tokens），用于避免回退到累计值导致展示漂移。
+  contextPromptTokens?: number;
+  // 后端运行时上下文窗口大小，优先级高于前端模型静态配置。
+  modelContextWindow?: number;
 }
 
 interface SmartbrainExtractionStartedPayload {
@@ -138,12 +142,14 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const totalTokens = Number(usage.totalTokens ?? promptTokens + completionTokens);
   const callCount = Number(usage.callCount ?? 0);
   const lastSinglePromptTokens = Number(usage.lastSinglePromptTokens ?? 0);
+  const contextWindowTokens = Number(usage.contextWindowTokens ?? 0);
   if (
     promptTokens <= 0 &&
     completionTokens <= 0 &&
     totalTokens <= 0 &&
     callCount <= 0 &&
-    lastSinglePromptTokens <= 0
+    lastSinglePromptTokens <= 0 &&
+    contextWindowTokens <= 0
   ) {
     return undefined;
   }
@@ -155,6 +161,9 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
     ...(lastSinglePromptTokens > 0
       ? { lastSinglePromptTokens: Math.max(0, Math.round(lastSinglePromptTokens)) }
+      : {}),
+    ...(contextWindowTokens > 0
+      ? { contextWindowTokens: Math.max(1, Math.round(contextWindowTokens)) }
       : {}),
   };
 }
@@ -171,8 +180,14 @@ function normalizeRealtimeTokenUsage(
   payload: ThreadTokenUsageUpdatedPayload,
 ): TokenUsage | undefined {
   if (payload.usage) {
-    return normalizeTokenUsage(payload.usage);
+    return normalizeTokenUsage({
+      ...payload.usage,
+      ...(typeof payload.modelContextWindow === "number"
+        ? { contextWindowTokens: payload.modelContextWindow }
+        : {}),
+    });
   }
+  const contextPromptTokens = Number(payload.contextPromptTokens ?? 0);
   return normalizeTokenUsage({
     promptTokens: Number(payload.inputTokens ?? 0),
     completionTokens: Number(payload.outputTokens ?? 0),
@@ -180,6 +195,11 @@ function normalizeRealtimeTokenUsage(
     ...(typeof payload.callCount === "number" ? { callCount: payload.callCount } : {}),
     ...(typeof payload.lastSinglePromptTokens === "number"
       ? { lastSinglePromptTokens: payload.lastSinglePromptTokens }
+      : contextPromptTokens > 0
+        ? { lastSinglePromptTokens: contextPromptTokens }
+        : {}),
+    ...(typeof payload.modelContextWindow === "number"
+      ? { contextWindowTokens: payload.modelContextWindow }
       : {}),
   });
 }
@@ -739,6 +759,21 @@ export function useTauriEvents() {
             toolCalls: items,
           });
           store.setStreamingLabel(toolActivityLabel(e.payload.calls, intl));
+
+          // 超时兜底：5 分钟后如果工具仍为 running，自动收敛为 failed，
+          // 防止事件丢失或线程不匹配时工具卡片永远转圈。
+          for (const c of e.payload.calls) {
+            setTimeout(() => {
+              const latest = useAppStore.getState();
+              for (const msg of latest.messages) {
+                const tc = msg.toolCalls?.find((t) => t.id === c.id && t.status === "running");
+                if (tc) {
+                  latest.updateToolCallStatus(c.id, "failed", "Tool timed out (5 min).");
+                  break;
+                }
+              }
+            }, 5 * 60 * 1000);
+          }
         }),
 
         listen<{ threadId: string; callId?: string; tool: string; exitCode?: number; output?: string }>(
@@ -914,7 +949,46 @@ export function useTauriEvents() {
 
         listen<{ threadId: string }>("compaction-started", () => {}),
 
-        listen<{ threadId: string; summaryLength: number }>("context-compacted", () => {}),
+        listen<{
+          threadId: string;
+          summaryLength: number;
+          contextPromptTokens?: number;
+          modelContextWindow?: number;
+        }>("context-compacted", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+            return;
+          }
+
+          // 压缩事件可能出现在 turn 间隙；此处主动刷新 live 用量，避免 UI 停留在压缩前数据。
+          const compactedPromptTokens = Number(e.payload.contextPromptTokens ?? 0);
+          const contextWindow = Number(e.payload.modelContextWindow ?? 0);
+          if (compactedPromptTokens <= 0 && contextWindow <= 0) {
+            return;
+          }
+
+          const nextUsage = normalizeTokenUsage({
+            promptTokens: compactedPromptTokens > 0
+              ? compactedPromptTokens
+              : Number(store.liveTurnUsage?.promptTokens ?? 0),
+            completionTokens: Number(store.liveTurnUsage?.completionTokens ?? 0),
+            totalTokens: compactedPromptTokens > 0
+              ? compactedPromptTokens
+              : Number(store.liveTurnUsage?.totalTokens ?? 0),
+            ...(typeof store.liveTurnUsage?.callCount === "number"
+              ? { callCount: store.liveTurnUsage.callCount }
+              : {}),
+            ...(compactedPromptTokens > 0
+              ? { lastSinglePromptTokens: compactedPromptTokens }
+              : {}),
+            ...(contextWindow > 0
+              ? { contextWindowTokens: contextWindow }
+              : {}),
+          });
+          if (nextUsage) {
+            store.setLiveTurnUsage(nextUsage);
+          }
+        }),
 
         listen<SmartbrainExtractionStartedPayload>(
           "smartbrain-extraction-started",
@@ -1007,6 +1081,10 @@ export function useTauriEvents() {
           params?: Record<string, unknown>;
         }>("server-request", (e) => {
           const method = e.payload.method ?? "";
+
+          // 机器人等待输入走专用事件通道，不进入 ApprovalModal
+          if (method === "robot_waiting_for_input") return;
+
           const isUserInput =
             method.includes("request_user_input") ||
             method.includes("requestUserInput");
@@ -1082,6 +1160,35 @@ export function useTauriEvents() {
           const store = useAppStore.getState();
           if (store.selectedRobotId === e.payload.robotId) {
             store.setSelectedRobotId(null);
+          }
+        }),
+
+        // 机器人提问倒计时等待
+        listen<{
+          threadId: string;
+          callId: string;
+          countdownMs: number;
+          assistantText: string;
+        }>("robot-waiting-for-input", (e) => {
+          const store = useAppStore.getState();
+          if (e.payload.threadId !== store.currentThreadId) return;
+          store.setRobotWaitCountdown({
+            callId: e.payload.callId,
+            threadId: e.payload.threadId,
+            countdownMs: e.payload.countdownMs,
+            startedAt: Date.now(),
+            assistantText: e.payload.assistantText,
+          });
+        }),
+
+        // 机器人倒计时结束（超时或用户回复）
+        listen<{
+          threadId: string;
+          callId: string;
+        }>("robot-wait-resolved", (e) => {
+          const store = useAppStore.getState();
+          if (store.robotWaitCountdown?.callId === e.payload.callId) {
+            store.setRobotWaitCountdown(null);
           }
         }),
 

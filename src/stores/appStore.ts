@@ -26,6 +26,20 @@ export type ChatMode = "chat" | "plan" | "goal";
 export type GoalStatus = ThreadGoalStatus;
 export type ThreadGoal = ApiThreadGoal;
 
+/** 机器人提问倒计时等待状态 */
+export interface RobotWaitCountdown {
+  /** 等待的唯一标识，对应后端 callId */
+  callId: string;
+  /** 关联的线程 ID */
+  threadId: string;
+  /** 总倒计时毫秒数 */
+  countdownMs: number;
+  /** 倒计时开始的时间戳（Date.now()） */
+  startedAt: number;
+  /** AI 提出的问题文本 */
+  assistantText: string;
+}
+
 export interface ChatSendOptions {
   goalBudgetTokens?: number;
 }
@@ -58,6 +72,8 @@ export interface TokenUsage {
   totalTokens: number;
   callCount?: number;
   lastSinglePromptTokens?: number;
+  // 上下文窗口大小（tokens）。用于让前端展示口径与后端运行时配置保持一致。
+  contextWindowTokens?: number;
 }
 
 export interface PendingFileReviewFile {
@@ -523,12 +539,14 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const totalTokens = Number(usage.totalTokens ?? promptTokens + completionTokens);
   const callCount = Number(usage.callCount ?? 0);
   const lastSinglePromptTokens = Number(usage.lastSinglePromptTokens ?? 0);
+  const contextWindowTokens = Number(usage.contextWindowTokens ?? 0);
   if (
     promptTokens <= 0 &&
     completionTokens <= 0 &&
     totalTokens <= 0 &&
     callCount <= 0 &&
-    lastSinglePromptTokens <= 0
+    lastSinglePromptTokens <= 0 &&
+    contextWindowTokens <= 0
   ) {
     return undefined;
   }
@@ -540,6 +558,9 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
     ...(lastSinglePromptTokens > 0
       ? { lastSinglePromptTokens: Math.max(0, Math.round(lastSinglePromptTokens)) }
+      : {}),
+    ...(contextWindowTokens > 0
+      ? { contextWindowTokens: Math.max(1, Math.round(contextWindowTokens)) }
       : {}),
   };
 }
@@ -1356,6 +1377,10 @@ interface AppState {
   selectedRobotId: string | null;
   robotCreateMode: boolean;
 
+  /** 机器人提问倒计时等待状态 */
+  robotWaitCountdown: RobotWaitCountdown | null;
+  setRobotWaitCountdown: (v: RobotWaitCountdown | null) => void;
+
   /** Workflow 提取：当设置为非空 threadId 时弹出提取对话框 */
   workflowExtractThreadId: string | null;
 
@@ -1522,6 +1547,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarTab: "chats",
   selectedRobotId: null,
   robotCreateMode: false,
+  robotWaitCountdown: null,
+  setRobotWaitCountdown: (v) => set({ robotWaitCountdown: v }),
   workflowExtractThreadId: null,
   rightPanelVisible: false,
   rightPanelTab: "browser",
@@ -2444,10 +2471,24 @@ export const useAppStore = create<AppState>((set, get) => ({
         activePlan,
       );
 
+      // 加载历史消息后，将所有残留的 running 工具标记为 success，
+      // 防止恢复老对话时出现永远转圈的工具卡片。
+      const cleanedMessages = messages.map((msg) => {
+        if (!msg.toolCalls?.length) return msg;
+        const hasRunning = msg.toolCalls.some((tc) => tc.status === "running");
+        if (!hasRunning) return msg;
+        return {
+          ...msg,
+          toolCalls: msg.toolCalls.map((tc) =>
+            tc.status === "running" ? { ...tc, status: "success" as const } : tc,
+          ),
+        };
+      });
+
       set({
         currentThreadId: threadId,
         currentTurnId: null,
-        messages,
+        messages: cleanedMessages,
         streamingText: "",
         isStreaming: false,
         liveTurnUsage: null,

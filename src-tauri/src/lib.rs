@@ -217,13 +217,59 @@ fn configure_bundled_webview2_runtime() -> Result<bool, String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+/// 初始化日志系统。
+/// - debug 模式：输出到 stderr
+/// - release 模式：同时输出到 stderr 和日志文件（可执行文件同级 logs/ 目录，按天滚动）
+///
+/// 返回 guard（持有文件 writer），调用方必须在 main 中 hold 住直到程序退出。
+fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "cn_codex_lib=info,warn".into());
+
+    // release 模式下同时写日志文件
+    if cfg!(not(debug_assertions)) {
+        let log_dir = resolve_log_dir();
+        let _ = std::fs::create_dir_all(&log_dir);
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "cn-codex.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+        use tracing_subscriber::prelude::*;
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(non_blocking),
+            )
+            .init();
+
+        // 写一条启动标记方便定位
+        tracing::info!(
+            "=== CN-Codex started (release) === log_dir={}",
+            log_dir.display()
+        );
+        return Some(guard);
+    }
+
+    // debug 模式只输出到 stderr
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "cn_codex_lib=info".into()),
-        )
+        .with_env_filter(env_filter)
         .init();
+    None
+}
+
+/// 日志目录：可执行文件同级的 logs/，或 fallback 到 TEMP/cn-codex-logs/
+pub fn resolve_log_dir() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("logs");
+        }
+    }
+    std::env::temp_dir().join("cn-codex-logs")
+}
+
+pub fn run() {
+    let _log_guard = init_tracing();
 
     #[cfg(all(target_os = "windows", not(debug_assertions)))]
     let webview2_config_started_at = Instant::now();
@@ -368,6 +414,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::greet,
             commands::get_server_status,
+            commands::get_log_dir,
+            commands::frontend_log,
             // Thread archive (standalone)
             commands::thread_archive,
             commands::hook_list,
@@ -378,6 +426,14 @@ pub fn run() {
             commands::skill_list,
             commands::skill_categories_read,
             commands::skill_read,
+            // Skill Lab
+            commands::skill_lab_list,
+            commands::skill_lab_read,
+            commands::skill_lab_save,
+            commands::skill_lab_update_result,
+            commands::skill_lab_promote,
+            commands::skill_lab_delete,
+            commands::skill_lab_run_test,
             // Plugins
             commands::plugin_list,
             commands::plugin_read,
@@ -391,8 +447,6 @@ pub fn run() {
             // Rules
             commands::rules_read,
             commands::rules_write,
-            commands::rules_read_project,
-            commands::rules_write_project,
             // App State (SQLite KV)
             commands::app_state_get,
             commands::app_state_set,
@@ -409,6 +463,8 @@ pub fn run() {
             standalone::standalone_thread_peek_goal,
             standalone::standalone_thread_read,
             standalone::fortune_llm_call,
+            standalone::test_model_connection,
+            standalone::test_model_connection,
             standalone::fortune_detail_stream_start,
             standalone::standalone_thread_goal_set,
             standalone::standalone_thread_goal_status,

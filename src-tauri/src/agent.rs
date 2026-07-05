@@ -38,6 +38,23 @@ fn emit_and_broadcast(app_handle: &AppHandle, event: &str, payload: serde_json::
     app_handle.emit(event, payload.clone()).ok();
     crate::mobile_server::broadcast(event, payload);
 }
+
+/// 按 UTF-8 字符边界截断字符串，避免按字节切片导致 panic。
+///
+/// 说明：
+/// - `max_bytes` 代表“最多保留多少字节”；
+/// - 若该字节位置落在多字节字符中间（例如中文），会向前回退到最近合法边界；
+/// - 仅用于日志/提示词截断，不改变原始字符串内容。
+fn truncate_utf8_by_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
 use crate::config_system::ConfigToml;
 use crate::error::{AppError, AppResult};
 use crate::hook_runtime::{
@@ -607,6 +624,8 @@ impl AgentEngine {
         const MAX_INTENT_RETRIES: u32 = 2;
         const MAX_RATE_LIMIT_RETRIES: u32 = 6;
         let max_goal_continuations: usize = 10;
+        // 使用固定且可解释的上下文窗口来源，避免前端分母与后端运行时配置漂移。
+        let model_context_window_tokens = resolve_model_context_window_tokens(config);
         let mut goal_continuation_count: usize = 0;
         // 追踪最近一次 API 调用返回的 prompt_tokens（代表当前 context 实际大小），
         // 而非累加值，用于 mid-turn compaction 判断。
@@ -797,7 +816,12 @@ impl AgentEngine {
                                 last_prompt_tokens = u.prompt_tokens;
                                 turn_usage.call_count = llm_call_count;
                                 turn_usage.last_single_prompt_tokens = last_prompt_tokens;
-                                emit_turn_usage_updated(app_handle, thread_id, &turn_usage);
+                                emit_turn_usage_updated(
+                                    app_handle,
+                                    thread_id,
+                                    &turn_usage,
+                                    model_context_window_tokens,
+                                );
                                 if let Some(ref recorder) = self.usage_recorder {
                                     recorder.record(&provider_id, &model, thread_id, u);
                                 }
@@ -963,34 +987,124 @@ impl AgentEngine {
                                 && !node_done_signal
                                 && assistant_is_waiting_for_user(&cleaned_text);
                             if waiting_for_user_requirements {
+                                // 倒计时等待：给用户 30 秒补充信息，超时后自动按已有信息继续。
+                                const ROBOT_WAIT_TIMEOUT_MS: u64 = 30_000;
+                                let wait_call_id = format!("robot-wait-{}", uuid::Uuid::new_v4());
                                 info!(
-                                    "Robot workflow paused because assistant requested more requirements without node completion"
+                                    "Robot workflow waiting for user input (timeout={ROBOT_WAIT_TIMEOUT_MS}ms, callId={wait_call_id})"
                                 );
-                                if let Err(err) = self
-                                    .thread_store
-                                    .set_thread_goal_status(thread_id, ThreadGoalStatus::Paused)
-                                    .await
-                                {
-                                    warn!(
-                                        "Failed to pause goal after requirement-request loop detection: {err}"
-                                    );
+
+                                // 发送等待事件，让前端展示倒计时 UI
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "robot-waiting-for-input",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "callId": &wait_call_id,
+                                        "countdownMs": ROBOT_WAIT_TIMEOUT_MS,
+                                        "assistantText": &cleaned_text,
+                                    }),
+                                );
+
+                                // 通过 approval 通道等待用户回复或超时
+                                let request_id = crate::protocol::RequestId::String(wait_call_id.clone());
+                                app_handle
+                                    .emit(
+                                        "server-request",
+                                        serde_json::json!({
+                                            "requestId": &wait_call_id,
+                                            "id": &wait_call_id,
+                                            "method": "robot_waiting_for_input",
+                                            "params": {
+                                                "threadId": thread_id,
+                                                "callId": &wait_call_id,
+                                                "countdownMs": ROBOT_WAIT_TIMEOUT_MS,
+                                                "assistantText": &cleaned_text,
+                                            },
+                                        }),
+                                    )
+                                    .ok();
+
+                                let wait_result = crate::tool_executor::wait_for_approval_result_public(
+                                    app_handle,
+                                    &request_id,
+                                    ROBOT_WAIT_TIMEOUT_MS,
+                                )
+                                .await;
+
+                                // 通知前端倒计时结束
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "robot-wait-resolved",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "callId": &wait_call_id,
+                                    }),
+                                );
+
+                                match wait_result {
+                                    Ok(user_reply) => {
+                                        // 用户在倒计时内回复了补充信息（前端传 { "userReply": "..." }）
+                                        let reply_text = user_reply
+                                            .get("userReply")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .trim()
+                                            .to_string();
+
+                                        if reply_text.is_empty() {
+                                            // resolve 但无有效文本，等同于跳过
+                                            info!("Robot wait resolved with empty reply, auto-continuing");
+                                            let auto_msg = ThreadMessage {
+                                                id: uuid::Uuid::new_v4().to_string(),
+                                                role: "system".to_string(),
+                                                content: "用户未在限定时间内补充需求，请根据已有信息和上下文继续执行当前节点任务。".to_string(),
+                                                timestamp: now_secs(),
+                                                tool_call_id: None,
+                                                tool_name: None,
+                                                tool_calls: None,
+                                                attachments: Vec::new(),
+                                            };
+                                            self.thread_store.add_message(thread_id, auto_msg).await?;
+                                            continue;
+                                        }
+
+                                        info!("User replied during robot wait: {} chars", reply_text.len());
+                                        let user_msg = ThreadMessage {
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            role: "user".to_string(),
+                                            content: reply_text,
+                                            timestamp: now_secs(),
+                                            tool_call_id: None,
+                                            tool_name: None,
+                                            tool_calls: None,
+                                            attachments: Vec::new(),
+                                        };
+                                        self.thread_store.add_message(thread_id, user_msg).await?;
+                                        continue;
+                                    }
+                                    Err(_timeout_or_reject) => {
+                                        // 超时无回复，注入系统消息自动继续
+                                        info!("Robot wait timed out, auto-continuing with existing info");
+                                        let auto_continue_msg = ThreadMessage {
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            role: "system".to_string(),
+                                            content:
+                                                "用户未在限定时间内补充需求，请根据已有信息和上下文继续执行当前节点任务。"
+                                                    .to_string(),
+                                            timestamp: now_secs(),
+                                            tool_call_id: None,
+                                            tool_name: None,
+                                            tool_calls: None,
+                                            attachments: Vec::new(),
+                                        };
+                                        self.thread_store
+                                            .add_message(thread_id, auto_continue_msg)
+                                            .await?;
+                                        // 超时后继续 agent 循环
+                                        continue;
+                                    }
                                 }
-                                let pause_hint = ThreadMessage {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    role: "system".to_string(),
-                                    content:
-                                        "检测到当前机器人节点正在等待你补充需求。已自动暂停本轮 Goal，\
-                                         请补充关键信息后继续发送消息即可恢复。"
-                                            .to_string(),
-                                    timestamp: now_secs(),
-                                    tool_call_id: None,
-                                    tool_name: None,
-                                    tool_calls: None,
-                                    attachments: Vec::new(),
-                                };
-                                self.thread_store.add_message(thread_id, pause_hint).await?;
-                                stop_hooks_satisfied = true;
-                                break;
                             }
                             let git_status_now = git_status_snapshot(&effective_cwd).await;
                             merge_git_changes(
@@ -1137,7 +1251,12 @@ impl AgentEngine {
                                 last_prompt_tokens = u.prompt_tokens;
                                 turn_usage.call_count = llm_call_count;
                                 turn_usage.last_single_prompt_tokens = last_prompt_tokens;
-                                emit_turn_usage_updated(app_handle, thread_id, &turn_usage);
+                                emit_turn_usage_updated(
+                                    app_handle,
+                                    thread_id,
+                                    &turn_usage,
+                                    model_context_window_tokens,
+                                );
                                 if let Some(ref recorder) = self.usage_recorder {
                                     recorder.record(&provider_id, &model, thread_id, u);
                                 }
@@ -1683,7 +1802,12 @@ impl AgentEngine {
                                 last_prompt_tokens = u.prompt_tokens;
                                 turn_usage.call_count = llm_call_count;
                                 turn_usage.last_single_prompt_tokens = last_prompt_tokens;
-                                emit_turn_usage_updated(app_handle, thread_id, &turn_usage);
+                                emit_turn_usage_updated(
+                                    app_handle,
+                                    thread_id,
+                                    &turn_usage,
+                                    model_context_window_tokens,
+                                );
                                 if let Some(ref recorder) = self.usage_recorder {
                                     recorder.record(&provider_id, &model, thread_id, &u);
                                 }
@@ -1701,7 +1825,12 @@ impl AgentEngine {
                                 last_prompt_tokens = u.prompt_tokens;
                                 turn_usage.call_count = llm_call_count;
                                 turn_usage.last_single_prompt_tokens = last_prompt_tokens;
-                                emit_turn_usage_updated(app_handle, thread_id, &turn_usage);
+                                emit_turn_usage_updated(
+                                    app_handle,
+                                    thread_id,
+                                    &turn_usage,
+                                    model_context_window_tokens,
+                                );
                                 if let Some(ref recorder) = self.usage_recorder {
                                     recorder.record(&provider_id, &model, thread_id, &u);
                                 }
@@ -1969,7 +2098,7 @@ impl AgentEngine {
         let user_rules_path = self.cwd.join("codey").join("user-rules.md");
         let user_rules_content = std::fs::read_to_string(&user_rules_path).unwrap_or_default();
         let user_instructions = if !user_rules_content.trim().is_empty() {
-            let truncated = &user_rules_content[..user_rules_content.len().min(4000)];
+            let truncated = truncate_utf8_by_bytes(&user_rules_content, 4000);
             format!("\n\n## User Rules (from codey/user-rules.md)\n{truncated}")
         } else {
             config
@@ -1978,16 +2107,6 @@ impl AgentEngine {
                 .filter(|s| !s.is_empty())
                 .map(|s| format!("\n\n## User Rules\n{s}"))
                 .unwrap_or_default()
-        };
-
-        let project_rules_path = effective_cwd.join(".rule.md");
-        let project_rules_content =
-            std::fs::read_to_string(&project_rules_path).unwrap_or_default();
-        let project_rules = if !project_rules_content.trim().is_empty() {
-            let truncated = &project_rules_content[..project_rules_content.len().min(4000)];
-            format!("\n\n## Project Rules (from .rule.md)\n{truncated}")
-        } else {
-            String::new()
         };
 
         let skills_instructions = self.render_available_skills_prompt();
@@ -2193,7 +2312,7 @@ impl AgentEngine {
              WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
              use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \
              directories. Alternatively, set the 'workdir' parameter in the shell tool call.\n\
-             - edit_project_rules: Read or write the project rules file (.rule.md) in the current working directory.{skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{project_rules}{smartbrain_instructions}"
+             {skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{smartbrain_instructions}"
         )
     }
 
@@ -3042,7 +3161,7 @@ impl AgentEngine {
             let body_text = response.text().await.unwrap_or_default();
             info!(
                 "Non-streaming JSON response received (first 300 chars): {}",
-                &body_text[..body_text.len().min(300)]
+                truncate_utf8_by_bytes(&body_text, 300)
             );
             return self.parse_non_streaming_chat_response(&body_text, app_handle, thread_id);
         }
@@ -3104,7 +3223,7 @@ impl AgentEngine {
                     continue;
                 }
 
-                tracing::trace!("SSE line: {}", &line[..line.len().min(200)]);
+                tracing::trace!("SSE line: {}", truncate_utf8_by_bytes(&line, 200));
 
                 // 使用 adapter 检测是否结束
                 if adapter.is_stream_done(&line) {
@@ -3313,7 +3432,7 @@ impl AgentEngine {
         if full_text.is_empty() && final_tool_calls.is_empty() && finish_reason.is_none() {
             warn!(
                 "Stream ended with no content and no finish_reason. Buffer remainder: {:?}",
-                &buffer[..buffer.len().min(200)]
+                truncate_utf8_by_bytes(&buffer, 200)
             );
             return Err(AppError::Custom(
                 "LLM returned empty stream - the provider may not support the current request format. \
@@ -4009,13 +4128,23 @@ fn nonzero_turn_usage(usage: &TurnUsage) -> Option<TurnUsage> {
     }
 }
 
-fn emit_turn_usage_updated(app_handle: &AppHandle, thread_id: &str, usage: &TurnUsage) {
+fn emit_turn_usage_updated(
+    app_handle: &AppHandle,
+    thread_id: &str,
+    usage: &TurnUsage,
+    model_context_window: u64,
+) {
     if let Some(current) = nonzero_turn_usage(usage) {
         let prompt_tokens = current.prompt_tokens;
         let completion_tokens = current.completion_tokens;
         let total_tokens = current.total_tokens;
         let call_count = current.call_count;
         let last_single_prompt_tokens = current.last_single_prompt_tokens;
+        let context_prompt_tokens = if last_single_prompt_tokens > 0 {
+            last_single_prompt_tokens
+        } else {
+            prompt_tokens
+        };
         emit_and_broadcast(
             app_handle,
             "thread-token-usage-updated",
@@ -4028,8 +4157,20 @@ fn emit_turn_usage_updated(app_handle: &AppHandle, thread_id: &str, usage: &Turn
                 "totalTokens": total_tokens,
                 "callCount": call_count,
                 "lastSinglePromptTokens": last_single_prompt_tokens,
+                // 稳定提供“上下文占用分子”与“上下文窗口分母”，让 UI 计算不依赖历史回退逻辑。
+                "contextPromptTokens": context_prompt_tokens,
+                "modelContextWindow": model_context_window,
             }),
         );
+    }
+}
+
+fn resolve_model_context_window_tokens(config: &ConfigToml) -> u64 {
+    let configured = config.model_context_window.unwrap_or(128_000);
+    if configured > 0 {
+        configured as u64
+    } else {
+        128_000
     }
 }
 

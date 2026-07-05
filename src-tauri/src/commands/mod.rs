@@ -9,6 +9,7 @@ pub mod recording;
 pub mod robot;
 pub mod rules;
 pub mod skill;
+pub mod skill_lab;
 pub mod usage;
 pub mod window;
 
@@ -30,6 +31,7 @@ pub use recording::*;
 pub use robot::*;
 pub use rules::*;
 pub use skill::*;
+pub use skill_lab::*;
 pub use usage::*;
 pub use window::*;
 
@@ -48,6 +50,22 @@ pub struct ServerStatus {
 #[tauri::command]
 pub fn greet(name: &str) -> String {
     format!("CN-Codex ready for {name}.")
+}
+
+/// 接收前端错误日志，写入后端 tracing 日志文件。
+#[tauri::command]
+pub fn frontend_log(level: String, message: String) {
+    match level.as_str() {
+        "error" => tracing::error!("[frontend] {message}"),
+        "warn" => tracing::warn!("[frontend] {message}"),
+        _ => tracing::info!("[frontend] {message}"),
+    }
+}
+
+/// 返回日志文件目录路径，供前端展示和打开。
+#[tauri::command]
+pub fn get_log_dir() -> String {
+    normalize_windows_verbatim_prefix(&crate::resolve_log_dir().to_string_lossy())
 }
 
 pub(crate) fn normalize_windows_verbatim_prefix(raw: &str) -> String {

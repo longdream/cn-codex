@@ -126,12 +126,15 @@ export interface ThreadTokenUsageUpdatedNotification {
     totalTokens: number;
     callCount?: number;
     lastSinglePromptTokens?: number;
+    contextWindowTokens?: number;
   };
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   callCount?: number;
   lastSinglePromptTokens?: number;
+  contextPromptTokens?: number;
+  modelContextWindow?: number;
 }
 
 export interface AccountUpdatedNotification {

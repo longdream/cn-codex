@@ -269,9 +269,40 @@ pub async fn run_compaction(
         .replace_messages(thread_id, new_history)
         .await?;
 
+    // compaction 后立即回推一份 token usage，确保前端在 idle/turn 间隙也能同步到新占用。
+    let compacted_prompt_tokens = thread_store.get_thread_total_tokens(thread_id).await;
+    let model_context_window = config
+        .model_context_window
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW)
+        .max(1) as u64;
+    let usage_payload = serde_json::json!({
+        "threadId": thread_id,
+        "usage": {
+            "promptTokens": compacted_prompt_tokens,
+            "completionTokens": 0_u64,
+            "totalTokens": compacted_prompt_tokens,
+            "callCount": 0_u64,
+            "lastSinglePromptTokens": compacted_prompt_tokens,
+            "contextWindowTokens": model_context_window,
+        },
+        "inputTokens": compacted_prompt_tokens,
+        "outputTokens": 0_u64,
+        "totalTokens": compacted_prompt_tokens,
+        "callCount": 0_u64,
+        "lastSinglePromptTokens": compacted_prompt_tokens,
+        "contextPromptTokens": compacted_prompt_tokens,
+        "modelContextWindow": model_context_window,
+    });
+    app_handle
+        .emit("thread-token-usage-updated", usage_payload.clone())
+        .ok();
+    crate::mobile_server::broadcast("thread-token-usage-updated", usage_payload);
+
     let compacted_payload = serde_json::json!({
         "threadId": thread_id,
         "summaryLength": summary_text.len(),
+        "contextPromptTokens": compacted_prompt_tokens,
+        "modelContextWindow": model_context_window,
     });
     app_handle
         .emit("context-compacted", compacted_payload.clone())

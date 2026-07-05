@@ -65,9 +65,17 @@ pub async fn start_mobile_server(
     let agent_engine = state.agent_engine.clone();
     let config_manager = state.config_manager.clone();
     let static_dir = state.project_root.join("mobile-dist");
-
-    let _ = std::fs::create_dir_all(&static_dir);
     tracing::info!("[mobile] static_dir={}", static_dir.display());
+
+    // 检查 mobile-dist/index.html 是否存在，不存在则报错而非静默 404
+    if !static_dir.join("index.html").is_file() {
+        let msg = format!(
+            "mobile-dist/index.html 不存在: {}。请确保发布包中包含 mobile-dist 目录。",
+            static_dir.display()
+        );
+        tracing::error!("[mobile] {msg}");
+        return Err(msg);
+    }
 
     let mobile_state = Arc::new(mobile_server::MobileServerState {
         broadcast_tx: broadcast_tx.clone(),

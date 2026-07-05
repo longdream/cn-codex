@@ -64,10 +64,26 @@ document.addEventListener("keyup", (e) => {
   if (e.key === "F12") f12Pressed = false;
 });
 
+// 将前端错误转发到后端 tracing 日志（release 模式下写入日志文件）
+function forwardErrorToBackend(message: string) {
+  invoke("frontend_log", { level: "error", message }).catch(() => {
+    // 后端不可用时静默忽略，避免循环
+  });
+}
+
 // 全局未捕获 Promise rejection 处理，防止 WebView2 崩溃白屏
 window.addEventListener("unhandledrejection", (event) => {
-  console.error("Unhandled promise rejection:", event.reason);
+  const msg = `Unhandled rejection: ${event.reason}`;
+  console.error(msg);
+  forwardErrorToBackend(msg);
   event.preventDefault();
+});
+
+// 全局未捕获 JS 错误
+window.addEventListener("error", (event) => {
+  const msg = `Uncaught error: ${event.message} at ${event.filename}:${event.lineno}:${event.colno}`;
+  console.error(msg);
+  forwardErrorToBackend(msg);
 });
 
 document.addEventListener("DOMContentLoaded", () => {

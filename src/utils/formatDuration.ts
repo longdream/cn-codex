@@ -7,12 +7,19 @@ export function formatDuration(durationMs?: number): string {
     return `${durationMs}ms`;
   }
 
-  const seconds = durationMs / 1000;
-  if (seconds < 60) {
-    return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const totalSeconds = Math.floor(durationMs / 1000);
+
+  if (totalSeconds < 60) {
+    const s = durationMs / 1000;
+    return `${s.toFixed(s < 10 ? 1 : 0)}s`;
   }
 
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds % 60);
-  return `${minutes}m ${rest}s`;
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  return `${minutes}m ${seconds}s`;
 }

@@ -1232,6 +1232,137 @@ pub async fn fortune_detail_stream_start(
     }))
 }
 
+/// 测试模型连接：发送一个极短的 completion 请求，返回是否成功、延迟和 tokens/s 速度。
+/// 支持 OpenAI-compatible (chat) 和 Anthropic 两种协议。
+#[tauri::command]
+pub async fn test_model_connection(
+    base_url: String,
+    api_key: String,
+    model: String,
+    wire_api: String,
+) -> AppResult<serde_json::Value> {
+    info!(
+        "[test_model] base_url={base_url}, model={model}, wire_api={wire_api}"
+    );
+
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| AppError::Custom(format!("HTTP client error: {e}")))?;
+
+    let start = std::time::Instant::now();
+
+    if wire_api == "anthropic" {
+        let url = {
+            let base = base_url.trim_end_matches('/');
+            if base.ends_with("/messages") {
+                base.to_string()
+            } else {
+                format!("{base}/messages")
+            }
+        };
+        let resp = http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&serde_json::json!({
+                "model": model,
+                "max_tokens": 20,
+                "messages": [{ "role": "user", "content": "Say hi" }],
+            }))
+            .send()
+            .await
+            .map_err(|e| AppError::Custom(format!("Request failed: {e}")))?;
+
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let status_code = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Ok(serde_json::json!({
+                "success": false,
+                "statusCode": status_code,
+                "error": body,
+                "latencyMs": elapsed_ms,
+            }));
+        }
+        let data: serde_json::Value = resp.json().await.unwrap_or_default();
+        let output_tokens = data
+            .pointer("/usage/output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let tokens_per_sec = if elapsed_ms > 0 && output_tokens > 0 {
+            (output_tokens as f64) / (elapsed_ms as f64 / 1000.0)
+        } else {
+            0.0
+        };
+        return Ok(serde_json::json!({
+            "success": true,
+            "statusCode": status_code,
+            "latencyMs": elapsed_ms,
+            "outputTokens": output_tokens,
+            "tokensPerSec": (tokens_per_sec * 10.0).round() / 10.0,
+        }));
+    }
+
+    // OpenAI-compatible (chat / responses / gemini)
+    let url = {
+        let base = base_url.trim_end_matches('/');
+        if base.ends_with("/chat/completions") {
+            base.to_string()
+        } else {
+            format!("{base}/chat/completions")
+        }
+    };
+
+    let mut req = http.post(&url).header("Content-Type", "application/json");
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    let resp = req
+        .json(&serde_json::json!({
+            "model": model,
+            "max_tokens": 20,
+            "messages": [{ "role": "user", "content": "Say hi" }],
+        }))
+        .send()
+        .await
+        .map_err(|e| AppError::Custom(format!("Request failed: {e}")))?;
+
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let status_code = resp.status().as_u16();
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Ok(serde_json::json!({
+            "success": false,
+            "statusCode": status_code,
+            "error": body,
+            "latencyMs": elapsed_ms,
+        }));
+    }
+
+    let data: serde_json::Value = resp.json().await.unwrap_or_default();
+    let output_tokens = data
+        .pointer("/usage/completion_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let tokens_per_sec = if elapsed_ms > 0 && output_tokens > 0 {
+        (output_tokens as f64) / (elapsed_ms as f64 / 1000.0)
+    } else {
+        0.0
+    };
+
+    Ok(serde_json::json!({
+        "success": true,
+        "statusCode": status_code,
+        "latencyMs": elapsed_ms,
+        "outputTokens": output_tokens,
+        "tokensPerSec": (tokens_per_sec * 10.0).round() / 10.0,
+    }))
+}
+
 fn parse_goal_status(value: Option<&str>) -> AppResult<Option<ThreadGoalStatus>> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);

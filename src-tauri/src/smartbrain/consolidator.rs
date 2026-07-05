@@ -22,9 +22,30 @@ pub async fn run_consolidation(
         return;
     }
 
-    let index = ExperienceIndex::load(experiences_dir);
+    let mut index = ExperienceIndex::load(experiences_dir);
     if index.entries.is_empty() {
         info!("Experience consolidation skipped: no entries to consolidate");
+        return;
+    }
+
+    let raw_dir = experiences_dir.join("raw");
+    // 启动自愈：用户删除 raw/*.md 后，index.json 可能残留无效条目。
+    // 这里先清理不存在原始文件的条目并回写，避免每次启动都刷屏 warn。
+    let before_count = index.entries.len();
+    index
+        .entries
+        .retain(|entry| raw_dir.join(format!("{}.md", entry.thread_id)).is_file());
+    let removed_count = before_count.saturating_sub(index.entries.len());
+    if removed_count > 0 {
+        info!(
+            "Experience consolidation cleaned {removed_count} stale entries from index"
+        );
+        if let Err(e) = index.save(experiences_dir) {
+            warn!("Failed to persist cleaned experience index: {e}");
+        }
+    }
+    if index.entries.is_empty() {
+        info!("Experience consolidation skipped: no valid raw experience files");
         return;
     }
 
@@ -72,7 +93,6 @@ pub async fn run_consolidation(
         return;
     }
 
-    let raw_dir = experiences_dir.join("raw");
     let ranked = index.ranked_entries();
     let top_entries: Vec<_> = ranked
         .into_iter()

@@ -8,6 +8,7 @@ import { ProviderPanel } from "./ProviderPanel";
 import { IntegrationPanel } from "./IntegrationPanel";
 import { PluginsPanel } from "./PluginsPanel";
 import { SkillsPanel } from "./SkillsPanel";
+import { SkillLabPanel } from "./SkillLabPanel";
 import { HooksPanel } from "./HooksPanel";
 import { RobotsPanel } from "./RobotsPanel";
 import { WorkflowsPanel } from "./WorkflowsPanel";
@@ -19,7 +20,7 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "image" | "usage" | "integration" | "plugins" | "skills" | "robots" | "workflows" | "hooks" | "experience" | "knowledge" | "rules";
+type SettingsTab = "general" | "provider" | "image" | "usage" | "integration" | "plugins" | "skills" | "skill-lab" | "robots" | "workflows" | "hooks" | "experience" | "knowledge" | "rules";
 
 function displayFileName(path: string): string {
   const normalized = path.replace(/\\/g, "/");
@@ -99,9 +100,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     }).catch(() => {});
   }, [normalizeRelayServerUrl]);
 
+  const [webServerError, setWebServerError] = useState<string | null>(null);
+
   const handleWebServerToggle = useCallback(async () => {
     if (webServerLoading) return;
     setWebServerLoading(true);
+    setWebServerError(null);
     try {
       if (!webServerEnabled) {
         const url = await invoke<string>("start_mobile_server");
@@ -114,6 +118,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       }
     } catch (err) {
       console.error("Web server toggle failed:", err);
+      const msg = typeof err === "string" ? err : (err as Error)?.message ?? String(err);
+      setWebServerError(msg);
+      setWebServerEnabled(false);
+      setWebServerUrl(null);
     } finally {
       setWebServerLoading(false);
     }
@@ -239,6 +247,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       id: "skills",
       label: intl.formatMessage({ id: "settings.skills" }),
       detail: intl.formatMessage({ id: "settings.skills.description" }),
+    },
+    {
+      id: "skill-lab",
+      label: intl.formatMessage({ id: "settings.skillLab" }),
+      detail: intl.formatMessage({ id: "settings.skillLab.description" }),
     },
     {
       id: "robots",
@@ -423,6 +436,36 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       {webServerUrl}
                     </p>
                   )}
+                  {webServerError && (
+                    <p className="text-xs text-red-500">
+                      {intl.formatMessage({ id: "settings.webServer.error" })}: {webServerError}
+                    </p>
+                  )}
+                </section>
+
+                <section className="settings-card space-y-3">
+                  <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                    {intl.formatMessage({ id: "settings.logs" })}
+                  </h4>
+                  <p className="text-xs text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "settings.logs.description" })}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={async () => {
+                        try {
+                          const dir = await invoke<string>("get_log_dir");
+                          const { openPath } = await import("@tauri-apps/plugin-opener");
+                          await openPath(dir);
+                        } catch (err) {
+                          console.error("Failed to open log dir:", err);
+                        }
+                      }}
+                      className="app-button-secondary text-xs"
+                    >
+                      {intl.formatMessage({ id: "settings.logs.openDir" })}
+                    </button>
+                  </div>
                 </section>
 
                 <section className="settings-card space-y-3">
@@ -729,6 +772,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "integration" && <IntegrationPanel />}
             {tab === "plugins" && <PluginsPanel />}
             {tab === "skills" && <SkillsPanel />}
+            {tab === "skill-lab" && <SkillLabPanel />}
             {tab === "robots" && <RobotsPanel />}
             {tab === "workflows" && <WorkflowsPanel />}
             {tab === "hooks" && <HooksPanel />}

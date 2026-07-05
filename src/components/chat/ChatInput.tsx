@@ -307,6 +307,12 @@ export function ChatInput({
     ?? defaultProvider;
 
   const modelContextWindow = useMemo(() => {
+    // 优先使用后端实时上报的窗口值，确保展示口径与运行时配置一致。
+    const runtimeWindow = Number(liveTurnUsage?.contextWindowTokens ?? 0);
+    if (runtimeWindow > 0) {
+      return runtimeWindow;
+    }
+
     if (activeEntry) {
       const matchedProvider = providers.find(
         (provider) => provider.id === activeEntry.provider || provider.type === activeEntry.provider,
@@ -327,13 +333,13 @@ export function ChatInput({
     }
 
     return providerModels[0]?.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH;
-  }, [activeEntry, currentModel, providerModels, providers]);
+  }, [activeEntry, currentModel, liveTurnUsage?.contextWindowTokens, providerModels, providers]);
 
   const contextUsedTokens = useMemo(() => {
     if (liveTurnUsage) {
-      const liveUsed = liveTurnUsage.lastSinglePromptTokens && liveTurnUsage.lastSinglePromptTokens > 0
-        ? liveTurnUsage.lastSinglePromptTokens
-        : liveTurnUsage.promptTokens;
+      // 上下文占用只使用“单次请求 prompt tokens”，不再回退累计 promptTokens，
+      // 避免累计值在多次工具调用后把占用显示拉高到假 100%。
+      const liveUsed = Number(liveTurnUsage.lastSinglePromptTokens ?? 0);
       if (liveUsed > 0) {
         return liveUsed;
       }
@@ -343,9 +349,8 @@ export function ChatInput({
       if (!usage) {
         continue;
       }
-      const used = usage.lastSinglePromptTokens && usage.lastSinglePromptTokens > 0
-        ? usage.lastSinglePromptTokens
-        : usage.promptTokens;
+      // 历史回填同样保持一致口径：只认 lastSinglePromptTokens。
+      const used = Number(usage.lastSinglePromptTokens ?? 0);
       if (used > 0) {
         return used;
       }
@@ -1451,6 +1456,8 @@ function ContextUsageRing({
 }) {
   const intl = useIntl();
   const ratio = Math.max(0, Math.min(1, usedTokens / windowTokens));
+  // 让 tooltip 与圆环百分比保持同一口径，避免出现“百分比 100% 但文本超过上限”的认知冲突。
+  const clampedUsedTokens = Math.max(0, Math.min(usedTokens, windowTokens));
   const radius = 7;
   const strokeWidth = 2;
   const normalizedRadius = radius - strokeWidth / 2;
@@ -1473,7 +1480,7 @@ function ContextUsageRing({
       title={intl.formatMessage(
         { id: "chat.contextUsage" },
         {
-          used: formatter.format(usedTokens),
+          used: formatter.format(clampedUsedTokens),
           total: formatter.format(windowTokens),
         },
       )}

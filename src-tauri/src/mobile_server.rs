@@ -66,16 +66,14 @@ pub async fn start(
         .layer(CorsLayer::permissive())
         .with_state(state);
 
+    // 先尝试指定端口，失败后回退到随机端口。
+    // 不使用超时包裹：Windows 防火墙弹窗会阻塞 bind，
+    // 超时会导致用户还没来得及点允许就被判定为失败。
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let bind_result = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        tokio::net::TcpListener::bind(addr),
-    )
-    .await;
-
-    let listener = match bind_result {
-        Ok(Ok(l)) => l,
-        _ => {
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(bind_err) => {
+            info!("Failed to bind port {port}: {bind_err}, trying random port");
             let fallback = SocketAddr::from(([0, 0, 0, 0], 0u16));
             tokio::net::TcpListener::bind(fallback)
                 .await
