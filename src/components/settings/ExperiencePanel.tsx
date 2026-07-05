@@ -1,4 +1,11 @@
-import { IconChevronDown, IconChevronRight, IconTrash, IconAlertCircle } from "@tabler/icons-react";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconTrash,
+  IconAlertCircle,
+  IconLayersIntersect,
+  IconLoader2,
+} from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
@@ -22,6 +29,11 @@ interface OkfFrontmatter {
   timestamp?: string;
 }
 
+interface SmartbrainConfig {
+  auto_summarize_enabled?: boolean;
+  auto_summarize_threshold?: number;
+}
+
 function formatDate(ts: number): string {
   if (ts <= 0) return "-";
   return new Date(ts * 1000).toLocaleDateString();
@@ -37,10 +49,21 @@ export function ExperiencePanel() {
   const [expContent, setExpContent] = useState<Record<string, string>>({});
   const [expFrontmatter, setExpFrontmatter] = useState<Record<string, OkfFrontmatter | null>>({});
 
+  const [summarizing, setSummarizing] = useState(false);
+  const [summarizeResult, setSummarizeResult] = useState<string | null>(null);
+  const [autoSummarizeEnabled, setAutoSummarizeEnabled] = useState(true);
+  const [autoSummarizeThreshold, setAutoSummarizeThreshold] = useState(10);
+  const [thresholdSaving, setThresholdSaving] = useState(false);
+
   useEffect(() => {
-    invoke<{ config?: { smartbrain?: { enabled?: boolean } } }>("standalone_config_read")
+    invoke<{ config?: { smartbrain?: { enabled?: boolean } & SmartbrainConfig } }>(
+      "standalone_config_read",
+    )
       .then((result) => {
-        setEnabled(result?.config?.smartbrain?.enabled ?? false);
+        const sb = result?.config?.smartbrain;
+        setEnabled(sb?.enabled ?? false);
+        setAutoSummarizeEnabled(sb?.auto_summarize_enabled ?? true);
+        setAutoSummarizeThreshold(sb?.auto_summarize_threshold ?? 10);
       })
       .catch(() => {});
   }, []);
@@ -84,6 +107,92 @@ export function ExperiencePanel() {
     setExpandedExp(threadId);
   }, [expandedExp, expContent]);
 
+  const handleSummarize = useCallback(async () => {
+    if (summarizing) return;
+    if (experiences.length < 2) {
+      setSummarizeResult(
+        intl.formatMessage({ id: "settings.smartbrain.experience.summarize.tooFew" }),
+      );
+      return;
+    }
+    if (
+      !confirm(
+        intl.formatMessage(
+          { id: "settings.smartbrain.experience.summarize.confirm" },
+          { count: experiences.length },
+        ),
+      )
+    ) {
+      return;
+    }
+    setSummarizing(true);
+    setSummarizeResult(null);
+    try {
+      const result = await invoke<{
+        status: string;
+        beforeCount: number;
+        afterCount: number;
+        error: string | null;
+      }>("smartbrain_summarize_experiences");
+      if (result.status === "ok") {
+        setSummarizeResult(
+          intl.formatMessage(
+            { id: "settings.smartbrain.experience.summarize.success" },
+            { before: result.beforeCount, after: result.afterCount },
+          ),
+        );
+        setExpContent({});
+        setExpFrontmatter({});
+        setExpandedExp(null);
+        await loadExperiences();
+      } else {
+        setSummarizeResult(
+          intl.formatMessage(
+            { id: "settings.smartbrain.experience.summarize.failed" },
+            { error: result.error ?? "unknown" },
+          ),
+        );
+      }
+    } catch (err) {
+      const msg = typeof err === "string" ? err : (err as Error)?.message ?? String(err);
+      setSummarizeResult(
+        intl.formatMessage(
+          { id: "settings.smartbrain.experience.summarize.failed" },
+          { error: msg },
+        ),
+      );
+    } finally {
+      setSummarizing(false);
+    }
+  }, [summarizing, experiences.length, intl, loadExperiences]);
+
+  const handleAutoSummarizeToggle = useCallback(async (value: boolean) => {
+    setAutoSummarizeEnabled(value);
+    try {
+      await invoke("standalone_config_write", {
+        edits: [{ keyPath: "smartbrain.auto_summarize_enabled", value }],
+      });
+    } catch (err) {
+      console.error("Save auto_summarize_enabled failed:", err);
+      setAutoSummarizeEnabled(!value);
+    }
+  }, []);
+
+  const handleThresholdSave = useCallback(async () => {
+    const clamped = Math.max(2, Math.min(1000, Number(autoSummarizeThreshold) || 10));
+    setAutoSummarizeThreshold(clamped);
+    setThresholdSaving(true);
+    try {
+      await invoke("standalone_config_write", {
+        edits: [{ keyPath: "smartbrain.auto_summarize_threshold", value: clamped }],
+      });
+    } catch (err) {
+      console.error("Save auto_summarize_threshold failed:", err);
+    } finally {
+      setThresholdSaving(false);
+    }
+  }, [autoSummarizeThreshold]);
+
   return (
     <div className="space-y-5">
       {!enabled && (
@@ -102,6 +211,85 @@ export function ExperiencePanel() {
           </p>
         </div>
       )}
+
+      {enabled && (
+        <section className="settings-card space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-0.5">
+              <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
+                {intl.formatMessage({ id: "settings.smartbrain.experience.summarize.title" })}
+              </h4>
+              <p className="text-xs text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "settings.smartbrain.experience.summarize.description" })}
+              </p>
+            </div>
+            <button
+              onClick={() => void handleSummarize()}
+              disabled={summarizing || experiences.length < 2}
+              className="app-button-secondary flex items-center gap-1.5 text-xs disabled:opacity-50"
+            >
+              {summarizing ? (
+                <IconLoader2 size={13} className="animate-spin" />
+              ) : (
+                <IconLayersIntersect size={13} stroke={1.8} />
+              )}
+              {intl.formatMessage({ id: "settings.smartbrain.experience.summarize.button" })}
+            </button>
+          </div>
+          {summarizeResult && (
+            <p className="text-xs text-[var(--text-muted)]">{summarizeResult}</p>
+          )}
+
+          <div className="flex items-center justify-between border-t border-[var(--border-subtle)] pt-3">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs font-medium text-[var(--text-strong)]">
+                {intl.formatMessage({ id: "settings.smartbrain.experience.autoSummarize" })}
+              </span>
+              <span className="text-[11px] text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "settings.smartbrain.experience.autoSummarize.hint" })}
+              </span>
+            </div>
+            <button
+              onClick={() => void handleAutoSummarizeToggle(!autoSummarizeEnabled)}
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                autoSummarizeEnabled ? "bg-[var(--accent)]" : "bg-[var(--border-subtle)]"
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+                  autoSummarizeEnabled ? "translate-x-[18px]" : "translate-x-[3px]"
+                }`}
+              />
+            </button>
+          </div>
+
+          {autoSummarizeEnabled && (
+            <div className="flex items-center gap-2">
+              <label className="text-[11px] text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "settings.smartbrain.experience.autoSummarize.threshold" })}
+              </label>
+              <input
+                type="number"
+                min={2}
+                max={1000}
+                value={autoSummarizeThreshold}
+                onChange={(e) => setAutoSummarizeThreshold(Number(e.target.value))}
+                className="app-input w-20"
+              />
+              <button
+                onClick={() => void handleThresholdSave()}
+                disabled={thresholdSaving}
+                className="app-button-secondary text-xs disabled:opacity-50"
+              >
+                {thresholdSaving
+                  ? intl.formatMessage({ id: "settings.smartbrain.experience.autoSummarize.saving" })
+                  : intl.formatMessage({ id: "settings.smartbrain.experience.autoSummarize.save" })}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
       <section className="settings-card space-y-3">
         <button
           onClick={() => setExpExpanded(!expExpanded)}

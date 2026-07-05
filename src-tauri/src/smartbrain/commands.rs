@@ -112,6 +112,40 @@ pub async fn smartbrain_delete_experience(
     Ok(serde_json::json!({ "status": "ok" }))
 }
 
+/// Manually trigger categorization and merging of experiences to reduce their count.
+///
+/// This is the backend counterpart of the "分类总结" button: it asks the LLM to
+/// group similar experiences and replace them with fewer consolidated entries.
+#[tauri::command]
+pub async fn smartbrain_summarize_experiences(
+    state: State<'_, AppState>,
+) -> AppResult<serde_json::Value> {
+    let config = state.config_manager.read()?;
+    let experiences_dir = super::experiences_dir(&state.workspace_config_dir);
+    let bm25_path = super::bm25_index_path(&state.workspace_config_dir);
+
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(300))
+        .build()
+        .unwrap_or_default();
+
+    let stats = super::summarizer::run_summarize_merge(
+        &http,
+        &config,
+        &experiences_dir,
+        Some(&bm25_path),
+    )
+    .await;
+
+    Ok(serde_json::json!({
+        "status": if stats.success { "ok" } else { "error" },
+        "beforeCount": stats.before_count,
+        "afterCount": stats.after_count,
+        "error": stats.error,
+    }))
+}
+
 #[tauri::command]
 pub async fn smartbrain_list_knowledge(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
     let knowledge_dir = super::knowledge_dir(&state.workspace_config_dir);

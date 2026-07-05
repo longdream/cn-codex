@@ -73,6 +73,10 @@ pub struct SmartBrainConfig {
     pub max_raw_experiences: usize,
     #[serde(default = "default_max_consolidation_entries")]
     pub max_consolidation_entries: usize,
+    #[serde(default = "default_true")]
+    pub auto_summarize_enabled: bool,
+    #[serde(default = "default_auto_summarize_threshold")]
+    pub auto_summarize_threshold: usize,
     #[serde(default = "default_max_unused_days")]
     pub max_unused_days: i64,
     #[serde(default = "default_max_rollouts_per_startup")]
@@ -108,6 +112,9 @@ fn default_max_raw_experiences() -> usize {
 }
 fn default_max_consolidation_entries() -> usize {
     50
+}
+fn default_auto_summarize_threshold() -> usize {
+    10
 }
 fn default_max_unused_days() -> i64 {
     30
@@ -152,6 +159,8 @@ impl Default for SmartBrainConfig {
             inject_summary: default_true(),
             max_raw_experiences: default_max_raw_experiences(),
             max_consolidation_entries: default_max_consolidation_entries(),
+            auto_summarize_enabled: default_true(),
+            auto_summarize_threshold: default_auto_summarize_threshold(),
             max_unused_days: default_max_unused_days(),
             max_rollouts_per_startup: default_max_rollouts_per_startup(),
             min_session_messages: default_min_session_messages(),
@@ -549,6 +558,21 @@ impl ConfigToml {
                     .smartbrain
                     .get_or_insert_with(SmartBrainConfig::default);
                 sb.extraction_start_at = value.as_i64();
+            }
+            "smartbrain.auto_summarize_enabled" => {
+                let sb = self
+                    .smartbrain
+                    .get_or_insert_with(SmartBrainConfig::default);
+                sb.auto_summarize_enabled = value.as_bool().unwrap_or(true);
+            }
+            "smartbrain.auto_summarize_threshold" => {
+                let sb = self
+                    .smartbrain
+                    .get_or_insert_with(SmartBrainConfig::default);
+                sb.auto_summarize_threshold = value
+                    .as_u64()
+                    .map(|v| v.max(2) as usize)
+                    .unwrap_or(default_auto_summarize_threshold());
             }
             "smartbrain.search_okf_prefilter_enabled" => {
                 let sb = self
@@ -1256,5 +1280,39 @@ mod tests {
             vec!["relative_path".to_string(), "domain".to_string()]
         );
         assert!(!smartbrain.knowledge_chunk_files_enabled);
+    }
+
+    #[test]
+    fn apply_edit_smartbrain_auto_summarize_fields() {
+        let mut config = ConfigToml::default();
+        config
+            .apply_edit(
+                "smartbrain.auto_summarize_enabled",
+                &serde_json::json!(false),
+            )
+            .expect("set smartbrain.auto_summarize_enabled");
+        config
+            .apply_edit(
+                "smartbrain.auto_summarize_threshold",
+                &serde_json::json!(20),
+            )
+            .expect("set smartbrain.auto_summarize_threshold");
+
+        let smartbrain = config.smartbrain_config();
+        assert!(!smartbrain.auto_summarize_enabled);
+        assert_eq!(smartbrain.auto_summarize_threshold, 20);
+    }
+
+    #[test]
+    fn apply_edit_smartbrain_auto_summarize_threshold_clamps_to_min() {
+        let mut config = ConfigToml::default();
+        config
+            .apply_edit(
+                "smartbrain.auto_summarize_threshold",
+                &serde_json::json!(1),
+            )
+            .expect("set smartbrain.auto_summarize_threshold");
+        let smartbrain = config.smartbrain_config();
+        assert_eq!(smartbrain.auto_summarize_threshold, 2);
     }
 }

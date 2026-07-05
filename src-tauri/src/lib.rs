@@ -364,6 +364,27 @@ pub fn run() {
                     )
                     .await;
 
+                    // Auto-summarize: when experiences exceed the configured threshold,
+                    // categorize and merge them into fewer consolidated entries.
+                    if sb_config.auto_summarize_enabled {
+                        let exp_index = smartbrain::index::ExperienceIndex::load(&experiences_dir);
+                        let exp_count = exp_index.entries.len();
+                        if exp_count >= sb_config.auto_summarize_threshold {
+                            info!(
+                                "[startup][rust] auto-summarize triggered: {} experiences >= threshold {}",
+                                exp_count, sb_config.auto_summarize_threshold
+                            );
+                            smartbrain::summarizer::run_summarize_merge(
+                                &http,
+                                &config,
+                                &experiences_dir,
+                                Some(&bm25_path),
+                            )
+                            .await;
+                        }
+                    }
+
+
                     smartbrain::knowledge::scan_and_ingest_new(
                         &http,
                         &config,
@@ -555,6 +576,7 @@ pub fn run() {
             smartbrain::commands::smartbrain_list_experiences,
             smartbrain::commands::smartbrain_read_experience,
             smartbrain::commands::smartbrain_delete_experience,
+            smartbrain::commands::smartbrain_summarize_experiences,
             smartbrain::commands::smartbrain_list_knowledge,
             smartbrain::commands::smartbrain_read_knowledge,
             smartbrain::commands::smartbrain_delete_knowledge,

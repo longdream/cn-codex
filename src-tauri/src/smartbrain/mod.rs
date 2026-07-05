@@ -7,6 +7,7 @@ pub mod knowledge;
 pub mod okf;
 pub mod prompts;
 pub mod search;
+pub mod summarizer;
 
 use std::path::{Path, PathBuf};
 

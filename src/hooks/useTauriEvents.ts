@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useIntl, type IntlShape } from "react-intl";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fileReviewGet } from "../api/fileReview";
-import { standaloneConfigWrite } from "../api";
+import { standaloneConfigWrite, standaloneChat } from "../api";
 import {
   createRunSummaryMessage,
   useAppStore,
@@ -527,13 +527,59 @@ export function useTauriEvents() {
       if (!threadId) {
         return;
       }
-      if (payload.threadId && payload.threadId !== store.currentThreadId) {
-        return;
-      }
       const nextValue = `${reasoningByThread.get(threadId) ?? ""}${delta}`;
       reasoningByThread.set(threadId, nextValue);
-      if (store.isStreaming) {
+      // 仅活跃线程更新 streamingLabel（后台线程无需更新 UI）。
+      if (threadId === store.currentThreadId && store.isStreaming) {
         store.setStreamingLabel(`${intl.formatMessage({ id: "tool.reasoning" })}...`);
+      }
+    };
+
+    /**
+     * 后台线程 turn 结束后自动发送队列中的下一条消息。
+     * 仅处理非活跃线程——活跃线程的队列发送由 ChatPage 的 effect 负责。
+     */
+    const autoSendNextQueuedForBackgroundThread = async (threadId: string) => {
+      const store = useAppStore.getState();
+      // 线程可能已被删除或变为活跃线程
+      if (threadId === store.currentThreadId) return;
+      const runtime = store.getThreadRuntimeState(threadId);
+      if (!runtime || runtime.pendingMessageQueue.length === 0) return;
+      // 仍在流式中则不发送（等本次 turn 完全收敛后再推进）
+      if (runtime.isStreaming) return;
+
+      const next = store.dequeueMessageForThread(threadId);
+      if (!next) return;
+
+      const cwd = store.workspaceCwd || store.projectRoot || store.userHomeDir;
+      if (!cwd) return;
+
+      // 标记后台线程开始新的 turn
+      store.setStreamingForThread(threadId, true);
+      store.clearStreamingTextForThread(threadId);
+      store.setLiveTurnUsageForThread(threadId, null);
+      store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.processing" }));
+
+      try {
+        await standaloneChat(
+          threadId,
+          next.text,
+          cwd,
+          next.mode,
+          next.attachments,
+          next.options?.goalBudgetTokens,
+          next.options?.robotId,
+        );
+      } catch (err) {
+        console.error(`[background-queue] Failed to send queued message for thread ${threadId}:`, err);
+        const latestStore = useAppStore.getState();
+        latestStore.setStreamingForThread(threadId, false);
+        latestStore.addMessageToThread(threadId, {
+          id: crypto.randomUUID(),
+          role: "system",
+          content: intl.formatMessage({ id: "chat.sendFailed" }),
+          timestamp: Date.now(),
+        });
       }
     };
 
@@ -541,24 +587,24 @@ export function useTauriEvents() {
       const listeners: Array<Promise<UnlistenFn>> = [
         listen<{ delta: string; threadId?: string }>("agent-message-delta", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
+          if (!store.isThreadStreaming(threadId)) {
             return;
           }
-          if (!store.isStreaming) {
+          const runtime = store.getThreadRuntimeState(threadId);
+          if (runtime?.currentGoal?.status === "complete") {
             return;
           }
-          if (store.currentGoal?.status === "complete") {
-            return;
-          }
-          const currentLen = store.streamingText.length;
+          const currentLen = runtime?.streamingText.length ?? 0;
           if (currentLen === 0) {
-            store.setStreamingLabel(intl.formatMessage({ id: "streaming.generating" }));
+            store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.generating" }));
           } else if (currentLen > 200 && currentLen <= 220) {
-            store.setStreamingLabel(intl.formatMessage({ id: "streaming.structuring" }));
+            store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.structuring" }));
           } else if (currentLen > 800 && currentLen <= 820) {
-            store.setStreamingLabel(intl.formatMessage({ id: "streaming.summarizing" }));
+            store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.summarizing" }));
           }
-          store.appendStreamingText(e.payload.delta);
+          store.appendStreamingTextForThread(threadId, e.payload.delta);
         }),
 
         listen<ReasoningDeltaPayload>("reasoning-text-delta", (e) => {
@@ -573,69 +619,67 @@ export function useTauriEvents() {
           "turn-started",
           (e) => {
             const store = useAppStore.getState();
-            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-              return;
-            }
-            store.setCurrentTurnId(e.payload.turn?.id ?? null);
-            store.setStreaming(true);
-            store.clearStreamingText();
-            store.setLiveTurnUsage(null);
-            store.setStreamingLabel(intl.formatMessage({ id: "streaming.processing" }));
-            if (e.payload.threadId) {
-              reasoningByThread.set(e.payload.threadId, "");
-            }
+            const threadId = e.payload.threadId ?? store.currentThreadId;
+            if (!threadId) return;
+            store.setCurrentTurnIdForThread(threadId, e.payload.turn?.id ?? null);
+            store.setStreamingForThread(threadId, true);
+            store.clearStreamingTextForThread(threadId);
+            store.setLiveTurnUsageForThread(threadId, null);
+            store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.processing" }));
+            reasoningByThread.set(threadId, "");
             if ("goal" in e.payload) {
-              store.setCurrentGoal(e.payload.goal ?? null);
+              store.setCurrentGoalForThread(threadId, e.payload.goal ?? null);
             }
           },
         ),
 
         listen<ThreadTokenUsageUpdatedPayload>("thread-token-usage-updated", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-            return;
-          }
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
           const usage = normalizeRealtimeTokenUsage(e.payload);
-          store.setLiveTurnUsage(usage ?? null);
+          store.setLiveTurnUsageForThread(threadId, usage ?? null);
         }),
 
         listen<TurnEventPayload>(
           "turn-completed",
           (e) => {
             const store = useAppStore.getState();
-            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-              return;
+            const threadId = e.payload.threadId ?? store.currentThreadId;
+            if (!threadId) return;
+            const isActive = threadId === store.currentThreadId;
+
+            // 推理过程消息
+            const reasoningText = (reasoningByThread.get(threadId) ?? "").trim();
+            if (reasoningText) {
+              store.addMessageToThread(threadId, {
+                id: `reasoning-${crypto.randomUUID()}`,
+                role: "system",
+                content: "",
+                timestamp: Date.now(),
+                toolCalls: [
+                  {
+                    id: `reasoning-call-${crypto.randomUUID()}`,
+                    name: "reasoning",
+                    arguments: "{}",
+                    status: "success",
+                    displayLabel: intl.formatMessage({
+                      id: "tool.reasoning",
+                      defaultMessage: "思考过程",
+                    }),
+                    output: reasoningText,
+                  },
+                ],
+              });
             }
-            const threadId = e.payload.threadId;
-            if (threadId) {
-              const reasoningText = (reasoningByThread.get(threadId) ?? "").trim();
-              if (reasoningText) {
-                store.addMessage({
-                  id: `reasoning-${crypto.randomUUID()}`,
-                  role: "system",
-                  content: "",
-                  timestamp: Date.now(),
-                  toolCalls: [
-                    {
-                      id: `reasoning-call-${crypto.randomUUID()}`,
-                      name: "reasoning",
-                      arguments: "{}",
-                      status: "success",
-                      displayLabel: intl.formatMessage({
-                        id: "tool.reasoning",
-                        defaultMessage: "思考过程",
-                      }),
-                      output: reasoningText,
-                    },
-                  ],
-                });
-              }
-              reasoningByThread.delete(threadId);
-            }
-            if (store.isStreaming) {
-              const text = store.streamingText;
+            reasoningByThread.delete(threadId);
+
+            // 提交流式文本为助手消息
+            const runtime = store.getThreadRuntimeState(threadId);
+            if (runtime?.isStreaming) {
+              const text = runtime.streamingText;
               if (text) {
-                store.addMessage({
+                store.addMessageToThread(threadId, {
                   id: crypto.randomUUID(),
                   role: "assistant",
                   content: text,
@@ -643,59 +687,72 @@ export function useTauriEvents() {
                 });
               }
             }
+
+            // 运行摘要
             const summary = runSummaryFromTurn(e.payload.turn);
             if (summary) {
-              store.addMessage(createRunSummaryMessage(summary));
+              store.addMessageToThread(threadId, createRunSummaryMessage(summary));
             }
-            if (hasWebFileChanges(e.payload.turn.changedFiles)) {
+
+            // Web 文件变更刷新（仅活跃线程触发 UI 事件）
+            if (isActive && hasWebFileChanges(e.payload.turn.changedFiles)) {
               window.dispatchEvent(new CustomEvent("cn-codex:browser-refresh-requested"));
             }
+
             if ("goal" in e.payload) {
-              store.setCurrentGoal(e.payload.goal ?? null);
+              store.setCurrentGoalForThread(threadId, e.payload.goal ?? null);
             }
-            store.setLiveTurnUsage(null);
+            store.setLiveTurnUsageForThread(threadId, null);
+
+            // 新会话标题回填（仅活跃线程需要检查当前 messages）
             const latestStore = useAppStore.getState();
-            const currentSummary = latestStore.threads.find((thread) => thread.id === e.payload.threadId);
+            const currentSummary = latestStore.threads.find((t) => t.id === threadId);
             if (currentSummary && currentSummary.preview.trim().length === 0) {
-              const userMessages = latestStore.messages.filter((message) => message.role === "user");
+              const threadRuntime = latestStore.getThreadRuntimeState(threadId);
+              const userMessages = (threadRuntime?.messages ?? []).filter(
+                (message) => message.role === "user",
+              );
               if (userMessages.length === 1) {
                 const preview = userMessages[0].content.trim().slice(0, 60);
                 if (preview) {
-                  // turn-completed 兜底：只在“仅有 1 条 user 消息”的新会话场景回填标题，
-                  // 既保证实时可见，又避免把历史旧会话批量回填（符合“仅修复未来会话”约束）。
-                  latestStore.updateThreadSummary(e.payload.threadId, {
+                  latestStore.updateThreadSummary(threadId, {
                     preview,
                     updatedAt: Date.now(),
                   });
                 }
               }
             }
-            // turn 已结束但仍有 running 工具时，做一次兜底收敛，避免 UI 长时间转圈。
-            store.markRunningToolCallsInterrupted(
+
+            // turn 已结束但仍有 running 工具时，做一次兜底收敛。
+            store.markRunningToolCallsInterruptedForThread(
+              threadId,
               "Turn completed before tool status settled.",
             );
-            store.flushAndStopStreaming();
+            store.flushAndStopStreamingForThread(threadId);
+
+            // 后台队列自动发送：turn 结束后检查该线程是否有排队消息。
+            if (!isActive) {
+              void autoSendNextQueuedForBackgroundThread(threadId);
+            }
           },
         ),
 
         listen<ThreadGoalUpdatedPayload>("thread-goal-updated", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-            return;
-          }
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
           const goal = e.payload.goal ?? null;
-          store.setCurrentGoal(goal);
+          store.setCurrentGoalForThread(threadId, goal);
           if (goal?.status === "complete") {
-            store.flushAndStopStreaming({ commitStreamingText: true });
+            store.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
           }
         }),
 
         listen<ThreadGoalClearedPayload>("thread-goal-cleared", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-            return;
-          }
-          store.setCurrentGoal(null);
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
+          store.setCurrentGoalForThread(threadId, null);
         }),
 
         listen<{
@@ -703,18 +760,21 @@ export function useTauriEvents() {
           calls: Array<{ id: string; name: string; arguments: string }>;
         }>("tool-calls-start", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-            return;
-          }
-          const pendingText = store.streamingText;
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
+          const isActive = threadId === store.currentThreadId;
+
+          // 提交待处理的流式文本
+          const runtime = store.getThreadRuntimeState(threadId);
+          const pendingText = runtime?.streamingText ?? "";
           if (pendingText) {
-            store.addMessage({
+            store.addMessageToThread(threadId, {
               id: crypto.randomUUID(),
               role: "assistant",
               content: pendingText,
               timestamp: Date.now(),
             });
-            store.clearStreamingText();
+            store.clearStreamingTextForThread(threadId);
           }
 
           const items: ToolCallItem[] = e.payload.calls.map((c) => ({
@@ -725,9 +785,9 @@ export function useTauriEvents() {
             displayLabel: toolDisplayLabel(c.name, c.arguments),
           }));
 
+          // 浏览器面板仅活跃线程触发 UI
           const browserCall = e.payload.calls.find((c) => c.name === "browser_run" || c.name === "web_search");
-          if (browserCall) {
-            // 设置面板打开时不自动拉起右侧栏，避免内置浏览器遮挡设置层。
+          if (browserCall && isActive) {
             const latestStore = useAppStore.getState();
             if (!latestStore.showSettings) {
               latestStore.setRightPanelTab("browser");
@@ -751,24 +811,24 @@ export function useTauriEvents() {
             latestStore.triggerBrowserSync();
           }
 
-          store.addMessage({
+          store.addMessageToThread(threadId, {
             id: `tcg-${Date.now()}`,
             role: "system",
             content: "",
             timestamp: Date.now(),
             toolCalls: items,
           });
-          store.setStreamingLabel(toolActivityLabel(e.payload.calls, intl));
+          store.setStreamingLabelForThread(threadId, toolActivityLabel(e.payload.calls, intl));
 
-          // 超时兜底：5 分钟后如果工具仍为 running，自动收敛为 failed，
-          // 防止事件丢失或线程不匹配时工具卡片永远转圈。
+          // 超时兜底：5 分钟后如果工具仍为 running，自动收敛为 failed。
           for (const c of e.payload.calls) {
             setTimeout(() => {
               const latest = useAppStore.getState();
-              for (const msg of latest.messages) {
+              const latestRuntime = latest.getThreadRuntimeState(threadId);
+              for (const msg of latestRuntime?.messages ?? []) {
                 const tc = msg.toolCalls?.find((t) => t.id === c.id && t.status === "running");
                 if (tc) {
-                  latest.updateToolCallStatus(c.id, "failed", "Tool timed out (5 min).");
+                  latest.updateToolCallStatusForThread(threadId, c.id, "failed", "Tool timed out (5 min).");
                   break;
                 }
               }
@@ -780,13 +840,13 @@ export function useTauriEvents() {
           "tool-exec-end",
           (e) => {
             const store = useAppStore.getState();
-            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-              return;
-            }
+            const threadId = e.payload.threadId ?? store.currentThreadId;
+            if (!threadId) return;
+            const isActive = threadId === store.currentThreadId;
             const status = e.payload.exitCode === 0 ? "success" : "failed";
             const output = e.payload.output;
 
-            if (e.payload.tool === "browser_run") {
+            if (e.payload.tool === "browser_run" && isActive) {
               const parsed = parseBrowserRunOutput(output);
               store.setBrowserPanelState({
                 url: parsed?.finalUrl ?? store.browserPanelUrl,
@@ -796,11 +856,13 @@ export function useTauriEvents() {
             }
 
             if (e.payload.callId) {
-              store.updateToolCallStatus(e.payload.callId, status, output);
+              store.updateToolCallStatusForThread(threadId, e.payload.callId, status, output);
               return;
             }
 
-            const msgs = store.messages;
+            // 回退查找：在最近的消息中搜索匹配的 running 工具
+            const runtime = store.getThreadRuntimeState(threadId);
+            const msgs = runtime?.messages ?? [];
             for (let i = msgs.length - 1; i >= 0; i--) {
               const tc = msgs[i].toolCalls;
               if (!tc) continue;
@@ -808,7 +870,7 @@ export function useTauriEvents() {
                 (c) => c.status === "running" && c.name === e.payload.tool,
               );
               if (runningIdx >= 0) {
-                store.updateToolCallStatus(tc[runningIdx].id, status, output);
+                store.updateToolCallStatusForThread(threadId, tc[runningIdx].id, status, output);
                 return;
               }
             }
@@ -829,16 +891,15 @@ export function useTauriEvents() {
           changes?: Array<Record<string, unknown>>;
         }>("file-change-patch-updated", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-            return;
-          }
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
           const toolId = e.payload.callId ?? e.payload.itemId;
           if (!toolId) {
             return;
           }
           const changes = normalizePatchProgressChanges(e.payload);
           if (changes.length) {
-            useAppStore.getState().updateToolCallPatchProgress(toolId, changes);
+            useAppStore.getState().updateToolCallPatchProgressForThread(threadId, toolId, changes);
           }
         }),
 
@@ -848,12 +909,10 @@ export function useTauriEvents() {
           itemId?: string;
         }>("file-review-ready", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-            return;
-          }
-          const threadId = e.payload.threadId;
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
           const callId = e.payload.callId ?? e.payload.itemId;
-          if (!threadId || !callId) {
+          if (!callId) {
             return;
           }
           // 后端只广播“审阅就绪”的轻量事件，完整内容在此按需拉取，
@@ -861,10 +920,7 @@ export function useTauriEvents() {
           void fileReviewGet(threadId, callId)
             .then((review) => {
               const latestStore = useAppStore.getState();
-              if (threadId && latestStore.currentThreadId && threadId !== latestStore.currentThreadId) {
-                return;
-              }
-              latestStore.upsertPendingFileReview(normalizePendingFileReview(review));
+              latestStore.upsertPendingFileReviewForThread(threadId, normalizePendingFileReview(review));
             })
             .catch((err) => {
               console.error("[event] file-review-ready: fetch review failed", err);
@@ -878,25 +934,24 @@ export function useTauriEvents() {
           message?: string;
         }>("file-review-updated", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-            return;
-          }
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
           const callId = e.payload.callId;
           if (!callId) {
             return;
           }
           // 统一处理后端状态机事件：updated/applied/cancelled/failed。
-          // 这样即使用户在别的入口触发 apply/cancel，本地 UI 也能实时收敛。
           switch (e.payload.status) {
             case "updated":
-              store.setPendingFileReviewStatus(callId, "pending");
+              store.setPendingFileReviewStatusForThread(threadId, callId, "pending");
               break;
             case "applied":
             case "cancelled":
-              store.removePendingFileReview(callId);
+              store.removePendingFileReviewForThread(threadId, callId);
               break;
             case "failed":
-              store.setPendingFileReviewStatus(
+              store.setPendingFileReviewStatusForThread(
+                threadId,
                 callId,
                 "failed",
                 e.payload.message ?? "Review apply failed.",
@@ -934,11 +989,11 @@ export function useTauriEvents() {
           "tool-calls-end",
           (e) => {
             const store = useAppStore.getState();
-            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-              return;
-            }
+            const threadId = e.payload.threadId ?? store.currentThreadId;
+            if (!threadId) return;
             for (const result of e.payload.results ?? []) {
-              store.updateToolCallStatus(
+              store.updateToolCallStatusForThread(
+                threadId,
                 result.id,
                 result.success ? "success" : "failed",
                 result.interrupted ? "Tool interrupted by user." : undefined,
@@ -956,9 +1011,8 @@ export function useTauriEvents() {
           modelContextWindow?: number;
         }>("context-compacted", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-            return;
-          }
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
 
           // 压缩事件可能出现在 turn 间隙；此处主动刷新 live 用量，避免 UI 停留在压缩前数据。
           const compactedPromptTokens = Number(e.payload.contextPromptTokens ?? 0);
@@ -967,16 +1021,18 @@ export function useTauriEvents() {
             return;
           }
 
+          const runtime = store.getThreadRuntimeState(threadId);
+          const liveUsage = runtime?.liveTurnUsage ?? null;
           const nextUsage = normalizeTokenUsage({
             promptTokens: compactedPromptTokens > 0
               ? compactedPromptTokens
-              : Number(store.liveTurnUsage?.promptTokens ?? 0),
-            completionTokens: Number(store.liveTurnUsage?.completionTokens ?? 0),
+              : Number(liveUsage?.promptTokens ?? 0),
+            completionTokens: Number(liveUsage?.completionTokens ?? 0),
             totalTokens: compactedPromptTokens > 0
               ? compactedPromptTokens
-              : Number(store.liveTurnUsage?.totalTokens ?? 0),
-            ...(typeof store.liveTurnUsage?.callCount === "number"
-              ? { callCount: store.liveTurnUsage.callCount }
+              : Number(liveUsage?.totalTokens ?? 0),
+            ...(typeof liveUsage?.callCount === "number"
+              ? { callCount: liveUsage.callCount }
               : {}),
             ...(compactedPromptTokens > 0
               ? { lastSinglePromptTokens: compactedPromptTokens }
@@ -986,7 +1042,7 @@ export function useTauriEvents() {
               : {}),
           });
           if (nextUsage) {
-            store.setLiveTurnUsage(nextUsage);
+            store.setLiveTurnUsageForThread(threadId, nextUsage);
           }
         }),
 
@@ -1040,9 +1096,8 @@ export function useTauriEvents() {
           "server-error",
           (e) => {
             const store = useAppStore.getState();
-            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-              return;
-            }
+            const threadId = e.payload.threadId ?? store.currentThreadId;
+            if (!threadId) return;
             console.error("[event] server-error:", e.payload);
             if (e.payload.retryable) {
               const retryInMs = Number(e.payload.retryInMs ?? 1_000);
@@ -1051,21 +1106,19 @@ export function useTauriEvents() {
               const maxAttempts = Number(e.payload.maxAttempts ?? 0);
               const retrySuffix =
                 attempt > 0 && maxAttempts > 0 ? ` (${attempt}/${maxAttempts})` : "";
-              store.setStreaming(true);
-              store.setStreamingLabel(`429 限流，${waitSeconds}s 后重试${retrySuffix}`);
+              store.setStreamingForThread(threadId, true);
+              store.setStreamingLabelForThread(threadId, `429 限流，${waitSeconds}s 后重试${retrySuffix}`);
               return;
             }
             const msg =
               e.payload.message ??
               e.payload.error?.message ??
               JSON.stringify(e.payload);
-            if (e.payload.threadId) {
-              reasoningByThread.delete(e.payload.threadId);
-            }
-            store.setLiveTurnUsage(null);
-            store.markRunningToolCallsInterrupted(msg);
-            store.flushAndStopStreaming();
-            store.addMessage({
+            reasoningByThread.delete(threadId);
+            store.setLiveTurnUsageForThread(threadId, null);
+            store.markRunningToolCallsInterruptedForThread(threadId, msg);
+            store.flushAndStopStreamingForThread(threadId);
+            store.addMessageToThread(threadId, {
               id: crypto.randomUUID(),
               role: "system",
               content: `Error: ${msg}`,
@@ -1171,8 +1224,8 @@ export function useTauriEvents() {
           assistantText: string;
         }>("robot-waiting-for-input", (e) => {
           const store = useAppStore.getState();
-          if (e.payload.threadId !== store.currentThreadId) return;
-          store.setRobotWaitCountdown({
+          const threadId = e.payload.threadId;
+          store.setRobotWaitCountdownForThread(threadId, {
             callId: e.payload.callId,
             threadId: e.payload.threadId,
             countdownMs: e.payload.countdownMs,
@@ -1187,8 +1240,15 @@ export function useTauriEvents() {
           callId: string;
         }>("robot-wait-resolved", (e) => {
           const store = useAppStore.getState();
+          // 活跃线程的 robotWaitCountdown 在顶层，后台线程在映射中。
           if (store.robotWaitCountdown?.callId === e.payload.callId) {
             store.setRobotWaitCountdown(null);
+          }
+          // 检查所有后台线程的 robotWaitCountdown
+          for (const [tid, runtime] of Object.entries(store.threadRuntimeStates)) {
+            if (runtime.robotWaitCountdown?.callId === e.payload.callId) {
+              store.setRobotWaitCountdownForThread(tid, null);
+            }
           }
         }),
 
@@ -1210,9 +1270,8 @@ export function useTauriEvents() {
           "plan-generated",
           (e) => {
             const store = useAppStore.getState();
-            if (e.payload.threadId && e.payload.threadId !== store.currentThreadId) {
-              return;
-            }
+            const threadId = e.payload.threadId ?? store.currentThreadId;
+            if (!threadId) return;
             const revision = Number(e.payload.revision ?? 0);
             const nextPlan = {
               path: e.payload.path,
@@ -1222,13 +1281,13 @@ export function useTauriEvents() {
                 : {}),
               updatedAt: Date.now(),
             };
-            useAppStore.setState((state) => {
-              const activePath = state.activePlan?.path;
+            store.applyToThread(threadId, (draft) => {
+              const activePath = draft.activePlan?.path;
               const targetPath =
                 e.payload.updated && activePath
                   ? activePath
                   : nextPlan.path;
-              const duplicated = state.messages.some(
+              const duplicated = draft.messages.some(
                 (message) =>
                   message.planFile?.path === nextPlan.path &&
                   message.planFile?.content === nextPlan.content &&
@@ -1242,7 +1301,7 @@ export function useTauriEvents() {
               }
 
               let replaced = false;
-              const nextMessages = state.messages.map((message) => {
+              const nextMessages = draft.messages.map((message) => {
                 const planPath = message.planFile?.path;
                 if (!planPath) {
                   return message;

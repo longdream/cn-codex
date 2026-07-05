@@ -66,6 +66,34 @@ Rules:
 - Remove outdated or contradictory information (prefer the more recent entry).
 - Keep the summary focused on actionable knowledge, not narrative.";
 
+pub const SUMMARIZE_MERGE_SYSTEM_PROMPT: &str = "\
+You are an experience consolidation system. You will receive a collection of raw experience notes extracted from past coding sessions. Your job is to categorize and merge similar/duplicate experiences into a SMALLER set of consolidated experience entries, reducing the total count while preserving all reusable knowledge.
+
+You must produce AT MOST {target_count} merged entries, and strictly FEWER than the number of input experiences. Group experiences that share the same topic, technology, or lesson. Each merged entry must combine the knowledge of its members without losing concrete technical details (error messages, command syntax, file paths).
+
+Format your response as:
+
+---BEGIN merged_experiences.json---
+[
+  {
+    \"title\": \"Short human-readable title (10-30 chars), same language as the input\",
+    \"summary\": \"1-2 sentence durable summary of the reusable experience\",
+    \"slug\": \"kebab-case-identifier\",
+    \"categories\": [\"tag1\", \"tag2\"],
+    \"content\": \"Full markdown body. Use ## sections (Lessons, User Preferences, Project Knowledge, Workflow Patterns) as needed. Merge and deduplicate the member experiences' content here.\"
+  }
+]
+---END merged_experiences.json---
+
+Rules:
+- Produce fewer entries than the input. Merge aggressively when experiences overlap.
+- Never invent new knowledge not present in the inputs.
+- Preserve concrete technical details from the source experiences.
+- `categories` should be lowercase tags merged from the members (2-8 tags).
+- `content` must be self-contained markdown usable as a standalone experience document.
+- Write titles and summaries in the same language as the source experiences.
+- If all inputs are trivial or empty, output an empty array: []";
+
 pub const KNOWLEDGE_ORGANIZE_SYSTEM_PROMPT: &str = "\
 You are a knowledge organization system. You will receive raw text extracted from a document. Your job is to:
 
@@ -108,6 +136,21 @@ pub struct KnowledgeOrganizeMetadata {
     pub domain: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+/// A single merged experience entry produced by the summarize-merge pipeline.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MergedExperience {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub content: String,
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +236,34 @@ pub fn build_consolidation_messages(
     ]
 }
 
+pub fn build_summarize_merge_messages(
+    raw_experiences: &[(String, String, u32)],
+    target_count: usize,
+) -> Vec<(String, String)> {
+    let system =
+        SUMMARIZE_MERGE_SYSTEM_PROMPT.replace("{target_count}", &target_count.to_string());
+
+    let mut user_content = String::from(
+        "Here are the raw experience notes to categorize and merge. Each entry includes the thread ID, usage count, and content:\n\n",
+    );
+
+    for (thread_id, content, usage_count) in raw_experiences {
+        user_content.push_str(&format!(
+            "--- Experience from thread {thread_id} (used {usage_count} times) ---\n{content}\n\n"
+        ));
+    }
+
+    user_content.push_str(&format!(
+        "Please categorize and merge these into AT MOST {target_count} consolidated experience entries (fewer than the {count} inputs).",
+        count = raw_experiences.len()
+    ));
+
+    vec![
+        ("system".to_string(), system),
+        ("user".to_string(), user_content),
+    ]
+}
+
 pub fn build_knowledge_organize_messages(
     raw_text: &str,
     source_name: &str,
@@ -261,6 +332,35 @@ pub fn parse_consolidation_output(output: &str) -> (String, String) {
     )
     .unwrap_or_default();
     (summary, handbook)
+}
+
+pub fn parse_summarize_merge_output(output: &str) -> Vec<MergedExperience> {
+    let json_text = match extract_delimited(
+        output,
+        "---BEGIN merged_experiences.json---",
+        "---END merged_experiences.json---",
+    ) {
+        Some(text) => text,
+        None => {
+            // Tolerate models that emit a bare JSON array without markers.
+            let trimmed = output.trim();
+            if trimmed.starts_with('[') {
+                trimmed.to_string()
+            } else {
+                return Vec::new();
+            }
+        }
+    };
+
+    if json_text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let parsed: Vec<MergedExperience> = serde_json::from_str(&json_text).unwrap_or_default();
+    parsed
+        .into_iter()
+        .filter(|entry| !entry.content.trim().is_empty())
+        .collect()
 }
 
 pub fn parse_knowledge_organize_output(output: &str) -> ParsedKnowledgeOrganizeOutput {
@@ -481,5 +581,67 @@ Some preamble text.
         assert!(parsed.organized_markdown.contains("## Notes"));
         assert!(parsed.hierarchy.is_some());
         assert!(parsed.metadata.is_none());
+    }
+
+    #[test]
+    fn parse_summarize_merge_output_parses_delimited_json() {
+        let output = "\
+Some preamble.
+
+---BEGIN merged_experiences.json---
+[
+  {
+    \"title\": \"React debugging\",
+    \"summary\": \"Fix common React issues.\",
+    \"slug\": \"react-debugging\",
+    \"categories\": [\"debugging\", \"react\"],
+    \"content\": \"## Lessons\\n- Use useEffect for hydration.\"
+  },
+  {
+    \"title\": \"Rust build\",
+    \"summary\": \"Cargo build tips.\",
+    \"slug\": \"rust-build\",
+    \"categories\": [\"rust\", \"build\"],
+    \"content\": \"## Lessons\\n- Run cargo check.\"
+  }
+]
+---END merged_experiences.json---
+";
+        let merged = parse_summarize_merge_output(output);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].title.as_deref(), Some("React debugging"));
+        assert_eq!(merged[0].categories, vec!["debugging", "react"]);
+        assert!(merged[0].content.contains("useEffect"));
+        assert_eq!(merged[1].slug.as_deref(), Some("rust-build"));
+    }
+
+    #[test]
+    fn parse_summarize_merge_output_tolerates_bare_json_array() {
+        let output = "[{\"title\":\"t\",\"summary\":\"s\",\"slug\":\"sl\",\"categories\":[\"a\"],\"content\":\"body\"}]";
+        let merged = parse_summarize_merge_output(output);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].content, "body");
+    }
+
+    #[test]
+    fn parse_summarize_merge_output_drops_empty_content_entries() {
+        let output = "\
+---BEGIN merged_experiences.json---
+[
+  {\"title\":\"keep\",\"content\":\"real content\"},
+  {\"title\":\"drop\",\"content\":\"   \"}
+]
+---END merged_experiences.json---
+";
+        let merged = parse_summarize_merge_output(output);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].title.as_deref(), Some("keep"));
+    }
+
+    #[test]
+    fn parse_summarize_merge_output_handles_empty_array() {
+        let output = "---BEGIN merged_experiences.json---\n[]\n---END merged_experiences.json---";
+        let merged = parse_summarize_merge_output(output);
+        assert!(merged.is_empty());
     }
 }

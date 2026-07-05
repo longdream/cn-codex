@@ -180,6 +180,57 @@ export interface QueuedMessage {
   timestamp: number;
 }
 
+/**
+ * 单个对话的运行时状态快照。
+ *
+ * 顶层 store 字段始终反映"活跃线程"的视图，而该结构用于保存非活跃
+ * （后台）线程的对话上下文，使切换对话时不丢失队列、流式状态、消息等。
+ */
+export interface ThreadRuntimeState {
+  messages: ChatMessage[];
+  streamingText: string;
+  streamingLabel: string;
+  isStreaming: boolean;
+  liveTurnUsage: TokenUsage | null;
+  currentTurnId: string | null;
+  pendingMessageQueue: QueuedMessage[];
+  pendingFileReviews: Record<string, PendingFileReview>;
+  currentGoal: ThreadGoal | null;
+  activePlan: PlanFile | null;
+  latestPlanContent: string | null;
+  chatMode: ChatMode;
+  selectedRobotId: string | null;
+  robotCreateMode: boolean;
+  robotWaitCountdown: RobotWaitCountdown | null;
+  reasoningText: string;
+  updatedAt: number;
+}
+
+/** 后台线程运行时状态映射的最大条目数，超出时淘汰最旧条目。 */
+const MAX_THREAD_RUNTIME_STATES = 20;
+
+function createDefaultThreadRuntimeState(): ThreadRuntimeState {
+  return {
+    messages: [],
+    streamingText: "",
+    streamingLabel: "",
+    isStreaming: false,
+    liveTurnUsage: null,
+    currentTurnId: null,
+    pendingMessageQueue: [],
+    pendingFileReviews: {},
+    currentGoal: null,
+    activePlan: null,
+    latestPlanContent: null,
+    chatMode: "chat",
+    selectedRobotId: null,
+    robotCreateMode: false,
+    robotWaitCountdown: null,
+    reasoningText: "",
+    updatedAt: Date.now(),
+  };
+}
+
 export type RightPanelTab = "browser" | "project" | "terminal" | "git";
 export type SidebarTab = "chats" | "projects";
 export interface SmartbrainExtractionProgress {
@@ -1342,6 +1393,8 @@ interface AppState {
   pendingMessageQueue: QueuedMessage[];
   /** apply_patch 的“写盘前审阅”会话，按 callId 建索引。 */
   pendingFileReviews: Record<string, PendingFileReview>;
+  /** 后台线程运行时状态映射，key 为 threadId。切换离开的线程状态保存在这里。 */
+  threadRuntimeStates: Record<string, ThreadRuntimeState>;
 
   projects: Project[];
   currentProjectId: string | null;
@@ -1503,6 +1556,120 @@ interface AppState {
   createThread: () => Promise<string | null>;
   loadThreads: () => Promise<void>;
   loadThread: (threadId: string) => Promise<void>;
+
+  // ─── Per-thread 运行时状态管理 ──────────────────────────────
+  /** 将当前活跃线程的顶层字段快照到 threadRuntimeStates 映射。 */
+  saveCurrentThreadRuntimeState: () => void;
+  /** 从映射恢复指定线程状态到顶层字段，返回是否命中缓存。 */
+  restoreThreadRuntimeState: (threadId: string) => boolean;
+  /** 统一更新入口：活跃线程更新顶层，后台线程更新映射。updater 返回需要合并的部分状态。 */
+  applyToThread: (
+    threadId: string,
+    updater: (draft: ThreadRuntimeState) => Partial<ThreadRuntimeState>,
+  ) => Partial<ThreadRuntimeState>;
+  /** 获取指定线程的运行时状态快照（活跃线程从顶层字段组装，后台线程从映射读取）。 */
+  getThreadRuntimeState: (threadId: string) => ThreadRuntimeState | null;
+  /** 删除指定线程的运行时状态（用于删除对话时清理）。 */
+  deleteThreadRuntimeState: (threadId: string) => void;
+  /** 检查指定线程是否正在流式（活跃线程看顶层 isStreaming，后台看映射）。 */
+  isThreadStreaming: (threadId: string) => boolean;
+
+  // ─── Per-thread 方法族（事件处理器调用） ─────────────────────
+  addMessageToThread: (threadId: string, message: ChatMessage) => void;
+  setStreamingForThread: (threadId: string, v: boolean) => void;
+  appendStreamingTextForThread: (threadId: string, delta: string) => void;
+  clearStreamingTextForThread: (threadId: string) => void;
+  setStreamingLabelForThread: (threadId: string, label: string) => void;
+  flushAndStopStreamingForThread: (threadId: string, options?: StreamingConvergeOptions) => void;
+  setCurrentTurnIdForThread: (threadId: string, id: string | null) => void;
+  setLiveTurnUsageForThread: (threadId: string, usage: TokenUsage | null) => void;
+  setCurrentGoalForThread: (threadId: string, goal: ThreadGoal | null) => void;
+  updateToolCallStatusForThread: (
+    threadId: string,
+    toolId: string,
+    status: "success" | "failed",
+    output?: string,
+  ) => void;
+  updateToolCallPatchProgressForThread: (
+    threadId: string,
+    toolId: string,
+    changes: PatchProgressChange[],
+  ) => void;
+  markRunningToolCallsInterruptedForThread: (threadId: string, reason?: string) => void;
+  upsertPendingFileReviewForThread: (threadId: string, review: PendingFileReview) => void;
+  setPendingFileReviewStatusForThread: (
+    threadId: string,
+    callId: string,
+    status: PendingFileReview["status"],
+    error?: string,
+  ) => void;
+  removePendingFileReviewForThread: (threadId: string, callId: string) => void;
+  dequeueMessageForThread: (threadId: string) => QueuedMessage | null;
+  enqueueMessageToThread: (threadId: string, msg: QueuedMessage) => void;
+  setRobotWaitCountdownForThread: (threadId: string, v: RobotWaitCountdown | null) => void;
+  setActivePlanForThread: (threadId: string, plan: PlanFile | null) => void;
+  setLatestPlanContentForThread: (threadId: string, content: string | null) => void;
+}
+
+/** 从顶层 store 字段组装 ThreadRuntimeState 快照。 */
+function assembleRuntimeStateFromStore(
+  state: Pick<
+    AppState,
+    | "messages"
+    | "streamingText"
+    | "streamingLabel"
+    | "isStreaming"
+    | "liveTurnUsage"
+    | "currentTurnId"
+    | "pendingMessageQueue"
+    | "pendingFileReviews"
+    | "currentGoal"
+    | "activePlan"
+    | "latestPlanContent"
+    | "chatMode"
+    | "selectedRobotId"
+    | "robotCreateMode"
+    | "robotWaitCountdown"
+  >,
+): ThreadRuntimeState {
+  return {
+    messages: state.messages,
+    streamingText: state.streamingText,
+    streamingLabel: state.streamingLabel,
+    isStreaming: state.isStreaming,
+    liveTurnUsage: state.liveTurnUsage,
+    currentTurnId: state.currentTurnId,
+    pendingMessageQueue: state.pendingMessageQueue,
+    pendingFileReviews: state.pendingFileReviews,
+    currentGoal: state.currentGoal,
+    activePlan: state.activePlan,
+    latestPlanContent: state.latestPlanContent,
+    chatMode: state.chatMode,
+    selectedRobotId: state.selectedRobotId,
+    robotCreateMode: state.robotCreateMode,
+    robotWaitCountdown: state.robotWaitCountdown,
+    reasoningText: "",
+    updatedAt: Date.now(),
+  };
+}
+
+/** LRU 淘汰：若映射超过上限则移除 updatedAt 最旧的条目。 */
+function pruneThreadRuntimeStates(
+  map: Record<string, ThreadRuntimeState>,
+): Record<string, ThreadRuntimeState> {
+  const keys = Object.keys(map);
+  if (keys.length <= MAX_THREAD_RUNTIME_STATES) {
+    return map;
+  }
+  const sorted = keys.sort(
+    (a, b) => (map[a].updatedAt ?? 0) - (map[b].updatedAt ?? 0),
+  );
+  const next = { ...map };
+  const toRemove = sorted.slice(0, keys.length - MAX_THREAD_RUNTIME_STATES);
+  for (const key of toRemove) {
+    delete next[key];
+  }
+  return next;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -1521,6 +1688,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingComposerInsert: null,
   pendingMessageQueue: [],
   pendingFileReviews: {},
+  threadRuntimeStates: {},
   workspaceCwd: null,
   configDir: null,
   configPath: null,
@@ -1577,12 +1745,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   retryInit: null,
   setRetryInit: (fn) => set({ retryInit: fn }),
   setCurrentThread: (id) => {
+    // 切换前保存当前线程的运行时状态，避免队列/流式等上下文丢失。
+    get().saveCurrentThreadRuntimeState();
+    if (id && get().restoreThreadRuntimeState(id)) {
+      // 命中缓存：恢复成功，仅需更新 currentThreadId。
+      set({ currentThreadId: id });
+      return;
+    }
+    // 未命中缓存：重置为干净的初始状态（新线程或首次打开）。
     set({
       currentThreadId: id,
       messages: [],
       streamingText: "",
       streamingLabel: "",
+      isStreaming: false,
       liveTurnUsage: null,
+      currentTurnId: null,
       currentGoal: null,
       latestPlanContent: null,
       activePlan: null,
@@ -1699,6 +1877,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectProject: (projectId: string) => {
     const project = get().projects.find((p) => p.id === projectId);
     if (!project) return;
+    // 切换项目前保存当前对话的运行时状态。
+    get().saveCurrentThreadRuntimeState();
     saveActiveProject(projectId, project.cwd);
     set({
       currentProjectId: projectId,
@@ -1706,18 +1886,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentThreadId: null,
       messages: [],
       streamingText: "",
+      streamingLabel: "",
       isStreaming: false,
       liveTurnUsage: null,
       currentTurnId: null,
       currentGoal: null,
       latestPlanContent: null,
       activePlan: null,
+      selectedRobotId: null,
+      robotCreateMode: false,
       pendingMessageQueue: [],
+      pendingFileReviews: {},
     });
   },
 
   selectGeneralMode: () => {
     const cwd = get().projectRoot ?? get().userHomeDir;
+    // 切换到通用模式前保存当前对话的运行时状态。
+    get().saveCurrentThreadRuntimeState();
     saveActiveProject(GENERAL_PROJECT_ID, cwd);
     set({
       currentProjectId: GENERAL_PROJECT_ID,
@@ -1725,13 +1911,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentThreadId: null,
       messages: [],
       streamingText: "",
+      streamingLabel: "",
       isStreaming: false,
       liveTurnUsage: null,
       currentTurnId: null,
       currentGoal: null,
       latestPlanContent: null,
       activePlan: null,
+      selectedRobotId: null,
+      robotCreateMode: false,
       pendingMessageQueue: [],
+      pendingFileReviews: {},
     });
   },
 
@@ -1753,6 +1943,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     saveThreadProjectMap(tpMap);
     const filteredThreads = get().threads.filter((t) => !threadsToRemove.has(t.id));
+    // 清理被删除对话的运行时状态快照
+    for (const tid of threadsToRemove) {
+      get().deleteThreadRuntimeState(tid);
+    }
     set({
       projects: next,
       threads: filteredThreads,
@@ -1764,10 +1958,14 @@ export const useAppStore = create<AppState>((set, get) => ({
             currentThreadId: null,
             messages: [],
             streamingText: "",
+            streamingLabel: "",
+            isStreaming: false,
             liveTurnUsage: null,
             currentGoal: null,
             latestPlanContent: null,
             activePlan: null,
+            pendingMessageQueue: [],
+            pendingFileReviews: {},
           }
         : {}),
     });
@@ -2066,6 +2264,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const tpMap = { ...get().threadProjectMap };
     delete tpMap[threadId];
     saveThreadProjectMap(tpMap);
+    // 清理该线程的运行时状态快照
+    get().deleteThreadRuntimeState(threadId);
     set({
       threads,
       threadProjectMap: tpMap,
@@ -2074,10 +2274,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           currentThreadId: null,
           messages: [],
           streamingText: "",
+          streamingLabel: "",
+          isStreaming: false,
           liveTurnUsage: null,
           currentTurnId: null,
           latestPlanContent: null,
           activePlan: null,
+          currentGoal: null,
+          pendingMessageQueue: [],
           pendingFileReviews: {},
         }
         : {}),
@@ -2390,6 +2594,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   createThread: async () => {
     try {
+      // 创建新线程前保存当前对话的运行时状态。
+      get().saveCurrentThreadRuntimeState();
       const resp = await standaloneThreadCreate();
       const threadId = resp?.thread?.id ?? null;
       if (threadId) {
@@ -2398,12 +2604,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           currentThreadId: threadId,
           messages: [],
           streamingText: "",
+          streamingLabel: "",
           isStreaming: false,
           liveTurnUsage: null,
           currentTurnId: null,
           currentGoal: null,
           latestPlanContent: null,
           activePlan: null,
+          selectedRobotId: null,
+          robotCreateMode: false,
           pendingMessageQueue: [],
           pendingFileReviews: {},
         });
@@ -2461,6 +2670,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   loadThread: async (threadId: string) => {
+    // 切换前保存当前线程的运行时状态。
+    get().saveCurrentThreadRuntimeState();
+
+    // 若该线程已有运行时状态快照（含后台事件更新），直接恢复，跳过后端加载。
+    // 这保留了队列、流式文本、工具调用等在切换期间累积的上下文。
+    if (get().restoreThreadRuntimeState(threadId)) {
+      set({ currentThreadId: threadId });
+      return;
+    }
+
     try {
       const resp = await standaloneThreadRead(threadId);
       const rawThread = resp?.thread as RawThread | undefined;
@@ -2490,11 +2709,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         currentTurnId: null,
         messages: cleanedMessages,
         streamingText: "",
+        streamingLabel: "",
         isStreaming: false,
         liveTurnUsage: null,
         latestPlanContent: hydratedActivePlan?.content ?? null,
         activePlan: hydratedActivePlan,
         currentGoal: normalizeThreadGoal(rawThread?.goal),
+        selectedRobotId: null,
+        robotCreateMode: false,
         pendingMessageQueue: [],
         pendingFileReviews: {},
       });
@@ -2521,6 +2743,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         currentTurnId: null,
         messages: [],
         streamingText: "",
+        streamingLabel: "",
         isStreaming: false,
         liveTurnUsage: null,
         currentGoal: null,
@@ -2530,6 +2753,317 @@ export const useAppStore = create<AppState>((set, get) => ({
         pendingFileReviews: {},
       });
     }
+  },
+
+  // ─── Per-thread 运行时状态管理实现 ──────────────────────────
+  saveCurrentThreadRuntimeState: () => {
+    const state = get();
+    const threadId = state.currentThreadId;
+    if (!threadId) return;
+    const snapshot = assembleRuntimeStateFromStore(state);
+    set((s) => ({
+      threadRuntimeStates: pruneThreadRuntimeStates({
+        ...s.threadRuntimeStates,
+        [threadId]: snapshot,
+      }),
+    }));
+  },
+
+  restoreThreadRuntimeState: (threadId) => {
+    const saved = get().threadRuntimeStates[threadId];
+    if (!saved) return false;
+    set({
+      messages: saved.messages,
+      streamingText: saved.streamingText,
+      streamingLabel: saved.streamingLabel,
+      isStreaming: saved.isStreaming,
+      liveTurnUsage: saved.liveTurnUsage,
+      currentTurnId: saved.currentTurnId,
+      pendingMessageQueue: saved.pendingMessageQueue,
+      pendingFileReviews: saved.pendingFileReviews,
+      currentGoal: saved.currentGoal,
+      activePlan: saved.activePlan,
+      latestPlanContent: saved.latestPlanContent,
+      chatMode: saved.chatMode,
+      selectedRobotId: saved.selectedRobotId,
+      robotCreateMode: saved.robotCreateMode,
+      robotWaitCountdown: saved.robotWaitCountdown,
+    });
+    return true;
+  },
+
+  applyToThread: (threadId, updater) => {
+    const state = get();
+    if (threadId === state.currentThreadId) {
+      const draft = assembleRuntimeStateFromStore(state);
+      const updates = updater(draft);
+      set(updates as Partial<AppState>);
+      return updates;
+    }
+    const existing = state.threadRuntimeStates[threadId] ?? createDefaultThreadRuntimeState();
+    const updates = updater({ ...existing });
+    const nextState: ThreadRuntimeState = {
+      ...existing,
+      ...updates,
+      updatedAt: Date.now(),
+    };
+    set((s) => ({
+      threadRuntimeStates: pruneThreadRuntimeStates({
+        ...s.threadRuntimeStates,
+        [threadId]: nextState,
+      }),
+    }));
+    return updates;
+  },
+
+  getThreadRuntimeState: (threadId) => {
+    const state = get();
+    if (threadId === state.currentThreadId) {
+      return assembleRuntimeStateFromStore(state);
+    }
+    return state.threadRuntimeStates[threadId] ?? null;
+  },
+
+  deleteThreadRuntimeState: (threadId) => {
+    set((s) => {
+      const next = { ...s.threadRuntimeStates };
+      delete next[threadId];
+      return { threadRuntimeStates: next };
+    });
+  },
+
+  isThreadStreaming: (threadId) => {
+    const state = get();
+    if (threadId === state.currentThreadId) {
+      return state.isStreaming;
+    }
+    return state.threadRuntimeStates[threadId]?.isStreaming ?? false;
+  },
+
+  // ─── Per-thread 方法族实现 ──────────────────────────────────
+  addMessageToThread: (threadId, message) => {
+    get().applyToThread(threadId, (draft) => ({
+      messages: [...draft.messages, message],
+    }));
+  },
+
+  setStreamingForThread: (threadId, v) => {
+    get().applyToThread(threadId, () => ({
+      isStreaming: v,
+      ...(v ? {} : { streamingLabel: "" }),
+    }));
+  },
+
+  appendStreamingTextForThread: (threadId, delta) => {
+    get().applyToThread(threadId, (draft) => ({
+      streamingText: draft.streamingText + delta,
+    }));
+  },
+
+  clearStreamingTextForThread: (threadId) => {
+    get().applyToThread(threadId, () => ({
+      streamingText: "",
+      streamingLabel: "",
+    }));
+  },
+
+  setStreamingLabelForThread: (threadId, label) => {
+    get().applyToThread(threadId, () => ({
+      streamingLabel: label,
+    }));
+  },
+
+  flushAndStopStreamingForThread: (threadId, options) => {
+    get().applyToThread(threadId, (draft) => {
+      const commitStreamingText = options?.commitStreamingText === true;
+      const text = draft.streamingText;
+      const shouldCommit = commitStreamingText && text.length > 0;
+      if (
+        !shouldCommit &&
+        !draft.isStreaming &&
+        text.length === 0 &&
+        draft.streamingLabel.length === 0 &&
+        !draft.currentTurnId
+      ) {
+        return {};
+      }
+      return {
+        ...(shouldCommit
+          ? {
+              messages: [
+                ...draft.messages,
+                {
+                  id: crypto.randomUUID(),
+                  role: "assistant" as const,
+                  content: text,
+                  timestamp: Date.now(),
+                },
+              ],
+            }
+          : {}),
+        streamingText: "",
+        streamingLabel: "",
+        isStreaming: false,
+        currentTurnId: null,
+        liveTurnUsage: null,
+      };
+    });
+  },
+
+  setCurrentTurnIdForThread: (threadId, id) => {
+    get().applyToThread(threadId, () => ({
+      currentTurnId: id,
+    }));
+  },
+
+  setLiveTurnUsageForThread: (threadId, usage) => {
+    get().applyToThread(threadId, () => ({
+      liveTurnUsage: usage,
+    }));
+  },
+
+  setCurrentGoalForThread: (threadId, goal) => {
+    const normalized = goal ? normalizeThreadGoal(goal) : null;
+    get().applyToThread(threadId, () => ({
+      currentGoal: normalized,
+    }));
+  },
+
+  updateToolCallStatusForThread: (threadId, toolId, status, output?) => {
+    get().applyToThread(threadId, (draft) => {
+      const msgs = [...draft.messages];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const tc = msgs[i].toolCalls;
+        if (!tc) continue;
+        const idx = tc.findIndex((c) => c.id === toolId);
+        if (idx >= 0) {
+          const updatedCalls = [...tc];
+          updatedCalls[idx] = {
+            ...updatedCalls[idx],
+            status,
+            ...(output !== undefined ? { output } : {}),
+          };
+          msgs[i] = { ...msgs[i], toolCalls: updatedCalls };
+          return { messages: msgs };
+        }
+      }
+      return {};
+    });
+  },
+
+  updateToolCallPatchProgressForThread: (threadId, toolId, changes) => {
+    const normalized = changes.filter((change) => change.path.trim());
+    if (!normalized.length) return;
+    get().applyToThread(threadId, (draft) => {
+      const msgs = [...draft.messages];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const tc = msgs[i].toolCalls;
+        if (!tc) continue;
+        const idx = tc.findIndex((c) => c.id === toolId);
+        if (idx >= 0) {
+          const updatedCalls = [...tc];
+          updatedCalls[idx] = { ...updatedCalls[idx], patchProgress: normalized };
+          msgs[i] = { ...msgs[i], toolCalls: updatedCalls };
+          return { messages: msgs };
+        }
+      }
+      return {};
+    });
+  },
+
+  markRunningToolCallsInterruptedForThread: (threadId, reason = "Tool interrupted by user.") => {
+    get().applyToThread(threadId, (draft) => {
+      let changed = false;
+      const messages = draft.messages.map((message) => {
+        if (!message.toolCalls?.length) {
+          return message;
+        }
+        let messageChanged = false;
+        const nextCalls = message.toolCalls.map((toolCall) => {
+          if (toolCall.status !== "running") {
+            return toolCall;
+          }
+          changed = true;
+          messageChanged = true;
+          return {
+            ...toolCall,
+            status: "failed" as const,
+            output: toolCall.output ?? reason,
+          };
+        });
+        return messageChanged ? { ...message, toolCalls: nextCalls } : message;
+      });
+      if (!changed) return {};
+      return { messages };
+    });
+  },
+
+  upsertPendingFileReviewForThread: (threadId, review) => {
+    const normalized = normalizePendingFileReview(review);
+    get().applyToThread(threadId, (draft) => ({
+      pendingFileReviews: {
+        ...draft.pendingFileReviews,
+        [normalized.callId]: normalized,
+      },
+    }));
+  },
+
+  setPendingFileReviewStatusForThread: (threadId, callId, status, error?) => {
+    get().applyToThread(threadId, (draft) => {
+      const review = draft.pendingFileReviews[callId];
+      if (!review) return {};
+      if (review.status === status && review.error === error) return {};
+      return {
+        pendingFileReviews: {
+          ...draft.pendingFileReviews,
+          [callId]: { ...review, status, error },
+        },
+      };
+    });
+  },
+
+  removePendingFileReviewForThread: (threadId, callId) => {
+    get().applyToThread(threadId, (draft) => {
+      if (!draft.pendingFileReviews[callId]) return {};
+      const next = { ...draft.pendingFileReviews };
+      delete next[callId];
+      return { pendingFileReviews: next };
+    });
+  },
+
+  dequeueMessageForThread: (threadId) => {
+    let dequeued: QueuedMessage | null = null;
+    get().applyToThread(threadId, (draft) => {
+      if (draft.pendingMessageQueue.length === 0) return {};
+      const [first, ...rest] = draft.pendingMessageQueue;
+      dequeued = first;
+      return { pendingMessageQueue: rest };
+    });
+    return dequeued;
+  },
+
+  enqueueMessageToThread: (threadId, msg) => {
+    get().applyToThread(threadId, (draft) => ({
+      pendingMessageQueue: [...draft.pendingMessageQueue, msg],
+    }));
+  },
+
+  setRobotWaitCountdownForThread: (threadId, v) => {
+    get().applyToThread(threadId, () => ({
+      robotWaitCountdown: v,
+    }));
+  },
+
+  setActivePlanForThread: (threadId, plan) => {
+    get().applyToThread(threadId, () => ({
+      activePlan: plan,
+    }));
+  },
+
+  setLatestPlanContentForThread: (threadId, content) => {
+    get().applyToThread(threadId, () => ({
+      latestPlanContent: content,
+    }));
   },
 }));
 

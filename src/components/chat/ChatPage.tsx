@@ -273,9 +273,17 @@ export function ChatPage() {
     }
   }, [addSystemMessage, intl]);
 
-  // 排队消息自动发送：当 isStreaming 从 true 变为 false 时，自动取出队首消息发送
+  // 排队消息自动发送：当 isStreaming 从 true 变为 false 时，自动取出队首消息发送。
+  // 线程切换时不触发（避免从流式线程切到非流式线程时误发队列消息）。
   const wasStreamingRef = useRef(false);
+  const lastAutoSendThreadIdRef = useRef<string | null>(null);
   useEffect(() => {
+    // 线程切换时重置 ref，避免跨线程误触发自动发送
+    if (lastAutoSendThreadIdRef.current !== currentThreadId) {
+      lastAutoSendThreadIdRef.current = currentThreadId;
+      wasStreamingRef.current = isStreaming;
+      return;
+    }
     if (wasStreamingRef.current && !isStreaming) {
       const store = useAppStore.getState();
       const next = store.dequeueMessage();
@@ -284,7 +292,7 @@ export function ChatPage() {
       }
     }
     wasStreamingRef.current = isStreaming;
-  }, [isStreaming, handleSend]);
+  }, [isStreaming, currentThreadId, handleSend]);
 
   const handleJumpQueue = useCallback(async (messageId: string) => {
     const store = useAppStore.getState();
