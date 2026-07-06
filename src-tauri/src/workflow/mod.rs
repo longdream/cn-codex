@@ -110,6 +110,21 @@ pub struct WorkflowNode {
     pub expected_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<u32>,
+    /// 该节点已知的失败案例/反例，帮助后续执行时避开相同错误。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_failures: Option<Vec<KnownFailure>>,
+}
+
+/// 一条已知的失败案例（反例经验）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownFailure {
+    /// 失败现象描述（发生了什么）
+    pub error: String,
+    /// 失败根因
+    pub cause: String,
+    /// 正确做法 / 避坑建议
+    pub fix: String,
 }
 
 /// The full workflow definition stored as `workflow.json`.
@@ -496,6 +511,7 @@ mod tests {
                 depends_on: Vec::new(),
                 expected_output: None,
                 token_budget: None,
+                known_failures: None,
             }],
             total_estimated_tokens: None,
         }

@@ -143,6 +143,9 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const callCount = Number(usage.callCount ?? 0);
   const lastSinglePromptTokens = Number(usage.lastSinglePromptTokens ?? 0);
   const contextWindowTokens = Number(usage.contextWindowTokens ?? 0);
+  const cachedTokens = Number(usage.cachedTokens ?? 0);
+  const cacheCreationTokens = Number(usage.cacheCreationTokens ?? 0);
+  const reasoningTokens = Number(usage.reasoningTokens ?? 0);
   if (
     promptTokens <= 0 &&
     completionTokens <= 0 &&
@@ -158,6 +161,11 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     promptTokens: Math.max(0, promptTokens),
     completionTokens: Math.max(0, completionTokens),
     totalTokens: Math.max(0, totalTokens),
+    ...(cachedTokens > 0 ? { cachedTokens: Math.max(0, Math.round(cachedTokens)) } : {}),
+    ...(cacheCreationTokens > 0
+      ? { cacheCreationTokens: Math.max(0, Math.round(cacheCreationTokens)) }
+      : {}),
+    ...(reasoningTokens > 0 ? { reasoningTokens: Math.max(0, Math.round(reasoningTokens)) } : {}),
     ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
     ...(lastSinglePromptTokens > 0
       ? { lastSinglePromptTokens: Math.max(0, Math.round(lastSinglePromptTokens)) }
@@ -192,12 +200,21 @@ function normalizeRealtimeTokenUsage(
     promptTokens: Number(payload.inputTokens ?? 0),
     completionTokens: Number(payload.outputTokens ?? 0),
     totalTokens: Number(payload.totalTokens ?? 0),
+    ...(typeof payload.cachedTokens === "number"
+      ? { cachedTokens: payload.cachedTokens }
+      : {}),
+    ...(typeof payload.cacheCreationTokens === "number"
+      ? { cacheCreationTokens: payload.cacheCreationTokens }
+      : {}),
+    ...(typeof payload.reasoningTokens === "number"
+      ? { reasoningTokens: payload.reasoningTokens }
+      : {}),
     ...(typeof payload.callCount === "number" ? { callCount: payload.callCount } : {}),
     ...(typeof payload.lastSinglePromptTokens === "number"
       ? { lastSinglePromptTokens: payload.lastSinglePromptTokens }
       : contextPromptTokens > 0
-        ? { lastSinglePromptTokens: contextPromptTokens }
-        : {}),
+      ? { lastSinglePromptTokens: contextPromptTokens }
+      : {}),
     ...(typeof payload.modelContextWindow === "number"
       ? { contextWindowTokens: payload.modelContextWindow }
       : {}),

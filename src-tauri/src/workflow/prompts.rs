@@ -1,6 +1,6 @@
 use crate::thread_store::ThreadMessage;
 
-const EXTRACTION_SYSTEM_PROMPT: &str = r#"你是一个 Workflow 提取专家。你的任务是分析一段对话记录（包含用户消息、AI 回复、工具调用），将其中的操作流程提取为一个结构化的、可复用的 Workflow。
+const EXTRACTION_SYSTEM_PROMPT: &str = r#"你是一个 Workflow 提取专家。你的任务是分析一段对话记录（包含用户消息、AI 回复、工具调用及其结果），将其中的操作流程提取为一个结构化的、可复用的 Workflow。**特别关注失败的工具调用，将其归纳为反例经验。**
 
 输出要求：
 1. 输出一个 JSON 对象，格式如下（不要添加多余文字，只输出 JSON）
@@ -17,6 +17,10 @@ const EXTRACTION_SYSTEM_PROMPT: &str = r#"你是一个 Workflow 提取专家。�
    - dependsOn: 依赖的前置节点 ID 数组
    - expectedOutput: 期望输出描述
    - tokenBudget: 预估该节点消耗的 token 数
+   - knownFailures: 该节点已知的失败案例数组（可选），每条包含：
+     * error: 失败现象
+     * cause: 失败根因
+     * fix: 正确做法/避坑建议
 8. totalEstimatedTokens: 整个 workflow 预估总 token 数
 9. createdAt: 可选，ISO 时间字符串；如未提供由系统自动回填
 10. 类型约束（必须严格遵守）：
@@ -30,6 +34,7 @@ const EXTRACTION_SYSTEM_PROMPT: &str = r#"你是一个 Workflow 提取专家。�
 - 合并琐碎的连续同类操作为一个节点
 - 每个节点应是一个有明确目标的独立步骤
 - tokenBudget 应反映该节点所需的上下文大小
+- **重要：仔细观察对话中每个工具调用的执行结果（success/failed），将失败的工具调用归纳为 knownFailures 反例。失败案例是宝贵的经验，必须提取到对应节点中，帮助后续用户避开相同错误。**
 
 JSON 格式示例：
 ```json
@@ -51,7 +56,14 @@ JSON 格式示例：
       "argsHints": { "shell": { "command": "npx create-react-app {{projectName}}" } },
       "dependsOn": [],
       "expectedOutput": "项目目录创建成功",
-      "tokenBudget": 1500
+      "tokenBudget": 1500,
+      "knownFailures": [
+        {
+          "error": "npx 报错 'create-react-app' 不是内部命令",
+          "cause": "Node.js 版本过低或 npx 未正确安装",
+          "fix": "先执行 'node -v' 确认 Node.js >= 16，必要时使用 'npm install -g create-react-app' 或改用 'npm create vite@latest {{projectName}}'"
+        }
+      ]
     }
   ],
   "totalEstimatedTokens": 5000
@@ -72,7 +84,8 @@ pub fn build_extraction_messages(history: &[ThreadMessage]) -> Vec<(String, Stri
 }
 
 /// Summarize a thread into a compact format suitable for workflow extraction.
-/// Only includes tool calls and their surrounding context to save tokens.
+/// Includes tool call results and success/failure markers to help the LLM extract
+/// known failures as counter-examples.
 fn summarize_thread_for_extraction(history: &[ThreadMessage]) -> String {
     let mut summary = String::new();
     summary.push_str("## 对话记录\n\n");
@@ -90,17 +103,36 @@ fn summarize_thread_for_extraction(history: &[ThreadMessage]) -> String {
                 }
                 for tc in tool_calls {
                     let args_preview = truncate_str(&tc.arguments, 300);
-                    summary.push_str(&format!("  工具: {} | 参数: {}\n", tc.name, args_preview,));
+                    summary.push_str(&format!("  工具: {} | 参数: {}\n", tc.name, args_preview));
                 }
                 summary.push('\n');
                 continue;
             }
         }
 
-        // Tool result messages (role == "tool")
+        // Tool result / error messages (role == "tool")
         if role == "tool" && !content.is_empty() {
-            let truncated = truncate_str(content, 200);
-            summary.push_str(&format!("[tool-result] {truncated}\n\n"));
+            // Highlight failure markers for LLM to notice
+            let content_lower = content.to_lowercase();
+            let status_marker = if content_lower.contains("error")
+                || content_lower.contains("fail")
+                || content_lower.contains("exit code: 1")
+                || content_lower.contains("exit code: 2")
+                || content_lower.contains("❌")
+            {
+                " [状态: 失败]"
+            } else if content_lower.contains("exit code: 0")
+                || content_lower.contains("success")
+                || content_lower.contains("✅")
+            {
+                " [状态: 成功]"
+            } else {
+                ""
+            };
+            let truncated = truncate_str(content, 400);
+            summary.push_str(&format!(
+                "[tool-result]{status_marker} {truncated}\n\n"
+            ));
             continue;
         }
 
@@ -110,8 +142,8 @@ fn summarize_thread_for_extraction(history: &[ThreadMessage]) -> String {
         }
     }
 
-    if summary.len() > 12000 {
-        summary.truncate(12000);
+    if summary.len() > 16000 {
+        summary.truncate(16000);
         summary.push_str("\n...(truncated)\n");
     }
 

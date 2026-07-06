@@ -124,6 +124,9 @@ export interface ThreadTokenUsageUpdatedNotification {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    cachedTokens?: number;
+    cacheCreationTokens?: number;
+    reasoningTokens?: number;
     callCount?: number;
     lastSinglePromptTokens?: number;
     contextWindowTokens?: number;
@@ -131,6 +134,9 @@ export interface ThreadTokenUsageUpdatedNotification {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  cachedTokens?: number;
+  cacheCreationTokens?: number;
+  reasoningTokens?: number;
   callCount?: number;
   lastSinglePromptTokens?: number;
   contextPromptTokens?: number;

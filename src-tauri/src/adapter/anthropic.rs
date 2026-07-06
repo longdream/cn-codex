@@ -176,10 +176,21 @@ impl ProviderAdapter for AnthropicAdapter {
                             .get("input_tokens")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
+                        let cached = usage
+                            .get("cache_read_input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let cache_creation = usage
+                            .get("cache_creation_input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         events.push(StreamEvent::Usage(UsageInfo {
                             prompt_tokens: input,
                             completion_tokens: 0,
                             total_tokens: input,
+                            cached_tokens: cached,
+                            cache_creation_tokens: cache_creation,
+                            reasoning_tokens: 0,
                         }));
                     }
                 }
@@ -268,6 +279,9 @@ impl ProviderAdapter for AnthropicAdapter {
                         prompt_tokens: 0,
                         completion_tokens: output,
                         total_tokens: output,
+                        cached_tokens: 0,
+                        cache_creation_tokens: 0,
+                        reasoning_tokens: 0,
                     }));
                 }
             }

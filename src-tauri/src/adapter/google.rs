@@ -227,6 +227,9 @@ impl ProviderAdapter for GoogleAdapter {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
                 total_tokens: total,
+                cached_tokens: 0,
+                cache_creation_tokens: 0,
+                reasoning_tokens: 0,
             }));
         }
 

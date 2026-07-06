@@ -615,6 +615,8 @@ textarea:focus {
   border-radius: var(--radius-md);
   background: var(--chat-card);
   box-shadow: var(--shadow-soft);
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .chat-tool-output,

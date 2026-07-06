@@ -70,6 +70,12 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  // 缓存命中 token 数
+  cachedTokens?: number;
+  // 缓存写入 token 数
+  cacheCreationTokens?: number;
+  // 思考（reasoning）token 数
+  reasoningTokens?: number;
   callCount?: number;
   lastSinglePromptTokens?: number;
   // 上下文窗口大小（tokens）。用于让前端展示口径与后端运行时配置保持一致。
@@ -203,6 +209,12 @@ export interface ThreadRuntimeState {
   robotCreateMode: boolean;
   robotWaitCountdown: RobotWaitCountdown | null;
   reasoningText: string;
+  /** 浏览器状态 — 每个对话独立维护 */
+  browserPanelUrl: string | null;
+  browserPanelTitle: string | null;
+  browserPanelStatus: "idle" | "running" | "success" | "failed";
+  browserActive: boolean;
+  browserDetached: boolean;
   updatedAt: number;
 }
 
@@ -227,6 +239,11 @@ function createDefaultThreadRuntimeState(): ThreadRuntimeState {
     robotCreateMode: false,
     robotWaitCountdown: null,
     reasoningText: "",
+    browserPanelUrl: null,
+    browserPanelTitle: null,
+    browserPanelStatus: "idle",
+    browserActive: false,
+    browserDetached: false,
     updatedAt: Date.now(),
   };
 }
@@ -591,6 +608,9 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
   const callCount = Number(usage.callCount ?? 0);
   const lastSinglePromptTokens = Number(usage.lastSinglePromptTokens ?? 0);
   const contextWindowTokens = Number(usage.contextWindowTokens ?? 0);
+  const cachedTokens = Number(usage.cachedTokens ?? 0);
+  const cacheCreationTokens = Number(usage.cacheCreationTokens ?? 0);
+  const reasoningTokens = Number(usage.reasoningTokens ?? 0);
   if (
     promptTokens <= 0 &&
     completionTokens <= 0 &&
@@ -606,6 +626,11 @@ function normalizeTokenUsage(usage?: TokenUsage | null): TokenUsage | undefined 
     promptTokens: Math.max(0, promptTokens),
     completionTokens: Math.max(0, completionTokens),
     totalTokens: Math.max(0, totalTokens),
+    ...(cachedTokens > 0 ? { cachedTokens: Math.max(0, Math.round(cachedTokens)) } : {}),
+    ...(cacheCreationTokens > 0
+      ? { cacheCreationTokens: Math.max(0, Math.round(cacheCreationTokens)) }
+      : {}),
+    ...(reasoningTokens > 0 ? { reasoningTokens: Math.max(0, Math.round(reasoningTokens)) } : {}),
     ...(callCount > 0 ? { callCount: Math.max(0, Math.round(callCount)) } : {}),
     ...(lastSinglePromptTokens > 0
       ? { lastSinglePromptTokens: Math.max(0, Math.round(lastSinglePromptTokens)) }
@@ -1630,6 +1655,11 @@ function assembleRuntimeStateFromStore(
     | "selectedRobotId"
     | "robotCreateMode"
     | "robotWaitCountdown"
+    | "browserPanelUrl"
+    | "browserPanelTitle"
+    | "browserPanelStatus"
+    | "browserActive"
+    | "browserDetached"
   >,
 ): ThreadRuntimeState {
   return {
@@ -1649,6 +1679,11 @@ function assembleRuntimeStateFromStore(
     robotCreateMode: state.robotCreateMode,
     robotWaitCountdown: state.robotWaitCountdown,
     reasoningText: "",
+    browserPanelUrl: state.browserPanelUrl,
+    browserPanelTitle: state.browserPanelTitle,
+    browserPanelStatus: state.browserPanelStatus,
+    browserActive: state.browserActive,
+    browserDetached: state.browserDetached,
     updatedAt: Date.now(),
   };
 }
@@ -2788,6 +2823,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedRobotId: saved.selectedRobotId,
       robotCreateMode: saved.robotCreateMode,
       robotWaitCountdown: saved.robotWaitCountdown,
+      browserPanelUrl: saved.browserPanelUrl,
+      browserPanelTitle: saved.browserPanelTitle,
+      browserPanelStatus: saved.browserPanelStatus,
+      browserActive: saved.browserActive,
+      browserDetached: saved.browserDetached,
     });
     return true;
   },

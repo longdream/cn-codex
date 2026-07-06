@@ -33,6 +33,15 @@ pub struct TurnUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    /// 缓存命中 token 数（跨次调用求和，作为“本次对话总和”口径）
+    #[serde(default)]
+    pub cached_tokens: u64,
+    /// 缓存写入 token 数
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    /// 思考（reasoning）token 数
+    #[serde(default)]
+    pub reasoning_tokens: u64,
     /// 本轮内成功发起并完成的 LLM 请求次数。
     #[serde(default)]
     pub call_count: u32,
@@ -1073,6 +1082,9 @@ impl ThreadStore {
                 prompt_tokens: estimated_tokens,
                 completion_tokens: 0,
                 total_tokens: estimated_tokens,
+                cached_tokens: 0,
+                cache_creation_tokens: 0,
+                reasoning_tokens: 0,
                 call_count: 0,
                 last_single_prompt_tokens: estimated_tokens,
             }),
@@ -1118,6 +1130,9 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 40,
             total_tokens: 140,
+            cached_tokens: 0,
+            cache_creation_tokens: 0,
+            reasoning_tokens: 0,
             call_count: 3,
             last_single_prompt_tokens: 100,
         };

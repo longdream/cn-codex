@@ -6,6 +6,12 @@ export interface WorkflowVariable {
   default?: string;
 }
 
+export interface KnownFailure {
+  error: string;
+  cause: string;
+  fix: string;
+}
+
 export interface WorkflowNode {
   nodeId: string;
   objective: string;
@@ -14,6 +20,8 @@ export interface WorkflowNode {
   dependsOn: string[];
   expectedOutput?: string;
   tokenBudget?: number;
+  /** 该节点已知的失败案例/反例 */
+  knownFailures?: KnownFailure[];
 }
 
 export interface WorkflowDef {

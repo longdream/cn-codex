@@ -3326,6 +3326,13 @@ impl AgentEngine {
                                     existing.prompt_tokens.max(usage.prompt_tokens);
                                 existing.completion_tokens =
                                     existing.completion_tokens.max(usage.completion_tokens);
+                                existing.cached_tokens =
+                                    existing.cached_tokens.max(usage.cached_tokens);
+                                existing.cache_creation_tokens = existing
+                                    .cache_creation_tokens
+                                    .max(usage.cache_creation_tokens);
+                                existing.reasoning_tokens =
+                                    existing.reasoning_tokens.max(usage.reasoning_tokens);
                                 existing.total_tokens =
                                     existing.prompt_tokens + existing.completion_tokens;
                             } else {
@@ -3469,6 +3476,9 @@ impl AgentEngine {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
+                cached_tokens: 0,
+                cache_creation_tokens: 0,
+                reasoning_tokens: 0,
             })
         } else {
             usage_info
@@ -3553,13 +3563,29 @@ impl AgentEngine {
         let text = parsed_protocol.visible;
 
         // 提取 usage
-        let usage_info = json.get("usage").map(|u| UsageInfo {
-            prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            completion_tokens: u
-                .get("completion_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0),
-            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        let usage_info = json.get("usage").map(|u| {
+            let prompt_details = u.get("prompt_tokens_details");
+            let completion_details = u.get("completion_tokens_details");
+            UsageInfo {
+                prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                completion_tokens: u
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                cached_tokens: prompt_details
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                cache_creation_tokens: prompt_details
+                    .and_then(|d| d.get("cache_creation"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                reasoning_tokens: completion_details
+                    .and_then(|d| d.get("reasoning_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            }
         });
 
         // 提取 tool calls
@@ -4107,6 +4133,11 @@ fn add_turn_usage(total: &mut TurnUsage, usage: &UsageInfo) {
     total.completion_tokens = total
         .completion_tokens
         .saturating_add(usage.completion_tokens);
+    total.cached_tokens = total.cached_tokens.saturating_add(usage.cached_tokens);
+    total.cache_creation_tokens = total
+        .cache_creation_tokens
+        .saturating_add(usage.cache_creation_tokens);
+    total.reasoning_tokens = total.reasoning_tokens.saturating_add(usage.reasoning_tokens);
     total.total_tokens = if usage.total_tokens > 0 {
         total.total_tokens.saturating_add(usage.total_tokens)
     } else {
@@ -4157,6 +4188,9 @@ fn emit_turn_usage_updated(
                 "totalTokens": total_tokens,
                 "callCount": call_count,
                 "lastSinglePromptTokens": last_single_prompt_tokens,
+                "cachedTokens": current.cached_tokens,
+                "cacheCreationTokens": current.cache_creation_tokens,
+                "reasoningTokens": current.reasoning_tokens,
                 // 稳定提供“上下文占用分子”与“上下文窗口分母”，让 UI 计算不依赖历史回退逻辑。
                 "contextPromptTokens": context_prompt_tokens,
                 "modelContextWindow": model_context_window,

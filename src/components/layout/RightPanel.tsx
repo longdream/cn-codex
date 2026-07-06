@@ -126,6 +126,7 @@ export function RightPanel() {
   const setBrowserDetached = useAppStore((s) => s.setBrowserDetached);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const messages = useAppStore((s) => s.messages);
+  const currentThreadId = useAppStore((s) => s.currentThreadId);
   const addAttachedFile = useAppStore((s) => s.addAttachedFile);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const setBrowserPanelState = useAppStore((s) => s.setBrowserPanelState);
@@ -481,6 +482,17 @@ export function RightPanel() {
       return () => clearTimeout(timer);
     }
   }, [browserActive, rightPanelTab, syncBrowserPosition]);
+
+  // 切换对话时：若恢复的浏览器状态为活跃且浏览器未打开，则自动打开并导航到保存的 URL。
+  useEffect(() => {
+    if (browserActive && browserPanelUrl && rightPanelTab === "browser") {
+      handleOpenBrowser(browserPanelUrl);
+    } else if (!browserActive && !browserDetached && rightPanelTab === "browser") {
+      // 恢复的对话浏览器不活跃，但当前 WebView 还在，需要移出屏幕
+      void windowResizeBrowser(-9999, -9999, 0, 0);
+    }
+    // 只在当前对话 ID 变更时触发
+  }, [currentThreadId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 当切到 browser tab 时自动激活 webview（仅在后端未主动创建时触发）
   useEffect(() => {

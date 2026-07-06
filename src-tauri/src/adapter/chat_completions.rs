@@ -47,6 +47,21 @@ struct StreamChunk {
 }
 
 /// usage 字段（部分供应商在最后一个 chunk 中返回）
+#[derive(Debug, Deserialize, Default)]
+struct TokenDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CompletionDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
+}
+
+/// usage 字段（部分供应商在最后一个 chunk 中返回）
 #[derive(Debug, Deserialize)]
 struct ChunkUsage {
     #[serde(alias = "input_tokens")]
@@ -54,6 +69,10 @@ struct ChunkUsage {
     #[serde(alias = "output_tokens")]
     completion_tokens: Option<u64>,
     total_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_tokens_details: Option<TokenDetails>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionDetails>,
 }
 
 #[async_trait]
@@ -145,10 +164,21 @@ impl ProviderAdapter for ChatCompletionsAdapter {
 
         // 处理 usage-only chunk（部分供应商在流末尾单独发送 usage）
         if let Some(usage) = &chunk.usage {
+            let prompt_details = usage.prompt_tokens_details.as_ref();
+            let completion_details = usage.completion_tokens_details.as_ref();
             events.push(StreamEvent::Usage(UsageInfo {
                 prompt_tokens: usage.prompt_tokens.unwrap_or(0),
                 completion_tokens: usage.completion_tokens.unwrap_or(0),
                 total_tokens: usage.total_tokens.unwrap_or(0),
+                cached_tokens: prompt_details
+                    .and_then(|details| details.cached_tokens)
+                    .unwrap_or(0),
+                cache_creation_tokens: prompt_details
+                    .and_then(|details| details.cache_creation_tokens)
+                    .unwrap_or(0),
+                reasoning_tokens: completion_details
+                    .and_then(|details| details.reasoning_tokens)
+                    .unwrap_or(0),
             }));
         }
 

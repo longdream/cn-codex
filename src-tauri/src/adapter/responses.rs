@@ -177,10 +177,23 @@ impl ProviderAdapter for ResponsesAdapter {
                             .get("output_tokens")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
+                        let cached = usage
+                            .get("input_tokens_details")
+                            .and_then(|d| d.get("cached_tokens"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let reasoning = usage
+                            .get("output_tokens_details")
+                            .and_then(|d| d.get("reasoning_tokens"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         events.push(StreamEvent::Usage(UsageInfo {
                             prompt_tokens: prompt,
                             completion_tokens: completion,
                             total_tokens: prompt + completion,
+                            cached_tokens: cached,
+                            cache_creation_tokens: 0,
+                            reasoning_tokens: reasoning,
                         }));
                     }
                 }

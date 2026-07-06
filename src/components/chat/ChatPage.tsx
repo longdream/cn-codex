@@ -20,6 +20,7 @@ import {
 import type { BinaryAttachedFile } from "../../types/provider";
 import { ChatInput, type ParsedGoalCommand, type ChatSendExtendedOptions } from "./ChatInput";
 import { MessageList } from "./MessageList";
+import { TokenUsageBadge } from "./TokenUsageBadge";
 import { resolveApproval } from "../../api/approval";
 import { RobotWaitBanner } from "./RobotWaitBanner";
 
@@ -439,6 +440,7 @@ export function ChatPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       {messages.length > 0 && (
         <div className="flex items-center justify-end gap-2 px-4 py-1.5 border-b border-[var(--chat-line)]">
+          <TokenUsageBadge />
           {elapsedMs > 0 && (
             <span
               className="flex items-center gap-1 font-mono text-[11px] text-[var(--chat-muted)]"

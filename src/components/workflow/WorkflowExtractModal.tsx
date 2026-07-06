@@ -180,6 +180,32 @@ export function WorkflowExtractModal() {
                           </span>
                         ))}
                       </div>
+                      {/* 失败反例 */}
+                      {node.knownFailures && node.knownFailures.length > 0 && (
+                        <div className="mt-2 ml-7 space-y-1.5">
+                          {node.knownFailures.map((kf, fi) => (
+                            <div
+                              key={fi}
+                              className="rounded-[var(--radius-xs)] border border-[var(--warning-border)] bg-[var(--warning-soft)] px-2 py-1.5"
+                            >
+                              <div className="flex items-start gap-1.5">
+                                <IconAlertTriangle size={12} stroke={1.8} className="mt-0.5 flex-shrink-0 text-[var(--warning)]" />
+                                <div className="min-w-0">
+                                  <p className="text-[11px] font-medium text-[var(--warning)]">
+                                    {intl.formatMessage({ id: "workflow.extract.knownTrap" })}: {kf.error}
+                                  </p>
+                                  <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
+                                    {intl.formatMessage({ id: "workflow.extract.cause" })}: {kf.cause}
+                                  </p>
+                                  <p className="text-[10px] text-[var(--accent)]">
+                                    {intl.formatMessage({ id: "workflow.extract.fix" })}: {kf.fix}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

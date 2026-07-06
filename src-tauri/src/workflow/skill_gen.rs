@@ -89,7 +89,20 @@ pub fn generate_skill_md(def: &WorkflowDef, snapshot_paths: &[String]) -> String
         if let Some(budget) = node.token_budget {
             out.push_str(&format!("- **Token 预算**: {budget}\n"));
         }
-        out.push_str("\n");
+
+        // 已知陷阱（反例经验）
+        if let Some(failures) = &node.known_failures {
+            if !failures.is_empty() {
+                out.push_str("\n#### ⚠️ 已知陷阱\n\n");
+                for (j, failure) in failures.iter().enumerate() {
+                    out.push_str(&format!("**陷阱 {}**: {}\n", j + 1, failure.error));
+                    out.push_str(&format!("- 原因: {}\n", failure.cause));
+                    out.push_str(&format!("- 正确做法: {}\n\n", failure.fix));
+                }
+            }
+        }
+
+        out.push('\n');
     }
 
     // Footer

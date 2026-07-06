@@ -10,6 +10,15 @@ pub struct UsageInfo {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    /// 缓存命中 token 数（prompt_tokens_details.cached_tokens / cache_read_input_tokens）
+    #[serde(default)]
+    pub cached_tokens: u64,
+    /// 缓存写入 token 数（prompt_tokens_details.cache_creation / cache_creation_input_tokens）
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    /// 思考（reasoning）token 数（completion_tokens_details.reasoning_tokens）
+    #[serde(default)]
+    pub reasoning_tokens: u64,
 }
 
 /// tool call 累积器（逐步拼接 SSE 中的碎片）
