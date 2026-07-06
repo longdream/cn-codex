@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::Serialize;
@@ -21,6 +21,15 @@ const DEFAULT_OKF_PREFILTER_ORDER: [&str; 6] = [
     "source_group",
     "relative_path_prefix",
     "source_file",
+];
+const COVERABLE_FACT_HINTS: [&str; 7] = [
+    "fact",
+    "rule",
+    "policy",
+    "spec",
+    "decision",
+    "guideline",
+    "knowledge",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +115,456 @@ impl SmartBrainSearchResult {
             is_chunk,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictType {
+    None,
+    Time,
+    Source,
+    Dual,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ConflictWeights {
+    bm25: f64,
+    recency: f64,
+    coverage: f64,
+    authority: f64,
+    consistency: f64,
+}
+
+const TIME_CONFLICT_WEIGHTS: ConflictWeights = ConflictWeights {
+    // Time conflict: prefer newer, coverable fact-like content.
+    bm25: 0.40,
+    recency: 0.35,
+    coverage: 0.20,
+    authority: 0.05,
+    consistency: 0.0,
+};
+
+const SOURCE_CONFLICT_WEIGHTS: ConflictWeights = ConflictWeights {
+    // Source conflict: prefer authority + multi-source consistency.
+    bm25: 0.35,
+    recency: 0.05,
+    coverage: 0.0,
+    authority: 0.35,
+    consistency: 0.25,
+};
+
+const DUAL_CONFLICT_WEIGHTS: ConflictWeights = ConflictWeights {
+    // Time + source conflict: use weighted blend instead of hard picks.
+    bm25: 0.20,
+    recency: 0.20,
+    coverage: 0.20,
+    authority: 0.25,
+    consistency: 0.15,
+};
+
+fn normalize_title_for_conflict_key(title: &str) -> String {
+    let sanitized = title
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch.is_whitespace() {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    sanitized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn conflict_group_key(doc: &IndexedDocument, fallback_title: &str) -> String {
+    if let Some(parent_doc_id) = doc
+        .parent_doc_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return format!("parent:{parent_doc_id}");
+    }
+
+    let title_key = normalize_title_for_conflict_key(fallback_title);
+    if !title_key.is_empty() {
+        let domain_key = doc.domain.as_deref().unwrap_or("_");
+        return format!("title:{title_key}|domain:{domain_key}");
+    }
+
+    if let Some(source_file) = doc.source_file.as_deref().filter(|value| !value.is_empty()) {
+        return format!("source_file:{source_file}");
+    }
+    if let Some(relative_path) = doc
+        .relative_path
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return format!("relative_path:{relative_path}");
+    }
+
+    format!("doc:{}", doc.doc_id)
+}
+
+fn source_identity(doc: &IndexedDocument) -> String {
+    if let Some(source_group) = doc
+        .source_group
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return format!("source_group:{source_group}");
+    }
+    if let Some(source_file) = doc.source_file.as_deref().filter(|value| !value.is_empty()) {
+        return format!("source_file:{source_file}");
+    }
+    if let Some(relative_path) = doc
+        .relative_path
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return format!("relative_path:{relative_path}");
+    }
+    if let Some(domain) = doc.domain.as_deref().filter(|value| !value.is_empty()) {
+        return format!("domain:{domain}");
+    }
+    match doc.source_type {
+        SourceType::Experience => "source_type:experience".to_string(),
+        SourceType::Knowledge => "source_type:knowledge".to_string(),
+    }
+}
+
+fn detect_conflict_type(group_docs: &[&IndexedDocument]) -> ConflictType {
+    if group_docs.len() <= 1 {
+        return ConflictType::None;
+    }
+
+    let min_updated = group_docs
+        .iter()
+        .map(|doc| doc.updated_at)
+        .min()
+        .unwrap_or(0);
+    let max_updated = group_docs
+        .iter()
+        .map(|doc| doc.updated_at)
+        .max()
+        .unwrap_or(0);
+    let has_time_conflict = max_updated > min_updated;
+
+    let source_count = group_docs
+        .iter()
+        .map(|doc| source_identity(doc))
+        .collect::<HashSet<_>>()
+        .len();
+    let has_source_conflict = source_count > 1;
+
+    match (has_time_conflict, has_source_conflict) {
+        (true, true) => ConflictType::Dual,
+        (true, false) => ConflictType::Time,
+        (false, true) => ConflictType::Source,
+        (false, false) => ConflictType::None,
+    }
+}
+
+fn coverable_fact_score(doc: &IndexedDocument) -> f64 {
+    let concept_type = doc
+        .concept_type
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let is_coverable = COVERABLE_FACT_HINTS
+        .iter()
+        .any(|hint| concept_type.contains(hint))
+        || doc.source_type == SourceType::Knowledge;
+    if is_coverable { 1.0 } else { 0.35 }
+}
+
+fn recency_score(updated_at: i64, min_updated: i64, max_updated: i64) -> f64 {
+    if max_updated <= min_updated {
+        return 0.5;
+    }
+    (updated_at - min_updated) as f64 / (max_updated - min_updated) as f64
+}
+
+fn metadata_overlap_score(left: &IndexedDocument, right: &IndexedDocument) -> f64 {
+    let mut slots = 0.0f64;
+    let mut hits = 0.0f64;
+
+    let compare_optional =
+        |slots: &mut f64, hits: &mut f64, left: Option<&str>, right: Option<&str>| {
+            if left.is_some() || right.is_some() {
+                *slots += 1.0;
+                if left.is_some() && left == right {
+                    *hits += 1.0;
+                }
+            }
+        };
+
+    compare_optional(
+        &mut slots,
+        &mut hits,
+        left.domain.as_deref(),
+        right.domain.as_deref(),
+    );
+    compare_optional(
+        &mut slots,
+        &mut hits,
+        left.source_group.as_deref(),
+        right.source_group.as_deref(),
+    );
+    compare_optional(
+        &mut slots,
+        &mut hits,
+        left.relative_path.as_deref(),
+        right.relative_path.as_deref(),
+    );
+    compare_optional(
+        &mut slots,
+        &mut hits,
+        left.source_file.as_deref(),
+        right.source_file.as_deref(),
+    );
+
+    if !left.tags.is_empty() || !right.tags.is_empty() {
+        slots += 1.0;
+        let left_tags = left.tags.iter().map(String::as_str).collect::<HashSet<_>>();
+        if right
+            .tags
+            .iter()
+            .any(|tag| left_tags.contains(tag.as_str()))
+        {
+            hits += 1.0;
+        }
+    }
+
+    if slots <= 0.0 { 0.0 } else { hits / slots }
+}
+
+fn consistency_score(target: &IndexedDocument, group_docs: &[&IndexedDocument]) -> f64 {
+    if group_docs.len() <= 1 {
+        return 0.5;
+    }
+
+    let mut overlap_sum = 0.0f64;
+    let mut compared = 0usize;
+    let source_diversity = group_docs
+        .iter()
+        .map(|doc| source_identity(doc))
+        .collect::<HashSet<_>>()
+        .len() as f64
+        / group_docs.len() as f64;
+
+    for doc in group_docs {
+        if doc.doc_id == target.doc_id {
+            continue;
+        }
+        overlap_sum += metadata_overlap_score(target, doc);
+        compared += 1;
+    }
+    let overlap = if compared == 0 {
+        0.0
+    } else {
+        overlap_sum / compared as f64
+    };
+
+    (overlap * 0.7 + source_diversity * 0.3).clamp(0.0, 1.0)
+}
+
+fn authority_score(
+    doc: &IndexedDocument,
+    experience_index: &super::index::ExperienceIndex,
+    max_experience_priority: f64,
+) -> f64 {
+    let mut score = match doc.source_type {
+        SourceType::Knowledge => 0.78,
+        SourceType::Experience => 0.58,
+    };
+    if doc.source_group.is_some() {
+        score += 0.07;
+    }
+    if doc.source_file.is_some() {
+        score += 0.05;
+    }
+    if doc.domain.is_some() {
+        score += 0.03;
+    }
+    score += coverable_fact_score(doc) * 0.07;
+
+    if doc.source_type == SourceType::Experience && max_experience_priority > 0.0 {
+        let priority = experience_priority_score(experience_index, &doc.doc_id);
+        score += (priority / max_experience_priority).clamp(0.0, 1.0) * 0.12;
+    }
+
+    score.clamp(0.0, 1.0)
+}
+
+fn conflict_weights(conflict_type: ConflictType) -> Option<ConflictWeights> {
+    match conflict_type {
+        ConflictType::None => None,
+        ConflictType::Time => Some(TIME_CONFLICT_WEIGHTS),
+        ConflictType::Source => Some(SOURCE_CONFLICT_WEIGHTS),
+        ConflictType::Dual => Some(DUAL_CONFLICT_WEIGHTS),
+    }
+}
+
+fn weighted_conflict_score(
+    result: &SearchResult,
+    doc: &IndexedDocument,
+    group_docs: &[&IndexedDocument],
+    weights: ConflictWeights,
+    min_updated: i64,
+    max_updated: i64,
+    max_group_score: f64,
+    experience_index: &super::index::ExperienceIndex,
+    max_experience_priority: f64,
+) -> f64 {
+    let bm25 = if max_group_score <= 0.0 {
+        0.0
+    } else {
+        (result.score / max_group_score).clamp(0.0, 1.0)
+    };
+    let recency = recency_score(doc.updated_at, min_updated, max_updated);
+    let coverage = coverable_fact_score(doc);
+    let authority = authority_score(doc, experience_index, max_experience_priority);
+    let consistency = consistency_score(doc, group_docs);
+
+    bm25 * weights.bm25
+        + recency * weights.recency
+        + coverage * weights.coverage
+        + authority * weights.authority
+        + consistency * weights.consistency
+}
+
+fn resolve_conflicting_candidates(
+    index: &BM25Index,
+    bm25_index_path: &Path,
+    mut candidates: Vec<SearchResult>,
+) -> Vec<SearchResult> {
+    if candidates.len() <= 1 {
+        return candidates;
+    }
+
+    let doc_lookup: HashMap<&str, &IndexedDocument> = index
+        .documents
+        .iter()
+        .map(|doc| (doc.doc_id.as_str(), doc))
+        .collect();
+    let mut grouped_positions: HashMap<String, Vec<usize>> = HashMap::new();
+
+    for (position, candidate) in candidates.iter().enumerate() {
+        let Some(doc) = doc_lookup.get(candidate.doc_id.as_str()).copied() else {
+            continue;
+        };
+        let key = conflict_group_key(doc, &candidate.title);
+        grouped_positions.entry(key).or_default().push(position);
+    }
+
+    if grouped_positions
+        .values()
+        .all(|positions| positions.len() <= 1)
+    {
+        return candidates;
+    }
+
+    let experiences_dir =
+        workspace_config_dir_from_bm25_path(bm25_index_path).map(super::experiences_dir);
+    let experience_index = experiences_dir
+        .as_deref()
+        .map(super::index::ExperienceIndex::load)
+        .unwrap_or_default();
+    let max_experience_priority = candidates
+        .iter()
+        .filter_map(|candidate| doc_lookup.get(candidate.doc_id.as_str()).copied())
+        .filter(|doc| doc.source_type == SourceType::Experience)
+        .map(|doc| experience_priority_score(&experience_index, &doc.doc_id))
+        .fold(0.0, f64::max);
+
+    for positions in grouped_positions.values() {
+        if positions.len() <= 1 {
+            continue;
+        }
+
+        let mut ordered_positions = positions.clone();
+        ordered_positions.sort_unstable();
+        let mut group_entries: Vec<(SearchResult, &IndexedDocument)> = ordered_positions
+            .iter()
+            .filter_map(|position| {
+                let candidate = candidates.get(*position)?.clone();
+                let doc = doc_lookup.get(candidate.doc_id.as_str()).copied()?;
+                Some((candidate, doc))
+            })
+            .collect();
+
+        if group_entries.len() <= 1 {
+            continue;
+        }
+
+        let group_docs: Vec<&IndexedDocument> = group_entries.iter().map(|(_, doc)| *doc).collect();
+        let conflict_type = detect_conflict_type(&group_docs);
+        let Some(weights) = conflict_weights(conflict_type) else {
+            continue;
+        };
+
+        let min_updated = group_docs
+            .iter()
+            .map(|doc| doc.updated_at)
+            .min()
+            .unwrap_or(0);
+        let max_updated = group_docs
+            .iter()
+            .map(|doc| doc.updated_at)
+            .max()
+            .unwrap_or(0);
+        let max_group_score = group_entries
+            .iter()
+            .map(|(result, _)| result.score)
+            .fold(0.0, f64::max);
+
+        group_entries.sort_by(|(left_result, left_doc), (right_result, right_doc)| {
+            let left_score = weighted_conflict_score(
+                left_result,
+                left_doc,
+                &group_docs,
+                weights,
+                min_updated,
+                max_updated,
+                max_group_score,
+                &experience_index,
+                max_experience_priority,
+            );
+            let right_score = weighted_conflict_score(
+                right_result,
+                right_doc,
+                &group_docs,
+                weights,
+                min_updated,
+                max_updated,
+                max_group_score,
+                &experience_index,
+                max_experience_priority,
+            );
+            right_score
+                .partial_cmp(&left_score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| {
+                    right_result
+                        .score
+                        .partial_cmp(&left_result.score)
+                        .unwrap_or(Ordering::Equal)
+                })
+                .then_with(|| right_doc.updated_at.cmp(&left_doc.updated_at))
+                .then_with(|| left_result.doc_id.cmp(&right_result.doc_id))
+        });
+
+        for (position, (candidate, _)) in
+            ordered_positions.into_iter().zip(group_entries.into_iter())
+        {
+            if let Some(slot) = candidates.get_mut(position) {
+                *slot = candidate;
+            }
+        }
+    }
+
+    candidates
 }
 
 fn expanded_candidate_k(top_k: usize) -> usize {
@@ -269,7 +728,11 @@ fn two_stage_recall(
 }
 
 fn all_doc_ids(index: &BM25Index) -> HashSet<String> {
-    index.documents.iter().map(|doc| doc.doc_id.clone()).collect()
+    index
+        .documents
+        .iter()
+        .map(|doc| doc.doc_id.clone())
+        .collect()
 }
 
 fn normalized_okf_prefilter_order(order: Option<&[String]>) -> Vec<String> {
@@ -334,13 +797,13 @@ fn stage0_okf_prefilter_candidates(
                     .source_group
                     .as_deref()
                     .is_none_or(|group| doc.source_group.as_deref() == Some(group)),
-                "relative_path_prefix" => filter.relative_path_prefix.as_deref().is_none_or(
-                    |prefix| {
+                "relative_path_prefix" => {
+                    filter.relative_path_prefix.as_deref().is_none_or(|prefix| {
                         doc.relative_path
                             .as_deref()
                             .is_some_and(|path| path.starts_with(prefix))
-                    },
-                ),
+                    })
+                }
                 "source_file" => filter
                     .source_file
                     .as_deref()
@@ -467,7 +930,8 @@ pub fn unified_search(
     let stage1_results = index.search(query, stage1_recall_k(top_k));
     // 第二阶段：局部结构化扩展 + 候选池重排。
     let recalled = two_stage_recall(&index, query, top_k, stage1_results, None, None);
-    rerank_experience_candidates(bm25_index_path, recalled)
+    let reranked = rerank_experience_candidates(bm25_index_path, recalled);
+    resolve_conflicting_candidates(&index, bm25_index_path, reranked)
         .into_iter()
         .take(top_k)
         .map(|r| SmartBrainSearchResult::from_result(r, &index))
@@ -481,14 +945,7 @@ pub fn unified_search_with_filter(
     top_k: usize,
     filter: SearchFilter,
 ) -> Vec<SmartBrainSearchResult> {
-    unified_search_with_filter_with_policy(
-        bm25_index_path,
-        query,
-        top_k,
-        filter,
-        true,
-        None,
-    )
+    unified_search_with_filter_with_policy(bm25_index_path, query, top_k, filter, true, None)
 }
 
 pub fn unified_search_with_filter_with_policy(
@@ -508,10 +965,15 @@ pub fn unified_search_with_filter_with_policy(
     let mut active_filter: Option<&SearchFilter> = Some(&filter);
     // Stage-0: 基于 OKF 元信息先做候选文档分流，再进入 BM25 排序。
     let mut stage1_results = if okf_prefilter_enabled {
-        let stage0_candidates = stage0_okf_prefilter_candidates(&index, &filter, okf_prefilter_order);
+        let stage0_candidates =
+            stage0_okf_prefilter_candidates(&index, &filter, okf_prefilter_order);
         if stage0_candidates.len() < index.documents.len() {
-            let narrowed =
-                index.search_subset_with_filter(query, stage1_recall_k(top_k), &stage0_candidates, &filter);
+            let narrowed = index.search_subset_with_filter(
+                query,
+                stage1_recall_k(top_k),
+                &stage0_candidates,
+                &filter,
+            );
             if narrowed.is_empty() {
                 // 预筛选过严时回退，避免空召回。
                 index.search_with_filter(query, stage1_recall_k(top_k), &filter)
@@ -539,7 +1001,8 @@ pub fn unified_search_with_filter_with_policy(
         active_filter,
         candidate_scope.as_ref(),
     );
-    rerank_experience_candidates(bm25_index_path, recalled)
+    let reranked = rerank_experience_candidates(bm25_index_path, recalled);
+    resolve_conflicting_candidates(&index, bm25_index_path, reranked)
         .into_iter()
         .take(top_k)
         .map(|r| SmartBrainSearchResult::from_result(r, &index))
@@ -624,7 +1087,9 @@ pub fn rebuild_index(workspace_config_dir: &Path, bm25_index_path: &Path) {
                     .as_ref()
                     .and_then(|fm| fm.title.clone())
                     .filter(|title| !title.trim().is_empty())
-                    .unwrap_or_else(|| format!("{} [{}/{}]", entry.title, chunk_index, chunk_total));
+                    .unwrap_or_else(|| {
+                        format!("{} [{}/{}]", entry.title, chunk_index, chunk_total)
+                    });
                 let tags = frontmatter
                     .as_ref()
                     .map(|fm| fm.tags.clone())
@@ -759,7 +1224,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::smartbrain::bm25_index::{build_document, build_document_with_metadata};
+    use crate::smartbrain::bm25_index::{
+        build_document, build_document_with_locator_metadata, build_document_with_metadata,
+    };
     use crate::smartbrain::index::{ExperienceEntry, ExperienceIndex};
 
     fn setup_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -1140,5 +1607,187 @@ mod tests {
             "strict filter with no matches should degrade to global BM25 results"
         );
         assert_eq!(results[0].doc_id, "know:rust-guide");
+    }
+
+    #[test]
+    fn conflict_policy_prefers_newer_coverable_documents_on_time_conflict() {
+        let (_temp_dir, _workspace_config_dir, bm25_path) = setup_workspace();
+        let mut bm25 = BM25Index::default();
+        bm25.add_document(build_document_with_locator_metadata(
+            "know:deploy-policy-old".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/deploy-policy-old.md".to_string(),
+            "Deployment Rollback Policy".to_string(),
+            "deployment rollback policy for production services",
+            120,
+            vec!["ops".to_string(), "policy".to_string()],
+            Some("Policy".to_string()),
+            Some("ops".to_string()),
+            Some("official".to_string()),
+            Some("runbooks/deploy-policy.md".to_string()),
+            Some("runbooks/deploy-policy.md".to_string()),
+            None,
+            None,
+            None,
+            false,
+        ));
+        bm25.add_document(build_document_with_locator_metadata(
+            "know:deploy-policy-new".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/deploy-policy-new.md".to_string(),
+            "Deployment Rollback Policy".to_string(),
+            "deployment rollback policy with updated checklist and guardrails",
+            220,
+            vec!["ops".to_string(), "policy".to_string()],
+            Some("Policy".to_string()),
+            Some("ops".to_string()),
+            Some("official".to_string()),
+            Some("runbooks/deploy-policy.md".to_string()),
+            Some("runbooks/deploy-policy.md".to_string()),
+            None,
+            None,
+            None,
+            false,
+        ));
+        bm25.save(&bm25_path).unwrap();
+
+        let results = unified_search(&bm25_path, "deployment rollback policy", 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].doc_id, "know:deploy-policy-new");
+    }
+
+    #[test]
+    fn conflict_policy_uses_authority_and_consistency_for_source_conflicts() {
+        let (_temp_dir, workspace_config_dir, bm25_path) = setup_workspace();
+        save_experience_index(&workspace_config_dir);
+
+        let mut bm25 = BM25Index::default();
+        bm25.add_document(build_document_with_locator_metadata(
+            "know:credential-policy-official".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/credential-policy-official.md".to_string(),
+            "Credential Rotation Policy".to_string(),
+            "credential rotation policy requires rotating credentials every ninety days",
+            180,
+            vec!["security".to_string(), "policy".to_string()],
+            Some("Policy".to_string()),
+            Some("security".to_string()),
+            Some("official".to_string()),
+            Some("security/credential-policy.md".to_string()),
+            Some("security/credential-policy.md".to_string()),
+            None,
+            None,
+            None,
+            false,
+        ));
+        bm25.add_document(build_document_with_locator_metadata(
+            "know:credential-policy-support".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/credential-policy-support.md".to_string(),
+            "Credential Rotation Policy".to_string(),
+            "security team guide confirms credential rotation policy for critical systems",
+            180,
+            vec!["security".to_string(), "policy".to_string()],
+            Some("Policy".to_string()),
+            Some("security".to_string()),
+            None,
+            Some("security/credential-policy-team.md".to_string()),
+            Some("security/credential-policy-team.md".to_string()),
+            None,
+            None,
+            None,
+            false,
+        ));
+        bm25.add_document(build_document_with_locator_metadata(
+            "exp:credential-thread".to_string(),
+            SourceType::Experience,
+            "experiences/raw/credential-thread.md".to_string(),
+            "Credential Rotation Policy".to_string(),
+            "credential rotation policy credential rotation policy emergency note",
+            180,
+            vec!["incident".to_string()],
+            Some("Experience".to_string()),
+            Some("security".to_string()),
+            None,
+            Some("incidents/credential-thread.md".to_string()),
+            Some("incidents/credential-thread.md".to_string()),
+            None,
+            None,
+            None,
+            false,
+        ));
+        bm25.save(&bm25_path).unwrap();
+
+        let results = unified_search(&bm25_path, "credential rotation policy", 3);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].doc_id, "know:credential-policy-official");
+        assert_ne!(results[0].source_type, "experience");
+    }
+
+    #[test]
+    fn conflict_policy_uses_weighted_score_on_time_and_source_conflicts() {
+        let (_temp_dir, workspace_config_dir, bm25_path) = setup_workspace();
+        save_experience_index(&workspace_config_dir);
+
+        let mut bm25 = BM25Index::default();
+        bm25.add_document(build_document_with_locator_metadata(
+            "exp:latest-rate-limit-note".to_string(),
+            SourceType::Experience,
+            "experiences/raw/latest-rate-limit-note.md".to_string(),
+            "API Rate Limit Decision".to_string(),
+            "api rate limit strategy api rate limit strategy emergency workaround",
+            300,
+            vec!["incident".to_string()],
+            Some("Experience".to_string()),
+            Some("platform".to_string()),
+            None,
+            Some("incidents/rate-limit.md".to_string()),
+            Some("incidents/rate-limit.md".to_string()),
+            None,
+            None,
+            None,
+            false,
+        ));
+        bm25.add_document(build_document_with_locator_metadata(
+            "know:rate-limit-stable".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/rate-limit-stable.md".to_string(),
+            "API Rate Limit Decision".to_string(),
+            "api rate limit strategy for stable rollout and backpressure policy",
+            285,
+            vec!["platform".to_string(), "policy".to_string()],
+            Some("Policy".to_string()),
+            Some("platform".to_string()),
+            Some("official".to_string()),
+            Some("platform/rate-limit.md".to_string()),
+            Some("platform/rate-limit.md".to_string()),
+            None,
+            None,
+            None,
+            false,
+        ));
+        bm25.add_document(build_document_with_locator_metadata(
+            "know:rate-limit-support".to_string(),
+            SourceType::Knowledge,
+            "knowledge/docs/rate-limit-support.md".to_string(),
+            "API Rate Limit Decision".to_string(),
+            "platform handbook supports api rate limit strategy with gradual controls",
+            280,
+            vec!["platform".to_string(), "policy".to_string()],
+            Some("Policy".to_string()),
+            Some("platform".to_string()),
+            Some("platform-team".to_string()),
+            Some("platform/rate-limit-team.md".to_string()),
+            Some("platform/rate-limit-team.md".to_string()),
+            None,
+            None,
+            None,
+            false,
+        ));
+        bm25.save(&bm25_path).unwrap();
+
+        let results = unified_search(&bm25_path, "api rate limit strategy", 3);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].doc_id, "know:rate-limit-stable");
     }
 }

@@ -14,6 +14,8 @@ function relativeTime(ts: number): string {
 export function ThreadList() {
   const threads = useMobileStore((s) => s.threads);
   const activeThreadId = useMobileStore((s) => s.activeThreadId);
+  const currentThreadId = useMobileStore((s) => s.currentThreadId);
+  const isStreaming = useMobileStore((s) => s.isStreaming);
   const setCurrentThread = useMobileStore((s) => s.setCurrentThread);
 
   const handleSelect = (id: string) => {
@@ -34,6 +36,7 @@ export function ThreadList() {
     <div className="thread-list">
       {threads.map((thread) => {
         const isActive = thread.id === activeThreadId;
+        const isRunning = thread.id === currentThreadId && isStreaming;
         return (
           <button
             key={thread.id}
@@ -42,7 +45,7 @@ export function ThreadList() {
           >
             <div className="thread-item-header">
               <span className="thread-item-title">
-                {isActive && <span className="active-dot" />}
+                {isRunning && <span className="active-spinner" aria-label="正在执行" />}
                 {thread.name || thread.preview || "未命名对话"}
               </span>
               <span className="thread-item-time">{relativeTime(thread.updatedAt)}</span>
@@ -51,7 +54,8 @@ export function ThreadList() {
               <p className="thread-item-preview">{thread.preview}</p>
             )}
             <div className="thread-item-meta">
-              {isActive && <span className="active-badge">当前活跃</span>}
+              {isRunning && <span className="active-badge">正在执行</span>}
+              {!isRunning && isActive && <span className="active-badge">当前活跃</span>}
               <span className="thread-item-count">{thread.messageCount} 条消息</span>
             </div>
           </button>

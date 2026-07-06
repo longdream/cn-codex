@@ -4,6 +4,7 @@ import {
   IconFolder,
   IconFolderOpen,
   IconFolderPlus,
+  IconLoader2,
   IconMessage2,
   IconMessagePlus,
   IconRefresh,
@@ -37,6 +38,8 @@ export function Sidebar() {
   const currentProjectId = useAppStore((s) => s.currentProjectId);
   const threads = useAppStore((s) => s.threads);
   const currentThreadId = useAppStore((s) => s.currentThreadId);
+  const isStreaming = useAppStore((s) => s.isStreaming);
+  const threadRuntimeStates = useAppStore((s) => s.threadRuntimeStates);
   const initialized = useAppStore((s) => s.initialized);
   const initError = useAppStore((s) => s.initError);
   const retryInit = useAppStore((s) => s.retryInit);
@@ -129,6 +132,16 @@ export function Sidebar() {
     );
     return { filteredProjectThreads: filtered, filteredGeneralThreads: filteredGeneral };
   }, [projectThreads, generalThreads, searchQuery]);
+
+  const isThreadRunning = useCallback(
+    (threadId: string) => {
+      if (threadId === currentThreadId) {
+        return isStreaming;
+      }
+      return threadRuntimeStates[threadId]?.isStreaming ?? false;
+    },
+    [currentThreadId, isStreaming, threadRuntimeStates],
+  );
 
   return (
     <aside
@@ -249,6 +262,7 @@ export function Sidebar() {
                       thread={thread}
                       title={title}
                       isCurrent={currentThreadId === thread.id}
+                      isRunning={isThreadRunning(thread.id)}
                       locale={intl.locale}
                       onClick={() => {
                         if (!isGeneralMode) {
@@ -287,6 +301,7 @@ export function Sidebar() {
                   threads={filteredProjectThreads.get(project.id) ?? []}
                   isActive={currentProjectId === project.id}
                   currentThreadId={currentThreadId}
+                  isThreadRunning={isThreadRunning}
                   onSelect={() => useAppStore.getState().selectProject(project.id)}
                   onRemove={() => useAppStore.getState().removeProject(project.id)}
                   onNewChat={() => {
@@ -327,6 +342,7 @@ function ProjectGroup({
   threads,
   isActive,
   currentThreadId,
+  isThreadRunning,
   onSelect,
   onRemove,
   onNewChat,
@@ -338,6 +354,7 @@ function ProjectGroup({
   threads: Array<{ id: string; name?: string; preview: string; updatedAt: number }>;
   isActive: boolean;
   currentThreadId: string | null;
+  isThreadRunning: (threadId: string) => boolean;
   onSelect: () => void;
   onRemove: () => void;
   onNewChat: () => void;
@@ -470,6 +487,7 @@ function ProjectGroup({
                   thread={thread}
                   title={title}
                   isCurrent={currentThreadId === thread.id}
+                  isRunning={isThreadRunning(thread.id)}
                   locale={locale}
                   onClick={() => onThreadClick(thread.id)}
                   onDelete={() => onThreadDelete(thread.id)}
@@ -514,6 +532,7 @@ function ThreadItem({
   thread,
   title,
   isCurrent,
+  isRunning,
   locale,
   onClick,
   onDelete,
@@ -521,6 +540,7 @@ function ThreadItem({
   thread: { id: string; updatedAt: number };
   title: string;
   isCurrent: boolean;
+  isRunning: boolean;
   locale: string;
   onClick: () => void;
   onDelete: () => void;
@@ -561,7 +581,17 @@ function ThreadItem({
         onClick={onClick}
         onContextMenu={handleContextMenu}
       >
-        <p className="min-w-0 flex-1 truncate text-xs">{title}</p>
+        <div className="min-w-0 flex flex-1 items-center gap-1.5">
+          {isRunning && (
+            <IconLoader2
+              size={11}
+              stroke={2}
+              className="shrink-0 animate-spin text-[var(--accent)]"
+              title={intl.formatMessage({ id: "streaming.processing" })}
+            />
+          )}
+          <p className="min-w-0 flex-1 truncate text-xs">{title}</p>
+        </div>
         <span className="shrink-0 text-[11px] text-[var(--text-faint)] group-hover/thread:hidden">
           {formatThreadTime(thread.updatedAt, locale)}
         </span>

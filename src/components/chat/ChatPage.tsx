@@ -329,8 +329,7 @@ export function ChatPage() {
   // 注意：所有 Hook 必须在任何条件 return 之前声明，避免项目切换时触发 Hook 顺序错误。
   const [copyDone, setCopyDone] = useState(false);
 
-  // 当前会话计时：只在本次会话真正开始交互（首次 isStreaming=true）后才启动计时，
-  // 避免切入历史对话时立刻从第一条旧消息时间开始累计。
+  // 当前会话计时：在首次 isStreaming=true 后开始计时，结束即停止累加。
   const [elapsedMs, setElapsedMs] = useState(0);
   const timerRef = useRef<number | null>(null);
   // 记录本次会话首次开始交互的时刻（Date.now()），切换对话时重置
@@ -351,14 +350,20 @@ export function ChatPage() {
       // 首次开始交互，记录起点
       sessionStartRef.current = Date.now();
     }
-    if (sessionStartRef.current > 0 && timerRef.current === null) {
+    if (isStreaming && sessionStartRef.current > 0 && timerRef.current === null) {
       const start = sessionStartRef.current;
       setElapsedMs(Date.now() - start);
       timerRef.current = window.setInterval(() => {
         setElapsedMs(Date.now() - start);
       }, 1000);
     }
-    // streaming 结束后保持计时不停止，让用户看到总耗时
+    if (!isStreaming && timerRef.current !== null) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+      if (sessionStartRef.current > 0) {
+        setElapsedMs(Date.now() - sessionStartRef.current);
+      }
+    }
   }, [isStreaming]);
 
   const handleCopyAll = useCallback(() => {
