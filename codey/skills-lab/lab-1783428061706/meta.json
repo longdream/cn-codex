@@ -1,0 +1,13 @@
+{
+  "name": "股票评价",
+  "goal": "",
+  "testPrompt": "帮我对宁德时代（300750）做一个全方位的股票评价分析，需要包含基本面、技术面、行业竞争、资金面、风险提示和综合评分",
+  "status": "failed",
+  "iterationCount": 0,
+  "lastTestResult": null,
+  "lastEvaluation": null,
+  "bestScore": null,
+  "scoreHistory": [],
+  "bestEvaluation": null,
+  "stableRounds": 0
+}

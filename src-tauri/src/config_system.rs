@@ -559,6 +559,12 @@ impl ConfigToml {
                     .get_or_insert_with(SmartBrainConfig::default);
                 sb.extraction_start_at = value.as_i64();
             }
+            "smartbrain.auto_extract" => {
+                let sb = self
+                    .smartbrain
+                    .get_or_insert_with(SmartBrainConfig::default);
+                sb.auto_extract = value.as_bool().unwrap_or(true);
+            }
             "smartbrain.auto_summarize_enabled" => {
                 let sb = self
                     .smartbrain
@@ -1280,6 +1286,17 @@ mod tests {
             vec!["relative_path".to_string(), "domain".to_string()]
         );
         assert!(!smartbrain.knowledge_chunk_files_enabled);
+    }
+
+    #[test]
+    fn apply_edit_smartbrain_auto_extract() {
+        let mut config = ConfigToml::default();
+        config
+            .apply_edit("smartbrain.auto_extract", &serde_json::json!(false))
+            .expect("set smartbrain.auto_extract");
+
+        let smartbrain = config.smartbrain_config();
+        assert!(!smartbrain.auto_extract);
     }
 
     #[test]

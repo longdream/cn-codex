@@ -8,6 +8,7 @@ import {
 } from "../../api";
 import { revealInExplorer } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
+import { SettingsPagination, usePagedItems } from "./SettingsPagination";
 
 interface McpServerInfo {
   name: string;
@@ -57,6 +58,14 @@ export function IntegrationPanel() {
   const [playwrightEnabling, setPlaywrightEnabling] = useState(false);
   const [playwrightStatus, setPlaywrightStatus] = useState<string | null>(null);
   const [playwrightError, setPlaywrightError] = useState<string | null>(null);
+  const {
+    page: serversPage,
+    setPage: setServersPage,
+    pageSize: serversPageSize,
+    totalItems: totalServers,
+    totalPages: totalServerPages,
+    pagedItems: pagedServers,
+  } = usePagedItems(servers);
 
   const displayConfigDir = normalizeWindowsVerbatimPath(configDir);
   const displayConfigPath = normalizeWindowsVerbatimPath(configPath);
@@ -364,7 +373,7 @@ export function IntegrationPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            {servers.map((server) => (
+            {pagedServers.map((server) => (
               <div
                 key={server.name}
                 className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-contrast)]/82 px-4 py-4"
@@ -397,6 +406,13 @@ export function IntegrationPanel() {
                 </p>
               </div>
             ))}
+            <SettingsPagination
+              page={serversPage}
+              onPageChange={setServersPage}
+              pageSize={serversPageSize}
+              totalItems={totalServers}
+              totalPages={totalServerPages}
+            />
           </div>
         )}
       </section>

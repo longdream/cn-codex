@@ -8,6 +8,10 @@ import {
   pluginUninstall,
 } from "../../api";
 import type { PluginSummary } from "../../types/plugin";
+import { SettingsPagination, usePagedItems } from "./SettingsPagination";
+
+const PLUGIN_APP_PAGE_SIZE = 6;
+const PLUGIN_WARNING_PAGE_SIZE = 6;
 
 export function PluginsPanel() {
   const intl = useIntl();
@@ -19,6 +23,16 @@ export function PluginsPanel() {
   const [pluginActionId, setPluginActionId] = useState<string | null>(null);
   const [pluginActionStatus, setPluginActionStatus] = useState<string | null>(null);
   const [pluginActionError, setPluginActionError] = useState<string | null>(null);
+  const [pluginAppsPage, setPluginAppsPage] = useState<Record<string, number>>({});
+  const [pluginWarningsPage, setPluginWarningsPage] = useState<Record<string, number>>({});
+  const {
+    page,
+    setPage,
+    pageSize,
+    totalItems,
+    totalPages,
+    pagedItems: pagedPlugins,
+  } = usePagedItems(plugins);
 
   const load = useCallback(async () => {
     try {
@@ -33,6 +47,25 @@ export function PluginsPanel() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    setPluginAppsPage((prev) => {
+      const next: Record<string, number> = {};
+      for (const plugin of plugins) {
+        const maxPage = Math.max(0, Math.ceil(plugin.apps.length / PLUGIN_APP_PAGE_SIZE) - 1);
+        next[plugin.id] = Math.min(prev[plugin.id] ?? 0, maxPage);
+      }
+      return next;
+    });
+    setPluginWarningsPage((prev) => {
+      const next: Record<string, number> = {};
+      for (const plugin of plugins) {
+        const maxPage = Math.max(0, Math.ceil(plugin.warnings.length / PLUGIN_WARNING_PAGE_SIZE) - 1);
+        next[plugin.id] = Math.min(prev[plugin.id] ?? 0, maxPage);
+      }
+      return next;
+    });
+  }, [plugins]);
 
   const handleImportPlugins = async () => {
     if (importingPlugins) return;
@@ -187,7 +220,7 @@ export function PluginsPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            {plugins.map((plugin) => {
+            {pagedPlugins.map((plugin) => {
               const capabilityBadges = [
                 plugin.skillsCount > 0
                   ? intl.formatMessage(
@@ -202,6 +235,18 @@ export function PluginsPanel() {
               const summary =
                 plugin.interface?.shortDescription ?? plugin.description ?? plugin.manifestPath;
               const pluginBusy = pluginActionId === plugin.id;
+              const appsPage = pluginAppsPage[plugin.id] ?? 0;
+              const appTotalPages = Math.max(1, Math.ceil(plugin.apps.length / PLUGIN_APP_PAGE_SIZE));
+              const pagedApps = plugin.apps.slice(
+                appsPage * PLUGIN_APP_PAGE_SIZE,
+                (appsPage + 1) * PLUGIN_APP_PAGE_SIZE,
+              );
+              const warningsPage = pluginWarningsPage[plugin.id] ?? 0;
+              const warningTotalPages = Math.max(1, Math.ceil(plugin.warnings.length / PLUGIN_WARNING_PAGE_SIZE));
+              const pagedWarnings = plugin.warnings.slice(
+                warningsPage * PLUGIN_WARNING_PAGE_SIZE,
+                (warningsPage + 1) * PLUGIN_WARNING_PAGE_SIZE,
+              );
 
               return (
                 <div
@@ -291,7 +336,7 @@ export function PluginsPanel() {
 
                   {plugin.apps.length > 0 && (
                     <div className="mt-3 space-y-2 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-main)]/50 px-3 py-3">
-                      {plugin.apps.map((app) => (
+                      {pagedApps.map((app) => (
                         <div
                           key={`${app.key}:${app.connectorId}`}
                           className="flex flex-wrap items-center gap-2 text-xs"
@@ -302,12 +347,21 @@ export function PluginsPanel() {
                           </span>
                         </div>
                       ))}
+                      <SettingsPagination
+                        page={appsPage}
+                        onPageChange={(nextPage) =>
+                          setPluginAppsPage((prev) => ({ ...prev, [plugin.id]: nextPage }))}
+                        pageSize={PLUGIN_APP_PAGE_SIZE}
+                        totalItems={plugin.apps.length}
+                        totalPages={appTotalPages}
+                        className="flex items-center justify-between pt-1"
+                      />
                     </div>
                   )}
 
                   {plugin.warnings.length > 0 && (
                     <div className="mt-3 space-y-1">
-                      {plugin.warnings.map((warning) => (
+                      {pagedWarnings.map((warning) => (
                         <p
                           key={warning}
                           className="break-words text-xs text-[var(--text-faint)]"
@@ -315,11 +369,27 @@ export function PluginsPanel() {
                           {warning}
                         </p>
                       ))}
+                      <SettingsPagination
+                        page={warningsPage}
+                        onPageChange={(nextPage) =>
+                          setPluginWarningsPage((prev) => ({ ...prev, [plugin.id]: nextPage }))}
+                        pageSize={PLUGIN_WARNING_PAGE_SIZE}
+                        totalItems={plugin.warnings.length}
+                        totalPages={warningTotalPages}
+                        className="flex items-center justify-between pt-1"
+                      />
                     </div>
                   )}
                 </div>
               );
             })}
+            <SettingsPagination
+              page={page}
+              onPageChange={setPage}
+              pageSize={pageSize}
+              totalItems={totalItems}
+              totalPages={totalPages}
+            />
           </div>
         )}
       </section>

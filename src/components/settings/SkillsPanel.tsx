@@ -3,6 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useIntl } from "react-intl";
 import { skillCategoriesRead, skillList, skillRead } from "../../api";
 import type { SkillCategoryConfig, SkillSummary } from "../../types/skill";
+import { SettingsPagination, usePagedItems } from "./SettingsPagination";
+
+const SKILLS_PER_GROUP_PAGE = 8;
 
 export function SkillsPanel() {
   const intl = useIntl();
@@ -12,6 +15,7 @@ export function SkillsPanel() {
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [skillContent, setSkillContent] = useState<string>("");
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+  const [skillPageByCategory, setSkillPageByCategory] = useState<Record<string, number>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -101,6 +105,30 @@ export function SkillsPanel() {
 
     return groups;
   }, [categories, skills, skillMap]);
+  const {
+    page: groupsPage,
+    setPage: setGroupsPage,
+    pageSize: groupsPageSize,
+    totalItems: totalGroups,
+    totalPages: totalGroupPages,
+    pagedItems: pagedCategorizedGroups,
+  } = usePagedItems(categorizedGroups);
+
+  useEffect(() => {
+    setSkillPageByCategory((prev) => {
+      const next: Record<string, number> = {};
+      for (const group of categorizedGroups) {
+        const maxPage = Math.max(0, Math.ceil(group.skills.length / SKILLS_PER_GROUP_PAGE) - 1);
+        const current = prev[group.labelId] ?? 0;
+        next[group.labelId] = Math.min(current, maxPage);
+      }
+      return next;
+    });
+  }, [categorizedGroups]);
+
+  const handleGroupSkillPageChange = useCallback((labelId: string, nextPage: number) => {
+    setSkillPageByCategory((prev) => ({ ...prev, [labelId]: nextPage }));
+  }, []);
 
   if (loading) {
     return (
@@ -135,8 +163,14 @@ export function SkillsPanel() {
           </div>
         ) : (
           <div className="space-y-2">
-            {categorizedGroups.map((group) => {
+            {pagedCategorizedGroups.map((group) => {
               const isOpen = expandedCategories.has(group.labelId);
+              const groupPage = skillPageByCategory[group.labelId] ?? 0;
+              const groupTotalPages = Math.max(1, Math.ceil(group.skills.length / SKILLS_PER_GROUP_PAGE));
+              const pagedSkills = group.skills.slice(
+                groupPage * SKILLS_PER_GROUP_PAGE,
+                (groupPage + 1) * SKILLS_PER_GROUP_PAGE,
+              );
               return (
                 <div
                   key={group.labelId}
@@ -163,7 +197,7 @@ export function SkillsPanel() {
 
                   {isOpen && (
                     <div className="border-t border-[var(--border-subtle)]">
-                      {group.skills.map((skill) => (
+                      {pagedSkills.map((skill) => (
                         <div key={skill.id}>
                           <div
                             onClick={() => handleViewSkill(skill.id)}
@@ -197,11 +231,28 @@ export function SkillsPanel() {
                           )}
                         </div>
                       ))}
+                      <div className="px-4 py-2">
+                        <SettingsPagination
+                          page={groupPage}
+                          onPageChange={(nextPage) => handleGroupSkillPageChange(group.labelId, nextPage)}
+                          pageSize={SKILLS_PER_GROUP_PAGE}
+                          totalItems={group.skills.length}
+                          totalPages={groupTotalPages}
+                          className="flex items-center justify-between"
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
               );
             })}
+            <SettingsPagination
+              page={groupsPage}
+              onPageChange={setGroupsPage}
+              pageSize={groupsPageSize}
+              totalItems={totalGroups}
+              totalPages={totalGroupPages}
+            />
           </div>
         )}
       </section>

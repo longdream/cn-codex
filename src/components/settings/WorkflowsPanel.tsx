@@ -3,11 +3,20 @@ import { useIntl } from "react-intl";
 import { IconRoute, IconTrash, IconLoader2 } from "@tabler/icons-react";
 import { workflowList, workflowDelete } from "../../api/workflow";
 import type { WorkflowSummary } from "../../api/workflow";
+import { SettingsPagination, usePagedItems } from "./SettingsPagination";
 
 export function WorkflowsPanel() {
   const intl = useIntl();
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const {
+    page,
+    setPage,
+    pageSize,
+    totalItems,
+    totalPages,
+    pagedItems: pagedWorkflows,
+  } = usePagedItems(workflows);
 
   const loadWorkflows = useCallback(async () => {
     setLoading(true);
@@ -57,7 +66,7 @@ export function WorkflowsPanel() {
 
   return (
     <div className="space-y-3">
-      {workflows.map((wf) => (
+      {pagedWorkflows.map((wf) => (
         <div
           key={wf.name}
           className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--bg-secondary)] px-4 py-3"
@@ -90,6 +99,13 @@ export function WorkflowsPanel() {
           </button>
         </div>
       ))}
+      <SettingsPagination
+        page={page}
+        onPageChange={setPage}
+        pageSize={pageSize}
+        totalItems={totalItems}
+        totalPages={totalPages}
+      />
     </div>
   );
 }

@@ -9,33 +9,99 @@ use super::knowledge::KnowledgeIndex;
 
 const FOLDER_IMPORT_CONFIRM_THRESHOLD: usize = 200;
 const FOLDER_IMPORT_PREVIEW_LIMIT: usize = 8;
+const DEFAULT_EXPERIENCE_PAGE_SIZE: u32 = 20;
+const MAX_EXPERIENCE_PAGE_SIZE: u32 = 100;
+
+fn experience_entry_to_json(e: &super::index::ExperienceEntry) -> serde_json::Value {
+    serde_json::json!({
+        "thread_id": e.thread_id,
+        "extracted_at": e.extracted_at,
+        "usage_count": e.usage_count,
+        "last_used_at": e.last_used_at,
+        "summary_slug": e.summary_slug,
+        "title": e.title,
+        "summary": e.summary,
+        "categories": e.categories,
+    })
+}
+
+fn delete_experiences_impl(
+    experiences_dir: &std::path::Path,
+    bm25_path: &std::path::Path,
+    thread_ids: &[String],
+) -> u32 {
+    if thread_ids.is_empty() {
+        return 0;
+    }
+
+    let mut exp_index = ExperienceIndex::load(experiences_dir);
+    let mut bm25 = BM25Index::load(bm25_path);
+    let mut deleted = 0u32;
+
+    for thread_id in thread_ids {
+        let raw_path = experiences_dir.join("raw").join(format!("{thread_id}.md"));
+        let _ = std::fs::remove_file(&raw_path);
+        if exp_index.remove_entry(thread_id) {
+            deleted += 1;
+        }
+        bm25.remove_document(&format!("exp:{thread_id}"));
+    }
+
+    if deleted > 0 {
+        if let Err(e) = exp_index.save(experiences_dir) {
+            tracing::warn!("Failed to save experience index after delete: {e}");
+        }
+        if let Err(e) = bm25.save(bm25_path) {
+            tracing::warn!("Failed to save BM25 index after delete: {e}");
+        }
+    }
+
+    if exp_index.entries.is_empty() {
+        for name in [
+            "experience_summary.md",
+            "experience_handbook.md",
+            "index.md",
+            "log.md",
+        ] {
+            let _ = std::fs::remove_file(experiences_dir.join(name));
+        }
+        exp_index.last_consolidated_at = None;
+        let _ = exp_index.save(experiences_dir);
+    }
+
+    deleted
+}
 
 #[tauri::command]
 pub async fn smartbrain_list_experiences(
     state: State<'_, AppState>,
+    limit: Option<u32>,
+    offset: Option<u32>,
 ) -> AppResult<serde_json::Value> {
     let experiences_dir = super::experiences_dir(&state.workspace_config_dir);
     let index = ExperienceIndex::load(&experiences_dir);
 
-    let entries: Vec<serde_json::Value> = index
+    let mut filtered: Vec<&super::index::ExperienceEntry> = index
         .entries
         .iter()
         .filter(|e| e.title.is_some() || e.summary_slug.is_some())
-        .map(|e| {
-            serde_json::json!({
-                "thread_id": e.thread_id,
-                "extracted_at": e.extracted_at,
-                "usage_count": e.usage_count,
-                "last_used_at": e.last_used_at,
-                "summary_slug": e.summary_slug,
-                "title": e.title,
-                "summary": e.summary,
-                "categories": e.categories,
-            })
-        })
+        .collect();
+    filtered.sort_by(|a, b| b.extracted_at.cmp(&a.extracted_at));
+
+    let total = filtered.len();
+    let offset = offset.unwrap_or(0) as usize;
+    let limit = limit
+        .unwrap_or(DEFAULT_EXPERIENCE_PAGE_SIZE)
+        .clamp(1, MAX_EXPERIENCE_PAGE_SIZE) as usize;
+
+    let entries: Vec<serde_json::Value> = filtered
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(experience_entry_to_json)
         .collect();
 
-    Ok(serde_json::json!({ "entries": entries }))
+    Ok(serde_json::json!({ "entries": entries, "total": total }))
 }
 
 #[tauri::command]
@@ -76,40 +142,22 @@ pub async fn smartbrain_delete_experience(
 ) -> AppResult<serde_json::Value> {
     let experiences_dir = super::experiences_dir(&state.workspace_config_dir);
     let bm25_path = super::bm25_index_path(&state.workspace_config_dir);
-
-    // 1. 删除 raw 源文件
-    let raw_path = experiences_dir.join("raw").join(format!("{thread_id}.md"));
-    let _ = std::fs::remove_file(&raw_path);
-
-    // 2. 从经验索引中移除并持久化
-    let mut exp_index = ExperienceIndex::load(&experiences_dir);
-    exp_index.remove_entry(&thread_id);
-    if let Err(e) = exp_index.save(&experiences_dir) {
-        tracing::warn!("Failed to save experience index after delete: {e}");
-    }
-
-    // 3. 从 BM25 搜索索引中移除
-    let mut bm25 = BM25Index::load(&bm25_path);
-    bm25.remove_document(&format!("exp:{thread_id}"));
-    if let Err(e) = bm25.save(&bm25_path) {
-        tracing::warn!("Failed to save BM25 index after delete: {e}");
-    }
-
-    // 4. 所有经验都删光后，清除 consolidation 产物，避免下次启动残留报错
-    if exp_index.entries.is_empty() {
-        for name in [
-            "experience_summary.md",
-            "experience_handbook.md",
-            "index.md",
-            "log.md",
-        ] {
-            let _ = std::fs::remove_file(experiences_dir.join(name));
-        }
-        exp_index.last_consolidated_at = None;
-        let _ = exp_index.save(&experiences_dir);
-    }
-
+    delete_experiences_impl(&experiences_dir, &bm25_path, &[thread_id]);
     Ok(serde_json::json!({ "status": "ok" }))
+}
+
+#[tauri::command]
+pub async fn smartbrain_delete_experiences(
+    state: State<'_, AppState>,
+    thread_ids: Vec<String>,
+) -> AppResult<serde_json::Value> {
+    let experiences_dir = super::experiences_dir(&state.workspace_config_dir);
+    let bm25_path = super::bm25_index_path(&state.workspace_config_dir);
+    let deleted_count = delete_experiences_impl(&experiences_dir, &bm25_path, &thread_ids);
+    Ok(serde_json::json!({
+        "status": "ok",
+        "deleted_count": deleted_count,
+    }))
 }
 
 /// Manually trigger categorization and merging of experiences to reduce their count.
@@ -139,6 +187,7 @@ pub async fn smartbrain_summarize_experiences(
         "beforeCount": stats.before_count,
         "afterCount": stats.after_count,
         "error": stats.error,
+        "skipReason": stats.skip_reason,
     }))
 }
 

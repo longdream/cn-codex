@@ -8,6 +8,7 @@ import {
   IconFile,
   IconFolder,
   IconPaperclip,
+  IconPencil,
   IconPlayerSkipForward,
   IconPlugConnected,
   IconPlus,
@@ -212,6 +213,7 @@ interface ChatInputProps {
   onInterrupt?: () => void;
   onJumpQueue?: (id: string) => void;
   isStreaming: boolean;
+  isDispatching: boolean;
   disabled: boolean;
   mode: ChatMode;
   onGoalCommand?: (command: ParsedGoalCommand) => void;
@@ -237,6 +239,7 @@ export function ChatInput({
   onInterrupt,
   onJumpQueue,
   isStreaming,
+  isDispatching,
   disabled,
   mode,
   onGoalCommand,
@@ -273,6 +276,7 @@ export function ChatInput({
   // 目标模式运行态：只在 goal + active 时视为“整体执行中”。
   // 聊天模式不受该状态影响。
   const goalRunning = mode === "goal" && currentGoal?.status === "active";
+  const composerBusy = isStreaming || goalRunning || isDispatching;
 
   // 供应商相关
   const providers = useAppStore((s) => s.providers);
@@ -565,6 +569,38 @@ export function ChatInput({
     }
   }, []);
 
+  const handleEditQueuedMessage = useCallback((queuedMessageId: string) => {
+    const queuedMessage = pendingMessageQueue.find((message) => message.id === queuedMessageId);
+    if (!queuedMessage) {
+      return;
+    }
+    removeQueuedMessage(queuedMessageId);
+    setText(queuedMessage.text);
+    setShowSlash(false);
+    useAppStore.getState().setChatMode(queuedMessage.mode);
+    useAppStore.getState().setAttachedFiles([...queuedMessage.attachments]);
+
+    if (queuedMessage.options?.robotCreateMode) {
+      setRobotCreateMode(true);
+      setRobotModifyMode(false);
+    } else if (queuedMessage.options?.robotId) {
+      setSelectedRobotId(queuedMessage.options.robotId);
+      setRobotModifyMode(Boolean(queuedMessage.options.robotModifyMode));
+    } else {
+      setSelectedRobotId(null);
+      setRobotCreateMode(false);
+      setRobotModifyMode(false);
+    }
+
+    requestAnimationFrame(() => {
+      const element = textareaRef.current;
+      if (!element) return;
+      element.focus();
+      element.style.height = "auto";
+      element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+    });
+  }, [pendingMessageQueue, removeQueuedMessage, setRobotCreateMode, setSelectedRobotId]);
+
   const sendPrepared = useCallback(
     (
       rawText: string,
@@ -643,8 +679,11 @@ export function ChatInput({
     if ((!trimmed && attachedFiles.length === 0) || disabled) return;
     const filesToSend = attachedFiles;
 
-    // AI 回复中或目标运行中时，将消息加入排队队列而非直接发送
-    if (isStreaming || goalRunning) {
+    // 使用点击时的实时状态，避免 turn 边界时旧渲染闭包导致误判。
+    const currentStoreState = useAppStore.getState();
+    const goalIsRunningNow =
+      currentStoreState.chatMode === "goal" && currentStoreState.currentGoal?.status === "active";
+    if (isDispatching || currentStoreState.isStreaming || goalIsRunningNow) {
       const queuedPayload = prepareSendPayload(trimmed, filesToSend);
       const queuedMsg: QueuedMessage = {
         id: crypto.randomUUID(),
@@ -723,10 +762,9 @@ export function ChatInput({
     attachedFiles,
     currentGoal,
     disabled,
-    goalRunning,
     handleModifyRobotCommandSubmit,
     handleSkillCommandSubmit,
-    isStreaming,
+    isDispatching,
     mode,
     onGoalCommand,
     resetComposerAfterSubmit,
@@ -1121,6 +1159,15 @@ export function ChatInput({
                 </button>
                 <button
                   type="button"
+                  onClick={() => handleEditQueuedMessage(qm.id)}
+                  className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border border-[var(--chat-line)] text-[var(--chat-faint)] transition-colors hover:border-[var(--accent-border)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
+                  title={intl.formatMessage({ id: "chat.queueEdit" })}
+                  aria-label={intl.formatMessage({ id: "chat.queueEdit" })}
+                >
+                  <IconPencil size={10} stroke={2.5} />
+                </button>
+                <button
+                  type="button"
                   onClick={() => removeQueuedMessage(qm.id)}
                   className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-[var(--chat-faint)] transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                   title={intl.formatMessage({ id: "chat.queueRemove" })}
@@ -1350,7 +1397,7 @@ export function ChatInput({
             onInput={handleInput}
             onPaste={handlePaste}
             placeholder={intl.formatMessage({
-              id: (isStreaming || goalRunning)
+              id: composerBusy
                 ? "chat.queuePlaceholder"
                 : robotModifyMode
                   ? "chat.robot.modifyPlaceholder"
@@ -1363,7 +1410,7 @@ export function ChatInput({
             className="chat-composer-input max-h-[200px] min-h-[78px] w-full flex-1 resize-none bg-transparent py-2 text-[13px] leading-relaxed text-[var(--chat-prose)] placeholder:text-[var(--chat-faint)] outline-none disabled:opacity-50"
           />
 
-          {(isStreaming || goalRunning) && !text.trim() ? (
+          {composerBusy && !text.trim() ? (
             <button
               type="button"
               onClick={onInterrupt}

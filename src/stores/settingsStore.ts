@@ -97,7 +97,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       ? initialSettingsSnapshot.locale
       : "zh-CN",
   theme: normalizeThemeMode(initialSettingsSnapshot?.theme),
-  fortuneEnabled: initialSettingsSnapshot?.fortuneEnabled ?? true,
+  fortuneEnabled: initialSettingsSnapshot?.fortuneEnabled ?? false,
   backgroundImagePath:
     typeof initialSettingsSnapshot?.backgroundImagePath === "string"
       ? initialSettingsSnapshot.backgroundImagePath
@@ -141,7 +141,7 @@ export async function initSettingsFromDb(): Promise<void> {
       useSettingsStore.setState({
         locale: parsed.locale ?? "zh-CN",
         theme: normalizeThemeMode(parsed.theme),
-        fortuneEnabled: parsed.fortuneEnabled ?? true,
+        fortuneEnabled: parsed.fortuneEnabled ?? false,
         backgroundImagePath:
           typeof parsed.backgroundImagePath === "string"
             ? parsed.backgroundImagePath

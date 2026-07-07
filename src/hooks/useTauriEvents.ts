@@ -675,6 +675,20 @@ export function useTauriEvents() {
             const threadId = e.payload.threadId ?? store.currentThreadId;
             if (!threadId) return;
             const isActive = threadId === store.currentThreadId;
+            const completedTurnId = e.payload.turn?.id ?? null;
+            const runtimeBeforeComplete = store.getThreadRuntimeState(threadId);
+            const activeTurnId = runtimeBeforeComplete?.currentTurnId ?? null;
+            const isStaleCompletion =
+              !!completedTurnId && !!activeTurnId && completedTurnId !== activeTurnId;
+
+            // 旧 turn 的 completed 事件晚到时，不能覆盖新 turn 的运行态。
+            // 否则会把输入区错误地打回“空闲发送”按钮。
+            if (isStaleCompletion) {
+              console.warn(
+                `[event] ignore stale turn-completed for thread ${threadId}: completed=${completedTurnId}, active=${activeTurnId}`,
+              );
+              return;
+            }
 
             // 推理过程消息
             const reasoningText = (reasoningByThread.get(threadId) ?? "").trim();

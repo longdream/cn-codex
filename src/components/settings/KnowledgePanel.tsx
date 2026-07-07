@@ -14,6 +14,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { SettingsPagination, usePagedItems } from "./SettingsPagination";
 
 interface KnowledgeEntry {
   doc_id: string;
@@ -100,6 +101,14 @@ export function KnowledgePanel() {
     kind: "success" | "error" | "warning" | "info";
     text: string;
   } | null>(null);
+  const {
+    page: knowledgePage,
+    setPage: setKnowledgePage,
+    pageSize: knowledgePageSize,
+    totalItems: totalKnowledgeItems,
+    totalPages: totalKnowledgePages,
+    pagedItems: pagedKnowledge,
+  } = usePagedItems(knowledge);
 
   useEffect(() => {
     invoke<{ config?: { smartbrain?: { enabled?: boolean } } }>("standalone_config_read")
@@ -436,171 +445,180 @@ export function KnowledgePanel() {
                 {intl.formatMessage({ id: "settings.smartbrain.knowledge.empty" })}
               </p>
             ) : (
-              knowledge.map((doc) => (
-                <div
-                  key={doc.doc_id}
-                  className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)]/50"
-                >
+              <>
+                {pagedKnowledge.map((doc) => (
                   <div
-                    className="flex cursor-pointer items-center gap-2 px-3 py-2"
-                    onClick={() => handleExpandKnowledge(doc.doc_id)}
+                    key={doc.doc_id}
+                    className="rounded-md border border-[var(--border-subtle)] bg-[var(--surface-soft)]/50"
                   >
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
-                    <span className="flex-1 truncate text-xs font-medium text-[var(--text-strong)]">
-                      {doc.title}
-                    </span>
-                    <span className="shrink-0 rounded bg-[var(--border-subtle)] px-1 py-0.5 text-[9px] text-[var(--text-faint)]">
-                      {doc.source_type}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-[var(--text-faint)]">
-                      {formatDate(doc.added_at)}
-                    </span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (editingDocId === doc.doc_id) {
-                          handleCancelEditKnowledge();
-                        } else {
-                          void handleStartEditKnowledge(doc);
-                        }
-                      }}
-                      className="icon-button shrink-0 opacity-50 hover:opacity-100"
-                      title={editingDocId === doc.doc_id ? "Cancel edit" : "Edit metadata"}
-                    >
-                      {editingDocId === doc.doc_id ? (
-                        <IconX size={13} stroke={1.6} />
-                      ) : (
-                        <IconPencil size={13} stroke={1.6} />
-                      )}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (editingDocId !== doc.doc_id) {
-                          handleDeleteKnowledge(doc.doc_id);
-                        }
-                      }}
-                      className="icon-button shrink-0 opacity-50 hover:opacity-100 disabled:opacity-30"
-                      disabled={editingDocId === doc.doc_id}
-                    >
-                      <IconTrash size={13} stroke={1.6} />
-                    </button>
-                  </div>
-                  {editingDocId === doc.doc_id && (
                     <div
-                      className="space-y-2 border-t border-[var(--border-subtle)] px-3 py-2"
-                      onClick={(e) => e.stopPropagation()}
+                      className="flex cursor-pointer items-center gap-2 px-3 py-2"
+                      onClick={() => handleExpandKnowledge(doc.doc_id)}
                     >
-                      <div className="grid gap-2 md:grid-cols-2">
-                        <input
-                          value={editForm.title}
-                          onChange={(e) =>
-                            setEditForm((prev) => ({ ...prev, title: e.target.value }))
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
+                      <span className="flex-1 truncate text-xs font-medium text-[var(--text-strong)]">
+                        {doc.title}
+                      </span>
+                      <span className="shrink-0 rounded bg-[var(--border-subtle)] px-1 py-0.5 text-[9px] text-[var(--text-faint)]">
+                        {doc.source_type}
+                      </span>
+                      <span className="shrink-0 text-[10px] text-[var(--text-faint)]">
+                        {formatDate(doc.added_at)}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (editingDocId === doc.doc_id) {
+                            handleCancelEditKnowledge();
+                          } else {
+                            void handleStartEditKnowledge(doc);
                           }
-                          placeholder="Title"
-                          className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
-                        />
-                        <input
-                          value={editForm.tagsText}
-                          onChange={(e) =>
-                            setEditForm((prev) => ({ ...prev, tagsText: e.target.value }))
+                        }}
+                        className="icon-button shrink-0 opacity-50 hover:opacity-100"
+                        title={editingDocId === doc.doc_id ? "Cancel edit" : "Edit metadata"}
+                      >
+                        {editingDocId === doc.doc_id ? (
+                          <IconX size={13} stroke={1.6} />
+                        ) : (
+                          <IconPencil size={13} stroke={1.6} />
+                        )}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (editingDocId !== doc.doc_id) {
+                            handleDeleteKnowledge(doc.doc_id);
                           }
-                          placeholder="Tags (comma separated)"
-                          className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
-                        />
-                        <input
-                          value={editForm.domain}
-                          onChange={(e) =>
-                            setEditForm((prev) => ({ ...prev, domain: e.target.value }))
-                          }
-                          placeholder="Domain"
-                          className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
-                        />
-                        <input
-                          value={editForm.sourceGroup}
-                          onChange={(e) =>
-                            setEditForm((prev) => ({ ...prev, sourceGroup: e.target.value }))
-                          }
-                          placeholder="Source group"
-                          className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
-                        />
-                      </div>
-                      <textarea
-                        value={editForm.description}
-                        onChange={(e) =>
-                          setEditForm((prev) => ({ ...prev, description: e.target.value }))
-                        }
-                        placeholder="Description"
-                        rows={3}
-                        className="w-full rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
-                      />
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => void handleSaveEditKnowledge()}
-                          disabled={savingEdit}
-                          className="app-button-secondary flex items-center gap-1.5 text-xs"
-                        >
-                          <IconCheck size={13} stroke={1.8} />
-                          {savingEdit ? "Saving..." : "Save"}
-                        </button>
-                        <button
-                          onClick={handleCancelEditKnowledge}
-                          disabled={savingEdit}
-                          className="app-button-secondary flex items-center gap-1.5 text-xs"
-                        >
-                          <IconX size={13} stroke={1.8} />
-                          Cancel
-                        </button>
-                      </div>
+                        }}
+                        className="icon-button shrink-0 opacity-50 hover:opacity-100 disabled:opacity-30"
+                        disabled={editingDocId === doc.doc_id}
+                      >
+                        <IconTrash size={13} stroke={1.6} />
+                      </button>
                     </div>
-                  )}
-                  <div className="flex items-center gap-2 px-3 pb-1.5">
-                    <span className="text-[10px] text-[var(--text-faint)]">
-                      {intl.formatMessage(
-                        { id: "settings.smartbrain.knowledge.chunks" },
-                        { count: doc.chunk_count }
-                      )}
-                    </span>
-                    {doc.categories.length > 0 && (
-                      <div className="flex gap-1">
-                        {doc.categories.slice(0, 4).map((cat) => (
-                          <span
-                            key={cat}
-                            className="rounded bg-[var(--border-subtle)] px-1.5 py-0.5 text-[9px] text-[var(--text-faint)]"
+                    {editingDocId === doc.doc_id && (
+                      <div
+                        className="space-y-2 border-t border-[var(--border-subtle)] px-3 py-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="grid gap-2 md:grid-cols-2">
+                          <input
+                            value={editForm.title}
+                            onChange={(e) =>
+                              setEditForm((prev) => ({ ...prev, title: e.target.value }))
+                            }
+                            placeholder="Title"
+                            className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                          />
+                          <input
+                            value={editForm.tagsText}
+                            onChange={(e) =>
+                              setEditForm((prev) => ({ ...prev, tagsText: e.target.value }))
+                            }
+                            placeholder="Tags (comma separated)"
+                            className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                          />
+                          <input
+                            value={editForm.domain}
+                            onChange={(e) =>
+                              setEditForm((prev) => ({ ...prev, domain: e.target.value }))
+                            }
+                            placeholder="Domain"
+                            className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                          />
+                          <input
+                            value={editForm.sourceGroup}
+                            onChange={(e) =>
+                              setEditForm((prev) => ({ ...prev, sourceGroup: e.target.value }))
+                            }
+                            placeholder="Source group"
+                            className="rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                          />
+                        </div>
+                        <textarea
+                          value={editForm.description}
+                          onChange={(e) =>
+                            setEditForm((prev) => ({ ...prev, description: e.target.value }))
+                          }
+                          placeholder="Description"
+                          rows={3}
+                          className="w-full rounded border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5 text-xs text-[var(--text-strong)]"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => void handleSaveEditKnowledge()}
+                            disabled={savingEdit}
+                            className="app-button-secondary flex items-center gap-1.5 text-xs"
                           >
-                            {cat}
-                          </span>
-                        ))}
+                            <IconCheck size={13} stroke={1.8} />
+                            {savingEdit ? "Saving..." : "Save"}
+                          </button>
+                          <button
+                            onClick={handleCancelEditKnowledge}
+                            disabled={savingEdit}
+                            className="app-button-secondary flex items-center gap-1.5 text-xs"
+                          >
+                            <IconX size={13} stroke={1.8} />
+                            Cancel
+                          </button>
+                        </div>
                       </div>
                     )}
-                    {doc.domain && (
-                      <span className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] text-purple-400">
+                    <div className="flex items-center gap-2 px-3 pb-1.5">
+                      <span className="text-[10px] text-[var(--text-faint)]">
                         {intl.formatMessage(
-                          { id: "settings.smartbrain.knowledge.domainLabel" },
-                          { domain: doc.domain },
+                          { id: "settings.smartbrain.knowledge.chunks" },
+                          { count: doc.chunk_count }
                         )}
                       </span>
-                    )}
-                  </div>
-                  {expandedKnow === doc.doc_id && knowContent[doc.doc_id] && (
-                    <div className="thin-scrollbar max-h-60 overflow-y-auto border-t border-[var(--border-subtle)] px-3 py-2">
-                      {knowFrontmatter[doc.doc_id] && (
-                        <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] text-[var(--text-faint)]">
-                          <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-400">
-                            OKF: {knowFrontmatter[doc.doc_id]!.type}
-                          </span>
-                          {knowFrontmatter[doc.doc_id]!.description && (
-                            <span className="italic">{knowFrontmatter[doc.doc_id]!.description}</span>
-                          )}
+                      {doc.categories.length > 0 && (
+                        <div className="flex gap-1">
+                          {doc.categories.slice(0, 4).map((cat) => (
+                            <span
+                              key={cat}
+                              className="rounded bg-[var(--border-subtle)] px-1.5 py-0.5 text-[9px] text-[var(--text-faint)]"
+                            >
+                              {cat}
+                            </span>
+                          ))}
                         </div>
                       )}
-                      <pre className="whitespace-pre-wrap text-[11px] text-[var(--text-muted)]">
-                        {knowContent[doc.doc_id]}
-                      </pre>
+                      {doc.domain && (
+                        <span className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] text-purple-400">
+                          {intl.formatMessage(
+                            { id: "settings.smartbrain.knowledge.domainLabel" },
+                            { domain: doc.domain },
+                          )}
+                        </span>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))
+                    {expandedKnow === doc.doc_id && knowContent[doc.doc_id] && (
+                      <div className="thin-scrollbar max-h-60 overflow-y-auto border-t border-[var(--border-subtle)] px-3 py-2">
+                        {knowFrontmatter[doc.doc_id] && (
+                          <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] text-[var(--text-faint)]">
+                            <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-400">
+                              OKF: {knowFrontmatter[doc.doc_id]!.type}
+                            </span>
+                            {knowFrontmatter[doc.doc_id]!.description && (
+                              <span className="italic">{knowFrontmatter[doc.doc_id]!.description}</span>
+                            )}
+                          </div>
+                        )}
+                        <pre className="whitespace-pre-wrap text-[11px] text-[var(--text-muted)]">
+                          {knowContent[doc.doc_id]}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <SettingsPagination
+                  page={knowledgePage}
+                  onPageChange={setKnowledgePage}
+                  pageSize={knowledgePageSize}
+                  totalItems={totalKnowledgeItems}
+                  totalPages={totalKnowledgePages}
+                />
+              </>
             )}
           </div>
         )}

@@ -1,13 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 use tracing::info;
 
 use crate::adapter;
 use crate::adapter::types::InternalMessage;
+use crate::agent::UserAttachment;
 use crate::error::{AppError, AppResult};
-use crate::protocol::UserAttachment;
 use crate::state::AppState;
 
 /// Skill 实验室草稿的隔离存储目录: codey/skills-lab/
@@ -18,6 +20,73 @@ fn get_skill_lab_dir(state: &AppState) -> PathBuf {
 /// 实验室中单个 skill 草稿的目录
 fn get_skill_lab_entry_dir(state: &AppState, skill_id: &str) -> PathBuf {
     get_skill_lab_dir(state).join(skill_id)
+}
+
+static ACTIVE_SKILL_LAB_RUNS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn active_skill_lab_runs() -> &'static Mutex<HashSet<String>> {
+    ACTIVE_SKILL_LAB_RUNS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn register_active_skill_lab_run(skill_id: &str) -> bool {
+    let mut guard = active_skill_lab_runs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.insert(skill_id.to_string())
+}
+
+fn unregister_active_skill_lab_run(skill_id: &str) {
+    let mut guard = active_skill_lab_runs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.remove(skill_id);
+}
+
+fn is_skill_lab_run_active(skill_id: &str) -> bool {
+    let guard = active_skill_lab_runs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.contains(skill_id)
+}
+
+fn is_live_skill_lab_status(status: &str) -> bool {
+    matches!(status, "testing" | "evaluating" | "rewriting")
+}
+
+fn recover_stale_skill_lab_status(meta_path: &Path, skill_id: &str, meta: &mut SkillLabMeta) {
+    if !is_live_skill_lab_status(&meta.status) || is_skill_lab_run_active(skill_id) {
+        return;
+    }
+
+    info!(
+        "Recover stale skill lab status for {skill_id}: {} -> failed",
+        meta.status
+    );
+    meta.status = "failed".to_string();
+    write_skill_lab_meta(meta_path, meta);
+}
+
+struct ActiveSkillLabRunGuard {
+    skill_id: String,
+}
+
+impl ActiveSkillLabRunGuard {
+    fn acquire(skill_id: &str) -> AppResult<Self> {
+        if !register_active_skill_lab_run(skill_id) {
+            return Err(AppError::Custom(format!(
+                "Skill lab test is already running: {skill_id}"
+            )));
+        }
+        Ok(Self {
+            skill_id: skill_id.to_string(),
+        })
+    }
+}
+
+impl Drop for ActiveSkillLabRunGuard {
+    fn drop(&mut self) {
+        unregister_active_skill_lab_run(&self.skill_id);
+    }
 }
 
 fn parse_python_version_output(raw: &str) -> Option<String> {
@@ -106,6 +175,8 @@ pub struct SkillLabSummary {
 pub struct SkillLabDetail {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub goal: String,
     pub content: String,
     pub test_prompt: String,
     pub status: String,
@@ -140,6 +211,8 @@ pub struct SkillLabScoreRecord {
 #[serde(rename_all = "camelCase")]
 struct SkillLabMeta {
     name: String,
+    #[serde(default)]
+    goal: String,
     test_prompt: String,
     status: String,
     iteration_count: u32,
@@ -218,7 +291,8 @@ pub async fn skill_lab_list(state: State<'_, AppState>) -> AppResult<Vec<SkillLa
             .to_string();
 
         if let Ok(content) = std::fs::read_to_string(&meta_path) {
-            if let Ok(meta) = serde_json::from_str::<SkillLabMeta>(&content) {
+            if let Ok(mut meta) = serde_json::from_str::<SkillLabMeta>(&content) {
+                recover_stale_skill_lab_status(&meta_path, &id, &mut meta);
                 skills.push(SkillLabSummary {
                     id,
                     name: meta.name,
@@ -251,8 +325,9 @@ pub async fn skill_lab_read(
 
     let meta_str = std::fs::read_to_string(&meta_path)
         .map_err(|e| AppError::Custom(format!("Failed to read meta: {e}")))?;
-    let meta: SkillLabMeta = serde_json::from_str(&meta_str)
+    let mut meta: SkillLabMeta = serde_json::from_str(&meta_str)
         .map_err(|e| AppError::Custom(format!("Failed to parse meta: {e}")))?;
+    recover_stale_skill_lab_status(&meta_path, &skill_id, &mut meta);
 
     let content = if skill_md_path.exists() {
         std::fs::read_to_string(&skill_md_path).unwrap_or_default()
@@ -263,6 +338,7 @@ pub async fn skill_lab_read(
     Ok(SkillLabDetail {
         id: skill_id,
         name: meta.name,
+        goal: meta.goal,
         content,
         test_prompt: meta.test_prompt,
         status: meta.status,
@@ -282,6 +358,8 @@ pub async fn skill_lab_read(
 pub struct SkillLabSaveParams {
     pub skill_id: String,
     pub name: String,
+    #[serde(default)]
+    pub goal: String,
     pub content: String,
     pub test_prompt: String,
 }
@@ -308,6 +386,7 @@ pub async fn skill_lab_save(
 
     let meta = SkillLabMeta {
         name: params.name,
+        goal: params.goal,
         test_prompt: params.test_prompt,
         status: existing_meta
             .as_ref()
@@ -691,7 +770,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub async fn skill_lab_promote(state: State<'_, AppState>, skill_id: String) -> AppResult<()> {
+pub async fn skill_lab_deploy(state: State<'_, AppState>, skill_id: String) -> AppResult<()> {
     let lab_dir = get_skill_lab_entry_dir(&state, &skill_id);
     let skill_md_src = lab_dir.join("SKILL.md");
 
@@ -724,7 +803,7 @@ pub async fn skill_lab_promote(state: State<'_, AppState>, skill_id: String) -> 
     let meta_path = lab_dir.join("meta.json");
     if let Ok(meta_str) = std::fs::read_to_string(&meta_path) {
         if let Ok(mut meta) = serde_json::from_str::<SkillLabMeta>(&meta_str) {
-            meta.status = "promoted".to_string();
+            meta.status = "deployed".to_string();
             if let Ok(json) = serde_json::to_string_pretty(&meta) {
                 let _ = std::fs::write(&meta_path, json);
             }
@@ -748,10 +827,15 @@ pub async fn skill_lab_delete(state: State<'_, AppState>, skill_id: String) -> A
 // ── Skill Lab 自动测试闭环 ──────────────────────────────────
 
 /// 最大自动改写迭代次数
-const MAX_EVOLUTION_ITERATIONS: u32 = 12;
+const MAX_EVOLUTION_ITERATIONS: u32 = 3;
 const HIGH_SCORE_THRESHOLD: f64 = 90.0;
 const SCORE_PLATEAU_DELTA: f64 = 1.0;
 const SCORE_PLATEAU_ROUNDS: u32 = 2;
+const TEST_CALL_RETRY_MAX_ATTEMPTS: u32 = 3;
+const TEST_CALL_RETRY_BASE_DELAY_MS: u64 = 1000;
+const TEST_CALL_RETRY_JITTER_MAX_MS: u64 = 250;
+const PROGRESS_LOG_SNIPPET_MAX_CHARS: usize = 240;
+const PROGRESS_LOG_MAX_LINES: usize = 5;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -829,9 +913,8 @@ fn weakest_dimension(eval: &SkillEvaluation) -> &'static str {
     weakest.0
 }
 
-fn should_stop_evolution(total_score: f64, stable_rounds: u32, iteration: u32) -> bool {
-    (total_score >= HIGH_SCORE_THRESHOLD && stable_rounds >= SCORE_PLATEAU_ROUNDS)
-        || iteration >= MAX_EVOLUTION_ITERATIONS
+fn should_stop_evolution(_total_score: f64, _stable_rounds: u32, iteration: u32) -> bool {
+    iteration >= MAX_EVOLUTION_ITERATIONS
 }
 
 fn update_best_candidate(
@@ -846,6 +929,161 @@ fn update_best_candidate(
         *best_score = candidate_score;
         *best_content = candidate_content.to_string();
         *best_evaluation = candidate_evaluation.to_string();
+    }
+}
+
+fn is_too_many_requests_error(message: &str) -> bool {
+    message.contains("API error (429") || message.contains("429 Too Many Requests")
+}
+
+fn retry_backoff_base_ms(retry_attempt: u32) -> u64 {
+    let exp = retry_attempt.saturating_sub(1).min(10);
+    TEST_CALL_RETRY_BASE_DELAY_MS.saturating_mul(1u64 << exp)
+}
+
+fn retry_backoff_delay_ms(retry_attempt: u32) -> u64 {
+    let base = retry_backoff_base_ms(retry_attempt);
+    let jitter = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+        % (TEST_CALL_RETRY_JITTER_MAX_MS + 1);
+    base.saturating_add(jitter)
+}
+
+fn compact_progress_snippet(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut snippet = trimmed
+        .replace('\r', "")
+        .lines()
+        .take(PROGRESS_LOG_MAX_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if snippet.chars().count() > PROGRESS_LOG_SNIPPET_MAX_CHARS {
+        snippet = format!(
+            "{}…",
+            snippet
+                .chars()
+                .take(PROGRESS_LOG_SNIPPET_MAX_CHARS)
+                .collect::<String>()
+        );
+    }
+    Some(snippet)
+}
+
+fn emit_skill_lab_progress(
+    app_handle: &AppHandle,
+    skill_id: &str,
+    phase: &str,
+    iteration: u32,
+    max_iterations: u32,
+    log_type: &str,
+    log_snippet: Option<String>,
+    score: Option<f64>,
+    retry_attempt: Option<u32>,
+    retry_delay_ms: Option<u64>,
+    retry_reason: Option<&str>,
+) {
+    let mut payload = serde_json::json!({
+        "skillId": skill_id,
+        "phase": phase,
+        "iteration": iteration,
+        "maxIterations": max_iterations,
+        "logType": log_type,
+    });
+    if let Some(obj) = payload.as_object_mut() {
+        if let Some(snippet) = log_snippet {
+            obj.insert("logSnippet".to_string(), serde_json::Value::String(snippet));
+        }
+        if let Some(value) = score {
+            obj.insert("score".to_string(), serde_json::json!(value));
+        }
+        if let Some(value) = retry_attempt {
+            obj.insert("retryAttempt".to_string(), serde_json::json!(value));
+            obj.insert(
+                "retryMax".to_string(),
+                serde_json::json!(TEST_CALL_RETRY_MAX_ATTEMPTS),
+            );
+        }
+        if let Some(value) = retry_delay_ms {
+            obj.insert("retryDelayMs".to_string(), serde_json::json!(value));
+        }
+        if let Some(value) = retry_reason {
+            obj.insert("retryReason".to_string(), serde_json::json!(value));
+        }
+    }
+    let _ = app_handle.emit("skill-lab-progress", payload);
+}
+
+fn write_skill_lab_meta(meta_path: &Path, meta: &SkillLabMeta) {
+    if let Ok(json) = serde_json::to_string_pretty(meta) {
+        let _ = std::fs::write(meta_path, json);
+    }
+}
+
+async fn call_test_non_streaming_with_retry(
+    http: &reqwest::Client,
+    adapter: &dyn adapter::ProviderAdapter,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    max_tokens: Option<i64>,
+    messages: &[InternalMessage],
+    query_params: Option<&HashMap<String, String>>,
+    extra_headers: Option<&HashMap<String, String>>,
+    app_handle: &AppHandle,
+    skill_id: &str,
+    iteration: u32,
+    max_iterations: u32,
+) -> Result<String, String> {
+    let mut retry_attempt = 0u32;
+    loop {
+        match call_ai_non_streaming(
+            http,
+            adapter,
+            base_url,
+            api_key,
+            model,
+            max_tokens,
+            messages,
+            query_params,
+            extra_headers,
+        )
+        .await
+        {
+            Ok(output) => return Ok(output),
+            Err(err) => {
+                if !is_too_many_requests_error(&err) {
+                    return Err(err);
+                }
+                if retry_attempt >= TEST_CALL_RETRY_MAX_ATTEMPTS {
+                    return Err(format!(
+                        "{err} (429 retry exhausted after {TEST_CALL_RETRY_MAX_ATTEMPTS} attempts)"
+                    ));
+                }
+                retry_attempt += 1;
+                let delay_ms = retry_backoff_delay_ms(retry_attempt);
+                emit_skill_lab_progress(
+                    app_handle,
+                    skill_id,
+                    "testing",
+                    iteration,
+                    max_iterations,
+                    "retry",
+                    Some(format!(
+                        "429 限流，准备第 {retry_attempt}/{TEST_CALL_RETRY_MAX_ATTEMPTS} 次重试，{delay_ms}ms 后继续。"
+                    )),
+                    None,
+                    Some(retry_attempt),
+                    Some(delay_ms),
+                    Some("429"),
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+        }
     }
 }
 
@@ -878,6 +1116,7 @@ pub async fn skill_lab_run_test(
     app_handle: AppHandle,
     skill_id: String,
 ) -> AppResult<SkillLabTestResult> {
+    let _active_run_guard = ActiveSkillLabRunGuard::acquire(&skill_id)?;
     let dir = get_skill_lab_entry_dir(&state, &skill_id);
     let meta_path = dir.join("meta.json");
     let skill_md_path = dir.join("SKILL.md");
@@ -919,6 +1158,13 @@ pub async fn skill_lab_run_test(
         .unwrap_or("chat")
         .to_string();
 
+    // 与主 agent 保持一致：使用配置中的 max_output_tokens，并夹到 API 允许的范围内
+    // （部分 API 要求 max_tokens ∈ [1, 65536]，适配器默认 131072 会触发 400）。
+    let max_output_tokens = config
+        .max_output_tokens
+        .map(|v| v.clamp(1, 65536))
+        .unwrap_or(65536);
+
     let http = reqwest::Client::new();
     let adapter = adapter::get_adapter(&wire_api);
 
@@ -939,14 +1185,24 @@ pub async fn skill_lab_run_test(
             "Skill lab evolution iteration {iterations}/{MAX_EVOLUTION_ITERATIONS} for {skill_id}"
         );
 
+        meta.status = "testing".to_string();
+        write_skill_lab_meta(&meta_path, &meta);
+
         // 通知前端当前阶段
-        let _ = app_handle.emit(
-            "skill-lab-progress",
-            serde_json::json!({
-                "skillId": &skill_id,
-                "phase": "testing",
-                "iteration": iterations,
-            }),
+        emit_skill_lab_progress(
+            &app_handle,
+            &skill_id,
+            "testing",
+            iterations,
+            MAX_EVOLUTION_ITERATIONS,
+            "phase",
+            Some(format!(
+                "开始第 {iterations}/{MAX_EVOLUTION_ITERATIONS} 轮测试。"
+            )),
+            None,
+            None,
+            None,
+            None,
         );
 
         // ── 步骤1：用 Skill 内容作为 system prompt，测试提示词作为 user prompt ──
@@ -967,27 +1223,55 @@ pub async fn skill_lab_run_test(
             },
         ];
 
-        last_output = call_ai_non_streaming(
+        last_output = call_test_non_streaming_with_retry(
             &http,
             &*adapter,
             &base_url,
             &api_key,
             &model,
+            Some(max_output_tokens),
             &test_messages,
             provider_info.query_params.as_ref(),
             provider_info.http_headers.as_ref(),
+            &app_handle,
+            &skill_id,
+            iterations,
+            MAX_EVOLUTION_ITERATIONS,
         )
         .await
-        .map_err(|e| AppError::Custom(format!("Test call failed: {e}")))?;
+        .map_err(|e| {
+            meta.status = "failed".to_string();
+            write_skill_lab_meta(&meta_path, &meta);
+            let _ = app_handle.emit(
+                "skill-lab-progress",
+                serde_json::json!({
+                    "skillId": &skill_id,
+                    "phase": "done",
+                    "status": "failed",
+                    "iteration": iterations,
+                    "maxIterations": MAX_EVOLUTION_ITERATIONS,
+                    "logType": "error",
+                    "logSnippet": format!("测试失败: {e}"),
+                }),
+            );
+            AppError::Custom(format!("Test call failed: {e}"))
+        })?;
 
         // ── 步骤2：AI 评估 ──
-        let _ = app_handle.emit(
-            "skill-lab-progress",
-            serde_json::json!({
-                "skillId": &skill_id,
-                "phase": "evaluating",
-                "iteration": iterations,
-            }),
+        meta.status = "evaluating".to_string();
+        write_skill_lab_meta(&meta_path, &meta);
+        emit_skill_lab_progress(
+            &app_handle,
+            &skill_id,
+            "evaluating",
+            iterations,
+            MAX_EVOLUTION_ITERATIONS,
+            "testOutput",
+            compact_progress_snippet(&last_output),
+            None,
+            None,
+            None,
+            None,
         );
 
         let eval_system = "你是一个 Skill 质量评审员。\
@@ -1029,12 +1313,29 @@ pub async fn skill_lab_run_test(
             &base_url,
             &api_key,
             &model,
+            Some(max_output_tokens),
             &eval_messages,
             provider_info.query_params.as_ref(),
             provider_info.http_headers.as_ref(),
         )
         .await
-        .map_err(|e| AppError::Custom(format!("Evaluation call failed: {e}")))?;
+        .map_err(|e| {
+            meta.status = "failed".to_string();
+            write_skill_lab_meta(&meta_path, &meta);
+            let _ = app_handle.emit(
+                "skill-lab-progress",
+                serde_json::json!({
+                    "skillId": &skill_id,
+                    "phase": "done",
+                    "status": "failed",
+                    "iteration": iterations,
+                    "maxIterations": MAX_EVOLUTION_ITERATIONS,
+                    "logType": "error",
+                    "logSnippet": format!("评估失败: {e}"),
+                }),
+            );
+            AppError::Custom(format!("Evaluation call failed: {e}"))
+        })?;
         let evaluation = parse_skill_evaluation(&evaluation_raw);
         let total_score = clamp_score(evaluation.total_score);
 
@@ -1048,6 +1349,22 @@ pub async fn skill_lab_run_test(
             stable_rounds = 0;
         }
         previous_score = Some(total_score);
+        emit_skill_lab_progress(
+            &app_handle,
+            &skill_id,
+            "evaluating",
+            iterations,
+            MAX_EVOLUTION_ITERATIONS,
+            "score",
+            Some(format!(
+                "第 {iterations} 轮评分 {:.1}，平台期轮次 {stable_rounds}。",
+                total_score
+            )),
+            Some(total_score),
+            None,
+            None,
+            None,
+        );
 
         score_history.push(SkillLabScoreRecord {
             iteration: iterations,
@@ -1074,13 +1391,20 @@ pub async fn skill_lab_run_test(
         }
 
         // ── 步骤3：自动改写 ──
-        let _ = app_handle.emit(
-            "skill-lab-progress",
-            serde_json::json!({
-                "skillId": &skill_id,
-                "phase": "rewriting",
-                "iteration": iterations,
-            }),
+        meta.status = "rewriting".to_string();
+        write_skill_lab_meta(&meta_path, &meta);
+        emit_skill_lab_progress(
+            &app_handle,
+            &skill_id,
+            "rewriting",
+            iterations,
+            MAX_EVOLUTION_ITERATIONS,
+            "rewriteInput",
+            compact_progress_snippet(&evaluation_raw),
+            Some(total_score),
+            None,
+            None,
+            None,
         );
 
         let rewrite_system = "你是一个 Skill 指令优化专家。\
@@ -1149,12 +1473,29 @@ pub async fn skill_lab_run_test(
             &base_url,
             &api_key,
             &model,
+            Some(max_output_tokens),
             &rewrite_messages,
             provider_info.query_params.as_ref(),
             provider_info.http_headers.as_ref(),
         )
         .await
-        .map_err(|e| AppError::Custom(format!("Rewrite call failed: {e}")))?;
+        .map_err(|e| {
+            meta.status = "failed".to_string();
+            write_skill_lab_meta(&meta_path, &meta);
+            let _ = app_handle.emit(
+                "skill-lab-progress",
+                serde_json::json!({
+                    "skillId": &skill_id,
+                    "phase": "done",
+                    "status": "failed",
+                    "iteration": iterations,
+                    "maxIterations": MAX_EVOLUTION_ITERATIONS,
+                    "logType": "error",
+                    "logSnippet": format!("改写失败: {e}"),
+                }),
+            );
+            AppError::Custom(format!("Rewrite call failed: {e}"))
+        })?;
 
         if !rewritten.trim().is_empty() {
             skill_content = rewritten;
@@ -1187,9 +1528,7 @@ pub async fn skill_lab_run_test(
         let _ = std::fs::write(&skill_md_path, &best_content);
     }
 
-    if let Ok(json) = serde_json::to_string_pretty(&meta) {
-        let _ = std::fs::write(&meta_path, json);
-    }
+    write_skill_lab_meta(&meta_path, &meta);
 
     // 通知前端完成
     let _ = app_handle.emit(
@@ -1199,9 +1538,12 @@ pub async fn skill_lab_run_test(
             "phase": "done",
             "status": &final_status,
             "iteration": iterations,
+            "maxIterations": MAX_EVOLUTION_ITERATIONS,
             "bestScore": best_score,
             "stableRounds": stable_rounds,
             "converged": evolution_converged,
+            "logType": "done",
+            "logSnippet": format!("测试结束：{}，最佳分数 {:.1}。", &final_status, best_score),
         }),
     );
 
@@ -1224,6 +1566,7 @@ async fn call_ai_non_streaming(
     base_url: &str,
     api_key: &str,
     model: &str,
+    max_tokens: Option<i64>,
     messages: &[InternalMessage],
     query_params: Option<&HashMap<String, String>>,
     extra_headers: Option<&HashMap<String, String>>,
@@ -1235,7 +1578,7 @@ async fn call_ai_non_streaming(
             .map_err(|e| format!("Request override error: {e}"))?;
     // ponytail: 非流式请求设 stream=false 但部分 adapter 的 build_body
     // 默认会设 stream=true，这里构建后手动覆盖
-    let mut body = adapter.build_body(model, messages, None, None);
+    let mut body = adapter.build_body(model, messages, None, max_tokens);
     if let Some(obj) = body.as_object_mut() {
         obj.insert("stream".to_string(), serde_json::Value::Bool(false));
     }
@@ -1338,6 +1681,7 @@ mod tests {
     fn meta_round_trip() {
         let meta = SkillLabMeta {
             name: "Test Skill".to_string(),
+            goal: String::new(),
             test_prompt: "Say hello".to_string(),
             status: "idle".to_string(),
             iteration_count: 0,

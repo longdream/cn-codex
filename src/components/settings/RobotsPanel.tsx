@@ -4,6 +4,9 @@ import { useIntl } from "react-intl";
 import { robotList, robotRead, robotDelete } from "../../api/robot";
 import type { RobotSummary, RobotDetail } from "../../types/robot";
 import { useAppStore } from "../../stores/appStore";
+import { SettingsPagination, usePagedItems } from "./SettingsPagination";
+
+const ROBOT_DETAIL_LIST_PAGE_SIZE = 8;
 
 export function RobotsPanel() {
   const intl = useIntl();
@@ -15,6 +18,61 @@ export function RobotsPanel() {
   const [detail, setDetail] = useState<RobotDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [detailSkillsPage, setDetailSkillsPage] = useState(0);
+  const [detailPluginSkillsPage, setDetailPluginSkillsPage] = useState(0);
+  const [detailWorkflowNodesPage, setDetailWorkflowNodesPage] = useState(0);
+  const [detailWorkflowPage, setDetailWorkflowPage] = useState(0);
+  const {
+    page,
+    setPage,
+    pageSize,
+    totalItems,
+    totalPages,
+    pagedItems: pagedRobots,
+  } = usePagedItems(robots);
+  const detailSkillsPageSafe = detail
+    ? Math.min(detailSkillsPage, Math.max(0, Math.ceil(detail.skills.length / ROBOT_DETAIL_LIST_PAGE_SIZE) - 1))
+    : 0;
+  const detailPluginSkillsPageSafe = detail
+    ? Math.min(
+      detailPluginSkillsPage,
+      Math.max(0, Math.ceil(detail.pluginSkills.length / ROBOT_DETAIL_LIST_PAGE_SIZE) - 1),
+    )
+    : 0;
+  const detailWorkflowNodesPageSafe = detail
+    ? Math.min(
+      detailWorkflowNodesPage,
+      Math.max(0, Math.ceil(detail.workflowNodes.length / ROBOT_DETAIL_LIST_PAGE_SIZE) - 1),
+    )
+    : 0;
+  const detailWorkflowPageSafe = detail
+    ? Math.min(detailWorkflowPage, Math.max(0, Math.ceil(detail.workflow.length / ROBOT_DETAIL_LIST_PAGE_SIZE) - 1))
+    : 0;
+  const pagedDetailSkills = detail
+    ? detail.skills.slice(
+      detailSkillsPageSafe * ROBOT_DETAIL_LIST_PAGE_SIZE,
+      (detailSkillsPageSafe + 1) * ROBOT_DETAIL_LIST_PAGE_SIZE,
+    )
+    : [];
+  const pagedDetailPluginSkills = detail
+    ? detail.pluginSkills.slice(
+      detailPluginSkillsPageSafe * ROBOT_DETAIL_LIST_PAGE_SIZE,
+      (detailPluginSkillsPageSafe + 1) * ROBOT_DETAIL_LIST_PAGE_SIZE,
+    )
+    : [];
+  const pagedDetailWorkflowNodes = detail
+    ? detail.workflowNodes.slice(
+      detailWorkflowNodesPageSafe * ROBOT_DETAIL_LIST_PAGE_SIZE,
+      (detailWorkflowNodesPageSafe + 1) * ROBOT_DETAIL_LIST_PAGE_SIZE,
+    )
+    : [];
+  const pagedDetailWorkflow = detail
+    ? detail.workflow.slice(
+      detailWorkflowPageSafe * ROBOT_DETAIL_LIST_PAGE_SIZE,
+      (detailWorkflowPageSafe + 1) * ROBOT_DETAIL_LIST_PAGE_SIZE,
+    )
+    : [];
+  const workflowNodeOffset = detailWorkflowNodesPageSafe * ROBOT_DETAIL_LIST_PAGE_SIZE;
 
   const load = useCallback(async () => {
     try {
@@ -36,6 +94,10 @@ export function RobotsPanel() {
       setDetail(null);
       return;
     }
+    setDetailSkillsPage(0);
+    setDetailPluginSkillsPage(0);
+    setDetailWorkflowNodesPage(0);
+    setDetailWorkflowPage(0);
     setExpandedId(id);
     setDetailLoading(true);
     try {
@@ -115,7 +177,7 @@ export function RobotsPanel() {
           </div>
         ) : (
           <div className="space-y-3">
-            {robots.map((robot) => {
+            {pagedRobots.map((robot) => {
               const isExpanded = expandedId === robot.id;
               return (
                 <div
@@ -178,12 +240,20 @@ export function RobotsPanel() {
                                 {intl.formatMessage({ id: "settings.robots.localSkills" })}
                               </p>
                               <div className="flex flex-wrap gap-1.5">
-                                {detail.skills.map((s) => (
+                                {pagedDetailSkills.map((s) => (
                                   <span key={s} className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] text-[var(--accent-strong)]">
                                     {s}
                                   </span>
                                 ))}
                               </div>
+                              <SettingsPagination
+                                page={detailSkillsPageSafe}
+                                onPageChange={setDetailSkillsPage}
+                                pageSize={ROBOT_DETAIL_LIST_PAGE_SIZE}
+                                totalItems={detail.skills.length}
+                                totalPages={Math.max(1, Math.ceil(detail.skills.length / ROBOT_DETAIL_LIST_PAGE_SIZE))}
+                                className="flex items-center justify-between pt-2"
+                              />
                             </div>
                           )}
 
@@ -193,12 +263,20 @@ export function RobotsPanel() {
                                 {intl.formatMessage({ id: "settings.robots.pluginSkills" })}
                               </p>
                               <div className="flex flex-wrap gap-1.5">
-                                {detail.pluginSkills.map((ps) => (
+                                {pagedDetailPluginSkills.map((ps) => (
                                   <span key={`${ps.pluginId}/${ps.skillId}`} className="rounded-full bg-[var(--surface-soft)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
                                     {ps.pluginId}/{ps.skillId}
                                   </span>
                                 ))}
                               </div>
+                              <SettingsPagination
+                                page={detailPluginSkillsPageSafe}
+                                onPageChange={setDetailPluginSkillsPage}
+                                pageSize={ROBOT_DETAIL_LIST_PAGE_SIZE}
+                                totalItems={detail.pluginSkills.length}
+                                totalPages={Math.max(1, Math.ceil(detail.pluginSkills.length / ROBOT_DETAIL_LIST_PAGE_SIZE))}
+                                className="flex items-center justify-between pt-2"
+                              />
                             </div>
                           )}
 
@@ -208,13 +286,13 @@ export function RobotsPanel() {
                                 {intl.formatMessage({ id: "settings.robots.workflow" })}
                               </p>
                               <div className="space-y-2">
-                                {detail.workflowNodes.map((node, i) => (
+                                {pagedDetailWorkflowNodes.map((node, i) => (
                                   <div
-                                    key={`${i}-${node.objective}`}
+                                    key={`${workflowNodeOffset + i}-${node.objective}`}
                                     className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-main)]/60 px-3 py-2"
                                   >
                                     <p className="text-xs font-medium text-[var(--text-strong)]">
-                                      {i + 1}. {node.objective}
+                                      {workflowNodeOffset + i + 1}. {node.objective}
                                     </p>
                                     {(node.skills.length > 0 || node.pluginSkills.length > 0) && (
                                       <div className="mt-1.5 space-y-1">
@@ -247,6 +325,14 @@ export function RobotsPanel() {
                                   </div>
                                 ))}
                               </div>
+                              <SettingsPagination
+                                page={detailWorkflowNodesPageSafe}
+                                onPageChange={setDetailWorkflowNodesPage}
+                                pageSize={ROBOT_DETAIL_LIST_PAGE_SIZE}
+                                totalItems={detail.workflowNodes.length}
+                                totalPages={Math.max(1, Math.ceil(detail.workflowNodes.length / ROBOT_DETAIL_LIST_PAGE_SIZE))}
+                                className="flex items-center justify-between pt-2"
+                              />
                             </div>
                           ) : detail.workflow.length > 0 && (
                             <div>
@@ -254,10 +340,18 @@ export function RobotsPanel() {
                                 {intl.formatMessage({ id: "settings.robots.workflow" })}
                               </p>
                               <ol className="list-inside list-decimal space-y-1 text-xs text-[var(--text-muted)]">
-                                {detail.workflow.map((step, i) => (
+                                {pagedDetailWorkflow.map((step, i) => (
                                   <li key={i}>{step}</li>
                                 ))}
                               </ol>
+                              <SettingsPagination
+                                page={detailWorkflowPageSafe}
+                                onPageChange={setDetailWorkflowPage}
+                                pageSize={ROBOT_DETAIL_LIST_PAGE_SIZE}
+                                totalItems={detail.workflow.length}
+                                totalPages={Math.max(1, Math.ceil(detail.workflow.length / ROBOT_DETAIL_LIST_PAGE_SIZE))}
+                                className="flex items-center justify-between pt-2"
+                              />
                             </div>
                           )}
 
@@ -278,6 +372,13 @@ export function RobotsPanel() {
                 </div>
               );
             })}
+            <SettingsPagination
+              page={page}
+              onPageChange={setPage}
+              pageSize={pageSize}
+              totalItems={totalItems}
+              totalPages={totalPages}
+            />
           </div>
         )}
       </section>

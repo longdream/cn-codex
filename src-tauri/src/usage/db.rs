@@ -25,6 +25,12 @@ pub struct UsageRecord {
     pub completion_tokens: u64,
     /// 总 token 数
     pub total_tokens: u64,
+    /// 缓存命中 token 数（cache read）
+    pub cached_tokens: u64,
+    /// 缓存写入 token 数（cache creation / write）
+    pub cache_creation_tokens: u64,
+    /// 思考（reasoning）token 数
+    pub reasoning_tokens: u64,
     /// 费用（美元，按照 pricing 计算）
     pub cost_usd: f64,
     /// 时间戳（Unix 秒）
@@ -43,6 +49,12 @@ pub struct UsageStats {
     pub total_completion_tokens: u64,
     /// 总 token
     pub total_tokens: u64,
+    /// 总缓存命中 token
+    pub total_cached_tokens: u64,
+    /// 总缓存写入 token
+    pub total_cache_creation_tokens: u64,
+    /// 总思考 token
+    pub total_reasoning_tokens: u64,
     /// 总费用
     pub total_cost_usd: f64,
 }
@@ -57,6 +69,9 @@ pub struct DailyUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    pub cached_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub reasoning_tokens: u64,
     pub cost_usd: f64,
 }
 
@@ -70,6 +85,9 @@ pub struct ModelUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    pub cached_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub reasoning_tokens: u64,
     pub cost_usd: f64,
 }
 
@@ -115,6 +133,9 @@ impl UsageDb {
                 prompt_tokens INTEGER NOT NULL DEFAULT 0,
                 completion_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
                 cost_usd REAL NOT NULL DEFAULT 0.0,
                 timestamp INTEGER NOT NULL
             );
@@ -138,6 +159,37 @@ impl UsageDb {
             );",
         )
         .map_err(|e| AppError::Custom(format!("Migration failed: {e}")))?;
+
+        // 为已存在的 usage_records 表补齐缓存/推理相关列（向后兼容旧数据库）
+        Self::migrate_usage_columns(&conn)?;
+        Ok(())
+    }
+
+    /// 为 usage_records 表补齐新增列，已存在的列跳过
+    fn migrate_usage_columns(conn: &Connection) -> AppResult<()> {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(usage_records)")
+            .map_err(|e| AppError::Custom(format!("Pragma failed: {e}")))?;
+        let existing: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| AppError::Custom(format!("Pragma query failed: {e}")))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let new_cols: &[(&str, &str)] = &[
+            ("cached_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            ("cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            ("reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ];
+        for (col, ddl) in new_cols {
+            if !existing.iter().any(|c| c == col) {
+                conn.execute(
+                    &format!("ALTER TABLE usage_records ADD COLUMN {col} {ddl}"),
+                    [],
+                )
+                .map_err(|e| AppError::Custom(format!("Add column {col} failed: {e}")))?;
+            }
+        }
         Ok(())
     }
 
@@ -150,6 +202,9 @@ impl UsageDb {
         prompt_tokens: u64,
         completion_tokens: u64,
         total_tokens: u64,
+        cached_tokens: u64,
+        cache_creation_tokens: u64,
+        reasoning_tokens: u64,
         cost_usd: f64,
     ) -> AppResult<i64> {
         let conn = self
@@ -162,9 +217,21 @@ impl UsageDb {
             .as_secs() as i64;
 
         conn.execute(
-            "INSERT INTO usage_records (provider, model, thread_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![provider, model, thread_id, prompt_tokens as i64, completion_tokens as i64, total_tokens as i64, cost_usd, timestamp],
+            "INSERT INTO usage_records (provider, model, thread_id, prompt_tokens, completion_tokens, total_tokens, cached_tokens, cache_creation_tokens, reasoning_tokens, cost_usd, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                provider,
+                model,
+                thread_id,
+                prompt_tokens as i64,
+                completion_tokens as i64,
+                total_tokens as i64,
+                cached_tokens as i64,
+                cache_creation_tokens as i64,
+                reasoning_tokens as i64,
+                cost_usd,
+                timestamp
+            ],
         ).map_err(|e| AppError::Custom(format!("Insert failed: {e}")))?;
 
         Ok(conn.last_insert_rowid())
@@ -178,12 +245,12 @@ impl UsageDb {
             .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
         let (sql, param): (&str, i64) = if let Some(since) = since_timestamp {
             (
-                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0.0) FROM usage_records WHERE timestamp >= ?1",
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cached_tokens),0), COALESCE(SUM(cache_creation_tokens),0), COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cost_usd),0.0) FROM usage_records WHERE timestamp >= ?1",
                 since,
             )
         } else {
             (
-                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0.0) FROM usage_records WHERE 1=1 OR ?1=0",
+                "SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cached_tokens),0), COALESCE(SUM(cache_creation_tokens),0), COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cost_usd),0.0) FROM usage_records WHERE 1=1 OR ?1=0",
                 0,
             )
         };
@@ -198,7 +265,10 @@ impl UsageDb {
                     total_prompt_tokens: row.get::<_, i64>(1)? as u64,
                     total_completion_tokens: row.get::<_, i64>(2)? as u64,
                     total_tokens: row.get::<_, i64>(3)? as u64,
-                    total_cost_usd: row.get(4)?,
+                    total_cached_tokens: row.get::<_, i64>(4)? as u64,
+                    total_cache_creation_tokens: row.get::<_, i64>(5)? as u64,
+                    total_reasoning_tokens: row.get::<_, i64>(6)? as u64,
+                    total_cost_usd: row.get(7)?,
                 })
             })
             .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
@@ -225,6 +295,9 @@ impl UsageDb {
                     SUM(prompt_tokens),
                     SUM(completion_tokens),
                     SUM(total_tokens),
+                    SUM(cached_tokens),
+                    SUM(cache_creation_tokens),
+                    SUM(reasoning_tokens),
                     SUM(cost_usd)
              FROM usage_records
              WHERE timestamp >= ?1
@@ -241,7 +314,10 @@ impl UsageDb {
                     prompt_tokens: row.get::<_, i64>(2)? as u64,
                     completion_tokens: row.get::<_, i64>(3)? as u64,
                     total_tokens: row.get::<_, i64>(4)? as u64,
-                    cost_usd: row.get(5)?,
+                    cached_tokens: row.get::<_, i64>(5)? as u64,
+                    cache_creation_tokens: row.get::<_, i64>(6)? as u64,
+                    reasoning_tokens: row.get::<_, i64>(7)? as u64,
+                    cost_usd: row.get(8)?,
                 })
             })
             .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
@@ -262,7 +338,7 @@ impl UsageDb {
         let since = since_timestamp.unwrap_or(0);
 
         let mut stmt = conn.prepare(
-            "SELECT provider, model, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(total_tokens), SUM(cost_usd)
+            "SELECT provider, model, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(total_tokens), SUM(cached_tokens), SUM(cache_creation_tokens), SUM(reasoning_tokens), SUM(cost_usd)
              FROM usage_records
              WHERE timestamp >= ?1
              GROUP BY provider, model
@@ -278,7 +354,10 @@ impl UsageDb {
                     prompt_tokens: row.get::<_, i64>(3)? as u64,
                     completion_tokens: row.get::<_, i64>(4)? as u64,
                     total_tokens: row.get::<_, i64>(5)? as u64,
-                    cost_usd: row.get(6)?,
+                    cached_tokens: row.get::<_, i64>(6)? as u64,
+                    cache_creation_tokens: row.get::<_, i64>(7)? as u64,
+                    reasoning_tokens: row.get::<_, i64>(8)? as u64,
+                    cost_usd: row.get(9)?,
                 })
             })
             .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;
@@ -298,7 +377,7 @@ impl UsageDb {
             .map_err(|e| AppError::Custom(format!("Lock error: {e}")))?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, provider, model, thread_id, prompt_tokens, completion_tokens, total_tokens, cost_usd, timestamp
+            "SELECT id, provider, model, thread_id, prompt_tokens, completion_tokens, total_tokens, cached_tokens, cache_creation_tokens, reasoning_tokens, cost_usd, timestamp
              FROM usage_records
              ORDER BY timestamp DESC
              LIMIT ?1"
@@ -314,8 +393,11 @@ impl UsageDb {
                     prompt_tokens: row.get::<_, i64>(4)? as u64,
                     completion_tokens: row.get::<_, i64>(5)? as u64,
                     total_tokens: row.get::<_, i64>(6)? as u64,
-                    cost_usd: row.get(7)?,
-                    timestamp: row.get(8)?,
+                    cached_tokens: row.get::<_, i64>(7)? as u64,
+                    cache_creation_tokens: row.get::<_, i64>(8)? as u64,
+                    reasoning_tokens: row.get::<_, i64>(9)? as u64,
+                    cost_usd: row.get(10)?,
+                    timestamp: row.get(11)?,
                 })
             })
             .map_err(|e| AppError::Custom(format!("Query failed: {e}")))?;

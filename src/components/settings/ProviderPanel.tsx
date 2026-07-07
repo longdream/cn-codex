@@ -31,6 +31,7 @@ import {
 } from "../../stores/appStore";
 import type { ProviderConfig, ProviderPreset, ProviderModel, PoolModelEndpoint } from "../../types/provider";
 import type { ConfigEdit } from "../../types";
+import { SettingsPagination, usePagedItems } from "./SettingsPagination";
 
 const LOCAL_OCR_FALLBACK_VALUE = "__local_ocr__";
 
@@ -102,6 +103,22 @@ export function ProviderPanel() {
     () => PROVIDER_PRESETS.find((p) => p.type === selectedProvider?.type),
     [selectedProvider?.type],
   );
+  const {
+    page: providersPage,
+    setPage: setProvidersPage,
+    pageSize: providersPageSize,
+    totalItems: totalProviders,
+    totalPages: totalProviderPages,
+    pagedItems: pagedProviders,
+  } = usePagedItems(providers);
+  const {
+    page: modelsPage,
+    setPage: setModelsPage,
+    pageSize: modelsPageSize,
+    totalItems: totalModels,
+    totalPages: totalModelPages,
+    pagedItems: pagedModels,
+  } = usePagedItems(selectedProvider?.models ?? []);
 
   useEffect(() => {
     const fallbackId = activeProviderId ?? providers[0]?.id ?? null;
@@ -345,6 +362,14 @@ export function ProviderPanel() {
     }
     return Object.entries(map).filter(([, items]) => items.length > 0);
   }, []);
+  const {
+    page: presetCategoryPage,
+    setPage: setPresetCategoryPage,
+    pageSize: presetCategoryPageSize,
+    totalItems: totalPresetCategories,
+    totalPages: totalPresetCategoryPages,
+    pagedItems: pagedPresetCategories,
+  } = usePagedItems(presetsByCategory);
 
   return (
     <div className="flex h-full gap-4">
@@ -377,7 +402,7 @@ export function ProviderPanel() {
               </button>
             </div>
           )}
-          {providers.map((provider) => {
+          {pagedProviders.map((provider) => {
             const isActive = activeProviderId === provider.id;
             const isSelected = selectedId === provider.id;
             return (
@@ -425,6 +450,14 @@ export function ProviderPanel() {
               </div>
             );
           })}
+          <SettingsPagination
+            page={providersPage}
+            onPageChange={setProvidersPage}
+            pageSize={providersPageSize}
+            totalItems={totalProviders}
+            totalPages={totalProviderPages}
+            className="flex items-center justify-between pt-2"
+          />
         </div>
       </div>
 
@@ -560,7 +593,7 @@ export function ProviderPanel() {
                 {intl.formatMessage({ id: "settings.provider.models" })}
               </h4>
               <div className="space-y-1">
-                {selectedProvider.models.map((model) => (
+                {pagedModels.map((model) => (
                   <ModelRow
                     key={model.id}
                     model={model}
@@ -570,6 +603,13 @@ export function ProviderPanel() {
                   />
                 ))}
               </div>
+              <SettingsPagination
+                page={modelsPage}
+                onPageChange={setModelsPage}
+                pageSize={modelsPageSize}
+                totalItems={totalModels}
+                totalPages={totalModelPages}
+              />
               {/* 添加新模型 */}
               <div className="space-y-2 rounded-[var(--radius-md)] border border-dashed border-[var(--border-strong)] bg-[var(--surface-contrast)]/40 p-3">
                 <div className="flex items-center gap-2">
@@ -681,7 +721,7 @@ export function ProviderPanel() {
             <p className="mb-4 text-xs text-[var(--text-muted)]">
               {intl.formatMessage({ id: "settings.provider.addProviderHint" })}
             </p>
-            {presetsByCategory.map(([category, presets]) => (
+            {pagedPresetCategories.map(([category, presets]) => (
               <div key={category} className="mb-4">
                 <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--text-faint)]">
                   {intl.formatMessage({ id: `settings.provider.category.${category}` })}
@@ -721,6 +761,13 @@ export function ProviderPanel() {
                 </div>
               </div>
             ))}
+            <SettingsPagination
+              page={presetCategoryPage}
+              onPageChange={setPresetCategoryPage}
+              pageSize={presetCategoryPageSize}
+              totalItems={totalPresetCategories}
+              totalPages={totalPresetCategoryPages}
+            />
 
           </div>
         </div>
@@ -883,6 +930,14 @@ function ModelRow({
   }, [providerId, model.id, contextLengthValue]);
 
   const endpoints = model.endpoints ?? [];
+  const {
+    page: endpointsPage,
+    setPage: setEndpointsPage,
+    pageSize: endpointsPageSize,
+    totalItems: totalEndpoints,
+    totalPages: totalEndpointPages,
+    pagedItems: pagedEndpoints,
+  } = usePagedItems(endpoints, 6);
 
   const handleAddEndpoint = useCallback(() => {
     const url = newEndpointUrl.trim();
@@ -1218,8 +1273,9 @@ function ModelRow({
                 {intl.formatMessage({ id: "settings.pool.noEndpoints" })}
               </p>
             )}
-            {endpoints.map((ep, idx) => {
-              const isActive = activeEndpointIndex === idx;
+            {pagedEndpoints.map((ep, idx) => {
+              const globalIdx = endpointsPage * endpointsPageSize + idx;
+              const isActive = activeEndpointIndex === globalIdx;
               const isEditing = editingEpId === ep.id;
               return (
                 <div
@@ -1241,7 +1297,7 @@ function ModelRow({
                       title={isActive ? intl.formatMessage({ id: "settings.pool.activeEndpoint" }) : ""}
                     />
                     <IconGripVertical size={10} stroke={1.5} className="shrink-0 cursor-grab text-[var(--text-faint)]" />
-                    <span className="shrink-0 w-4 text-center font-mono text-[10px] text-[var(--text-faint)]">{idx + 1}</span>
+                    <span className="shrink-0 w-4 text-center font-mono text-[10px] text-[var(--text-faint)]">{globalIdx + 1}</span>
                     <span className="min-w-0 flex-1 truncate font-mono text-[var(--text-base)]" title={ep.url}>{ep.url}</span>
                     <span
                       className="shrink-0 rounded bg-[var(--surface-contrast)] px-1 py-0.5 font-mono text-[10px] text-[var(--text-faint)]"
@@ -1285,7 +1341,7 @@ function ModelRow({
                       <button
                         type="button"
                         onClick={() => handleMoveEndpoint(ep.id, -1)}
-                        disabled={idx === 0}
+                        disabled={globalIdx === 0}
                         className="rounded p-0.5 text-[var(--text-faint)] transition-colors hover:text-[var(--text-muted)] disabled:opacity-30"
                         title="Move up"
                       >
@@ -1294,7 +1350,7 @@ function ModelRow({
                       <button
                         type="button"
                         onClick={() => handleMoveEndpoint(ep.id, 1)}
-                        disabled={idx === endpoints.length - 1}
+                        disabled={globalIdx === endpoints.length - 1}
                         className="rounded p-0.5 text-[var(--text-faint)] transition-colors hover:text-[var(--text-muted)] disabled:opacity-30"
                         title="Move down"
                       >
@@ -1392,6 +1448,13 @@ function ModelRow({
                 </div>
               );
             })}
+            <SettingsPagination
+              page={endpointsPage}
+              onPageChange={setEndpointsPage}
+              pageSize={endpointsPageSize}
+              totalItems={totalEndpoints}
+              totalPages={totalEndpointPages}
+            />
           </div>
           <div className="mt-3 rounded-[var(--radius-sm)] border border-dashed border-[var(--border-subtle)] p-2.5">
             <p className="mb-2 text-[11px] font-medium text-[var(--text-muted)]">

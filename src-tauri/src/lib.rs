@@ -452,7 +452,7 @@ pub fn run() {
             commands::skill_lab_check_python_env,
             commands::skill_lab_generate_from_goal,
             commands::skill_lab_update_result,
-            commands::skill_lab_promote,
+            commands::skill_lab_deploy,
             commands::skill_lab_delete,
             commands::skill_lab_run_test,
             // Plugins
@@ -580,6 +580,7 @@ pub fn run() {
             smartbrain::commands::smartbrain_list_experiences,
             smartbrain::commands::smartbrain_read_experience,
             smartbrain::commands::smartbrain_delete_experience,
+            smartbrain::commands::smartbrain_delete_experiences,
             smartbrain::commands::smartbrain_summarize_experiences,
             smartbrain::commands::smartbrain_list_knowledge,
             smartbrain::commands::smartbrain_read_knowledge,

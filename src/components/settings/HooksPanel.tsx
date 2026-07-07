@@ -3,6 +3,7 @@ import { useIntl } from "react-intl";
 import { hookList } from "../../api";
 import { useAppStore } from "../../stores/appStore";
 import type { HookListItem } from "../../types/hook";
+import { SettingsPagination, usePagedItems } from "./SettingsPagination";
 
 interface HookConfig {
   id: string;
@@ -29,6 +30,14 @@ export function HooksPanel() {
   const configPath = useAppStore((state) => state.configPath);
   const [hooks, setHooks] = useState<HookConfig[]>([]);
   const [loading, setLoading] = useState(true);
+  const {
+    page,
+    setPage,
+    pageSize,
+    totalItems,
+    totalPages,
+    pagedItems: pagedHooks,
+  } = usePagedItems(hooks);
 
   useEffect(() => {
     hookList()
@@ -77,7 +86,7 @@ export function HooksPanel() {
         )}
 
         <div className="space-y-3">
-          {hooks.map((hook) => {
+          {pagedHooks.map((hook) => {
             const knownHook = KNOWN_HOOKS.find((item) => item.name === hook.name);
             return (
               <div
@@ -123,6 +132,13 @@ export function HooksPanel() {
             );
           })}
         </div>
+        <SettingsPagination
+          page={page}
+          onPageChange={setPage}
+          pageSize={pageSize}
+          totalItems={totalItems}
+          totalPages={totalPages}
+        />
 
         <p className="text-sm text-[var(--text-muted)]">
           {intl.formatMessage({ id: "settings.hooks.hint" })}

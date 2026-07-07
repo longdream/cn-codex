@@ -35,6 +35,10 @@ export function ChatPage() {
   const initialized = useAppStore((s) => s.initialized);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
   const chatMode = useAppStore((s) => s.chatMode);
+  // 发送请求已发起，但后端 turn-started 事件尚未到达时保持“运行中”态，
+  // 避免上一轮 turn-completed 把输入区短暂打回空闲按钮。
+  const [isDispatching, setIsDispatching] = useState(false);
+  const dispatchSeqRef = useRef(0);
 
   const handleSend = useCallback(
     async (
@@ -123,6 +127,9 @@ export function ChatPage() {
       }
       if (!threadId) return;
 
+      const dispatchSeq = dispatchSeqRef.current + 1;
+      dispatchSeqRef.current = dispatchSeq;
+      setIsDispatching(true);
       try {
         await standaloneChat(
           threadId,
@@ -134,6 +141,9 @@ export function ChatPage() {
           options.robotId,
         );
       } catch (err) {
+        if (dispatchSeqRef.current === dispatchSeq) {
+          setIsDispatching(false);
+        }
         const store = useAppStore.getState();
         store.setStreaming(false);
         store.addMessage({
@@ -337,6 +347,18 @@ export function ChatPage() {
   const sessionStartRef = useRef<number>(0);
 
   useEffect(() => {
+    if (!isStreaming) {
+      return;
+    }
+    setIsDispatching(false);
+  }, [isStreaming]);
+
+  useEffect(() => {
+    dispatchSeqRef.current = 0;
+    setIsDispatching(false);
+  }, [currentThreadId]);
+
+  useEffect(() => {
     // 切换对话时重置
     setElapsedMs(0);
     sessionStartRef.current = 0;
@@ -481,6 +503,7 @@ export function ChatPage() {
         onInterrupt={handleInterrupt}
         onJumpQueue={handleJumpQueue}
         isStreaming={isStreaming}
+        isDispatching={isDispatching}
         disabled={!initialized || !hasProject}
         mode={effectiveMode}
         onGoalCommand={handleGoalCommand}

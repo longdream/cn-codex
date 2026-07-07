@@ -33,17 +33,23 @@ impl UsageRecorder {
             usage.prompt_tokens,
             usage.completion_tokens,
             usage.total_tokens,
+            usage.cached_tokens,
+            usage.cache_creation_tokens,
+            usage.reasoning_tokens,
             cost,
         ) {
             Ok(id) => {
                 info!(
-                    "Usage recorded (id={}): provider={}, model={}, tokens={}/{}/{}, cost=${:.6}",
+                    "Usage recorded (id={}): provider={}, model={}, tokens={}/{}/{}, cached={}, cache_creation={}, reasoning={}, cost=${:.6}",
                     id,
                     provider,
                     model,
                     usage.prompt_tokens,
                     usage.completion_tokens,
                     usage.total_tokens,
+                    usage.cached_tokens,
+                    usage.cache_creation_tokens,
+                    usage.reasoning_tokens,
                     cost
                 );
             }

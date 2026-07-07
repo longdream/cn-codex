@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import type { UsageStats, DailyUsage, ModelUsage } from "../../types/usage";
 import { usageGetStats, usageGetDaily, usageGetByModel } from "../../api/usage";
+import { SettingsPagination, usePagedItems } from "./SettingsPagination";
 
 /** 时间范围选项 */
 type TimeRange = "7d" | "30d" | "all";
@@ -30,6 +31,9 @@ function fillDailyData(data: DailyUsage[], days: number): DailyUsage[] {
         promptTokens: 0,
         completionTokens: 0,
         totalTokens: 0,
+        cachedTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
         costUsd: 0,
       },
     );
@@ -50,6 +54,21 @@ function formatDateLabel(dateStr: string): string {
   return `${m}/${d}`;
 }
 
+/** 格式化数字 */
+function formatNumber(n: number | undefined | null): string {
+  if (n == null) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toString();
+}
+
+/** 格式化费用 */
+function formatCost(cost: number | undefined | null): string {
+  if (cost == null) return "$0.00";
+  if (cost < 0.01) return `$${cost.toFixed(4)}`;
+  return `$${cost.toFixed(2)}`;
+}
+
 export function UsageDashboard() {
   const intl = useIntl();
   const [timeRange, setTimeRange] = useState<TimeRange>("30d");
@@ -57,6 +76,14 @@ export function UsageDashboard() {
   const [dailyUsage, setDailyUsage] = useState<DailyUsage[]>([]);
   const [modelUsage, setModelUsage] = useState<ModelUsage[]>([]);
   const [loading, setLoading] = useState(true);
+  const {
+    page: modelPage,
+    setPage: setModelPage,
+    pageSize: modelPageSize,
+    totalItems: totalModels,
+    totalPages: totalModelPages,
+    pagedItems: pagedModelUsage,
+  } = usePagedItems(modelUsage);
 
   /** 根据时间范围计算 since timestamp */
   const getSinceTimestamp = useCallback((range: TimeRange): number | undefined => {
@@ -90,19 +117,10 @@ export function UsageDashboard() {
     loadData();
   }, [loadData]);
 
-  /** 格式化数字 */
-  const formatNumber = (n: number | undefined | null) => {
-    if (n == null) return "0";
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-    return n.toString();
-  };
-
-  /** 格式化费用 */
-  const formatCost = (cost: number | undefined | null) => {
-    if (cost == null) return "$0.00";
-    if (cost < 0.01) return `$${cost.toFixed(4)}`;
-    return `$${cost.toFixed(2)}`;
+  /** 格式化百分比（0~1） */
+  const formatPercent = (value: number) => {
+    if (!Number.isFinite(value)) return "0.0%";
+    return `${(Math.min(1, Math.max(0, value)) * 100).toFixed(1)}%`;
   };
 
   if (loading && !stats) {
@@ -144,27 +162,103 @@ export function UsageDashboard() {
       </div>
 
       {/* 汇总卡片 */}
-      {stats && (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <StatCard
-            label={intl.formatMessage({ id: "usage.totalRequests" })}
-            value={formatNumber(stats.totalRequests)}
-          />
-          <StatCard
-            label={intl.formatMessage({ id: "usage.totalTokens" })}
-            value={formatNumber(stats.totalTokens)}
-          />
-          <StatCard
-            label={intl.formatMessage({ id: "usage.inputTokens" })}
-            value={formatNumber(stats.totalPromptTokens)}
-          />
-          <StatCard
-            label={intl.formatMessage({ id: "usage.totalCost" })}
-            value={formatCost(stats.totalCostUsd)}
-            highlight
-          />
-        </div>
-      )}
+      {stats && (() => {
+        const cached = stats.totalCachedTokens ?? 0;
+        const cacheCreation = stats.totalCacheCreationTokens ?? 0;
+        const reasoning = stats.totalReasoningTokens ?? 0;
+        const prompt = stats.totalPromptTokens ?? 0;
+        const completion = stats.totalCompletionTokens ?? 0;
+        const cacheMiss = Math.max(0, prompt - cached);
+        const response = Math.max(0, completion - reasoning);
+        const cacheHitRate = prompt > 0 ? cached / prompt : 0;
+
+        return (
+          <>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+              <StatCard
+                label={intl.formatMessage({ id: "usage.totalRequests" })}
+                value={formatNumber(stats.totalRequests)}
+              />
+              <StatCard
+                label={intl.formatMessage({ id: "usage.totalTokens" })}
+                value={formatNumber(stats.totalTokens)}
+              />
+              <StatCard
+                label={intl.formatMessage({ id: "usage.totalCost" })}
+                value={formatCost(stats.totalCostUsd)}
+                highlight
+              />
+              <StatCard
+                label={intl.formatMessage({ id: "usage.inputTokens" })}
+                value={formatNumber(prompt)}
+              />
+              <StatCard
+                label={intl.formatMessage({ id: "usage.outputTokens" })}
+                value={formatNumber(completion)}
+              />
+              <StatCard
+                label={intl.formatMessage({ id: "usage.cachedTokens" })}
+                value={formatNumber(cached)}
+              />
+            </div>
+
+            {/* Token 明细拆解 */}
+            <section className="settings-card space-y-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                {intl.formatMessage({ id: "usage.breakdown" })}
+              </h4>
+              <div className="space-y-1 font-mono text-[12px]">
+                <BreakRow
+                  label={intl.formatMessage({ id: "usage.totalTokens" })}
+                  value={formatNumber(stats.totalTokens)}
+                  emphasize
+                />
+
+                <div className="mt-1 border-t border-[var(--chat-line)] pt-1">
+                  <BreakRow
+                    label={intl.formatMessage({ id: "usage.inputTokens" })}
+                    value={formatNumber(prompt)}
+                  />
+                  <BreakSubRow
+                    label={intl.formatMessage({ id: "usage.cachedTokens" })}
+                    value={formatNumber(cached)}
+                  />
+                  <BreakSubRow
+                    label={intl.formatMessage({ id: "usage.cacheMiss" })}
+                    value={formatNumber(cacheMiss)}
+                  />
+                  <BreakSubRow
+                    label={intl.formatMessage({ id: "usage.cacheWriteTokens" })}
+                    value={formatNumber(cacheCreation)}
+                  />
+                </div>
+
+                <div className="border-t border-[var(--chat-line)] pt-1">
+                  <BreakRow
+                    label={intl.formatMessage({ id: "usage.outputTokens" })}
+                    value={formatNumber(completion)}
+                  />
+                  <BreakSubRow
+                    label={intl.formatMessage({ id: "usage.reasoningTokens" })}
+                    value={formatNumber(reasoning)}
+                  />
+                  <BreakSubRow
+                    label={intl.formatMessage({ id: "usage.responseTokens" })}
+                    value={formatNumber(response)}
+                  />
+                </div>
+
+                <div className="border-t border-[var(--chat-line)] pt-1">
+                  <BreakRow
+                    label={intl.formatMessage({ id: "usage.cacheHitRate" })}
+                    value={formatPercent(cacheHitRate)}
+                  />
+                </div>
+              </div>
+            </section>
+          </>
+        );
+      })()}
 
       {/* 每日趋势 */}
       {dailyUsage.length > 0 && (
@@ -202,6 +296,11 @@ export function UsageDashboard() {
                           <div className="text-[var(--text-muted)]">
                             {formatNumber(day.totalTokens)} tokens
                           </div>
+                          {day.cachedTokens > 0 && (
+                            <div className="text-[var(--text-muted)]">
+                              {intl.formatMessage({ id: "usage.cachedTokens" })}: {formatNumber(day.cachedTokens)}
+                            </div>
+                          )}
                           <div className="text-[var(--text-muted)]">
                             {formatCost(day.costUsd)}
                           </div>
@@ -252,29 +351,50 @@ export function UsageDashboard() {
           <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             {intl.formatMessage({ id: "usage.byModel" })}
           </h4>
-          <div className="space-y-2">
-            {modelUsage.map((item) => (
-              <div
-                key={`${item.provider}-${item.model}`}
-                className="flex items-center justify-between rounded-md bg-[var(--surface-soft)] px-3 py-2"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-2 w-2 rounded-full bg-[var(--accent)]" />
-                  <span className="text-xs font-medium text-[var(--text-strong)]">
-                    {item.model}
-                  </span>
-                  <span className="text-[11px] text-[var(--text-faint)]">({item.provider})</span>
-                </div>
-                <div className="flex items-center gap-4 text-xs text-[var(--text-muted)]">
-                  <span>{intl.formatMessage({ id: "usage.requestCount" }, { count: item.requests })}</span>
-                  <span>{formatNumber(item.totalTokens)} tokens</span>
-                  <span className="font-medium text-[var(--text-strong)]">
-                    {formatCost(item.costUsd)}
-                  </span>
-                </div>
+          {/* 使用单一 grid 容器，所有行共用同一组列，保证列对齐；
+              内容过长时整体横向滚动而非错位。 */}
+          <div className="overflow-x-auto">
+            <div
+              className="grid min-w-[600px] items-center gap-x-3 gap-y-1 p-1 text-xs"
+              style={{
+                gridTemplateColumns:
+                  "minmax(0,1fr) 72px 84px 84px 72px 84px 88px",
+              }}
+            >
+              {/* 表头 */}
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "usage.model" })}
               </div>
-            ))}
+              <div className="text-right text-[11px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "usage.requests" })}
+              </div>
+              <div className="text-right text-[11px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "usage.inputTokens" })}
+              </div>
+              <div className="text-right text-[11px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "usage.outputTokens" })}
+              </div>
+              <div className="text-right text-[11px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "usage.cachedTokens" })}
+              </div>
+              <div className="text-right text-[11px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "usage.totalTokens" })}
+              </div>
+              <div className="text-right text-[11px] font-semibold uppercase tracking-wider text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "usage.cost" })}
+              </div>
+              {pagedModelUsage.map((item) => (
+                <ModelRowItem key={`${item.provider}-${item.model}`} item={item} />
+              ))}
+            </div>
           </div>
+          <SettingsPagination
+            page={modelPage}
+            onPageChange={setModelPage}
+            pageSize={modelPageSize}
+            totalItems={totalModels}
+            totalPages={totalModelPages}
+          />
         </section>
       )}
 
@@ -314,5 +434,67 @@ function StatCard({
         {value}
       </p>
     </div>
+  );
+}
+
+/** Token 明细：主行 */
+function BreakRow({ label, value, emphasize }: { label: string; value: string; emphasize?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className={emphasize ? "font-semibold text-[var(--text-strong)]" : "text-[var(--chat-muted)]"}>
+        {label}
+      </span>
+      <span className={emphasize ? "font-semibold text-[var(--accent)]" : "text-[var(--chat-prose)]"}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/** Token 明细：子行（缩进） */
+function BreakSubRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 pl-3">
+      <span className="text-[var(--chat-faint)]">{label}</span>
+      <span className="text-[var(--chat-muted)]">{value}</span>
+    </div>
+  );
+}
+
+/** 按模型统计的每一行：直接输出 7 个网格单元，与表头共用同一组列 */
+function ModelRowItem({ item }: { item: ModelUsage }) {
+  return (
+    <>
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-[var(--accent)]" />
+        <span
+          className="truncate text-xs font-medium text-[var(--text-strong)]"
+          title={`${item.model} (${item.provider})`}
+        >
+          {item.model}
+        </span>
+        <span className="shrink-0 text-[11px] text-[var(--text-faint)]">
+          ({item.provider})
+        </span>
+      </div>
+      <div className="text-right tabular-nums text-[var(--text-muted)]">
+        {item.requests}
+      </div>
+      <div className="text-right tabular-nums text-[var(--text-muted)]">
+        {formatNumber(item.promptTokens)}
+      </div>
+      <div className="text-right tabular-nums text-[var(--text-muted)]">
+        {formatNumber(item.completionTokens)}
+      </div>
+      <div className="text-right tabular-nums text-[var(--text-muted)]">
+        {item.cachedTokens > 0 ? formatNumber(item.cachedTokens) : "—"}
+      </div>
+      <div className="text-right tabular-nums text-[var(--text-muted)]">
+        {formatNumber(item.totalTokens)}
+      </div>
+      <div className="text-right tabular-nums font-medium text-[var(--text-strong)]">
+        {formatCost(item.costUsd)}
+      </div>
+    </>
   );
 }

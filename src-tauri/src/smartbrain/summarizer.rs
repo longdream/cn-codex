@@ -24,6 +24,8 @@ pub struct SummarizeMergeStats {
     pub success: bool,
     /// Human-readable error message when the run failed.
     pub error: Option<String>,
+    /// Machine-readable skip reason for non-fatal no-op outcomes.
+    pub skip_reason: Option<String>,
 }
 
 impl SummarizeMergeStats {
@@ -33,6 +35,17 @@ impl SummarizeMergeStats {
             after_count: after,
             success: true,
             error: None,
+            skip_reason: None,
+        }
+    }
+
+    fn skipped(before: usize, after: usize, skip_reason: impl Into<String>) -> Self {
+        Self {
+            before_count: before,
+            after_count: after,
+            success: true,
+            error: None,
+            skip_reason: Some(skip_reason.into()),
         }
     }
 
@@ -42,6 +55,7 @@ impl SummarizeMergeStats {
             after_count: before,
             success: false,
             error: Some(error),
+            skip_reason: None,
         }
     }
 }
@@ -121,7 +135,7 @@ pub async fn run_summarize_merge(
         target_count
     );
 
-    let merged = match summarize_merge_via_llm(
+    let result_text = match summarize_merge_via_llm(
         http,
         &base_url,
         &api_key,
@@ -135,18 +149,29 @@ pub async fn run_summarize_merge(
     )
     .await
     {
-        Ok(entries) => entries,
+        Ok(output) => output,
         Err(e) => {
             warn!("Experience summarize-merge failed: {e}");
             return SummarizeMergeStats::failed(before_count, e);
         }
     };
 
-    if merged.is_empty() {
-        let msg = "Summarize-merge returned no entries".to_string();
-        warn!("{msg}");
-        return SummarizeMergeStats::failed(before_count, msg);
-    }
+    let merged = match prompts::parse_summarize_merge_output(&result_text) {
+        Ok(entries) => {
+            persist_last_summarize_output(experiences_dir, &result_text, None);
+            entries
+        }
+        Err(reason) => {
+            persist_last_summarize_output(experiences_dir, &result_text, Some(&reason));
+            if reason == prompts::SummarizeMergeParseReason::EmptyArray {
+                info!("Experience summarize-merge skipped: model returned empty array");
+                return SummarizeMergeStats::skipped(before_count, before_count, "empty_array");
+            }
+            let msg = format!("Summarize-merge parse failed ({reason})");
+            warn!("{msg}");
+            return SummarizeMergeStats::failed(before_count, msg);
+        }
+    };
 
     // Safety net: only commit the merge if it actually reduces the count.
     if merged.len() >= raw_experiences.len() {
@@ -155,7 +180,7 @@ pub async fn run_summarize_merge(
             merged.len(),
             raw_experiences.len()
         );
-        return SummarizeMergeStats::ok(before_count, before_count);
+        return SummarizeMergeStats::skipped(before_count, before_count, "not_reduced");
     }
 
     let timestamp = now_secs();
@@ -332,7 +357,7 @@ async fn summarize_merge_via_llm(
     max_tokens: Option<i64>,
     query_params: Option<&HashMap<String, String>>,
     extra_headers: Option<&HashMap<String, String>>,
-) -> Result<Vec<prompts::MergedExperience>, String> {
+) -> Result<String, String> {
     let prompt_messages = prompts::build_summarize_merge_messages(raw_experiences, target_count);
     let internal_messages: Vec<InternalMessage> = prompt_messages
         .into_iter()
@@ -399,5 +424,30 @@ async fn summarize_merge_via_llm(
         return Err("Summarize-merge returned empty response".to_string());
     }
 
-    Ok(prompts::parse_summarize_merge_output(&result_text))
+    Ok(result_text)
+}
+
+fn persist_last_summarize_output(
+    experiences_dir: &Path,
+    result_text: &str,
+    parse_reason: Option<&prompts::SummarizeMergeParseReason>,
+) {
+    let debug_path = experiences_dir.join(".last_summarize_output.txt");
+    let mut debug_text = format!(
+        "# summarize-merge debug output\n# generated_at: {}\n# output_chars: {}\n",
+        now_secs(),
+        result_text.chars().count()
+    );
+    if let Some(reason) = parse_reason {
+        debug_text.push_str(&format!("# parse_reason: {reason}\n"));
+    }
+    debug_text.push('\n');
+    debug_text.push_str(result_text);
+
+    if let Err(error) = std::fs::write(&debug_path, debug_text) {
+        warn!(
+            "Could not persist summarize-merge debug output to {}: {error}",
+            debug_path.display()
+        );
+    }
 }

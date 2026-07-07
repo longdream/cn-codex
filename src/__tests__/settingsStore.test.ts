@@ -12,7 +12,7 @@ describe("settingsStore", () => {
     useSettingsStore.setState({
       locale: "zh-CN",
       theme: "dark",
-      fortuneEnabled: true,
+      fortuneEnabled: false,
       backgroundImagePath: null,
       baziProfile: null,
     });
@@ -42,8 +42,8 @@ describe("settingsStore", () => {
     expect(useSettingsStore.getState().theme).toBe("light");
   });
 
-  it("defaults fortuneEnabled to true", () => {
-    expect(useSettingsStore.getState().fortuneEnabled).toBe(true);
+  it("defaults fortuneEnabled to false", () => {
+    expect(useSettingsStore.getState().fortuneEnabled).toBe(false);
   });
 
   it("setFortuneEnabled toggles fortune", () => {
@@ -89,14 +89,14 @@ describe("settingsStore", () => {
     useSettingsStore.setState({
       locale: "zh-CN",
       theme: "dark",
-      fortuneEnabled: true,
+      fortuneEnabled: false,
       backgroundImagePath: null,
       baziProfile: null,
     });
     const state = useSettingsStore.getState();
     expect(state.locale).toBe("zh-CN");
     expect(state.theme).toBe("dark");
-    expect(state.fortuneEnabled).toBe(true);
+    expect(state.fortuneEnabled).toBe(false);
     expect(state.backgroundImagePath).toBeNull();
     expect(state.baziProfile).toBeNull();
   });

@@ -153,6 +153,25 @@ pub struct MergedExperience {
     pub content: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SummarizeMergeParseReason {
+    EmptyArray,
+    MissingMarkers,
+    InvalidJson(String),
+    AllEmptyContent,
+}
+
+impl std::fmt::Display for SummarizeMergeParseReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyArray => f.write_str("empty_array"),
+            Self::MissingMarkers => f.write_str("missing_markers"),
+            Self::InvalidJson(error) => write!(f, "invalid_json: {error}"),
+            Self::AllEmptyContent => f.write_str("all_empty_content"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedKnowledgeOrganizeOutput {
     pub organized_markdown: String,
@@ -333,33 +352,75 @@ pub fn parse_consolidation_output(output: &str) -> (String, String) {
     (summary, handbook)
 }
 
-pub fn parse_summarize_merge_output(output: &str) -> Vec<MergedExperience> {
-    let json_text = match extract_delimited(
+pub fn parse_summarize_merge_output(
+    output: &str,
+) -> Result<Vec<MergedExperience>, SummarizeMergeParseReason> {
+    let mut candidates = Vec::new();
+    if let Some(text) = extract_delimited(
         output,
         "---BEGIN merged_experiences.json---",
         "---END merged_experiences.json---",
     ) {
-        Some(text) => text,
-        None => {
-            // Tolerate models that emit a bare JSON array without markers.
-            let trimmed = output.trim();
-            if trimmed.starts_with('[') {
-                trimmed.to_string()
-            } else {
-                return Vec::new();
-            }
-        }
-    };
-
-    if json_text.trim().is_empty() {
-        return Vec::new();
+        candidates.push(text);
     }
 
-    let parsed: Vec<MergedExperience> = serde_json::from_str(&json_text).unwrap_or_default();
-    parsed
-        .into_iter()
-        .filter(|entry| !entry.content.trim().is_empty())
-        .collect()
+    if candidates.is_empty() {
+        candidates = extract_json_array_candidates(output);
+    }
+
+    if candidates.is_empty() {
+        if output.contains('[') {
+            return Err(SummarizeMergeParseReason::InvalidJson(
+                "could not extract a complete JSON array".to_string(),
+            ));
+        }
+        return Err(SummarizeMergeParseReason::MissingMarkers);
+    }
+
+    let mut first_json_error: Option<String> = None;
+    let mut saw_empty_array = false;
+    let mut saw_all_empty_content = false;
+
+    for candidate in candidates {
+        let json_text = candidate.trim();
+        if json_text.is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<Vec<MergedExperience>>(json_text) {
+            Ok(parsed) => {
+                if parsed.is_empty() {
+                    saw_empty_array = true;
+                    continue;
+                }
+
+                let filtered: Vec<MergedExperience> = parsed
+                    .into_iter()
+                    .filter(|entry| !entry.content.trim().is_empty())
+                    .collect();
+                if filtered.is_empty() {
+                    saw_all_empty_content = true;
+                    continue;
+                }
+                return Ok(filtered);
+            }
+            Err(error) => {
+                if first_json_error.is_none() {
+                    first_json_error = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    if saw_all_empty_content {
+        return Err(SummarizeMergeParseReason::AllEmptyContent);
+    }
+    if saw_empty_array {
+        return Err(SummarizeMergeParseReason::EmptyArray);
+    }
+    Err(SummarizeMergeParseReason::InvalidJson(
+        first_json_error.unwrap_or_else(|| "unknown JSON parse error".to_string()),
+    ))
 }
 
 pub fn parse_knowledge_organize_output(output: &str) -> ParsedKnowledgeOrganizeOutput {
@@ -423,6 +484,64 @@ fn extract_delimited(text: &str, begin_marker: &str, end_marker: &str) -> Option
     } else {
         Some(content.to_string())
     }
+}
+
+fn extract_json_array_candidates(text: &str) -> Vec<String> {
+    let mut arrays = Vec::new();
+    let mut start_idx: Option<usize> = None;
+    let mut depth: usize = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '[' => {
+                if depth == 0 {
+                    start_idx = Some(idx);
+                }
+                depth += 1;
+            }
+            ']' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start) = start_idx.take() {
+                        let end = idx + ch.len_utf8();
+                        let slice = text[start..end].trim();
+                        if !slice.is_empty()
+                            && !arrays
+                                .iter()
+                                .any(|existing: &String| existing.as_str() == slice)
+                        {
+                            arrays.push(slice.to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    arrays.sort_by_key(|candidate| std::cmp::Reverse(candidate.len()));
+    arrays
 }
 
 fn truncate_str(s: &str, max_chars: usize) -> String {
@@ -609,7 +728,7 @@ Some preamble.
 ]
 ---END merged_experiences.json---
 ";
-        let merged = parse_summarize_merge_output(output);
+        let merged = parse_summarize_merge_output(output).expect("should parse merged experiences");
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].title.as_deref(), Some("React debugging"));
         assert_eq!(merged[0].categories, vec!["debugging", "react"]);
@@ -620,7 +739,7 @@ Some preamble.
     #[test]
     fn parse_summarize_merge_output_tolerates_bare_json_array() {
         let output = "[{\"title\":\"t\",\"summary\":\"s\",\"slug\":\"sl\",\"categories\":[\"a\"],\"content\":\"body\"}]";
-        let merged = parse_summarize_merge_output(output);
+        let merged = parse_summarize_merge_output(output).expect("should parse bare array");
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].content, "body");
     }
@@ -635,7 +754,7 @@ Some preamble.
 ]
 ---END merged_experiences.json---
 ";
-        let merged = parse_summarize_merge_output(output);
+        let merged = parse_summarize_merge_output(output).expect("should keep non-empty content");
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].title.as_deref(), Some("keep"));
     }
@@ -643,7 +762,82 @@ Some preamble.
     #[test]
     fn parse_summarize_merge_output_handles_empty_array() {
         let output = "---BEGIN merged_experiences.json---\n[]\n---END merged_experiences.json---";
-        let merged = parse_summarize_merge_output(output);
-        assert!(merged.is_empty());
+        let reason = parse_summarize_merge_output(output).expect_err("should report empty array");
+        assert_eq!(reason, SummarizeMergeParseReason::EmptyArray);
+    }
+
+    #[test]
+    fn parse_summarize_merge_output_supports_wrapped_json_array() {
+        let output = "\
+Here is the merged result:
+
+[
+  {
+    \"title\": \"Wrapped\",
+    \"summary\": \"Works with wrapper text\",
+    \"slug\": \"wrapped\",
+    \"categories\": [\"test\"],
+    \"content\": \"## Lessons\\n- Keep durable content.\"
+  }
+]
+
+Done.";
+        let merged = parse_summarize_merge_output(output).expect("should parse wrapped array");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].slug.as_deref(), Some("wrapped"));
+    }
+
+    #[test]
+    fn parse_summarize_merge_output_supports_markdown_code_fence() {
+        let output = "\
+```json
+[
+  {
+    \"title\": \"Fence\",
+    \"summary\": \"Code fence\",
+    \"slug\": \"fence\",
+    \"categories\": [\"test\"],
+    \"content\": \"## Lessons\\n- Parse fenced JSON.\"
+  }
+]
+```";
+        let merged = parse_summarize_merge_output(output).expect("should parse fenced JSON");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].slug.as_deref(), Some("fence"));
+    }
+
+    #[test]
+    fn parse_summarize_merge_output_reports_invalid_json() {
+        let output = "\
+---BEGIN merged_experiences.json---
+[
+  {\"title\": \"bad\", \"content\": \"oops\",
+]
+---END merged_experiences.json---";
+        let reason =
+            parse_summarize_merge_output(output).expect_err("should return invalid json reason");
+        assert!(matches!(reason, SummarizeMergeParseReason::InvalidJson(_)));
+    }
+
+    #[test]
+    fn parse_summarize_merge_output_reports_all_empty_content() {
+        let output = "\
+---BEGIN merged_experiences.json---
+[
+  {\"title\": \"empty-a\", \"content\": \"   \"},
+  {\"title\": \"empty-b\"}
+]
+---END merged_experiences.json---";
+        let reason =
+            parse_summarize_merge_output(output).expect_err("should report empty content entries");
+        assert_eq!(reason, SummarizeMergeParseReason::AllEmptyContent);
+    }
+
+    #[test]
+    fn parse_summarize_merge_output_reports_missing_markers() {
+        let output = "No JSON array here.";
+        let reason =
+            parse_summarize_merge_output(output).expect_err("should report missing markers");
+        assert_eq!(reason, SummarizeMergeParseReason::MissingMarkers);
     }
 }

@@ -17,6 +17,12 @@ export interface UsageRecord {
   completionTokens: number;
   /** 总 token 数 */
   totalTokens: number;
+  /** 缓存命中 token 数（cache read） */
+  cachedTokens: number;
+  /** 缓存写入 token 数（cache creation / write） */
+  cacheCreationTokens: number;
+  /** 思考（reasoning）token 数 */
+  reasoningTokens: number;
   /** 费用（美元） */
   costUsd: number;
   /** 时间戳（Unix 秒） */
@@ -29,6 +35,9 @@ export interface UsageStats {
   totalPromptTokens: number;
   totalCompletionTokens: number;
   totalTokens: number;
+  totalCachedTokens: number;
+  totalCacheCreationTokens: number;
+  totalReasoningTokens: number;
   totalCostUsd: number;
 }
 
@@ -39,6 +48,9 @@ export interface DailyUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
   costUsd: number;
 }
 
@@ -50,6 +62,9 @@ export interface ModelUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedTokens: number;
+  cacheCreationTokens: number;
+  reasoningTokens: number;
   costUsd: number;
 }
 
