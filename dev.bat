@@ -111,6 +111,14 @@ if not exist "codey\node\node.exe" (
 :skip_node_setup
 
 echo.
+echo Configuring Rust low-memory dev profile...
+if not defined CARGO_BUILD_JOBS set "CARGO_BUILD_JOBS=1"
+if not defined CARGO_PROFILE_DEV_CODEGEN_UNITS set "CARGO_PROFILE_DEV_CODEGEN_UNITS=4"
+if not defined CARGO_PROFILE_DEV_DEBUG set "CARGO_PROFILE_DEV_DEBUG=1"
+echo [INFO] CARGO_BUILD_JOBS=%CARGO_BUILD_JOBS%, CARGO_PROFILE_DEV_CODEGEN_UNITS=%CARGO_PROFILE_DEV_CODEGEN_UNITS%, CARGO_PROFILE_DEV_DEBUG=%CARGO_PROFILE_DEV_DEBUG%
+echo [%date% %time%] Rust dev profile: jobs=%CARGO_BUILD_JOBS% codegen-units=%CARGO_PROFILE_DEV_CODEGEN_UNITS% debug=%CARGO_PROFILE_DEV_DEBUG%>>logs\dev.log
+
+echo.
 echo Starting Tauri dev server (Vite HMR on http://localhost:%DEV_PORT%)...
 echo Log: logs\dev.log
 echo Press Ctrl+C to stop.

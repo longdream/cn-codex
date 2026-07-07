@@ -213,6 +213,8 @@ export interface ThreadRuntimeState {
   browserPanelUrl: string | null;
   browserPanelTitle: string | null;
   browserPanelStatus: "idle" | "running" | "success" | "failed";
+  browserCanGoBack: boolean;
+  browserCanGoForward: boolean;
   browserActive: boolean;
   browserDetached: boolean;
   updatedAt: number;
@@ -242,6 +244,8 @@ function createDefaultThreadRuntimeState(): ThreadRuntimeState {
     browserPanelUrl: null,
     browserPanelTitle: null,
     browserPanelStatus: "idle",
+    browserCanGoBack: false,
+    browserCanGoForward: false,
     browserActive: false,
     browserDetached: false,
     updatedAt: Date.now(),
@@ -1443,6 +1447,8 @@ interface AppState {
   browserPanelUrl: string | null;
   browserPanelTitle: string | null;
   browserPanelStatus: "idle" | "running" | "success" | "failed";
+  browserCanGoBack: boolean;
+  browserCanGoForward: boolean;
   smartbrainExtractionRunning: boolean;
   smartbrainExtractionLabel: string | null;
   smartbrainExtractionProgress: SmartbrainExtractionProgress | null;
@@ -1574,6 +1580,8 @@ interface AppState {
     url: string | null;
     title: string | null;
     status: "idle" | "running" | "success" | "failed";
+    canGoBack: boolean;
+    canGoForward: boolean;
   }>) => void;
   triggerBrowserSync: () => void;
   setBrowserActive: (v: boolean) => void;
@@ -1658,6 +1666,8 @@ function assembleRuntimeStateFromStore(
     | "browserPanelUrl"
     | "browserPanelTitle"
     | "browserPanelStatus"
+    | "browserCanGoBack"
+    | "browserCanGoForward"
     | "browserActive"
     | "browserDetached"
   >,
@@ -1682,6 +1692,8 @@ function assembleRuntimeStateFromStore(
     browserPanelUrl: state.browserPanelUrl,
     browserPanelTitle: state.browserPanelTitle,
     browserPanelStatus: state.browserPanelStatus,
+    browserCanGoBack: state.browserCanGoBack,
+    browserCanGoForward: state.browserCanGoForward,
     browserActive: state.browserActive,
     browserDetached: state.browserDetached,
     updatedAt: Date.now(),
@@ -1768,6 +1780,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   browserPanelUrl: null,
   browserPanelTitle: null,
   browserPanelStatus: "idle",
+  browserCanGoBack: false,
+  browserCanGoForward: false,
   smartbrainExtractionRunning: false,
   smartbrainExtractionLabel: null,
   smartbrainExtractionProgress: null,
@@ -1804,6 +1818,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       pendingComposerInsert: null,
       pendingMessageQueue: [],
       pendingFileReviews: {},
+      browserPanelUrl: null,
+      browserPanelTitle: null,
+      browserPanelStatus: "idle",
+      browserCanGoBack: false,
+      browserCanGoForward: false,
+      browserActive: false,
+      browserDetached: false,
     });
   },
   startNewThreadWithMessage: (threadId, message) => {
@@ -1820,6 +1841,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       pendingComposerInsert: null,
       pendingMessageQueue: [],
       pendingFileReviews: {},
+      browserPanelUrl: null,
+      browserPanelTitle: null,
+      browserPanelStatus: "idle",
+      browserCanGoBack: false,
+      browserCanGoForward: false,
+      browserActive: false,
+      browserDetached: false,
     });
   },
   setCurrentTurnId: (id) => set({ currentTurnId: id }),
@@ -1905,6 +1933,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       latestPlanContent: null,
       activePlan: null,
       currentGoal: null,
+      browserPanelUrl: null,
+      browserPanelTitle: null,
+      browserPanelStatus: "idle",
+      browserCanGoBack: false,
+      browserCanGoForward: false,
+      browserActive: false,
+      browserDetached: false,
     });
     return id;
   },
@@ -1932,6 +1967,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       robotCreateMode: false,
       pendingMessageQueue: [],
       pendingFileReviews: {},
+      browserPanelUrl: null,
+      browserPanelTitle: null,
+      browserPanelStatus: "idle",
+      browserCanGoBack: false,
+      browserCanGoForward: false,
+      browserActive: false,
+      browserDetached: false,
     });
   },
 
@@ -1957,6 +1999,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       robotCreateMode: false,
       pendingMessageQueue: [],
       pendingFileReviews: {},
+      browserPanelUrl: null,
+      browserPanelTitle: null,
+      browserPanelStatus: "idle",
+      browserCanGoBack: false,
+      browserCanGoForward: false,
+      browserActive: false,
+      browserDetached: false,
     });
   },
 
@@ -2621,6 +2670,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(state.url !== undefined ? { browserPanelUrl: state.url } : {}),
       ...(state.title !== undefined ? { browserPanelTitle: state.title } : {}),
       ...(state.status !== undefined ? { browserPanelStatus: state.status } : {}),
+      ...(state.canGoBack !== undefined ? { browserCanGoBack: state.canGoBack } : {}),
+      ...(state.canGoForward !== undefined ? { browserCanGoForward: state.canGoForward } : {}),
     }),
   triggerBrowserSync: () =>
     set((s) => ({ browserSyncTrigger: s.browserSyncTrigger + 1 })),
@@ -2754,6 +2805,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         robotCreateMode: false,
         pendingMessageQueue: [],
         pendingFileReviews: {},
+        browserPanelUrl: null,
+        browserPanelTitle: null,
+        browserPanelStatus: "idle",
+        browserCanGoBack: false,
+        browserCanGoForward: false,
+        browserActive: false,
+        browserDetached: false,
       });
       if (rawThread?.id) {
         set((state) => {
@@ -2786,6 +2844,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         activePlan: null,
         pendingMessageQueue: [],
         pendingFileReviews: {},
+        browserPanelUrl: null,
+        browserPanelTitle: null,
+        browserPanelStatus: "idle",
+        browserCanGoBack: false,
+        browserCanGoForward: false,
+        browserActive: false,
+        browserDetached: false,
       });
     }
   },
@@ -2826,6 +2891,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       browserPanelUrl: saved.browserPanelUrl,
       browserPanelTitle: saved.browserPanelTitle,
       browserPanelStatus: saved.browserPanelStatus,
+      browserCanGoBack: saved.browserCanGoBack,
+      browserCanGoForward: saved.browserCanGoForward,
       browserActive: saved.browserActive,
       browserDetached: saved.browserDetached,
     });

@@ -1,10 +1,10 @@
-import { IconBrowser, IconCheck, IconExternalLink, IconFolderOpen, IconGitBranch, IconMessagePlus, IconPencil, IconRefresh, IconTerminal2, IconX } from "@tabler/icons-react";
+import { IconBrowser, IconCheck, IconChevronLeft, IconChevronRight, IconExternalLink, IconFolderOpen, IconGitBranch, IconHome, IconMessagePlus, IconPencil, IconRefresh, IconTerminal2, IconX } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import { useAppStore } from "../../stores/appStore";
-import { browserApplyDomEdit, browserGetEditContext, browserPollPickedElement, browserRefreshPreview, browserStartPickMode, browserStopPickMode, revealInExplorer, windowAttachBrowser, windowCloseBrowser, windowDetachBrowser, windowNavigateBrowser, windowOpenBrowser, windowResizeBrowser, type BrowserDomEditRequest, type BrowserEditContext, type BrowserPickedElement } from "../../api/window";
+import { browserApplyDomEdit, browserGetEditContext, browserGetNavigationState, browserGoBack, browserGoForward, browserNavigateHome, browserPollPickedElement, browserRefreshPreview, browserStartPickMode, browserStopPickMode, revealInExplorer, windowAttachBrowser, windowCloseBrowser, windowDetachBrowser, windowNavigateBrowser, windowOpenBrowser, windowResizeBrowser, type BrowserDomEditRequest, type BrowserEditContext, type BrowserNavigationState, type BrowserPickedElement } from "../../api/window";
 import { FileTree } from "./FileTree";
 import { GitPanel } from "./GitPanel";
 import { TerminalPanel } from "./TerminalPanel";
@@ -118,7 +118,10 @@ export function RightPanel() {
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
   const rightPanelWidth = useAppStore((s) => s.rightPanelWidth);
   const browserPanelUrl = useAppStore((s) => s.browserPanelUrl);
+  const browserPanelTitle = useAppStore((s) => s.browserPanelTitle);
   const browserPanelStatus = useAppStore((s) => s.browserPanelStatus);
+  const browserCanGoBack = useAppStore((s) => s.browserCanGoBack);
+  const browserCanGoForward = useAppStore((s) => s.browserCanGoForward);
   const browserSyncTrigger = useAppStore((s) => s.browserSyncTrigger);
   const browserActive = useAppStore((s) => s.browserActive);
   const browserDetached = useAppStore((s) => s.browserDetached);
@@ -136,6 +139,7 @@ export function RightPanel() {
   const attachingBackRef = useRef(false);
   const browserActiveRef = useRef(false);
   const browserDetachedRef = useRef(false);
+  const addressFocusedRef = useRef(false);
   const rightPanelTabRef = useRef(rightPanelTab);
   const syncBrowserPositionRef = useRef<() => void>(() => undefined);
   const attachPopupBackToPanelRef = useRef<(nextUrl?: string) => Promise<void>>(() => Promise.resolve());
@@ -148,6 +152,7 @@ export function RightPanel() {
   const [editColor, setEditColor] = useState("");
   const [editFontSize, setEditFontSize] = useState("");
   const [applyingEdit, setApplyingEdit] = useState(false);
+  const [addressInput, setAddressInput] = useState("");
 
   const browserCall = useMemo(() => latestBrowserToolCall(messages), [messages]);
   const browserOutput = useMemo(
@@ -156,6 +161,36 @@ export function RightPanel() {
   );
 
   const screenshots = browserOutput?.screenshots ?? [];
+  const browserReady = browserActive || browserDetached;
+
+  const applyNavigationState = useCallback((navigation: BrowserNavigationState) => {
+    const nextUrl = navigation.url?.trim() || "about:blank";
+    setBrowserPanelState({
+      url: nextUrl,
+      title: navigation.title ?? "",
+      canGoBack: navigation.canGoBack,
+      canGoForward: navigation.canGoForward,
+      status: "success",
+    });
+  }, [setBrowserPanelState]);
+
+  const syncNavigationState = useCallback(() => {
+    if (!browserReady) {
+      return;
+    }
+    void browserGetNavigationState()
+      .then((navigation) => {
+        applyNavigationState(navigation);
+      })
+      .catch(() => undefined);
+  }, [applyNavigationState, browserReady]);
+
+  useEffect(() => {
+    if (addressFocusedRef.current) {
+      return;
+    }
+    setAddressInput(browserPanelUrl ?? browserOutput?.finalUrl ?? "");
+  }, [browserPanelUrl, browserOutput?.finalUrl]);
 
   const syncBrowserPosition = useCallback(() => {
     const el = browserContainerRef.current;
@@ -201,22 +236,34 @@ export function RightPanel() {
     const el = browserContainerRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
+    const normalizedUrl = url?.trim();
+    setBrowserPanelState({
+      ...(normalizedUrl ? { url: normalizedUrl } : {}),
+      status: "running",
+      canGoBack: false,
+      canGoForward: false,
+    });
     void windowOpenBrowser(url, {
       x: Math.round(rect.x),
       y: Math.round(rect.y),
       width: Math.max(Math.round(rect.width), 200),
       height: Math.max(Math.round(rect.height), 200),
-    }, workspaceCwd ?? undefined).then(() => {
+    }, workspaceCwd ?? undefined).then((info) => {
       setBrowserActive(true);
       setBrowserDetached(false);
+      setBrowserPanelState({
+        url: info.url,
+        status: "success",
+      });
       setTimeout(syncBrowserPosition, 100);
       requestAnimationFrame(syncBrowserPosition);
+      syncNavigationState();
     }).catch(() => {
       setBrowserActive(true);
       setBrowserDetached(false);
       syncBrowserPosition();
     });
-  }, [workspaceCwd, setBrowserActive, setBrowserDetached, syncBrowserPosition]);
+  }, [workspaceCwd, setBrowserActive, setBrowserDetached, setBrowserPanelState, syncBrowserPosition, syncNavigationState]);
 
   const handleCloseBrowser = useCallback(() => {
     void browserStopPickMode().catch(() => undefined).finally(() => {
@@ -230,6 +277,8 @@ export function RightPanel() {
           status: "idle",
           url: null,
           title: null,
+          canGoBack: false,
+          canGoForward: false,
         });
         setBrowserActive(false);
         setBrowserDetached(false);
@@ -289,10 +338,13 @@ export function RightPanel() {
         setBrowserPanelState({
           url: info.url,
           status: "success",
+          canGoBack: false,
+          canGoForward: false,
         });
         requestAnimationFrame(syncBrowserPosition);
         setTimeout(syncBrowserPosition, 80);
         scheduleRefreshEditContext();
+        syncNavigationState();
       })
       .catch((err) => {
         setBrowserEditError(String(err));
@@ -300,7 +352,7 @@ export function RightPanel() {
       .finally(() => {
         attachingBackRef.current = false;
       });
-  }, [workspaceCwd, setBrowserDetached, setBrowserActive, setBrowserPanelState, syncBrowserPosition, scheduleRefreshEditContext]);
+  }, [workspaceCwd, setBrowserDetached, setBrowserActive, setBrowserPanelState, syncBrowserPosition, scheduleRefreshEditContext, syncNavigationState]);
 
   useEffect(() => {
     browserActiveRef.current = browserActive;
@@ -334,13 +386,92 @@ export function RightPanel() {
           setBrowserPanelState({
             url: info.url,
             status: "success",
+            canGoBack: false,
+            canGoForward: false,
           });
+          syncNavigationState();
         })
         .catch((err) => {
           setBrowserEditError(String(err));
         });
     });
-  }, [browserDetached, attachPopupBackToPanel, setBrowserDetached, setBrowserActive, setBrowserPanelState]);
+  }, [browserDetached, attachPopupBackToPanel, setBrowserDetached, setBrowserActive, setBrowserPanelState, syncNavigationState]);
+
+  const handleNavigateSubmit = useCallback((rawUrl: string) => {
+    const url = rawUrl.trim();
+    if (!url) {
+      return;
+    }
+    setAddressInput(url);
+    if (browserReady) {
+      void windowNavigateBrowser(url, workspaceCwd ?? undefined)
+        .then(() => {
+          setBrowserEditMode(false);
+          setPickedElement(null);
+          if (!browserDetached) {
+            refreshEditContext();
+          }
+          syncNavigationState();
+        })
+        .catch((err) => {
+          setBrowserEditError(String(err));
+        });
+      return;
+    }
+    handleOpenBrowser(url);
+  }, [browserReady, workspaceCwd, browserDetached, refreshEditContext, syncNavigationState, handleOpenBrowser]);
+
+  const handleBrowserBack = useCallback(() => {
+    if (!browserReady) {
+      return;
+    }
+    void browserGoBack()
+      .then((navigation) => {
+        applyNavigationState(navigation);
+      })
+      .catch((err) => {
+        setBrowserEditError(String(err));
+      });
+  }, [browserReady, applyNavigationState]);
+
+  const handleBrowserForward = useCallback(() => {
+    if (!browserReady) {
+      return;
+    }
+    void browserGoForward()
+      .then((navigation) => {
+        applyNavigationState(navigation);
+      })
+      .catch((err) => {
+        setBrowserEditError(String(err));
+      });
+  }, [browserReady, applyNavigationState]);
+
+  const handleBrowserRefresh = useCallback(() => {
+    if (!browserReady) {
+      return;
+    }
+    void browserRefreshPreview()
+      .then(() => {
+        syncNavigationState();
+      })
+      .catch((err) => {
+        setBrowserEditError(String(err));
+      });
+  }, [browserReady, syncNavigationState]);
+
+  const handleBrowserHome = useCallback(() => {
+    if (!browserReady) {
+      return;
+    }
+    void browserNavigateHome()
+      .then((navigation) => {
+        applyNavigationState(navigation);
+      })
+      .catch((err) => {
+        setBrowserEditError(String(err));
+      });
+  }, [browserReady, applyNavigationState]);
 
   const handleToggleEditMode = useCallback(() => {
     if (browserDetached) {
@@ -521,6 +652,7 @@ export function RightPanel() {
         setBrowserActive(true);
         setBrowserEditError(null);
         requestAnimationFrame(() => syncBrowserPositionRef.current());
+        syncNavigationState();
       }
       if (typeof event.payload?.url === "string" && event.payload.url.trim()) {
         setBrowserPanelState({ url: event.payload.url.trim() });
@@ -552,7 +684,7 @@ export function RightPanel() {
       safeInvokeUnlisten(offDetached);
       safeInvokeUnlisten(offClosed);
     };
-  }, [setBrowserDetached, setBrowserActive, setBrowserPanelState]);
+  }, [setBrowserDetached, setBrowserActive, setBrowserPanelState, syncNavigationState]);
 
   useEffect(() => {
     if (!browserEditMode) {
@@ -595,13 +727,26 @@ export function RightPanel() {
   useEffect(() => {
     const onRefreshRequest = () => {
       if (!browserActive && !browserDetached) return;
-      void browserRefreshPreview().catch(() => undefined);
+      handleBrowserRefresh();
     };
     window.addEventListener("cn-codex:browser-refresh-requested", onRefreshRequest);
     return () => {
       window.removeEventListener("cn-codex:browser-refresh-requested", onRefreshRequest);
     };
-  }, [browserActive, browserDetached]);
+  }, [browserActive, browserDetached, handleBrowserRefresh]);
+
+  useEffect(() => {
+    if (rightPanelTab !== "browser" || !browserReady) {
+      return;
+    }
+    syncNavigationState();
+    const timer = window.setInterval(() => {
+      syncNavigationState();
+    }, 1200);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [rightPanelTab, browserReady, syncNavigationState]);
 
   useEffect(() => {
     return () => {
@@ -615,6 +760,8 @@ export function RightPanel() {
             status: "idle",
             url: null,
             title: null,
+            canGoBack: false,
+            canGoForward: false,
           });
           setBrowserEditMode(false);
           setPickedElement(null);
@@ -700,7 +847,47 @@ export function RightPanel() {
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* Browser address bar */}
           <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-1.5">
-            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <button
+                type="button"
+                onClick={handleBrowserBack}
+                disabled={!browserReady || !browserCanGoBack}
+                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
+                title={intl.formatMessage({ id: "rightPanel.browserBack" })}
+                aria-label={intl.formatMessage({ id: "rightPanel.browserBack" })}
+              >
+                <IconChevronLeft size={13} stroke={1.9} />
+              </button>
+              <button
+                type="button"
+                onClick={handleBrowserForward}
+                disabled={!browserReady || !browserCanGoForward}
+                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
+                title={intl.formatMessage({ id: "rightPanel.browserForward" })}
+                aria-label={intl.formatMessage({ id: "rightPanel.browserForward" })}
+              >
+                <IconChevronRight size={13} stroke={1.9} />
+              </button>
+              <button
+                type="button"
+                onClick={handleBrowserRefresh}
+                disabled={!browserReady}
+                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
+                title={intl.formatMessage({ id: "rightPanel.browserRefresh" })}
+                aria-label={intl.formatMessage({ id: "rightPanel.browserRefresh" })}
+              >
+                <IconRefresh size={12} stroke={1.9} />
+              </button>
+              <button
+                type="button"
+                onClick={handleBrowserHome}
+                disabled={!browserReady}
+                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
+                title={intl.formatMessage({ id: "rightPanel.browserHome" })}
+                aria-label={intl.formatMessage({ id: "rightPanel.browserHome" })}
+              >
+                <IconHome size={12} stroke={1.9} />
+              </button>
               <span
                 className={`h-2 w-2 flex-shrink-0 rounded-full ${
                   browserActive
@@ -713,27 +900,30 @@ export function RightPanel() {
               <input
                 type="text"
                 className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-muted)] outline-none transition-colors focus:border-[var(--accent)] focus:text-[var(--text-strong)]"
-                defaultValue={browserPanelUrl ?? browserOutput?.finalUrl ?? ""}
-                key={browserPanelUrl ?? browserOutput?.finalUrl ?? "empty"}
+                value={addressInput}
                 placeholder={intl.formatMessage({ id: "rightPanel.noActivePage" })}
+                onFocus={() => {
+                  addressFocusedRef.current = true;
+                }}
+                onBlur={() => {
+                  addressFocusedRef.current = false;
+                  setAddressInput(browserPanelUrl ?? browserOutput?.finalUrl ?? "");
+                }}
+                onChange={(event) => setAddressInput(event.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
-                    const url = (e.target as HTMLInputElement).value.trim();
-                    if (!url) return;
-                    if (browserActive || browserDetached) {
-                      void windowNavigateBrowser(url, workspaceCwd ?? undefined).then(() => {
-                        setBrowserEditMode(false);
-                        setPickedElement(null);
-                        if (!browserDetached) {
-                          refreshEditContext();
-                        }
-                      });
-                    } else {
-                      handleOpenBrowser(url);
-                    }
+                    handleNavigateSubmit(addressInput);
                   }
                 }}
               />
+              {browserPanelTitle && (
+                <span
+                  className="max-w-[140px] truncate text-[10px] text-[var(--text-faint)]"
+                  title={browserPanelTitle}
+                >
+                  {browserPanelTitle}
+                </span>
+              )}
             </div>
             <button
               type="button"

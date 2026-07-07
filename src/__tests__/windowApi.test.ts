@@ -6,6 +6,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  browserGetNavigationState,
+  browserGoBack,
+  browserGoForward,
+  browserNavigateHome,
   windowClose,
   windowMinimize,
   windowOpenBrowser,
@@ -65,5 +69,29 @@ describe("window API", () => {
     expect(mockInvoke).toHaveBeenNthCalledWith(2, "window_minimize");
     expect(mockInvoke).toHaveBeenNthCalledWith(3, "window_toggle_maximize");
     expect(mockInvoke).toHaveBeenNthCalledWith(4, "window_close");
+  });
+
+  it("routes browser navigation commands through tauri invoke", async () => {
+    const payload = {
+      url: "https://example.com",
+      title: "Example Domain",
+      canGoBack: true,
+      canGoForward: false,
+    };
+    mockInvoke
+      .mockResolvedValueOnce(payload)
+      .mockResolvedValueOnce(payload)
+      .mockResolvedValueOnce(payload)
+      .mockResolvedValueOnce(payload);
+
+    await expect(browserGoBack()).resolves.toMatchObject(payload);
+    await expect(browserGoForward()).resolves.toMatchObject(payload);
+    await expect(browserNavigateHome()).resolves.toMatchObject(payload);
+    await expect(browserGetNavigationState()).resolves.toMatchObject(payload);
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "browser_go_back");
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "browser_go_forward");
+    expect(mockInvoke).toHaveBeenNthCalledWith(3, "browser_navigate_home");
+    expect(mockInvoke).toHaveBeenNthCalledWith(4, "browser_get_navigation_state");
   });
 });

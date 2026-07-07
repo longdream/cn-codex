@@ -153,6 +153,7 @@ async fn consolidate_via_llm(
     let adapter = adapter::get_adapter(wire_api);
     let url = adapter.build_url(base_url, model);
     let headers = adapter.build_headers(api_key);
+    let (url, headers) = adapter::apply_request_overrides(url, headers, None, None)?;
     let body = adapter.build_body(model, &internal_messages, None, max_output_tokens);
 
     let response = http
@@ -181,16 +182,15 @@ async fn consolidate_via_llm(
             let line = buffer[..line_end].trim().to_string();
             buffer = buffer[line_end + 1..].to_string();
 
-            if line.is_empty() || !line.starts_with("data: ") {
+            if line.is_empty() {
                 continue;
             }
 
-            let data = &line[6..];
-            if adapter.is_stream_done(data) {
+            if adapter.is_stream_done(&line) {
                 break;
             }
 
-            for event in adapter.parse_stream_line(data) {
+            for event in adapter.parse_stream_line(&line) {
                 if let StreamEvent::TextDelta(delta) = event {
                     result_text.push_str(&delta);
                 }

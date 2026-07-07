@@ -484,7 +484,8 @@ async fn ingest_document_inner(
                 chunk_frontmatter.description = Some(value);
             }
             if let Some(value) = domain.clone() {
-                chunk_frontmatter = chunk_frontmatter.with_extension("domain", serde_json::json!(value));
+                chunk_frontmatter =
+                    chunk_frontmatter.with_extension("domain", serde_json::json!(value));
             }
             if let Some(value) = relative_path.clone() {
                 chunk_frontmatter =
@@ -783,27 +784,40 @@ pub fn update_knowledge_metadata(
         if !path.exists() {
             continue;
         }
-        let raw_content =
-            std::fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        let raw_content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
         let mut parsed = if let Some(doc) = okf::parse_document(&raw_content) {
             doc
         } else {
-            OkfDocument::new(OkfFrontmatter::new("Knowledge"), okf::extract_body(&raw_content))
+            OkfDocument::new(
+                OkfFrontmatter::new("Knowledge"),
+                okf::extract_body(&raw_content),
+            )
         };
 
-        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
         let chunk_index = okf_extension_usize(&parsed.frontmatter, "chunk_index")
             .or_else(|| chunk_index_from_file_name(doc_id, file_name))
             .unwrap_or(1);
-        let chunk_total = okf_extension_usize(&parsed.frontmatter, "chunk_total")
-            .unwrap_or(chunk_total_fallback);
-        let is_chunk_doc = path != &parent_doc_path || parsed.frontmatter.extensions.get("is_chunk").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let chunk_total =
+            okf_extension_usize(&parsed.frontmatter, "chunk_total").unwrap_or(chunk_total_fallback);
+        let is_chunk_doc = path != &parent_doc_path
+            || parsed
+                .frontmatter
+                .extensions
+                .get("is_chunk")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
 
         parsed.frontmatter.concept_type = "Knowledge".to_string();
         parsed.frontmatter.tags = updated_entry.categories.clone();
-        parsed.frontmatter
-            .extensions
-            .insert("okf_profile".to_string(), serde_json::json!("smartbrain-knowledge-v1"));
+        parsed.frontmatter.extensions.insert(
+            "okf_profile".to_string(),
+            serde_json::json!("smartbrain-knowledge-v1"),
+        );
         parsed.frontmatter.extensions.insert(
             "source_file".to_string(),
             serde_json::json!(updated_entry.source_file.clone()),
@@ -817,7 +831,11 @@ pub fn update_knowledge_metadata(
             serde_json::json!(updated_entry.chunk_count.max(1)),
         );
 
-        set_optional_extension(&mut parsed.frontmatter, "domain", updated_entry.domain.clone());
+        set_optional_extension(
+            &mut parsed.frontmatter,
+            "domain",
+            updated_entry.domain.clone(),
+        );
         set_optional_extension(
             &mut parsed.frontmatter,
             "relative_path",
@@ -847,8 +865,10 @@ pub fn update_knowledge_metadata(
                 .extensions
                 .insert("chunk_total".to_string(), serde_json::json!(chunk_total));
             if update_title {
-                parsed.frontmatter.title =
-                    Some(format!("{} [{}/{}]", updated_entry.title, chunk_index, chunk_total));
+                parsed.frontmatter.title = Some(format!(
+                    "{} [{}/{}]",
+                    updated_entry.title, chunk_index, chunk_total
+                ));
             }
         } else {
             parsed
@@ -1500,7 +1520,10 @@ pub(crate) fn list_chunk_doc_paths(docs_dir: &Path, doc_id: &str) -> Vec<PathBuf
 fn remove_chunk_files(docs_dir: &Path, doc_id: &str) -> Result<(), String> {
     for path in list_chunk_doc_paths(docs_dir, doc_id) {
         if let Err(e) = std::fs::remove_file(&path) {
-            return Err(format!("Failed to remove chunk file {}: {e}", path.display()));
+            return Err(format!(
+                "Failed to remove chunk file {}: {e}",
+                path.display()
+            ));
         }
     }
     Ok(())
@@ -1508,7 +1531,8 @@ fn remove_chunk_files(docs_dir: &Path, doc_id: &str) -> Result<(), String> {
 
 fn remove_chunk_docs_from_bm25(bm25: &mut BM25Index, doc_id: &str) {
     let prefix = chunk_bm25_doc_prefix(doc_id);
-    bm25.documents.retain(|doc| !doc.doc_id.starts_with(&prefix));
+    bm25.documents
+        .retain(|doc| !doc.doc_id.starts_with(&prefix));
 }
 
 fn chunk_text(text: &str, max_chunk_tokens: usize) -> Vec<String> {
@@ -1586,6 +1610,12 @@ async fn organize_via_llm(
     let adapter = adapter::get_adapter(wire_api);
     let url = adapter.build_url(&base_url, &model);
     let headers = adapter.build_headers(&api_key);
+    let (url, headers) = adapter::apply_request_overrides(
+        url,
+        headers,
+        provider.query_params.as_ref(),
+        provider.http_headers.as_ref(),
+    )?;
     let body = adapter.build_body(&model, &internal_messages, None, config.max_output_tokens);
 
     let response = http
@@ -1616,16 +1646,15 @@ async fn organize_via_llm(
             let line = buffer[..line_end].trim().to_string();
             buffer = buffer[line_end + 1..].to_string();
 
-            if line.is_empty() || !line.starts_with("data: ") {
+            if line.is_empty() {
                 continue;
             }
 
-            let data = &line[6..];
-            if adapter.is_stream_done(data) {
+            if adapter.is_stream_done(&line) {
                 break;
             }
 
-            for event in adapter.parse_stream_line(data) {
+            for event in adapter.parse_stream_line(&line) {
                 if let StreamEvent::TextDelta(delta) = event {
                     result_text.push_str(&delta);
                 }
@@ -1681,7 +1710,7 @@ fn update_hierarchy(knowledge_dir: &Path, doc_id: &str, hierarchy_fragment: &ser
 mod tests {
     use super::*;
     use crate::config_system::{ConfigToml, SmartBrainConfig};
-    use crate::smartbrain::bm25_index::{build_document, SourceType};
+    use crate::smartbrain::bm25_index::{SourceType, build_document};
     use reqwest::Client;
 
     #[test]
@@ -1819,7 +1848,10 @@ mod tests {
 
         let docs_dir = knowledge_dir.join("docs");
         let parent_doc = docs_dir.join(format!("{doc_id}.md"));
-        assert!(parent_doc.exists(), "parent doc should be kept for compatibility");
+        assert!(
+            parent_doc.exists(),
+            "parent doc should be kept for compatibility"
+        );
 
         let chunk_prefix = format!("{doc_id}__chunk_");
         let chunk_files = std::fs::read_dir(&docs_dir)
@@ -1920,7 +1952,8 @@ mod tests {
 
     #[test]
     fn chunk_text_handles_crlf_paragraph_breaks() {
-        let text = "第一段 alpha beta gamma\r\n\r\n第二段 delta epsilon zeta\r\n\r\n第三段 eta theta iota";
+        let text =
+            "第一段 alpha beta gamma\r\n\r\n第二段 delta epsilon zeta\r\n\r\n第三段 eta theta iota";
         let chunks = chunk_text(text, 3);
         assert!(chunks.len() > 1, "CRLF paragraph breaks should be chunked");
         assert!(chunks.iter().all(|chunk| !chunk.contains('\r')));
@@ -2078,19 +2111,26 @@ mod tests {
             .unwrap();
         assert_eq!(entry.title, "New Title");
         assert_eq!(entry.description.as_deref(), Some("updated description"));
-        assert_eq!(entry.categories, vec!["updated".to_string(), "kb".to_string()]);
+        assert_eq!(
+            entry.categories,
+            vec!["updated".to_string(), "kb".to_string()]
+        );
         assert_eq!(entry.domain.as_deref(), Some("backend"));
         assert_eq!(entry.source_group.as_deref(), Some("import-batch-1"));
 
-        let parent = okf::parse_document(&std::fs::read_to_string(docs_dir.join("meta-doc.md")).unwrap())
-            .unwrap();
+        let parent =
+            okf::parse_document(&std::fs::read_to_string(docs_dir.join("meta-doc.md")).unwrap())
+                .unwrap();
         assert_eq!(parent.body, "parent body unchanged");
         assert_eq!(parent.frontmatter.title.as_deref(), Some("New Title"));
         assert_eq!(
             parent.frontmatter.description.as_deref(),
             Some("updated description")
         );
-        assert_eq!(parent.frontmatter.tags, vec!["updated".to_string(), "kb".to_string()]);
+        assert_eq!(
+            parent.frontmatter.tags,
+            vec!["updated".to_string(), "kb".to_string()]
+        );
 
         let chunk = okf::parse_document(
             &std::fs::read_to_string(docs_dir.join("meta-doc__chunk_0001.md")).unwrap(),
@@ -2098,7 +2138,10 @@ mod tests {
         .unwrap();
         assert_eq!(chunk.body, "chunk body 1");
         assert_eq!(chunk.frontmatter.title.as_deref(), Some("New Title [1/2]"));
-        assert_eq!(chunk.frontmatter.tags, vec!["updated".to_string(), "kb".to_string()]);
+        assert_eq!(
+            chunk.frontmatter.tags,
+            vec!["updated".to_string(), "kb".to_string()]
+        );
         assert_eq!(
             chunk
                 .frontmatter
@@ -2112,7 +2155,8 @@ mod tests {
         assert!(
             bm25.documents
                 .iter()
-                .any(|doc| doc.doc_id == "know:meta-doc::chunk:0001" && doc.title == "New Title [1/2]"),
+                .any(|doc| doc.doc_id == "know:meta-doc::chunk:0001"
+                    && doc.title == "New Title [1/2]"),
             "chunk-1 index should reflect updated title"
         );
         assert!(

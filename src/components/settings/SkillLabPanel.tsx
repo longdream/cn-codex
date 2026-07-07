@@ -10,6 +10,7 @@ import {
   IconTrash,
   IconUpload,
   IconLoader2,
+  IconSparkles,
 } from "@tabler/icons-react";
 
 /** 实验室草稿摘要 */
@@ -21,6 +22,15 @@ interface SkillLabSummary {
 }
 
 /** 实验室草稿完整内容 */
+interface SkillLabScoreRecord {
+  iteration: number;
+  totalScore: number;
+  clarity: number;
+  robustness: number;
+  executability: number;
+  maintainability: number;
+}
+
 interface SkillLabDetail {
   id: string;
   name: string;
@@ -30,6 +40,29 @@ interface SkillLabDetail {
   iterationCount: number;
   lastTestResult: string | null;
   lastEvaluation: string | null;
+  bestScore: number | null;
+  scoreHistory: SkillLabScoreRecord[];
+  bestEvaluation: string | null;
+  stableRounds: number;
+}
+
+interface PythonEnvCheckResult {
+  available: boolean;
+  executable: string | null;
+  version: string | null;
+  installHint: string;
+}
+
+interface SkillLabGeneratedScript {
+  path: string;
+  content: string;
+}
+
+interface SkillLabGenerateResult {
+  name: string;
+  content: string;
+  testPrompt: string;
+  scripts: SkillLabGeneratedScript[];
 }
 
 type LabStatus = "idle" | "testing" | "evaluating" | "rewriting" | "passed" | "failed" | "promoted";
@@ -62,12 +95,17 @@ export function SkillLabPanel() {
 
   // 编辑状态
   const [name, setName] = useState("");
+  const [goal, setGoal] = useState("");
   const [content, setContent] = useState("");
   const [testPrompt, setTestPrompt] = useState("");
   const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [checkingPython, setCheckingPython] = useState(false);
   const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
   const [promoting, setPromoting] = useState(false);
+  const [pythonInfo, setPythonInfo] = useState("");
+  const [generationError, setGenerationError] = useState("");
   // 测试闭环实时进度
   const [testPhase, setTestPhase] = useState<string | null>(null);
   const [testIteration, setTestIteration] = useState(0);
@@ -116,8 +154,11 @@ export function SkillLabPanel() {
       const d = await invoke<SkillLabDetail>("skill_lab_read", { skillId: id });
       setDetail(d);
       setName(d.name);
+      setGoal("");
       setContent(d.content);
       setTestPrompt(d.testPrompt);
+      setGenerationError("");
+      setPythonInfo("");
     } catch (err) {
       console.error("Failed to load skill lab detail:", err);
     }
@@ -129,8 +170,11 @@ export function SkillLabPanel() {
     setSelectedId(id);
     setDetail(null);
     setName("");
+    setGoal("");
     setContent("");
     setTestPrompt("");
+    setGenerationError("");
+    setPythonInfo("");
     setSaved(false);
   }, []);
 
@@ -156,6 +200,70 @@ export function SkillLabPanel() {
       setSaving(false);
     }
   }, [selectedId, name, content, testPrompt, loadList]);
+
+  const handleGenerate = useCallback(async () => {
+    if (!selectedId || !goal.trim()) return;
+    setGenerating(true);
+    setCheckingPython(true);
+    setGenerationError("");
+    setPythonInfo("");
+    try {
+      const env = await invoke<PythonEnvCheckResult>("skill_lab_check_python_env");
+      setCheckingPython(false);
+      if (!env.available) {
+        setGenerationError(
+          env.installHint ||
+            intl.formatMessage({ id: "settings.skillLab.pythonMissingHint" }),
+        );
+        return;
+      }
+
+      const pythonText = [env.executable, env.version].filter(Boolean).join(" · ");
+      setPythonInfo(
+        pythonText ||
+          intl.formatMessage({ id: "settings.skillLab.pythonReadyFallback" }),
+      );
+
+      const generated = await invoke<SkillLabGenerateResult>(
+        "skill_lab_generate_from_goal",
+        {
+          params: {
+            skillId: selectedId,
+            goal: goal.trim(),
+            nameHint: name.trim() || undefined,
+          },
+        },
+      );
+
+      const nextName = generated.name?.trim() || name.trim() || selectedId;
+      setName(nextName);
+      setContent(generated.content || "");
+      setTestPrompt(generated.testPrompt || "");
+
+      await invoke("skill_lab_save", {
+        params: {
+          skillId: selectedId,
+          name: nextName,
+          content: generated.content || "",
+          testPrompt: generated.testPrompt || "",
+        },
+      });
+
+      await loadList();
+      const refreshed = await invoke<SkillLabDetail>("skill_lab_read", {
+        skillId: selectedId,
+      });
+      setDetail(refreshed);
+    } catch (err) {
+      const errorText =
+        `${intl.formatMessage({ id: "settings.skillLab.generateFailed" })}: ${String(err)}`;
+      setGenerationError(errorText);
+      console.error("Failed to auto-generate skill lab draft:", err);
+    } finally {
+      setCheckingPython(false);
+      setGenerating(false);
+    }
+  }, [selectedId, goal, intl, name, loadList]);
 
   // 运行完整的测试闭环：测试 → 评估 → 改写 → 重复
   const handleRunTest = useCallback(async () => {
@@ -222,6 +330,12 @@ export function SkillLabPanel() {
       if (selectedId === id) {
         setSelectedId(null);
         setDetail(null);
+        setGoal("");
+        setContent("");
+        setTestPrompt("");
+        setName("");
+        setPythonInfo("");
+        setGenerationError("");
       }
       await loadList();
     } catch (err) {
@@ -306,6 +420,34 @@ export function SkillLabPanel() {
               />
             </div>
 
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-base)] mb-1">
+                {intl.formatMessage({ id: "settings.skillLab.goal" })}
+              </label>
+              <textarea
+                value={goal}
+                onChange={(e) => setGoal(e.target.value)}
+                placeholder={intl.formatMessage({ id: "settings.skillLab.goalPlaceholder" })}
+                className="w-full min-h-[72px] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-main)]
+                           p-3 text-xs text-[var(--text-base)]
+                           placeholder:text-[var(--text-faint)]
+                           focus:border-[var(--accent-strong)] focus:outline-none resize-y"
+              />
+              {pythonInfo ? (
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  {intl.formatMessage({ id: "settings.skillLab.pythonReady" }, { python: pythonInfo })}
+                </p>
+              ) : null}
+              {checkingPython ? (
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  {intl.formatMessage({ id: "settings.skillLab.checkingPython" })}
+                </p>
+              ) : null}
+              {generationError ? (
+                <p className="mt-1 text-[11px] text-red-500">{generationError}</p>
+              ) : null}
+            </div>
+
             {/* Skill 内容 */}
             <div>
               <label className="block text-xs font-medium text-[var(--text-base)] mb-1">
@@ -352,6 +494,43 @@ export function SkillLabPanel() {
               </div>
             )}
 
+            {detail?.scoreHistory?.length ? (
+              <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3 space-y-2">
+                <div className="flex flex-wrap items-center gap-3 text-xs">
+                  <span className="text-[var(--text-base)]">
+                    {intl.formatMessage({ id: "settings.skillLab.bestScore" })}:{" "}
+                    <strong>{(detail.bestScore ?? 0).toFixed(1)}</strong>
+                  </span>
+                  <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                    {intl.formatMessage({ id: "settings.skillLab.bestVersion" })}
+                  </span>
+                  <span className="text-[var(--text-muted)]">
+                    {intl.formatMessage(
+                      { id: "settings.skillLab.stableRounds" },
+                      { count: detail.stableRounds ?? 0 },
+                    )}
+                  </span>
+                </div>
+                <div className="max-h-[120px] overflow-y-auto text-[11px] text-[var(--text-muted)] space-y-1">
+                  {detail.scoreHistory.map((score) => (
+                    <div key={`score-${score.iteration}`}>
+                      {intl.formatMessage(
+                        { id: "settings.skillLab.scoreLine" },
+                        {
+                          iteration: score.iteration,
+                          total: score.totalScore.toFixed(1),
+                          clarity: score.clarity.toFixed(1),
+                          robustness: score.robustness.toFixed(1),
+                          executability: score.executability.toFixed(1),
+                          maintainability: score.maintainability.toFixed(1),
+                        },
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             {/* 测试结果区域 */}
             {detail?.lastTestResult && (
               <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3">
@@ -378,6 +557,27 @@ export function SkillLabPanel() {
 
             {/* 操作按钮 */}
             <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={handleGenerate}
+                disabled={generating || checkingPython || !goal.trim()}
+                className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium
+                           bg-indigo-600 text-white hover:opacity-80 transition-opacity
+                           disabled:opacity-50"
+              >
+                {generating || checkingPython ? (
+                  <IconLoader2 size={14} stroke={2} className="animate-spin" />
+                ) : (
+                  <IconSparkles size={14} stroke={2} />
+                )}
+                {checkingPython
+                  ? intl.formatMessage({ id: "settings.skillLab.checkingPython" })
+                  : intl.formatMessage({
+                      id: generating
+                        ? "settings.skillLab.generating"
+                        : "settings.skillLab.generate",
+                    })}
+              </button>
+
               <button
                 onClick={handleSave}
                 disabled={saving || !name.trim()}

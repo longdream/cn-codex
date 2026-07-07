@@ -141,6 +141,8 @@ pub async fn run_compaction(
     model: &str,
     wire_api: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
+    query_params: Option<&std::collections::HashMap<String, String>>,
+    extra_headers: Option<&std::collections::HashMap<String, String>>,
 ) -> AppResult<()> {
     let compaction_start = Instant::now();
     info!("Starting context compaction for thread {thread_id}");
@@ -190,6 +192,9 @@ pub async fn run_compaction(
     let adapter = adapter::get_adapter(wire_api);
     let url = adapter.build_url(base_url, model);
     let headers = adapter.build_headers(api_key);
+    let (url, headers) =
+        adapter::apply_request_overrides(url, headers, query_params, extra_headers)
+            .map_err(AppError::Custom)?;
     let body = adapter.build_body(model, &messages, None, config.max_output_tokens);
 
     let input_chars: usize = messages
@@ -237,16 +242,15 @@ pub async fn run_compaction(
             let line = buffer[..line_end].trim().to_string();
             buffer = buffer[line_end + 1..].to_string();
 
-            if line.is_empty() || !line.starts_with("data: ") {
+            if line.is_empty() {
                 continue;
             }
 
-            let data = &line[6..];
-            if adapter.is_stream_done(data) {
+            if adapter.is_stream_done(&line) {
                 break;
             }
 
-            for event in adapter.parse_stream_line(data) {
+            for event in adapter.parse_stream_line(&line) {
                 if let StreamEvent::TextDelta(delta) = event {
                     summary_text.push_str(&delta);
                 }

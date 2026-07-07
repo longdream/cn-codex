@@ -264,7 +264,7 @@ export function ExperiencePanel() {
           </div>
 
           {autoSummarizeEnabled && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <label className="text-[11px] text-[var(--text-faint)]">
                 {intl.formatMessage({ id: "settings.smartbrain.experience.autoSummarize.threshold" })}
               </label>
@@ -274,12 +274,13 @@ export function ExperiencePanel() {
                 max={1000}
                 value={autoSummarizeThreshold}
                 onChange={(e) => setAutoSummarizeThreshold(Number(e.target.value))}
-                className="app-input w-20"
+                className="app-input shrink-0"
+                style={{ width: "5rem" }}
               />
               <button
                 onClick={() => void handleThresholdSave()}
                 disabled={thresholdSaving}
-                className="app-button-secondary text-xs disabled:opacity-50"
+                className="app-button-secondary shrink-0 text-xs disabled:opacity-50"
               >
                 {thresholdSaving
                   ? intl.formatMessage({ id: "settings.smartbrain.experience.autoSummarize.saving" })

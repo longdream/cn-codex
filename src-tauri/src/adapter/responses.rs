@@ -90,15 +90,19 @@ impl ProviderAdapter for ResponsesAdapter {
     }
 
     fn is_stream_done(&self, line: &str) -> bool {
-        line.trim() == "data: [DONE]"
+        let trimmed = line.trim();
+        trimmed == "data: [DONE]" || trimmed == "data:[DONE]" || trimmed == "[DONE]"
     }
 
     fn parse_stream_line(&self, line: &str) -> Vec<StreamEvent> {
         let mut events = Vec::new();
 
-        let data = match line.strip_prefix("data: ") {
-            Some(d) => d.trim(),
-            None => return events,
+        let data = if let Some(d) = line.strip_prefix("data: ") {
+            d.trim()
+        } else if let Some(d) = line.strip_prefix("data:") {
+            d.trim()
+        } else {
+            line.trim()
         };
 
         if data == "[DONE]" {
@@ -206,6 +210,19 @@ impl ProviderAdapter for ResponsesAdapter {
         }
 
         events
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_stream_line_supports_non_prefixed_data() {
+        let adapter = ResponsesAdapter;
+        let events =
+            adapter.parse_stream_line(r#"{"type":"response.output_text.delta","delta":"hello"}"#);
+        assert!(!events.is_empty());
     }
 }
 

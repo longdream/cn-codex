@@ -6237,7 +6237,8 @@ impl ToolExecutor {
                 {
                     lines.push(format!("   Relative Path: {relative_path}"));
                 }
-                if let Some(source_file) = r.source_file.as_deref().filter(|value| !value.is_empty())
+                if let Some(source_file) =
+                    r.source_file.as_deref().filter(|value| !value.is_empty())
                 {
                     lines.push(format!("   Source File: {source_file}"));
                 }
@@ -6251,10 +6252,9 @@ impl ToolExecutor {
                         lines.push(format!("   Parent Doc: {parent_doc_id}"));
                     }
                     if context_blocks_added < SMARTBRAIN_CONTEXT_RESULT_LIMIT {
-                        if let Some(context_block) = self.render_chunk_context_bridge(
-                            r,
-                            SMARTBRAIN_CONTEXT_OVERLAP_LINES,
-                        ) {
+                        if let Some(context_block) =
+                            self.render_chunk_context_bridge(r, SMARTBRAIN_CONTEXT_OVERLAP_LINES)
+                        {
                             lines.push(context_block);
                             context_blocks_added += 1;
                         }
@@ -6300,13 +6300,15 @@ impl ToolExecutor {
 
         let docs_dir = self.memories_dir().join("knowledge").join("docs");
         let previous_lines = if chunk_index > 1 {
-            let previous_file = crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index - 1);
+            let previous_file =
+                crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index - 1);
             read_okf_body_lines(&docs_dir.join(previous_file))
         } else {
             None
         };
         let next_lines = if chunk_index < chunk_total {
-            let next_file = crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index + 1);
+            let next_file =
+                crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index + 1);
             read_okf_body_lines(&docs_dir.join(next_file))
         } else {
             None
@@ -7814,7 +7816,14 @@ impl ToolExecutor {
                         .search_bing_browser(query, max_results, call_id, app_handle, thread_id)
                         .await
                     {
-                        self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &output);
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "web_search",
+                            0,
+                            &output,
+                        );
                         return Ok(output);
                     }
                     info!("Bing browser returned no results, falling back to DuckDuckGo");
@@ -7828,7 +7837,14 @@ impl ToolExecutor {
                         }
                     };
                     if web_search_output_has_results(&output) {
-                        self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &output);
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "web_search",
+                            0,
+                            &output,
+                        );
                         return Ok(output);
                     }
                     info!("DuckDuckGo API returned no results, trying browser fallback");
@@ -7838,7 +7854,14 @@ impl ToolExecutor {
                         .fallback_browser_search(query, max_results, call_id, app_handle, thread_id)
                         .await;
                     if web_search_output_has_results(&output) {
-                        self.emit_tool_end(app_handle, thread_id, call_id, "web_search", 0, &output);
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "web_search",
+                            0,
+                            &output,
+                        );
                         return Ok(output);
                     }
                     fallback_output = output;
@@ -7980,7 +8003,11 @@ impl ToolExecutor {
         Some(format_browser_search_results(query, &results))
     }
 
-    async fn search_duckduckgo_api(&self, query: &str, max_results: usize) -> Result<String, String> {
+    async fn search_duckduckgo_api(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> Result<String, String> {
         let search_url = format!(
             "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
             encode_query_component(query)
@@ -16149,7 +16176,9 @@ index 1111111..2222222 100644
 
     #[test]
     fn web_search_output_has_results_detects_empty_marker() {
-        assert!(web_search_output_has_results("Web search results for \"cn codex\":\n1. Result"));
+        assert!(web_search_output_has_results(
+            "Web search results for \"cn codex\":\n1. Result"
+        ));
         assert!(!web_search_output_has_results(
             "No web search results found for: cn codex (tried Bing and DuckDuckGo)"
         ));
@@ -16157,9 +16186,15 @@ index 1111111..2222222 100644
 
     #[test]
     fn render_chunk_context_bridge_includes_neighbor_overlap_windows() {
-        let root =
-            std::env::temp_dir().join(format!("cn-codex-smartbrain-context-{}", uuid::Uuid::new_v4()));
-        let docs_dir = root.join("codey").join("memories").join("knowledge").join("docs");
+        let root = std::env::temp_dir().join(format!(
+            "cn-codex-smartbrain-context-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let docs_dir = root
+            .join("codey")
+            .join("memories")
+            .join("knowledge")
+            .join("docs");
         std::fs::create_dir_all(&docs_dir).unwrap();
 
         let prev_content = (1..=40)

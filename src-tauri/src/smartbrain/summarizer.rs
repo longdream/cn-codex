@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use futures_util::StreamExt;
@@ -78,7 +79,9 @@ pub async fn run_summarize_merge(
 
     let (provider_id, provider) = config.resolve_provider();
     let mut model = config.resolve_model();
-    let (base_url, api_key, wire_api) = match resolve_endpoint(config, &provider, &mut model) {
+    let (base_url, api_key, wire_api, query_params, extra_headers) = match resolve_endpoint(
+        config, &provider, &mut model,
+    ) {
         Some(resolved) => resolved,
         None => {
             let msg = format!(
@@ -127,6 +130,8 @@ pub async fn run_summarize_merge(
         &raw_experiences,
         target_count,
         config.max_output_tokens,
+        query_params.as_ref(),
+        extra_headers.as_ref(),
     )
     .await
     {
@@ -154,8 +159,10 @@ pub async fn run_summarize_merge(
     }
 
     let timestamp = now_secs();
-    let source_thread_ids: Vec<String> =
-        raw_experiences.iter().map(|(id, _, _)| id.clone()).collect();
+    let source_thread_ids: Vec<String> = raw_experiences
+        .iter()
+        .map(|(id, _, _)| id.clone())
+        .collect();
 
     // Remove the source experiences (raw files + index entries).
     for thread_id in &source_thread_ids {
@@ -223,14 +230,12 @@ pub async fn run_summarize_merge(
         super::search::rebuild_index(workspace_config_dir, bm25_path);
     } else {
         // Still keep the on-disk BM25 index roughly in sync by removing stale docs.
-        let mut bm25 = BM25Index::load(
-            &super::bm25_index_path(
-                experiences_dir
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .unwrap_or(experiences_dir),
-            ),
-        );
+        let mut bm25 = BM25Index::load(&super::bm25_index_path(
+            experiences_dir
+                .parent()
+                .and_then(|p| p.parent())
+                .unwrap_or(experiences_dir),
+        ));
         for thread_id in &source_thread_ids {
             bm25.remove_document(&format!("exp:{thread_id}"));
         }
@@ -269,7 +274,13 @@ fn resolve_endpoint(
     config: &ConfigToml,
     provider: &crate::config_system::ModelProviderInfo,
     model: &mut String,
-) -> Option<(String, String, String)> {
+) -> Option<(
+    String,
+    String,
+    String,
+    Option<HashMap<String, String>>,
+    Option<HashMap<String, String>>,
+)> {
     if !config.model_endpoints.is_empty() {
         let idx = config.active_endpoint_index.unwrap_or(0);
         let ep = &config.model_endpoints[idx.min(config.model_endpoints.len() - 1)];
@@ -290,6 +301,8 @@ fn resolve_endpoint(
             ep.url.clone(),
             ep.api_key.clone().unwrap_or_default(),
             ep_wire_api.to_string(),
+            None,
+            None,
         ));
     }
 
@@ -299,7 +312,13 @@ fn resolve_endpoint(
         return None;
     }
     let wire = provider.wire_api.as_deref().unwrap_or("chat").to_string();
-    Some((url, key, wire))
+    Some((
+        url,
+        key,
+        wire,
+        provider.query_params.clone(),
+        provider.http_headers.clone(),
+    ))
 }
 
 async fn summarize_merge_via_llm(
@@ -311,9 +330,10 @@ async fn summarize_merge_via_llm(
     raw_experiences: &[(String, String, u32)],
     target_count: usize,
     max_tokens: Option<i64>,
+    query_params: Option<&HashMap<String, String>>,
+    extra_headers: Option<&HashMap<String, String>>,
 ) -> Result<Vec<prompts::MergedExperience>, String> {
-    let prompt_messages =
-        prompts::build_summarize_merge_messages(raw_experiences, target_count);
+    let prompt_messages = prompts::build_summarize_merge_messages(raw_experiences, target_count);
     let internal_messages: Vec<InternalMessage> = prompt_messages
         .into_iter()
         .map(|(role, content)| InternalMessage {
@@ -328,6 +348,8 @@ async fn summarize_merge_via_llm(
     let adapter = adapter::get_adapter(wire_api);
     let url = adapter.build_url(base_url, model);
     let headers = adapter.build_headers(api_key);
+    let (url, headers) =
+        adapter::apply_request_overrides(url, headers, query_params, extra_headers)?;
     let body = adapter.build_body(model, &internal_messages, None, max_tokens);
 
     let response = http
@@ -356,16 +378,15 @@ async fn summarize_merge_via_llm(
             let line = buffer[..line_end].trim().to_string();
             buffer = buffer[line_end + 1..].to_string();
 
-            if line.is_empty() || !line.starts_with("data: ") {
+            if line.is_empty() {
                 continue;
             }
 
-            let data = &line[6..];
-            if adapter.is_stream_done(data) {
+            if adapter.is_stream_done(&line) {
                 break;
             }
 
-            for event in adapter.parse_stream_line(data) {
+            for event in adapter.parse_stream_line(&line) {
                 if let StreamEvent::TextDelta(delta) = event {
                     result_text.push_str(&delta);
                 }

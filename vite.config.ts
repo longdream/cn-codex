@@ -32,6 +32,7 @@ export default defineConfig(async () => ({
         main: path.resolve(__dirname, "index.html"),
         detail: path.resolve(__dirname, "detail.html"),
         diff: path.resolve(__dirname, "diff.html"),
+        browser: path.resolve(__dirname, "browser.html"),
       },
     },
   },

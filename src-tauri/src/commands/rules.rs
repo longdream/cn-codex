@@ -17,4 +17,3 @@ pub async fn rules_write(state: State<'_, AppState>, content: String) -> AppResu
     std::fs::write(&path, content)?;
     Ok(())
 }
-

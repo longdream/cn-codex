@@ -1307,10 +1307,7 @@ mod tests {
     fn apply_edit_smartbrain_auto_summarize_threshold_clamps_to_min() {
         let mut config = ConfigToml::default();
         config
-            .apply_edit(
-                "smartbrain.auto_summarize_threshold",
-                &serde_json::json!(1),
-            )
+            .apply_edit("smartbrain.auto_summarize_threshold", &serde_json::json!(1))
             .expect("set smartbrain.auto_summarize_threshold");
         let smartbrain = config.smartbrain_config();
         assert_eq!(smartbrain.auto_summarize_threshold, 2);

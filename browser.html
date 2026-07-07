@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CN-Codex Browser</title>
+    <style>
+      html, body, #root {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: #1a1a1a;
+      }
+
+      body {
+        color: #d1d5db;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      .boot-splash {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        opacity: 0.82;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="boot-splash">浏览器窗口加载中...</div>
+    </div>
+    <script type="module" src="/src/browser-main.tsx"></script>
+  </body>
+</html>

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -19,7 +20,8 @@ pub async fn extract_workflow_from_thread(
     thread_store: &Arc<ThreadStore>,
     thread_id: &str,
 ) -> Result<WorkflowDef, String> {
-    let (base_url, api_key, wire_api, model) = resolve_llm_endpoint(config)?;
+    let (base_url, api_key, wire_api, model, query_params, extra_headers) =
+        resolve_llm_endpoint(config)?;
     if model.is_empty() {
         return Err("Workflow extraction failed: no model configured".to_string());
     }
@@ -44,6 +46,12 @@ pub async fn extract_workflow_from_thread(
     let adapter = adapter::get_adapter(&wire_api);
     let url = adapter.build_url(&base_url, &model);
     let headers = adapter.build_headers(&api_key);
+    let (url, headers) = adapter::apply_request_overrides(
+        url,
+        headers,
+        query_params.as_ref(),
+        extra_headers.as_ref(),
+    )?;
     let body = adapter.build_body(&model, &internal_messages, None, config.max_output_tokens);
 
     let response = http
@@ -74,16 +82,15 @@ pub async fn extract_workflow_from_thread(
             let line = buffer[..line_end].trim().to_string();
             buffer = buffer[line_end + 1..].to_string();
 
-            if line.is_empty() || !line.starts_with("data: ") {
+            if line.is_empty() {
                 continue;
             }
 
-            let data = &line[6..];
-            if adapter.is_stream_done(data) {
+            if adapter.is_stream_done(&line) {
                 break;
             }
 
-            for event in adapter.parse_stream_line(data) {
+            for event in adapter.parse_stream_line(&line) {
                 if let StreamEvent::TextDelta(delta) = event {
                     result_text.push_str(&delta);
                 }
@@ -109,7 +116,19 @@ pub async fn extract_workflow_from_thread(
 }
 
 /// Resolve LLM endpoint configuration (supports local-pool).
-fn resolve_llm_endpoint(config: &ConfigToml) -> Result<(String, String, String, String), String> {
+fn resolve_llm_endpoint(
+    config: &ConfigToml,
+) -> Result<
+    (
+        String,
+        String,
+        String,
+        String,
+        Option<HashMap<String, String>>,
+        Option<HashMap<String, String>>,
+    ),
+    String,
+> {
     let default_model = config.resolve_model();
     if !config.model_endpoints.is_empty() {
         let idx = config.active_endpoint_index.unwrap_or(0);
@@ -133,6 +152,8 @@ fn resolve_llm_endpoint(config: &ConfigToml) -> Result<(String, String, String, 
             ep.api_key.clone().unwrap_or_default(),
             wire_api,
             model,
+            None,
+            None,
         ))
     } else {
         let (provider_id, provider) = config.resolve_provider();
@@ -144,6 +165,13 @@ fn resolve_llm_endpoint(config: &ConfigToml) -> Result<(String, String, String, 
             return Err("Workflow extraction failed: no API key configured".to_string());
         }
         let wire_api = provider.wire_api.as_deref().unwrap_or("chat").to_string();
-        Ok((url, key, wire_api, default_model))
+        Ok((
+            url,
+            key,
+            wire_api,
+            default_model,
+            provider.query_params.clone(),
+            provider.http_headers.clone(),
+        ))
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -120,7 +121,10 @@ async fn run_extraction_internal(
 
     let (provider_id, provider) = config.resolve_provider();
     let mut model = config.resolve_model();
-    let (base_url, api_key, wire_api) = if !config.model_endpoints.is_empty() {
+    let (base_url, api_key, wire_api, query_params, extra_headers) = if !config
+        .model_endpoints
+        .is_empty()
+    {
         let idx = config.active_endpoint_index.unwrap_or(0);
         let ep = &config.model_endpoints[idx.min(config.model_endpoints.len() - 1)];
         let ep_wire_api = ep
@@ -140,6 +144,8 @@ async fn run_extraction_internal(
             ep.url.clone(),
             ep.api_key.clone().unwrap_or_default(),
             ep_wire_api.to_string(),
+            None,
+            None,
         )
     } else {
         let url = match provider.resolve_base_url() {
@@ -155,7 +161,13 @@ async fn run_extraction_internal(
             return;
         }
         let wire = provider.wire_api.as_deref().unwrap_or("chat").to_string();
-        (url, key, wire)
+        (
+            url,
+            key,
+            wire,
+            provider.query_params.clone(),
+            provider.http_headers.clone(),
+        )
     };
     if model.is_empty() {
         info!("Experience extraction skipped: no model configured");
@@ -192,6 +204,8 @@ async fn run_extraction_internal(
             &wire_api,
             &messages,
             config.max_output_tokens,
+            query_params.as_ref(),
+            extra_headers.as_ref(),
         )
         .await
         {
@@ -360,6 +374,8 @@ async fn extract_single(
     wire_api: &str,
     history: &[crate::thread_store::ThreadMessage],
     max_tokens: Option<i64>,
+    query_params: Option<&HashMap<String, String>>,
+    extra_headers: Option<&HashMap<String, String>>,
 ) -> Result<Option<prompts::ParsedExtraction>, String> {
     let prompt_messages = prompts::build_extraction_messages(history);
     let internal_messages: Vec<InternalMessage> = prompt_messages
@@ -376,6 +392,8 @@ async fn extract_single(
     let adapter = adapter::get_adapter(wire_api);
     let url = adapter.build_url(base_url, model);
     let headers = adapter.build_headers(api_key);
+    let (url, headers) =
+        adapter::apply_request_overrides(url, headers, query_params, extra_headers)?;
     let body = adapter.build_body(model, &internal_messages, None, max_tokens);
 
     let response = http
@@ -406,16 +424,15 @@ async fn extract_single(
             let line = buffer[..line_end].trim().to_string();
             buffer = buffer[line_end + 1..].to_string();
 
-            if line.is_empty() || !line.starts_with("data: ") {
+            if line.is_empty() {
                 continue;
             }
 
-            let data = &line[6..];
-            if adapter.is_stream_done(data) {
+            if adapter.is_stream_done(&line) {
                 break;
             }
 
-            for event in adapter.parse_stream_line(data) {
+            for event in adapter.parse_stream_line(&line) {
                 if let StreamEvent::TextDelta(delta) = event {
                     result_text.push_str(&delta);
                 }

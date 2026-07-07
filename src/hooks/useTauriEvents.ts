@@ -67,12 +67,22 @@ interface ThreadTokenUsageUpdatedPayload {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  cachedTokens?: number;
+  cacheCreationTokens?: number;
+  reasoningTokens?: number;
   callCount?: number;
   lastSinglePromptTokens?: number;
   // 统一后的上下文占用分子（单次 prompt tokens），用于避免回退到累计值导致展示漂移。
   contextPromptTokens?: number;
   // 后端运行时上下文窗口大小，优先级高于前端模型静态配置。
   modelContextWindow?: number;
+}
+
+interface BrowserNavigationChangedPayload {
+  url?: string;
+  title?: string;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
 }
 
 interface SmartbrainExtractionStartedPayload {
@@ -772,6 +782,21 @@ export function useTauriEvents() {
           store.setCurrentGoalForThread(threadId, null);
         }),
 
+        listen<BrowserNavigationChangedPayload>("browser-navigation-changed", (e) => {
+          const nextUrl = typeof e.payload.url === "string" ? e.payload.url.trim() : "";
+          const nextTitle = typeof e.payload.title === "string" ? e.payload.title : "";
+          useAppStore.getState().setBrowserPanelState({
+            ...(nextUrl ? { url: nextUrl } : {}),
+            title: nextTitle,
+            ...(typeof e.payload.canGoBack === "boolean"
+              ? { canGoBack: e.payload.canGoBack }
+              : {}),
+            ...(typeof e.payload.canGoForward === "boolean"
+              ? { canGoForward: e.payload.canGoForward }
+              : {}),
+          });
+        }),
+
         listen<{
           threadId: string;
           calls: Array<{ id: string; name: string; arguments: string }>;
@@ -818,10 +843,14 @@ export function useTauriEvents() {
                 url,
                 title: null,
                 status: "running",
+                canGoBack: false,
+                canGoForward: false,
               });
             } catch {
               latestStore.setBrowserPanelState({
                 status: "running",
+                canGoBack: false,
+                canGoForward: false,
               });
             }
             latestStore.setBrowserActive(true);

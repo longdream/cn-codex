@@ -9,7 +9,6 @@ import { IntegrationPanel } from "./IntegrationPanel";
 import { PluginsPanel } from "./PluginsPanel";
 import { SkillsPanel } from "./SkillsPanel";
 import { SkillLabPanel } from "./SkillLabPanel";
-import { HooksPanel } from "./HooksPanel";
 import { RobotsPanel } from "./RobotsPanel";
 import { WorkflowsPanel } from "./WorkflowsPanel";
 import { UsageDashboard } from "./UsageDashboard";
@@ -20,7 +19,7 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "general" | "provider" | "image" | "usage" | "integration" | "plugins" | "skills" | "skill-lab" | "robots" | "workflows" | "hooks" | "experience" | "knowledge" | "rules";
+type SettingsTab = "provider" | "image" | "usage" | "integration" | "plugins" | "skills" | "skill-lab" | "robots" | "workflows" | "experience" | "knowledge" | "rules" | "general";
 
 function displayFileName(path: string): string {
   const normalized = path.replace(/\\/g, "/");
@@ -214,11 +213,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const tabs: Array<{ id: SettingsTab; label: string; detail: string }> = [
     {
-      id: "general",
-      label: intl.formatMessage({ id: "common.settings" }),
-      detail: intl.formatMessage({ id: "settings.general.description" }),
-    },
-    {
       id: "provider",
       label: intl.formatMessage({ id: "settings.provider" }),
       detail: intl.formatMessage({ id: "settings.provider.description" }),
@@ -264,11 +258,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       detail: intl.formatMessage({ id: "settings.workflows.description" }),
     },
     {
-      id: "hooks",
-      label: intl.formatMessage({ id: "settings.hooks" }),
-      detail: intl.formatMessage({ id: "settings.hooks.description" }),
-    },
-    {
       id: "experience",
       label: intl.formatMessage({ id: "settings.experience" }),
       detail: intl.formatMessage({ id: "settings.experience.description" }),
@@ -282,6 +271,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       id: "rules",
       label: intl.formatMessage({ id: "settings.rules" }),
       detail: intl.formatMessage({ id: "settings.rules.description" }),
+    },
+    {
+      id: "general",
+      label: intl.formatMessage({ id: "common.settings" }),
+      detail: intl.formatMessage({ id: "settings.general.description" }),
     },
   ];
 
@@ -775,7 +769,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "skill-lab" && <SkillLabPanel />}
             {tab === "robots" && <RobotsPanel />}
             {tab === "workflows" && <WorkflowsPanel />}
-            {tab === "hooks" && <HooksPanel />}
             {tab === "experience" && <ExperiencePanel />}
             {tab === "knowledge" && <KnowledgePanel />}
             {tab === "rules" && (

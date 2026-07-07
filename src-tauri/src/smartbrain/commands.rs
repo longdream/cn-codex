@@ -130,13 +130,9 @@ pub async fn smartbrain_summarize_experiences(
         .build()
         .unwrap_or_default();
 
-    let stats = super::summarizer::run_summarize_merge(
-        &http,
-        &config,
-        &experiences_dir,
-        Some(&bm25_path),
-    )
-    .await;
+    let stats =
+        super::summarizer::run_summarize_merge(&http, &config, &experiences_dir, Some(&bm25_path))
+            .await;
 
     Ok(serde_json::json!({
         "status": if stats.success { "ok" } else { "error" },

@@ -252,9 +252,7 @@ fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     }
 
     // debug 模式只输出到 stderr
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
     None
 }
 
@@ -451,6 +449,8 @@ pub fn run() {
             commands::skill_lab_list,
             commands::skill_lab_read,
             commands::skill_lab_save,
+            commands::skill_lab_check_python_env,
+            commands::skill_lab_generate_from_goal,
             commands::skill_lab_update_result,
             commands::skill_lab_promote,
             commands::skill_lab_delete,
@@ -519,6 +519,10 @@ pub fn run() {
             commands::browser_poll_picked_element,
             commands::browser_apply_dom_edit,
             commands::browser_refresh_preview,
+            commands::browser_get_navigation_state,
+            commands::browser_go_back,
+            commands::browser_go_forward,
+            commands::browser_navigate_home,
             commands::window_open_document_detail,
             commands::window_close_document_detail,
             commands::window_get_document_detail_path,

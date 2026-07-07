@@ -50,6 +50,13 @@ export interface BrowserDomEditResult {
   livePreview: boolean;
 }
 
+export interface BrowserNavigationState {
+  url: string;
+  title: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
+
 export interface DocumentDetailWindowInfo {
   label: string;
   path: string;
@@ -191,6 +198,22 @@ export async function browserApplyDomEdit(
 
 export async function browserRefreshPreview(): Promise<string> {
   return invoke<string>("browser_refresh_preview");
+}
+
+export async function browserGoBack(): Promise<BrowserNavigationState> {
+  return invoke<BrowserNavigationState>("browser_go_back");
+}
+
+export async function browserGoForward(): Promise<BrowserNavigationState> {
+  return invoke<BrowserNavigationState>("browser_go_forward");
+}
+
+export async function browserNavigateHome(): Promise<BrowserNavigationState> {
+  return invoke<BrowserNavigationState>("browser_navigate_home");
+}
+
+export async function browserGetNavigationState(): Promise<BrowserNavigationState> {
+  return invoke<BrowserNavigationState>("browser_get_navigation_state");
 }
 
 export async function windowOpenDocumentDetail(

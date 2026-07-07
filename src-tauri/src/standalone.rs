@@ -141,26 +141,6 @@ async fn warmup_playwright_mcp_install(
     }
 }
 
-fn build_openai_fortune_payload(
-    model: &str,
-    prompt: &str,
-    with_json_mode: bool,
-) -> serde_json::Value {
-    let mut payload = serde_json::json!({
-        "model": model,
-        "messages": [
-            { "role": "system", "content": FORTUNE_SYSTEM_PROMPT },
-            { "role": "user", "content": prompt },
-        ],
-        "temperature": 0.2,
-        "max_tokens": 4096,
-    });
-    if with_json_mode {
-        payload["response_format"] = serde_json::json!({ "type": "json_object" });
-    }
-    payload
-}
-
 fn looks_like_json_mode_unsupported(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
     (lower.contains("response_format") && lower.contains("unsupported"))
@@ -387,6 +367,8 @@ async fn run_fortune_detail_stream(
     let adapter = adapter::get_adapter(&wire_api);
     let url = adapter.build_url(&base_url, &model);
     let headers = adapter.build_headers(&api_key);
+    let (url, headers) =
+        adapter::apply_request_overrides(url, headers, None, None).map_err(AppError::Custom)?;
     let messages = vec![
         InternalMessage {
             role: "system".to_string(),
@@ -1026,150 +1008,91 @@ pub async fn fortune_llm_call(
         .build()
         .map_err(|e| AppError::Custom(format!("Failed to create HTTP client: {e}")))?;
 
-    if wire_api == "anthropic" {
-        let url = {
-            let base = base_url.trim_end_matches('/');
-            if base.ends_with("/messages") {
-                base.to_string()
-            } else {
-                format!("{base}/messages")
-            }
-        };
-        info!("[fortune_llm_call] Anthropic POST {url}");
-        let resp = http
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&serde_json::json!({
-                "model": model,
-                "max_tokens": 2048,
-                "messages": [{ "role": "user", "content": prompt }],
-            }))
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::error!("[fortune_llm_call] Anthropic request failed: {e}");
-                AppError::Custom(format!("Anthropic request failed: {e}"))
-            })?;
-
-        let status = resp.status();
-        info!("[fortune_llm_call] Anthropic response status: {status}");
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            tracing::error!("[fortune_llm_call] Anthropic error {status}: {body}");
-            return Err(AppError::Custom(format!(
-                "Anthropic API error {status}: {body}"
-            )));
+    let adapter = adapter::get_adapter(&wire_api);
+    let url = adapter.build_url(&base_url, &model);
+    let headers = adapter.build_headers(&api_key);
+    let (url, headers) =
+        adapter::apply_request_overrides(url, headers, None, None).map_err(AppError::Custom)?;
+    let messages = vec![
+        InternalMessage {
+            role: "system".to_string(),
+            content: text_content(FORTUNE_SYSTEM_PROMPT),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+        InternalMessage {
+            role: "user".to_string(),
+            content: text_content(prompt.clone()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    ];
+    let mut body = adapter.build_body(&model, &messages, None, Some(4096));
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".to_string(), serde_json::Value::Bool(false));
+        if wire_api == "chat" {
+            obj.insert(
+                "response_format".to_string(),
+                serde_json::json!({ "type": "json_object" }),
+            );
         }
-
-        let data: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Custom(format!("Failed to parse Anthropic response: {e}")))?;
-        let text = data
-            .pointer("/content/0/text")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        info!("[fortune_llm_call] Anthropic response len={}", text.len());
-        return Ok(text);
     }
 
-    // OpenAI-compatible
-    let url = {
-        let base = base_url.trim_end_matches('/');
-        if base.ends_with("/chat/completions") {
-            base.to_string()
-        } else {
-            format!("{base}/chat/completions")
-        }
-    };
-    info!("[fortune_llm_call] OpenAI-compat POST {url}");
-
-    let mut req = http.post(&url).header("Content-Type", "application/json");
-    if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {api_key}"));
-    }
-    let payload_with_json_mode = build_openai_fortune_payload(&model, &prompt, true);
-    let mut resp = req
-        .json(&payload_with_json_mode)
+    let mut response = http
+        .post(&url)
+        .headers(headers.clone())
+        .json(&body)
         .send()
         .await
-        .map_err(|e| {
-            tracing::error!("[fortune_llm_call] LLM request failed: {e}");
-            AppError::Custom(format!("LLM request failed: {e}"))
-        })?;
+        .map_err(|e| AppError::Custom(format!("LLM request failed: {e}")))?;
 
-    let mut used_json_mode = true;
-    let mut status = resp.status();
-    info!("[fortune_llm_call] OpenAI-compat response status: {status}");
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        if looks_like_json_mode_unsupported(&body) {
+    let mut used_json_mode = wire_api == "chat";
+    if !response.status().is_success() {
+        let status = response.status();
+        let body_text = response.text().await.unwrap_or_default();
+        if wire_api == "chat" && looks_like_json_mode_unsupported(&body_text) {
             info!("[fortune_llm_call] response_format unsupported, retrying without json mode");
             used_json_mode = false;
-            let mut retry_req = http.post(&url).header("Content-Type", "application/json");
-            if !api_key.is_empty() {
-                retry_req = retry_req.header("Authorization", format!("Bearer {api_key}"));
+            let mut fallback_body = adapter.build_body(&model, &messages, None, Some(4096));
+            if let Some(obj) = fallback_body.as_object_mut() {
+                obj.insert("stream".to_string(), serde_json::Value::Bool(false));
             }
-            let payload_without_json_mode = build_openai_fortune_payload(&model, &prompt, false);
-            resp = retry_req
-                .json(&payload_without_json_mode)
+            response = http
+                .post(&url)
+                .headers(headers)
+                .json(&fallback_body)
                 .send()
                 .await
-                .map_err(|e| {
-                    tracing::error!(
-                        "[fortune_llm_call] LLM request failed after json mode fallback: {e}"
-                    );
-                    AppError::Custom(format!("LLM request failed after fallback: {e}"))
-                })?;
-            status = resp.status();
-            info!("[fortune_llm_call] OpenAI-compat fallback response status: {status}");
-            if !status.is_success() {
-                let fallback_body = resp.text().await.unwrap_or_default();
-                tracing::error!("[fortune_llm_call] LLM fallback error {status}: {fallback_body}");
+                .map_err(|e| AppError::Custom(format!("LLM fallback request failed: {e}")))?;
+            if !response.status().is_success() {
+                let fallback_status = response.status();
+                let fallback_text = response.text().await.unwrap_or_default();
                 return Err(AppError::Custom(format!(
-                    "LLM API error {status}: {fallback_body}"
+                    "LLM API error {fallback_status}: {fallback_text}"
                 )));
             }
         } else {
-            tracing::error!("[fortune_llm_call] LLM error {status}: {body}");
-            return Err(AppError::Custom(format!("LLM API error {status}: {body}")));
+            return Err(AppError::Custom(format!(
+                "LLM API error {status}: {body_text}"
+            )));
         }
     }
 
-    let raw_body = resp
+    let raw_body = response
         .text()
         .await
         .map_err(|e| AppError::Custom(format!("Failed to read LLM response body: {e}")))?;
-    let data: serde_json::Value = serde_json::from_str(&raw_body)
-        .map_err(|e| AppError::Custom(format!("Failed to parse LLM response JSON: {e}")))?;
-
-    let message = data.pointer("/choices/0/message");
-    let content = extract_openai_message_content_text(message);
-    let reasoning_len = message
-        .and_then(|m| m.get("reasoning_content"))
-        .and_then(|v| v.as_str())
-        .map(|text| text.len())
-        .unwrap_or(0);
-
+    let content = extract_non_streaming_fortune_text(&raw_body)?;
     if content.trim().is_empty() {
-        let finish_reason = data
-            .pointer("/choices/0/finish_reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        tracing::error!(
-            "[fortune_llm_call] Empty assistant content. finish_reason={finish_reason}, reasoning_len={reasoning_len}"
-        );
-        return Err(AppError::Custom(format!(
-            "LLM returned empty assistant content (finish_reason={finish_reason})"
-        )));
+        return Err(AppError::Custom(
+            "LLM returned empty assistant content".to_string(),
+        ));
     }
-
     info!(
-        "[fortune_llm_call] OpenAI-compat response len={}, json_mode={used_json_mode}, reasoning_len={reasoning_len}",
-        content.len()
+        "[fortune_llm_call] response len={}, json_mode={used_json_mode}",
+        content.len(),
     );
     Ok(content)
 }
@@ -1241,9 +1164,7 @@ pub async fn test_model_connection(
     model: String,
     wire_api: String,
 ) -> AppResult<serde_json::Value> {
-    info!(
-        "[test_model] base_url={base_url}, model={model}, wire_api={wire_api}"
-    );
+    info!("[test_model] base_url={base_url}, model={model}, wire_api={wire_api}");
 
     let http = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
@@ -1252,81 +1173,27 @@ pub async fn test_model_connection(
         .map_err(|e| AppError::Custom(format!("HTTP client error: {e}")))?;
 
     let start = std::time::Instant::now();
-
-    if wire_api == "anthropic" {
-        let url = {
-            let base = base_url.trim_end_matches('/');
-            if base.ends_with("/messages") {
-                base.to_string()
-            } else {
-                format!("{base}/messages")
-            }
-        };
-        let resp = http
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&serde_json::json!({
-                "model": model,
-                "max_tokens": 20,
-                "messages": [{ "role": "user", "content": "Say hi" }],
-            }))
-            .send()
-            .await
-            .map_err(|e| AppError::Custom(format!("Request failed: {e}")))?;
-
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        let status_code = resp.status().as_u16();
-        if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Ok(serde_json::json!({
-                "success": false,
-                "statusCode": status_code,
-                "error": body,
-                "latencyMs": elapsed_ms,
-            }));
-        }
-        let data: serde_json::Value = resp.json().await.unwrap_or_default();
-        let output_tokens = data
-            .pointer("/usage/output_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let tokens_per_sec = if elapsed_ms > 0 && output_tokens > 0 {
-            (output_tokens as f64) / (elapsed_ms as f64 / 1000.0)
-        } else {
-            0.0
-        };
-        return Ok(serde_json::json!({
-            "success": true,
-            "statusCode": status_code,
-            "latencyMs": elapsed_ms,
-            "outputTokens": output_tokens,
-            "tokensPerSec": (tokens_per_sec * 10.0).round() / 10.0,
-        }));
+    let adapter = adapter::get_adapter(&wire_api);
+    let url = adapter.build_url(&base_url, &model);
+    let headers = adapter.build_headers(&api_key);
+    let (url, headers) =
+        adapter::apply_request_overrides(url, headers, None, None).map_err(AppError::Custom)?;
+    let messages = vec![InternalMessage {
+        role: "user".to_string(),
+        content: text_content("Say hi"),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    }];
+    let mut body = adapter.build_body(&model, &messages, None, Some(20));
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".to_string(), serde_json::Value::Bool(false));
     }
 
-    // OpenAI-compatible (chat / responses / gemini)
-    let url = {
-        let base = base_url.trim_end_matches('/');
-        if base.ends_with("/chat/completions") {
-            base.to_string()
-        } else {
-            format!("{base}/chat/completions")
-        }
-    };
-
-    let mut req = http.post(&url).header("Content-Type", "application/json");
-    if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {api_key}"));
-    }
-
-    let resp = req
-        .json(&serde_json::json!({
-            "model": model,
-            "max_tokens": 20,
-            "messages": [{ "role": "user", "content": "Say hi" }],
-        }))
+    let resp = http
+        .post(&url)
+        .headers(headers)
+        .json(&body)
         .send()
         .await
         .map_err(|e| AppError::Custom(format!("Request failed: {e}")))?;
@@ -1343,11 +1210,17 @@ pub async fn test_model_connection(
         }));
     }
 
-    let data: serde_json::Value = resp.json().await.unwrap_or_default();
-    let output_tokens = data
-        .pointer("/usage/completion_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let raw_body = resp.text().await.unwrap_or_default();
+    let data: serde_json::Value = serde_json::from_str(&raw_body).unwrap_or_default();
+    let output_tokens = [
+        "/usage/completion_tokens",
+        "/usage/output_tokens",
+        "/response/usage/output_tokens",
+        "/usageMetadata/candidatesTokenCount",
+    ]
+    .iter()
+    .find_map(|ptr| data.pointer(ptr).and_then(|v| v.as_u64()))
+    .unwrap_or(0);
     let tokens_per_sec = if elapsed_ms > 0 && output_tokens > 0 {
         (output_tokens as f64) / (elapsed_ms as f64 / 1000.0)
     } else {

@@ -240,8 +240,7 @@ pub fn build_summarize_merge_messages(
     raw_experiences: &[(String, String, u32)],
     target_count: usize,
 ) -> Vec<(String, String)> {
-    let system =
-        SUMMARIZE_MERGE_SYSTEM_PROMPT.replace("{target_count}", &target_count.to_string());
+    let system = SUMMARIZE_MERGE_SYSTEM_PROMPT.replace("{target_count}", &target_count.to_string());
 
     let mut user_content = String::from(
         "Here are the raw experience notes to categorize and merge. Each entry includes the thread ID, usage count, and content:\n\n",
@@ -556,7 +555,10 @@ Some preamble text.
         assert!(parsed.organized_markdown.contains("API Reference"));
         assert!(parsed.hierarchy.is_some());
         assert_eq!(
-            parsed.metadata.as_ref().and_then(|meta| meta.title.as_deref()),
+            parsed
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.title.as_deref()),
             Some("API Guide")
         );
         assert_eq!(

@@ -228,6 +228,8 @@ impl AgentEngine {
                 &model,
                 &wire_api,
                 Some(&self.cancel_flag),
+                provider.query_params.as_ref(),
+                provider.http_headers.as_ref(),
             )
             .await?;
             return Ok(());
@@ -361,6 +363,8 @@ impl AgentEngine {
                 &model,
                 &wire_api,
                 Some(&self.cancel_flag),
+                provider.query_params.as_ref(),
+                provider.http_headers.as_ref(),
             )
             .await;
             if self.is_cancelled() {
@@ -665,6 +669,8 @@ impl AgentEngine {
                             &model,
                             &wire_api,
                             Some(&self.cancel_flag),
+                            provider.query_params.as_ref(),
+                            provider.http_headers.as_ref(),
                         )
                         .await;
                         if self.is_cancelled() {
@@ -795,6 +801,8 @@ impl AgentEngine {
                             config.max_output_tokens,
                             iteration,
                             turn_mode == "plan",
+                            provider.query_params.as_ref(),
+                            provider.http_headers.as_ref(),
                         )
                         .await;
 
@@ -1007,7 +1015,8 @@ impl AgentEngine {
                                 );
 
                                 // 通过 approval 通道等待用户回复或超时
-                                let request_id = crate::protocol::RequestId::String(wait_call_id.clone());
+                                let request_id =
+                                    crate::protocol::RequestId::String(wait_call_id.clone());
                                 app_handle
                                     .emit(
                                         "server-request",
@@ -1025,12 +1034,13 @@ impl AgentEngine {
                                     )
                                     .ok();
 
-                                let wait_result = crate::tool_executor::wait_for_approval_result_public(
-                                    app_handle,
-                                    &request_id,
-                                    ROBOT_WAIT_TIMEOUT_MS,
-                                )
-                                .await;
+                                let wait_result =
+                                    crate::tool_executor::wait_for_approval_result_public(
+                                        app_handle,
+                                        &request_id,
+                                        ROBOT_WAIT_TIMEOUT_MS,
+                                    )
+                                    .await;
 
                                 // 通知前端倒计时结束
                                 emit_and_broadcast(
@@ -1054,7 +1064,9 @@ impl AgentEngine {
 
                                         if reply_text.is_empty() {
                                             // resolve 但无有效文本，等同于跳过
-                                            info!("Robot wait resolved with empty reply, auto-continuing");
+                                            info!(
+                                                "Robot wait resolved with empty reply, auto-continuing"
+                                            );
                                             let auto_msg = ThreadMessage {
                                                 id: uuid::Uuid::new_v4().to_string(),
                                                 role: "system".to_string(),
@@ -1065,11 +1077,16 @@ impl AgentEngine {
                                                 tool_calls: None,
                                                 attachments: Vec::new(),
                                             };
-                                            self.thread_store.add_message(thread_id, auto_msg).await?;
+                                            self.thread_store
+                                                .add_message(thread_id, auto_msg)
+                                                .await?;
                                             continue;
                                         }
 
-                                        info!("User replied during robot wait: {} chars", reply_text.len());
+                                        info!(
+                                            "User replied during robot wait: {} chars",
+                                            reply_text.len()
+                                        );
                                         let user_msg = ThreadMessage {
                                             id: uuid::Uuid::new_v4().to_string(),
                                             role: "user".to_string(),
@@ -1085,7 +1102,9 @@ impl AgentEngine {
                                     }
                                     Err(_timeout_or_reject) => {
                                         // 超时无回复，注入系统消息自动继续
-                                        info!("Robot wait timed out, auto-continuing with existing info");
+                                        info!(
+                                            "Robot wait timed out, auto-continuing with existing info"
+                                        );
                                         let auto_continue_msg = ThreadMessage {
                                             id: uuid::Uuid::new_v4().to_string(),
                                             role: "system".to_string(),
@@ -1598,6 +1617,8 @@ impl AgentEngine {
                                     &model,
                                     &wire_api,
                                     Some(&self.cancel_flag),
+                                    provider.query_params.as_ref(),
+                                    provider.http_headers.as_ref(),
                                 )
                                 .await;
                                 info!(
@@ -1792,6 +1813,8 @@ impl AgentEngine {
                             config.max_output_tokens,
                             u32::MAX,
                             false,
+                            provider.query_params.as_ref(),
+                            provider.http_headers.as_ref(),
                         )
                         .await;
                     let summary_text = match summary_result {
@@ -2828,6 +2851,8 @@ impl AgentEngine {
                 active_model,
                 &image_attachments,
                 config.max_output_tokens,
+                fallback_provider.query_params.as_ref(),
+                fallback_provider.http_headers.as_ref(),
             )
             .await
         {
@@ -2869,10 +2894,15 @@ impl AgentEngine {
         active_model: &str,
         image_attachments: &[UserAttachment],
         max_tokens: Option<i64>,
+        query_params: Option<&std::collections::HashMap<String, String>>,
+        extra_headers: Option<&std::collections::HashMap<String, String>>,
     ) -> AppResult<String> {
         let adapter = adapter::get_adapter(wire_api);
         let url = adapter.build_url(base_url, model);
         let headers = adapter.build_headers(api_key);
+        let (url, headers) =
+            adapter::apply_request_overrides(url, headers, query_params, extra_headers)
+                .map_err(AppError::Custom)?;
         let image_list = image_attachments
             .iter()
             .enumerate()
@@ -2958,16 +2988,15 @@ impl AgentEngine {
                 let line = buffer[..line_end].trim().to_string();
                 buffer = buffer[line_end + 1..].to_string();
 
-                if line.is_empty() || !line.starts_with("data: ") {
+                if line.is_empty() {
                     continue;
                 }
 
-                let data = &line[6..];
-                if adapter.is_stream_done(data) {
+                if adapter.is_stream_done(&line) {
                     continue;
                 }
 
-                for event in adapter.parse_stream_line(data) {
+                for event in adapter.parse_stream_line(&line) {
                     if let StreamEvent::TextDelta(delta) = event {
                         result_text.push_str(&delta);
                     }
@@ -3101,12 +3130,17 @@ impl AgentEngine {
         max_tokens: Option<i64>,
         iteration: u32,
         plan_mode: bool,
+        query_params: Option<&std::collections::HashMap<String, String>>,
+        extra_headers: Option<&std::collections::HashMap<String, String>>,
     ) -> AppResult<CompletionResult> {
         // 根据 wire_api 选择 adapter
         let adapter = adapter::get_adapter(wire_api);
 
         let url = adapter.build_url(base_url, model);
         let headers = adapter.build_headers(api_key);
+        let (url, headers) =
+            adapter::apply_request_overrides(url, headers, query_params, extra_headers)
+                .map_err(AppError::Custom)?;
         let tools_slice = tools.as_deref();
         let body = adapter.build_body(model, &messages, tools_slice, max_tokens);
 
@@ -4137,7 +4171,9 @@ fn add_turn_usage(total: &mut TurnUsage, usage: &UsageInfo) {
     total.cache_creation_tokens = total
         .cache_creation_tokens
         .saturating_add(usage.cache_creation_tokens);
-    total.reasoning_tokens = total.reasoning_tokens.saturating_add(usage.reasoning_tokens);
+    total.reasoning_tokens = total
+        .reasoning_tokens
+        .saturating_add(usage.reasoning_tokens);
     total.total_tokens = if usage.total_tokens > 0 {
         total.total_tokens.saturating_add(usage.total_tokens)
     } else {
@@ -4262,37 +4298,51 @@ fn build_smartbrain_recall_context(
     }
 
     if !result.is_chunk {
-        return Some(truncate_chars_with_marker(&current_lines.join("\n"), max_chars));
+        return Some(truncate_chars_with_marker(
+            &current_lines.join("\n"),
+            max_chars,
+        ));
     }
 
     let parent_doc_id = result.parent_doc_id.as_deref()?.trim();
     if parent_doc_id.is_empty() {
-        return Some(truncate_chars_with_marker(&current_lines.join("\n"), max_chars));
+        return Some(truncate_chars_with_marker(
+            &current_lines.join("\n"),
+            max_chars,
+        ));
     }
     let chunk_index = result.chunk_index?;
     let chunk_total = result.chunk_total.unwrap_or(chunk_index).max(chunk_index);
     let docs_dir = memories_dir.join("knowledge").join("docs");
     let previous_lines = if chunk_index > 1 {
-        let previous_file = crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index - 1);
+        let previous_file =
+            crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index - 1);
         read_okf_body_lines_for_recall(&docs_dir.join(previous_file))
     } else {
         None
     };
     let next_lines = if chunk_index < chunk_total {
-        let next_file = crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index + 1);
+        let next_file =
+            crate::smartbrain::knowledge::chunk_file_name(parent_doc_id, chunk_index + 1);
         read_okf_body_lines_for_recall(&docs_dir.join(next_file))
     } else {
         None
     };
 
     if previous_lines.is_none() && next_lines.is_none() {
-        return Some(truncate_chars_with_marker(&current_lines.join("\n"), max_chars));
+        return Some(truncate_chars_with_marker(
+            &current_lines.join("\n"),
+            max_chars,
+        ));
     }
 
     let mut sections = Vec::new();
     if let Some(prev) = previous_lines {
         let mut prev_bridge = Vec::new();
-        prev_bridge.push(format!("Previous chunk {} tail:", chunk_index.saturating_sub(1)));
+        prev_bridge.push(format!(
+            "Previous chunk {} tail:",
+            chunk_index.saturating_sub(1)
+        ));
         prev_bridge.extend(take_last_lines_for_recall(&prev, overlap_lines));
         prev_bridge.push(format!(
             "Overlap with current chunk {} head ({} lines):",

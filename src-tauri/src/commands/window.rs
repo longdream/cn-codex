@@ -23,6 +23,8 @@ const BROWSER_DEBUG_PORT: u16 = 9242;
 const BROWSER_ENDPOINT_FILE: &str = "visible-browser.json";
 const BROWSER_DETACHED_CHANGED_EVENT: &str = "browser-detached-changed";
 const BROWSER_POPUP_CLOSED_EVENT: &str = "browser-popup-closed";
+const BROWSER_NAVIGATION_CHANGED_EVENT: &str = "browser-navigation-changed";
+const BROWSER_POPUP_WEBVIEW_TOP_GAP: f64 = 38.0;
 const DOCUMENT_DETAIL_WINDOW_LABEL: &str = "document-detail";
 const DOCUMENT_DETAIL_OPEN_EVENT: &str = "document-detail-open";
 const DOCUMENT_DETAIL_INSERT_EVENT: &str = "document-detail-insert-snippet";
@@ -128,6 +130,15 @@ struct BrowserDetachedChangedEvent {
     url: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserNavigationState {
+    pub url: String,
+    pub title: String,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteTabInfo {
@@ -194,6 +205,9 @@ pub async fn window_open_browser(
     workspace_root: Option<String>,
 ) -> AppResult<BrowserWindowInfo> {
     if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
+        if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
+            webview.close()?;
+        }
         window.close()?;
         emit_browser_detached_state(&app, false, None);
     }
@@ -218,6 +232,7 @@ pub async fn window_open_browser(
         let mut guard = state.browser_active_root.write().await;
         *guard = normalize_workspace_root_hint(workspace_root);
     }
+    let _ = emit_browser_navigation_state(&app, &state, Some(info.url.as_str())).await;
     Ok(info)
 }
 
@@ -244,35 +259,29 @@ pub async fn window_navigate_browser(
     workspace_root: Option<String>,
 ) -> AppResult<()> {
     let browser_url = normalize_browser_url(Some(&url))?;
-    let mut navigated = false;
     if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
         webview.navigate(browser_url.clone())?;
-        navigated = true;
-    } else if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
-        window.navigate(browser_url.clone())?;
-        navigated = true;
+    } else {
+        return Err(AppError::Custom(
+            "Browser panel is not active. Open the browser tab first.".to_string(),
+        ));
     }
-    if navigated {
-        let url = browser_url.as_str().to_string();
-        let info = BrowserWindowInfo {
-            label: if app.get_webview(BROWSER_WEBVIEW_LABEL).is_some() {
-                BROWSER_WEBVIEW_LABEL.to_string()
-            } else {
-                BROWSER_POPUP_WINDOW_LABEL.to_string()
-            },
-            url: url.clone(),
-            created: false,
-            debug_port: BROWSER_DEBUG_PORT,
-            cdp_endpoint: browser_cdp_endpoint(),
-        };
-        write_browser_endpoint_metadata(&state.workspace_config_dir, &info)?;
-        let mut guard = state.browser_last_url.write().await;
-        *guard = Some(url);
-    }
+    let url = browser_url.as_str().to_string();
+    let info = BrowserWindowInfo {
+        label: BROWSER_WEBVIEW_LABEL.to_string(),
+        url: url.clone(),
+        created: false,
+        debug_port: BROWSER_DEBUG_PORT,
+        cdp_endpoint: browser_cdp_endpoint(),
+    };
+    write_browser_endpoint_metadata(&state.workspace_config_dir, &info)?;
+    let mut guard = state.browser_last_url.write().await;
+    *guard = Some(url.clone());
     if workspace_root.is_some() {
         let mut guard = state.browser_active_root.write().await;
         *guard = normalize_workspace_root_hint(workspace_root);
     }
+    let _ = emit_browser_navigation_state(&app, &state, Some(url.as_str())).await;
     Ok(())
 }
 
@@ -320,6 +329,7 @@ pub async fn window_detach_browser(
         let mut guard = state.browser_last_url.write().await;
         *guard = Some(info.url.clone());
     }
+    let _ = emit_browser_navigation_state(&app, &state, Some(info.url.as_str())).await;
     emit_browser_detached_state(&app, true, Some(info.url.clone()));
     Ok(info)
 }
@@ -337,6 +347,9 @@ pub async fn window_attach_browser(
 ) -> AppResult<BrowserWindowInfo> {
     if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
         window.close()?;
+    }
+    if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
+        webview.close()?;
     }
 
     let resolved_url = if let Some(value) = url
@@ -366,6 +379,7 @@ pub async fn window_attach_browser(
         let mut guard = state.browser_active_root.write().await;
         *guard = normalize_workspace_root_hint(workspace_root);
     }
+    let _ = emit_browser_navigation_state(&app, &state, Some(info.url.as_str())).await;
     emit_browser_detached_state(&app, false, Some(info.url.clone()));
     Ok(info)
 }
@@ -560,7 +574,10 @@ pub async fn browser_apply_dom_edit(
 }
 
 #[tauri::command]
-pub async fn browser_refresh_preview(app: AppHandle) -> AppResult<String> {
+pub async fn browser_refresh_preview(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<String> {
     ensure_browser_webview(&app)?;
     let mode = evaluate_browser_script(
         r#"
@@ -579,21 +596,95 @@ pub async fn browser_refresh_preview(app: AppHandle) -> AppResult<String> {
     )
     .await;
     if let Ok(mode) = mode {
+        let _ = emit_browser_navigation_state(&app, &state, None).await;
         return Ok(mode.as_str().unwrap_or("reload").to_string());
     }
 
-    if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
-        window.eval("window.location.reload();")?;
-        return Ok("reload".to_string());
-    }
     if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
         webview.eval("window.location.reload();")?;
+        let _ = emit_browser_navigation_state(&app, &state, None).await;
         return Ok("reload".to_string());
     }
 
     Err(AppError::Custom(
         "No browser target available for preview refresh.".to_string(),
     ))
+}
+
+#[tauri::command]
+pub async fn browser_get_navigation_state(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<BrowserNavigationState> {
+    ensure_browser_webview(&app)?;
+    emit_browser_navigation_state(&app, &state, None).await
+}
+
+#[tauri::command]
+pub async fn browser_go_back(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<BrowserNavigationState> {
+    ensure_browser_webview(&app)?;
+    evaluate_browser_script(
+        r#"
+        (() => {
+            history.back();
+            return true;
+        })()
+        "#,
+        true,
+        None,
+    )
+    .await?;
+    sleep(Duration::from_millis(120)).await;
+    emit_browser_navigation_state(&app, &state, None).await
+}
+
+#[tauri::command]
+pub async fn browser_go_forward(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<BrowserNavigationState> {
+    ensure_browser_webview(&app)?;
+    evaluate_browser_script(
+        r#"
+        (() => {
+            history.forward();
+            return true;
+        })()
+        "#,
+        true,
+        None,
+    )
+    .await?;
+    sleep(Duration::from_millis(120)).await;
+    emit_browser_navigation_state(&app, &state, None).await
+}
+
+#[tauri::command]
+pub async fn browser_navigate_home(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<BrowserNavigationState> {
+    ensure_browser_webview(&app)?;
+    let browser_url = normalize_browser_url(Some("about:blank"))?;
+    if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
+        webview.navigate(browser_url.clone())?;
+    }
+    let url = browser_url.as_str().to_string();
+    let info = BrowserWindowInfo {
+        label: BROWSER_WEBVIEW_LABEL.to_string(),
+        url: url.clone(),
+        created: false,
+        debug_port: BROWSER_DEBUG_PORT,
+        cdp_endpoint: browser_cdp_endpoint(),
+    };
+    write_browser_endpoint_metadata(&state.workspace_config_dir, &info)?;
+    let mut guard = state.browser_last_url.write().await;
+    *guard = Some(url);
+    sleep(Duration::from_millis(120)).await;
+    emit_browser_navigation_state(&app, &state, Some(info.url.as_str())).await
 }
 
 #[tauri::command]
@@ -807,6 +898,19 @@ pub fn open_browser_embedded(
     width: f64,
     height: f64,
 ) -> AppResult<BrowserWindowInfo> {
+    open_browser_in_window(app, workspace_config_dir, "main", url, x, y, width, height)
+}
+
+fn open_browser_in_window(
+    app: &AppHandle,
+    workspace_config_dir: &Path,
+    parent_window_label: &str,
+    url: Option<&str>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> AppResult<BrowserWindowInfo> {
     let should_navigate_existing = url.is_some_and(|value| !value.trim().is_empty());
     let browser_url = normalize_browser_url(url)?;
     let url_string = browser_url.as_str().to_string();
@@ -832,9 +936,11 @@ pub fn open_browser_embedded(
     let browser_dir = workspace_config_dir.join("browser");
     fs::create_dir_all(&browser_dir)?;
 
-    let main_window = app
-        .get_window("main")
-        .ok_or_else(|| AppError::Custom("Main window not found".to_string()))?;
+    let host_window = app.get_window(parent_window_label).ok_or_else(|| {
+        AppError::Custom(format!(
+            "Browser host window '{parent_window_label}' not found"
+        ))
+    })?;
 
     let webview_builder =
         WebviewBuilder::new(BROWSER_WEBVIEW_LABEL, WebviewUrl::External(browser_url))
@@ -842,7 +948,7 @@ pub fn open_browser_embedded(
             .data_directory(browser_dir.join("webview-data"))
             .additional_browser_args(&browser_additional_args());
 
-    main_window.add_child(
+    host_window.add_child(
         webview_builder,
         LogicalPosition::new(x, y),
         LogicalSize::new(width, height),
@@ -875,72 +981,71 @@ fn open_browser_popup(
     width: f64,
     height: f64,
 ) -> AppResult<BrowserWindowInfo> {
-    let browser_url = normalize_browser_url(Some(url))?;
-    let url_string = browser_url.as_str().to_string();
-    let cdp_endpoint = browser_cdp_endpoint();
-
+    let mut popup_created = false;
     if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
-        window.navigate(browser_url.clone())?;
         window.set_size(LogicalSize::new(width, height))?;
         if !window.is_visible().unwrap_or(true) {
             window.show()?;
         }
         window.set_focus()?;
-        let info = BrowserWindowInfo {
-            label: BROWSER_POPUP_WINDOW_LABEL.to_string(),
-            url: url_string,
-            created: false,
-            debug_port: BROWSER_DEBUG_PORT,
-            cdp_endpoint,
-        };
-        write_browser_endpoint_metadata(workspace_config_dir, &info)?;
-        return Ok(info);
+    } else {
+        let popup =
+            WebviewWindowBuilder::new(app, BROWSER_POPUP_WINDOW_LABEL, browser_popup_window_url()?)
+                .title("Browser")
+                .inner_size(width, height)
+                .min_inner_size(640.0, 480.0)
+                .resizable(true)
+                .decorations(false)
+                .build()?;
+        popup.show()?;
+        popup.set_focus()?;
+        popup_created = true;
+
+        let app_handle = app.clone();
+        let last_url = browser_last_url.clone();
+        popup.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                let app_handle = app_handle.clone();
+                let last_url = last_url.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(webview) = app_handle.get_webview(BROWSER_WEBVIEW_LABEL) {
+                        let _ = webview.close();
+                    }
+                    let url = last_url.read().await.clone();
+                    let _ = app_handle.emit_to(
+                        "main",
+                        BROWSER_POPUP_CLOSED_EVENT,
+                        serde_json::json!({ "url": url }),
+                    );
+                    let _ = app_handle.emit_to(
+                        "main",
+                        BROWSER_DETACHED_CHANGED_EVENT,
+                        BrowserDetachedChangedEvent {
+                            detached: false,
+                            url,
+                        },
+                    );
+                });
+            }
+        });
     }
 
-    let popup = WebviewWindowBuilder::new(
+    let webview_info = open_browser_in_window(
         app,
+        workspace_config_dir,
         BROWSER_POPUP_WINDOW_LABEL,
-        WebviewUrl::External(browser_url),
-    )
-    .title("Browser")
-    .inner_size(width, height)
-    .min_inner_size(640.0, 480.0)
-    .resizable(true)
-    .build()?;
-    popup.show()?;
-    popup.set_focus()?;
-
-    let app_handle = app.clone();
-    let last_url = browser_last_url.clone();
-    popup.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed) {
-            let app_handle = app_handle.clone();
-            let last_url = last_url.clone();
-            tauri::async_runtime::spawn(async move {
-                let url = last_url.read().await.clone();
-                let _ = app_handle.emit_to(
-                    "main",
-                    BROWSER_POPUP_CLOSED_EVENT,
-                    serde_json::json!({ "url": url }),
-                );
-                let _ = app_handle.emit_to(
-                    "main",
-                    BROWSER_DETACHED_CHANGED_EVENT,
-                    BrowserDetachedChangedEvent {
-                        detached: false,
-                        url,
-                    },
-                );
-            });
-        }
-    });
-
+        Some(url),
+        0.0,
+        BROWSER_POPUP_WEBVIEW_TOP_GAP,
+        width.max(320.0),
+        (height - BROWSER_POPUP_WEBVIEW_TOP_GAP).max(180.0),
+    )?;
     let info = BrowserWindowInfo {
         label: BROWSER_POPUP_WINDOW_LABEL.to_string(),
-        url: url_string,
-        created: true,
-        debug_port: BROWSER_DEBUG_PORT,
-        cdp_endpoint,
+        url: webview_info.url.clone(),
+        created: popup_created || webview_info.created,
+        debug_port: webview_info.debug_port,
+        cdp_endpoint: webview_info.cdp_endpoint.clone(),
     };
     write_browser_endpoint_metadata(workspace_config_dir, &info)?;
     Ok(info)
@@ -965,9 +1070,7 @@ fn emit_browser_detached_state(app: &AppHandle, detached: bool, url: Option<Stri
 }
 
 fn ensure_browser_webview(app: &AppHandle) -> AppResult<()> {
-    if app.get_webview(BROWSER_WEBVIEW_LABEL).is_some()
-        || app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL).is_some()
-    {
+    if app.get_webview(BROWSER_WEBVIEW_LABEL).is_some() {
         return Ok(());
     }
     Err(AppError::Custom(
@@ -1313,6 +1416,131 @@ fn pick_mode_start_script() -> String {
 async fn current_browser_url() -> AppResult<String> {
     let value = evaluate_browser_script("(() => location.href || \"\")()", true, None).await?;
     Ok(value.as_str().unwrap_or("about:blank").to_string())
+}
+
+async fn read_browser_navigation_state(
+    preferred_url: Option<&str>,
+) -> AppResult<BrowserNavigationState> {
+    match read_browser_navigation_state_via_history(preferred_url).await {
+        Ok(state) => Ok(state),
+        Err(_) => read_browser_navigation_state_via_eval(preferred_url).await,
+    }
+}
+
+async fn read_browser_navigation_state_via_history(
+    preferred_url: Option<&str>,
+) -> AppResult<BrowserNavigationState> {
+    let cdp_endpoint = browser_cdp_endpoint();
+    let ws_url = browser_tab_websocket_url(&cdp_endpoint, preferred_url).await?;
+    let (mut stream, _) = connect_async(&ws_url)
+        .await
+        .map_err(|e| AppError::Custom(format!("CDP connect failed: {e}")))?;
+
+    cdp_send_command(&mut stream, 1, "Page.enable", json!({})).await?;
+    let response = cdp_send_command(&mut stream, 2, "Page.getNavigationHistory", json!({})).await?;
+    let history = response
+        .get("result")
+        .and_then(|value| value.get("result"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let entries = history
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return Err(AppError::Custom(
+            "Browser navigation history is empty.".to_string(),
+        ));
+    }
+
+    let current_index_raw = history
+        .get("currentIndex")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    let current_index = current_index_raw.max(0) as usize;
+    let selected_index = current_index.min(entries.len().saturating_sub(1));
+    let current_entry = entries.get(selected_index).cloned().unwrap_or_default();
+    let url = current_entry
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("about:blank")
+        .to_string();
+    let title = current_entry
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    Ok(BrowserNavigationState {
+        url,
+        title,
+        can_go_back: selected_index > 0,
+        can_go_forward: selected_index + 1 < entries.len(),
+    })
+}
+
+async fn read_browser_navigation_state_via_eval(
+    preferred_url: Option<&str>,
+) -> AppResult<BrowserNavigationState> {
+    let value = evaluate_browser_script(
+        r#"
+        (() => {
+            return {
+                url: location.href || "about:blank",
+                title: document.title || "",
+                canGoBack: Boolean(history.length > 1),
+                canGoForward: false,
+            };
+        })()
+        "#,
+        true,
+        preferred_url,
+    )
+    .await?;
+    let url = value
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("about:blank")
+        .trim()
+        .to_string();
+    let title = value
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let can_go_back = value
+        .get("canGoBack")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let can_go_forward = value
+        .get("canGoForward")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Ok(BrowserNavigationState {
+        url: if url.is_empty() {
+            "about:blank".to_string()
+        } else {
+            url
+        },
+        title,
+        can_go_back,
+        can_go_forward,
+    })
+}
+
+async fn emit_browser_navigation_state(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    preferred_url: Option<&str>,
+) -> AppResult<BrowserNavigationState> {
+    let navigation = read_browser_navigation_state(preferred_url).await?;
+    {
+        let mut guard = state.browser_last_url.write().await;
+        *guard = Some(navigation.url.clone());
+    }
+    let _ = app.emit(BROWSER_NAVIGATION_CHANGED_EVENT, navigation.clone());
+    Ok(navigation)
 }
 
 async fn evaluate_browser_script(
@@ -1774,6 +2002,25 @@ fn runsummary_diff_window_url() -> AppResult<WebviewUrl> {
     {
         // 生产构建使用打包后的 diff.html，避免主窗内弹层造成交互耦合。
         Ok(WebviewUrl::App("diff.html".into()))
+    }
+}
+
+fn browser_popup_window_url() -> AppResult<WebviewUrl> {
+    #[cfg(debug_assertions)]
+    {
+        let dev_url =
+            std::env::var("TAURI_DEV_URL").unwrap_or_else(|_| "http://localhost:1420".to_string());
+        let base = dev_url.trim().trim_end_matches('/');
+        let final_url = format!("{base}/browser.html");
+        let parsed = Url::parse(&final_url).map_err(|e| {
+            AppError::Custom(format!("Invalid browser popup dev url '{final_url}': {e}"))
+        })?;
+        return Ok(WebviewUrl::External(parsed));
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        Ok(WebviewUrl::App("browser.html".into()))
     }
 }
 

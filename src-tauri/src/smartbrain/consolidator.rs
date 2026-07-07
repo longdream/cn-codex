@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use futures_util::StreamExt;
@@ -37,9 +38,7 @@ pub async fn run_consolidation(
         .retain(|entry| raw_dir.join(format!("{}.md", entry.thread_id)).is_file());
     let removed_count = before_count.saturating_sub(index.entries.len());
     if removed_count > 0 {
-        info!(
-            "Experience consolidation cleaned {removed_count} stale entries from index"
-        );
+        info!("Experience consolidation cleaned {removed_count} stale entries from index");
         if let Err(e) = index.save(experiences_dir) {
             warn!("Failed to persist cleaned experience index: {e}");
         }
@@ -51,7 +50,10 @@ pub async fn run_consolidation(
 
     let (provider_id, provider) = config.resolve_provider();
     let mut model = config.resolve_model();
-    let (base_url, api_key, wire_api) = if !config.model_endpoints.is_empty() {
+    let (base_url, api_key, wire_api, query_params, extra_headers) = if !config
+        .model_endpoints
+        .is_empty()
+    {
         let idx = config.active_endpoint_index.unwrap_or(0);
         let ep = &config.model_endpoints[idx.min(config.model_endpoints.len() - 1)];
         let ep_wire_api = ep
@@ -71,6 +73,8 @@ pub async fn run_consolidation(
             ep.url.clone(),
             ep.api_key.clone().unwrap_or_default(),
             ep_wire_api.to_string(),
+            None,
+            None,
         )
     } else {
         let url = match provider.resolve_base_url() {
@@ -86,7 +90,13 @@ pub async fn run_consolidation(
             return;
         }
         let wire = provider.wire_api.as_deref().unwrap_or("chat").to_string();
-        (url, key, wire)
+        (
+            url,
+            key,
+            wire,
+            provider.query_params.clone(),
+            provider.http_headers.clone(),
+        )
     };
     if model.is_empty() {
         info!("Experience consolidation skipped: no model configured");
@@ -132,6 +142,8 @@ pub async fn run_consolidation(
         &raw_experiences,
         sb_config.summary_max_tokens,
         config.max_output_tokens,
+        query_params.as_ref(),
+        extra_headers.as_ref(),
     )
     .await
     {
@@ -196,6 +208,8 @@ async fn consolidate_via_llm(
     raw_experiences: &[(String, String, u32)],
     summary_max_tokens: usize,
     max_output_tokens: Option<i64>,
+    query_params: Option<&HashMap<String, String>>,
+    extra_headers: Option<&HashMap<String, String>>,
 ) -> Result<(String, String), String> {
     let prompt_messages =
         prompts::build_consolidation_messages(raw_experiences, summary_max_tokens);
@@ -213,6 +227,8 @@ async fn consolidate_via_llm(
     let adapter = adapter::get_adapter(wire_api);
     let url = adapter.build_url(base_url, model);
     let headers = adapter.build_headers(api_key);
+    let (url, headers) =
+        adapter::apply_request_overrides(url, headers, query_params, extra_headers)?;
     let body = adapter.build_body(model, &internal_messages, None, max_output_tokens);
 
     let response = http
@@ -241,16 +257,15 @@ async fn consolidate_via_llm(
             let line = buffer[..line_end].trim().to_string();
             buffer = buffer[line_end + 1..].to_string();
 
-            if line.is_empty() || !line.starts_with("data: ") {
+            if line.is_empty() {
                 continue;
             }
 
-            let data = &line[6..];
-            if adapter.is_stream_done(data) {
+            if adapter.is_stream_done(&line) {
                 break;
             }
 
-            for event in adapter.parse_stream_line(data) {
+            for event in adapter.parse_stream_line(&line) {
                 if let StreamEvent::TextDelta(delta) = event {
                     result_text.push_str(&delta);
                 }

@@ -130,9 +130,7 @@ fn summarize_thread_for_extraction(history: &[ThreadMessage]) -> String {
                 ""
             };
             let truncated = truncate_str(content, 400);
-            summary.push_str(&format!(
-                "[tool-result]{status_marker} {truncated}\n\n"
-            ));
+            summary.push_str(&format!("[tool-result]{status_marker} {truncated}\n\n"));
             continue;
         }
 

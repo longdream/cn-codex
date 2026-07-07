@@ -148,16 +148,26 @@ impl ProviderAdapter for GoogleAdapter {
     fn is_stream_done(&self, line: &str) -> bool {
         // Gemini 的 SSE 模式（alt=sse）：不使用 [DONE] 标志
         // 当包含 finishReason 时表示结束
-        line.contains("\"finishReason\"")
+        line.contains("\"finishReason\"") || line.trim() == "[DONE]"
     }
 
     fn parse_stream_line(&self, line: &str) -> Vec<StreamEvent> {
         let mut events = Vec::new();
 
-        let data = match line.strip_prefix("data: ") {
-            Some(d) => d.trim(),
-            None => return events,
+        let data = if let Some(d) = line.strip_prefix("data: ") {
+            d.trim()
+        } else if let Some(d) = line.strip_prefix("data:") {
+            d.trim()
+        } else {
+            line.trim()
         };
+
+        if data == "[DONE]" {
+            events.push(StreamEvent::Done {
+                finish_reason: Some("stop".to_string()),
+            });
+            return events;
+        }
 
         let parsed: serde_json::Value = match serde_json::from_str(data) {
             Ok(v) => v,
@@ -234,5 +244,18 @@ impl ProviderAdapter for GoogleAdapter {
         }
 
         events
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_stream_line_supports_non_prefixed_data() {
+        let adapter = GoogleAdapter;
+        let events =
+            adapter.parse_stream_line(r#"{"candidates":[{"content":{"parts":[{"text":"hey"}]}}]}"#);
+        assert!(!events.is_empty());
     }
 }

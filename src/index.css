@@ -897,6 +897,25 @@ textarea:focus {
   -webkit-user-select: none;
 }
 
+.browser-standalone-window,
+.browser-standalone-window * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.browser-standalone-window .browser-standalone-toolbar,
+.browser-standalone-window .browser-standalone-toolbar *,
+.browser-standalone-window .browser-standalone-window-drag,
+.browser-standalone-window .browser-standalone-window-drag * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.browser-standalone-window .browser-standalone-toolbar input {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .detail-code-editor-layer {
   position: relative;
   min-height: 0;

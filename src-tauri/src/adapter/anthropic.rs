@@ -149,15 +149,20 @@ impl ProviderAdapter for AnthropicAdapter {
 
     fn is_stream_done(&self, line: &str) -> bool {
         let trimmed = line.trim();
-        trimmed.contains("\"type\":\"message_stop\"") || trimmed == "event: message_stop"
+        trimmed.contains("\"type\":\"message_stop\"")
+            || trimmed == "event: message_stop"
+            || trimmed == "message_stop"
     }
 
     fn parse_stream_line(&self, line: &str) -> Vec<StreamEvent> {
         let mut events = Vec::new();
 
-        let data = match line.strip_prefix("data: ") {
-            Some(d) => d.trim(),
-            None => return events,
+        let data = if let Some(d) = line.strip_prefix("data: ") {
+            d.trim()
+        } else if let Some(d) = line.strip_prefix("data:") {
+            d.trim()
+        } else {
+            line.trim()
         };
 
         let parsed: serde_json::Value = match serde_json::from_str(data) {
@@ -295,5 +300,18 @@ impl ProviderAdapter for AnthropicAdapter {
         }
 
         events
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_stream_line_supports_non_prefixed_data() {
+        let adapter = AnthropicAdapter;
+        let events =
+            adapter.parse_stream_line(r#"{"type":"content_block_delta","delta":{"text":"hi"}}"#);
+        assert!(!events.is_empty());
     }
 }
