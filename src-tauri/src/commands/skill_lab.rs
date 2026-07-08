@@ -1577,7 +1577,8 @@ async fn call_ai_non_streaming(
         crate::adapter::apply_request_overrides(url, headers, query_params, extra_headers)
             .map_err(|e| format!("Request override error: {e}"))?;
     // ponytail: 非流式请求使用统一辅助函数，确保 stream=false 时移除 stream_options
-    let mut body = crate::adapter::build_non_stream_body(adapter, model, messages, None, max_tokens);
+    let mut body =
+        crate::adapter::build_non_stream_body(adapter, model, messages, None, max_tokens);
 
     let response = http
         .post(&url)

@@ -45,7 +45,7 @@ fn emit_and_broadcast(app_handle: &AppHandle, event: &str, payload: serde_json::
 /// - `max_bytes` 代表“最多保留多少字节”；
 /// - 若该字节位置落在多字节字符中间（例如中文），会向前回退到最近合法边界；
 /// - 仅用于日志/提示词截断，不改变原始字符串内容。
-fn truncate_utf8_by_bytes(value: &str, max_bytes: usize) -> &str {
+pub(crate) fn truncate_utf8_by_bytes(value: &str, max_bytes: usize) -> &str {
     if value.len() <= max_bytes {
         return value;
     }
@@ -65,8 +65,9 @@ use crate::hook_runtime::{
 use crate::ocr::{OcrImageInput, extract_text_from_data_urls};
 use crate::plugin_loader;
 use crate::robot_orchestrator::{
-    NodeProgressResult, RobotOrchestrator, build_robot_node_completion_nudge,
-    should_enable_robot_orchestration, strip_robot_node_done_marker,
+    NodeProgressResult, RobotOrchestrator, build_robot_model_history,
+    build_robot_node_completion_nudge, parse_robot_node_completion,
+    should_enable_robot_orchestration,
 };
 use crate::thread_store::{
     FileChange, ThreadGoal, ThreadGoalStatus, ThreadMessage, ThreadMessageAttachment,
@@ -689,6 +690,13 @@ impl AgentEngine {
                     iteration += 1;
 
                     let history = self.thread_store.get_thread_messages(thread_id).await;
+                    // 机器人编排分支：把历史裁剪为“原始用户目标 + 当前节点自身消息”，
+                    // 已完成上游节点的原始杂乱历史由 node_deliveries 以总结形式替代，保持上下文纯净。
+                    let model_history = if let Some(state) = robot_progress.as_ref() {
+                        build_robot_model_history(&history, state)
+                    } else {
+                        history
+                    };
                     let robot_overlay_prompt = if let Some(state) = robot_progress.as_ref() {
                         Some(robot_orchestrator.build_overlay_prompt(state)?)
                     } else {
@@ -711,7 +719,7 @@ impl AgentEngine {
                     };
                     let internal_messages = self.build_internal_messages(
                         config,
-                        &history,
+                        &model_history,
                         &effective_cwd,
                         &turn_mode,
                         robot_id,
@@ -834,11 +842,14 @@ impl AgentEngine {
                                     recorder.record(&provider_id, &model, thread_id, u);
                                 }
                             }
-                            let (cleaned_text, node_done_signal) = if robot_progress.is_some() {
-                                strip_robot_node_done_marker(text)
-                            } else {
-                                (text.clone(), false)
-                            };
+                            let (cleaned_text, node_done_signal, node_delivery_summary) =
+                                if robot_progress.is_some() {
+                                    let (cleaned, done, summary) =
+                                        parse_robot_node_completion(text);
+                                    (cleaned, done, summary)
+                                } else {
+                                    (text.clone(), false, None)
+                                };
 
                             if cleaned_text.is_empty() && iteration > 0 {
                                 info!("Empty message after tool execution, sending minimal signal");
@@ -1192,6 +1203,7 @@ impl AgentEngine {
                                         thread_id,
                                         progress_snapshot,
                                         node_done_signal,
+                                        node_delivery_summary,
                                     )
                                     .await?
                                 {
@@ -1211,9 +1223,22 @@ impl AgentEngine {
                                         continue;
                                     }
                                     NodeProgressResult::Advanced { state, nudge } => {
-                                        robot_progress = Some(state);
+                                        // 将推进后的 nudge 消息 id 记为“当前节点起点边界”，
+                                        // 用于后续把上游节点的原始杂乱历史从模型上下文裁剪掉，
+                                        // 仅保留原始用户目标 + 当前节点自身消息（含其交付总结）。
+                                        let boundary_id = uuid::Uuid::new_v4().to_string();
+                                        let mut advanced_state = state;
+                                        advanced_state.current_node_start_message_id =
+                                            Some(boundary_id.clone());
+                                        self.thread_store
+                                            .set_thread_robot_state(
+                                                thread_id,
+                                                advanced_state.clone(),
+                                            )
+                                            .await?;
+                                        robot_progress = Some(advanced_state);
                                         let msg = ThreadMessage {
-                                            id: uuid::Uuid::new_v4().to_string(),
+                                            id: boundary_id,
                                             role: "system".to_string(),
                                             content: nudge,
                                             timestamp: now_secs(),
@@ -1769,6 +1794,11 @@ impl AgentEngine {
                         .await?;
 
                     let history = self.thread_store.get_thread_messages(thread_id).await;
+                    let model_history = if let Some(state) = robot_progress.as_ref() {
+                        build_robot_model_history(&history, state)
+                    } else {
+                        history
+                    };
                     let robot_overlay_prompt = if let Some(state) = robot_progress.as_ref() {
                         Some(robot_orchestrator.build_overlay_prompt(state)?)
                     } else {
@@ -1791,7 +1821,7 @@ impl AgentEngine {
                     };
                     let internal_messages = self.build_internal_messages(
                         config,
-                        &history,
+                        &model_history,
                         &effective_cwd,
                         &turn_mode,
                         robot_id,

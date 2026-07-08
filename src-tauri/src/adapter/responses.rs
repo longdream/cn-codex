@@ -213,19 +213,6 @@ impl ProviderAdapter for ResponsesAdapter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_stream_line_supports_non_prefixed_data() {
-        let adapter = ResponsesAdapter;
-        let events =
-            adapter.parse_stream_line(r#"{"type":"response.output_text.delta","delta":"hello"}"#);
-        assert!(!events.is_empty());
-    }
-}
-
 fn responses_input_items_from_message(msg: &InternalMessage) -> Vec<serde_json::Value> {
     if msg.role == "system" {
         return vec![serde_json::json!({
@@ -433,6 +420,14 @@ fn tool_call_delta_event(
 mod tests {
     use super::*;
     use crate::adapter::types::{InternalFunctionCall, InternalToolCall, text_content};
+
+    #[test]
+    fn parse_stream_line_supports_non_prefixed_data() {
+        let adapter = ResponsesAdapter;
+        let events =
+            adapter.parse_stream_line(r#"{"type":"response.output_text.delta","delta":"hello"}"#);
+        assert!(!events.is_empty());
+    }
 
     #[test]
     fn responses_body_converts_apply_patch_to_custom_tool() {

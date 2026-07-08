@@ -87,6 +87,14 @@ pub struct ThreadRobotState {
     /// 固定顺序实例化后的节点目标队列（每个元素都作为真实 goal objective 使用）。
     #[serde(default)]
     pub runtime_nodes: Vec<String>,
+    /// 各已完成节点交付给下游节点的纯净总结（按完成顺序累计）。
+    /// 用于在下个节点以“总结”替代上游节点的原始杂乱历史，保持上下文纯净。
+    #[serde(default)]
+    pub node_deliveries: Vec<String>,
+    /// 当前节点起始消息 id，用于模型上下文裁剪：仅保留当前节点自身消息与原始用户目标。
+    /// 为 None 时（首个节点/未初始化）由 agent 层按首个用户消息 id 填充。
+    #[serde(default)]
+    pub current_node_start_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1337,6 +1345,8 @@ mod tests {
                             "阶段 2：执行变更".to_string(),
                             "阶段 3：验证并总结".to_string(),
                         ],
+                        node_deliveries: vec![],
+                        current_node_start_message_id: None,
                     },
                 )
                 .await
@@ -1353,6 +1363,8 @@ mod tests {
                         "阶段 2：执行变更".to_string(),
                         "阶段 3：验证并总结".to_string(),
                     ],
+                    node_deliveries: vec![],
+                    current_node_start_message_id: None,
                 })
             );
             thread.id
@@ -1375,6 +1387,8 @@ mod tests {
                     "阶段 2：执行变更".to_string(),
                     "阶段 3：验证并总结".to_string(),
                 ],
+                node_deliveries: vec![],
+                current_node_start_message_id: None,
             })
         );
 
