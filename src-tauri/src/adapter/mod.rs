@@ -51,6 +51,32 @@ pub fn get_adapter(wire_api: &str) -> Box<dyn ProviderAdapter> {
     }
 }
 
+/// 构建"非流式"请求 body。
+///
+/// 部分 adapter 的 `build_body` 会无条件写入 `stream: true` 与
+/// `stream_options`（如 OpenAI Chat Completions 的 `include_usage`）。
+/// 当以非流式方式（`stream: false`）调用时，某些严格校验的网关/API
+/// （如 NVIDIA `integrate.api.nvidia.com`）会拒绝同时出现 `stream_options`，
+/// 返回 400：`The 'stream_options' field is only allowed when 'stream' is set to true.`
+///
+/// 因此这里集中处理：在 `build_body` 基础上把 `stream` 设为 `false`，
+/// 并移除 `stream_options`。对不写该字段的 adapter（anthropic/responses/gemini）
+/// 而言 `remove` 是 no-op，安全无副作用。
+pub fn build_non_stream_body(
+    adapter: &dyn ProviderAdapter,
+    model: &str,
+    messages: &[InternalMessage],
+    tools: Option<&[serde_json::Value]>,
+    max_tokens: Option<i64>,
+) -> serde_json::Value {
+    let mut body = adapter.build_body(model, messages, tools, max_tokens);
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".to_string(), serde_json::Value::Bool(false));
+        obj.remove("stream_options");
+    }
+    body
+}
+
 /// 合并 provider 级别的 query/header 覆盖项（用于网关白名单、反抓取 header 等场景）
 pub fn apply_request_overrides(
     url: String,

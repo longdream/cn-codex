@@ -1576,12 +1576,8 @@ async fn call_ai_non_streaming(
     let (url, headers) =
         crate::adapter::apply_request_overrides(url, headers, query_params, extra_headers)
             .map_err(|e| format!("Request override error: {e}"))?;
-    // ponytail: 非流式请求设 stream=false 但部分 adapter 的 build_body
-    // 默认会设 stream=true，这里构建后手动覆盖
-    let mut body = adapter.build_body(model, messages, None, max_tokens);
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert("stream".to_string(), serde_json::Value::Bool(false));
-    }
+    // ponytail: 非流式请求使用统一辅助函数，确保 stream=false 时移除 stream_options
+    let mut body = crate::adapter::build_non_stream_body(adapter, model, messages, None, max_tokens);
 
     let response = http
         .post(&url)

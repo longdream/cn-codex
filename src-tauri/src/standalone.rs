@@ -1029,9 +1029,8 @@ pub async fn fortune_llm_call(
             name: None,
         },
     ];
-    let mut body = adapter.build_body(&model, &messages, None, Some(4096));
+    let mut body = adapter::build_non_stream_body(&*adapter, &model, &messages, None, Some(4096));
     if let Some(obj) = body.as_object_mut() {
-        obj.insert("stream".to_string(), serde_json::Value::Bool(false));
         if wire_api == "chat" {
             obj.insert(
                 "response_format".to_string(),
@@ -1055,10 +1054,8 @@ pub async fn fortune_llm_call(
         if wire_api == "chat" && looks_like_json_mode_unsupported(&body_text) {
             info!("[fortune_llm_call] response_format unsupported, retrying without json mode");
             used_json_mode = false;
-            let mut fallback_body = adapter.build_body(&model, &messages, None, Some(4096));
-            if let Some(obj) = fallback_body.as_object_mut() {
-                obj.insert("stream".to_string(), serde_json::Value::Bool(false));
-            }
+            let mut fallback_body =
+                adapter::build_non_stream_body(&*adapter, &model, &messages, None, Some(4096));
             response = http
                 .post(&url)
                 .headers(headers)
@@ -1185,10 +1182,7 @@ pub async fn test_model_connection(
         tool_call_id: None,
         name: None,
     }];
-    let mut body = adapter.build_body(&model, &messages, None, Some(20));
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert("stream".to_string(), serde_json::Value::Bool(false));
-    }
+    let body = adapter::build_non_stream_body(&*adapter, &model, &messages, None, Some(20));
 
     let resp = http
         .post(&url)
