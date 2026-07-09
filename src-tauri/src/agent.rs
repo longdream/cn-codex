@@ -88,6 +88,65 @@ struct GoalUpdateOutcome {
     goal: ThreadGoal,
 }
 
+enum RobotGoalCompletionOutcome {
+    Advanced(ThreadRobotState),
+    Completed,
+}
+
+fn extract_update_goal_status(arguments: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()?
+        .get("status")?
+        .as_str()
+        .map(|status| status.trim().to_string())
+        .filter(|status| !status.is_empty())
+}
+
+async fn advance_robot_workflow_from_goal_completion(
+    thread_store: &ThreadStore,
+    robot_orchestrator: &RobotOrchestrator,
+    thread_id: &str,
+    progress_state: ThreadRobotState,
+) -> Result<RobotGoalCompletionOutcome, String> {
+    match robot_orchestrator
+        .apply_node_progress(thread_store, thread_id, progress_state, true, None)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        NodeProgressResult::ContinueCurrent { .. } => Err(
+            "robot workflow refused to advance after update_goal marked the node complete"
+                .to_string(),
+        ),
+        NodeProgressResult::Advanced { state, nudge } => {
+            let boundary_id = uuid::Uuid::new_v4().to_string();
+            let mut advanced_state = state;
+            advanced_state.current_node_start_message_id = Some(boundary_id.clone());
+            thread_store
+                .set_thread_robot_state(thread_id, advanced_state.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+            thread_store
+                .add_message(
+                    thread_id,
+                    ThreadMessage {
+                        id: boundary_id,
+                        role: "system".to_string(),
+                        content: nudge,
+                        timestamp: now_secs(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                        attachments: Vec::new(),
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(RobotGoalCompletionOutcome::Advanced(advanced_state))
+        }
+        NodeProgressResult::Completed => Ok(RobotGoalCompletionOutcome::Completed),
+    }
+}
+
 /// 记录单个文件在当前 turn 内的“修改前/修改后”文本快照。
 ///
 /// 说明：
@@ -1362,6 +1421,7 @@ impl AgentEngine {
                             );
 
                             let mut results_json: Vec<serde_json::Value> = Vec::new();
+                            let mut robot_node_advanced_now = false;
 
                             for mut call in calls {
                                 info!("Tool call: {} args={}", call.name, call.arguments);
@@ -1387,6 +1447,42 @@ impl AgentEngine {
                                         "tool": call.name.clone(),
                                         "success": false,
                                         "skippedAfterGoalComplete": true,
+                                    }));
+                                    let tool_msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "tool".to_string(),
+                                        content: skipped_output,
+                                        timestamp: now_secs(),
+                                        tool_call_id: Some(call.id.clone()),
+                                        tool_name: Some(call.name.clone()),
+                                        tool_calls: None,
+                                        attachments: Vec::new(),
+                                    };
+                                    self.thread_store.add_message(thread_id, tool_msg).await?;
+                                    continue;
+                                }
+                                if robot_node_advanced_now {
+                                    let skipped_call_id = call.id.clone();
+                                    let skipped_tool_name = call.name.clone();
+                                    let skipped_output =
+                                        "Tool execution skipped: workflow node already advanced."
+                                            .to_string();
+                                    emit_and_broadcast(
+                                        app_handle,
+                                        "tool-exec-end",
+                                        serde_json::json!({
+                                            "threadId": thread_id,
+                                            "callId": skipped_call_id,
+                                            "tool": skipped_tool_name,
+                                            "exitCode": -1,
+                                            "output": skipped_output.clone(),
+                                        }),
+                                    );
+                                    results_json.push(serde_json::json!({
+                                        "id": call.id.clone(),
+                                        "tool": call.name.clone(),
+                                        "success": false,
+                                        "skippedAfterRobotNodeAdvance": true,
                                     }));
                                     let tool_msg = ThreadMessage {
                                         id: uuid::Uuid::new_v4().to_string(),
@@ -1491,21 +1587,100 @@ impl AgentEngine {
                                 }
 
                                 let (mut result_content, success) = if call.name == "update_goal" {
-                                    match handle_update_goal(
-                                        &self.thread_store,
-                                        app_handle,
-                                        thread_id,
-                                        &call.arguments,
-                                    )
-                                    .await
-                                    {
-                                        Ok(outcome) => {
-                                            if outcome.goal.status == ThreadGoalStatus::Complete {
-                                                goal_completed_now = true;
+                                    let requested_status =
+                                        extract_update_goal_status(&call.arguments);
+                                    if requested_status.as_deref() == Some("complete") {
+                                        if let Some(progress_snapshot) = robot_progress.clone() {
+                                            match advance_robot_workflow_from_goal_completion(
+                                                &self.thread_store,
+                                                &robot_orchestrator,
+                                                thread_id,
+                                                progress_snapshot,
+                                            )
+                                            .await
+                                            {
+                                                Ok(RobotGoalCompletionOutcome::Advanced(state)) => {
+                                                    let next_node =
+                                                        state.current_node_index.saturating_add(1);
+                                                    let total_nodes =
+                                                        state.runtime_nodes.len().max(1);
+                                                    robot_progress = Some(state);
+                                                    robot_node_advanced_now = true;
+                                                    (
+                                                        format!(
+                                                            "Current workflow node marked complete; advanced to node {next_node}/{total_nodes}."
+                                                        ),
+                                                        true,
+                                                    )
+                                                }
+                                                Ok(RobotGoalCompletionOutcome::Completed) => {
+                                                    robot_progress = None;
+                                                    if let Some(goal) = self
+                                                        .thread_store
+                                                        .get_thread(thread_id)
+                                                        .await
+                                                        .and_then(|thread| thread.goal)
+                                                    {
+                                                        emit_and_broadcast(
+                                                            app_handle,
+                                                            "thread-goal-updated",
+                                                            serde_json::json!({
+                                                                "threadId": thread_id,
+                                                                "goal": goal,
+                                                            }),
+                                                        );
+                                                    }
+                                                    goal_completed_now = true;
+                                                    (
+                                                        "Final workflow node marked complete; robot workflow finished."
+                                                            .to_string(),
+                                                        true,
+                                                    )
+                                                }
+                                                Err(e) => {
+                                                    (format!("update_goal error: {e}"), false)
+                                                }
                                             }
-                                            (outcome.message, true)
+                                        } else {
+                                            match handle_update_goal(
+                                                &self.thread_store,
+                                                app_handle,
+                                                thread_id,
+                                                &call.arguments,
+                                            )
+                                            .await
+                                            {
+                                                Ok(outcome) => {
+                                                    if outcome.goal.status
+                                                        == ThreadGoalStatus::Complete
+                                                    {
+                                                        goal_completed_now = true;
+                                                    }
+                                                    (outcome.message, true)
+                                                }
+                                                Err(e) => {
+                                                    (format!("update_goal error: {e}"), false)
+                                                }
+                                            }
                                         }
-                                        Err(e) => (format!("update_goal error: {e}"), false),
+                                    } else {
+                                        match handle_update_goal(
+                                            &self.thread_store,
+                                            app_handle,
+                                            thread_id,
+                                            &call.arguments,
+                                        )
+                                        .await
+                                        {
+                                            Ok(outcome) => {
+                                                if outcome.goal.status == ThreadGoalStatus::Complete
+                                                {
+                                                    goal_completed_now = true;
+                                                }
+                                                (outcome.message, true)
+                                            }
+                                            Err(e) => (format!("update_goal error: {e}"), false),
+                                        }
                                     }
                                 } else {
                                     let tool_result = self
@@ -1622,6 +1797,9 @@ impl AgentEngine {
                             if goal_completed_now {
                                 stop_hooks_satisfied = true;
                                 break;
+                            }
+                            if robot_node_advanced_now {
+                                continue;
                             }
 
                             if !mid_turn_compacted
@@ -6596,6 +6774,129 @@ mod tests {
                 action: "renamed".to_string(),
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn advance_robot_workflow_from_goal_completion_moves_to_next_node() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_dir = temp_dir.path().to_path_buf();
+        let thread_store = ThreadStore::new(&workspace_dir.join("codey"));
+        let thread = thread_store.create_thread(None).await.unwrap();
+        thread_store
+            .start_turn(&thread.id, Some("goal".to_string()), None)
+            .await
+            .unwrap();
+        thread_store
+            .set_thread_goal(
+                &thread.id,
+                "阶段 1：需求分析".to_string(),
+                ThreadGoalStatus::Active,
+                None,
+            )
+            .await
+            .unwrap();
+        let state = ThreadRobotState {
+            robot_id: "bot".to_string(),
+            current_node_index: 0,
+            root_objective: "实现 lite 版".to_string(),
+            runtime_nodes: vec![
+                "阶段 1：需求分析".to_string(),
+                "阶段 2：架构设计".to_string(),
+            ],
+            node_deliveries: Vec::new(),
+            current_node_start_message_id: None,
+        };
+        thread_store
+            .set_thread_robot_state(&thread.id, state.clone())
+            .await
+            .unwrap();
+
+        let orchestrator = RobotOrchestrator::new(&workspace_dir);
+        let outcome = advance_robot_workflow_from_goal_completion(
+            &thread_store,
+            &orchestrator,
+            &thread.id,
+            state,
+        )
+        .await
+        .unwrap();
+
+        let advanced_state = match outcome {
+            RobotGoalCompletionOutcome::Advanced(state) => state,
+            RobotGoalCompletionOutcome::Completed => panic!("expected workflow to advance"),
+        };
+        assert_eq!(advanced_state.current_node_index, 1);
+        assert!(advanced_state.current_node_start_message_id.is_some());
+
+        let stored_thread = thread_store.get_thread(&thread.id).await.unwrap();
+        let stored_goal = stored_thread.goal.unwrap();
+        let stored_robot = stored_thread.robot_state.unwrap();
+        assert_eq!(stored_goal.objective, "阶段 2：架构设计");
+        assert_eq!(stored_goal.status, ThreadGoalStatus::Active);
+        assert_eq!(stored_robot.current_node_index, 1);
+        assert_eq!(stored_robot.node_deliveries.len(), 1);
+        assert!(
+            stored_robot.node_deliveries[0]
+                .contains("Node 1 completed (no explicit delivery summary provided).")
+        );
+        assert!(stored_robot.current_node_start_message_id.is_some());
+
+        let messages = thread_store.get_thread_messages(&thread.id).await;
+        assert!(messages.last().is_some_and(|message| {
+            message.role == "system"
+                && message
+                    .content
+                    .contains("Workflow node completed. Continue with node 2/2.")
+        }));
+    }
+
+    #[tokio::test]
+    async fn advance_robot_workflow_from_goal_completion_finishes_last_node() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_dir = temp_dir.path().to_path_buf();
+        let thread_store = ThreadStore::new(&workspace_dir.join("codey"));
+        let thread = thread_store.create_thread(None).await.unwrap();
+        thread_store
+            .start_turn(&thread.id, Some("goal".to_string()), None)
+            .await
+            .unwrap();
+        thread_store
+            .set_thread_goal(
+                &thread.id,
+                "阶段 1：收尾".to_string(),
+                ThreadGoalStatus::Active,
+                None,
+            )
+            .await
+            .unwrap();
+        let state = ThreadRobotState {
+            robot_id: "bot".to_string(),
+            current_node_index: 0,
+            root_objective: "完成整个工作流".to_string(),
+            runtime_nodes: vec!["阶段 1：收尾".to_string()],
+            node_deliveries: Vec::new(),
+            current_node_start_message_id: None,
+        };
+        thread_store
+            .set_thread_robot_state(&thread.id, state.clone())
+            .await
+            .unwrap();
+
+        let orchestrator = RobotOrchestrator::new(&workspace_dir);
+        let outcome = advance_robot_workflow_from_goal_completion(
+            &thread_store,
+            &orchestrator,
+            &thread.id,
+            state,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, RobotGoalCompletionOutcome::Completed));
+        let stored_thread = thread_store.get_thread(&thread.id).await.unwrap();
+        let stored_goal = stored_thread.goal.unwrap();
+        assert!(stored_thread.robot_state.is_none());
+        assert_eq!(stored_goal.status, ThreadGoalStatus::Complete);
     }
 
     #[test]

@@ -245,6 +245,9 @@ impl RobotOrchestrator {
              - Work ONLY on CURRENT node.\n\
              - Do NOT skip nodes.\n\
              - Do NOT claim done without tool evidence.\n\
+             - Do NOT call `update_goal` with status `complete` to finish a node. Node completion \
+             must be signaled with `{done_marker}`, and the orchestrator will advance or finish the \
+             overall workflow for you.\n\
              - When CURRENT node is fully complete, include `{done_marker}` exactly once, and \
              wrap a concise delivery summary (what you produced, decided, or changed for the next \
              node) inside `{summary_marker}` ... `{summary_end_marker}`.\n\
@@ -763,6 +766,7 @@ mod tests {
         };
         let overlay = orchestrator.build_overlay_prompt(&state).unwrap();
         assert!(overlay.contains("Completed Node Deliveries"));
+        assert!(overlay.contains("Do NOT call `update_goal` with status `complete`"));
         assert!(overlay.contains("已完成需求分析与接口设计"));
         let _ = std::fs::remove_dir_all(workspace_root);
     }
