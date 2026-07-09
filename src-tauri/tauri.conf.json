@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.cn-codex.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "node scripts/run-package-bin.mjs vite",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "node scripts/run-package-bin.mjs typescript:tsc --noEmit && node scripts/run-package-bin.mjs vite build",
     "frontendDist": "../dist"
   },
   "app": {

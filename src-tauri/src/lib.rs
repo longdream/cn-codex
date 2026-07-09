@@ -485,7 +485,7 @@ pub fn run() {
             standalone::standalone_thread_read,
             standalone::fortune_llm_call,
             standalone::test_model_connection,
-            standalone::test_model_connection,
+            standalone::fetch_provider_models,
             standalone::fortune_detail_stream_start,
             standalone::standalone_thread_goal_set,
             standalone::standalone_thread_goal_status,

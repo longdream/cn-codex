@@ -124,8 +124,11 @@ echo Log: logs\dev.log
 echo Press Ctrl+C to stop.
 echo.
 
-echo [%date% %time%] Running pnpm tauri dev>>logs\dev.log
-call pnpm tauri dev
+set "NODE_RUNNER=node"
+if exist "codey\node\node.exe" set "NODE_RUNNER=codey\node\node.exe"
+echo [INFO] Running Tauri CLI via %NODE_RUNNER%
+echo [%date% %time%] Running Tauri CLI via %NODE_RUNNER%>>logs\dev.log
+call "%NODE_RUNNER%" scripts\run-package-bin.mjs @tauri-apps/cli dev
 if errorlevel 1 (
     echo.
     echo [ERROR] Dev server failed. Check logs\dev.log for details.

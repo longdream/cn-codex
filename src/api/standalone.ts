@@ -31,6 +31,27 @@ export async function standaloneConfigWrite(
   return invoke("standalone_config_write", { edits });
 }
 
+export interface RemoteProviderModel {
+  id: string;
+  label: string;
+  supportsVision: boolean;
+  contextLength?: number;
+  maxOutputTokens?: number;
+}
+
+export interface FetchProviderModelsResult {
+  supported: boolean;
+  models: RemoteProviderModel[];
+}
+
+export async function fetchProviderModels(params: {
+  baseUrl: string;
+  apiKey: string;
+  wireApi: string;
+}): Promise<FetchProviderModelsResult> {
+  return invoke("fetch_provider_models", params);
+}
+
 export interface PlaywrightMcpEnableResult {
   status: string;
   filePath: string;

@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "dev": "node scripts/run-package-bin.mjs vite",
+    "build": "node scripts/run-package-bin.mjs typescript:tsc --noEmit && node scripts/run-package-bin.mjs vite build",
+    "preview": "node scripts/run-package-bin.mjs vite preview",
+    "tauri": "node scripts/run-package-bin.mjs @tauri-apps/cli",
+    "test": "node scripts/run-package-bin.mjs vitest run",
+    "test:watch": "node scripts/run-package-bin.mjs vitest"
   },
   "dependencies": {
     "@tabler/icons-react": "^3.44.0",

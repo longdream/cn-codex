@@ -7,6 +7,7 @@ import {
   IconTrash,
   IconX,
   IconBolt,
+  IconRefresh,
   IconExternalLink,
   IconChevronDown,
   IconChevronRight,
@@ -18,6 +19,7 @@ import {
   IconLoader2,
 } from "@tabler/icons-react";
 import {
+  fetchProviderModels,
   standaloneConfigWrite,
 } from "../../api";
 import {
@@ -31,6 +33,7 @@ import {
 } from "../../stores/appStore";
 import type { ProviderConfig, ProviderPreset, ProviderModel, PoolModelEndpoint } from "../../types/provider";
 import type { ConfigEdit } from "../../types";
+import type { RemoteProviderModel } from "../../api";
 import { SettingsPagination, usePagedItems } from "./SettingsPagination";
 
 const LOCAL_OCR_FALLBACK_VALUE = "__local_ocr__";
@@ -56,6 +59,57 @@ function parseMultimodalFallbackValue(value: string): { providerId: string; mode
   return { providerId, modelId };
 }
 
+function mergeFetchedModels(
+  currentModels: ProviderModel[],
+  fetchedModels: RemoteProviderModel[],
+): { models: ProviderModel[]; addedCount: number } {
+  const fetchedById = new Map(fetchedModels.map((model) => [model.id, model]));
+  const nextModels = currentModels.map((model) => {
+    const fetched = fetchedById.get(model.id);
+    if (!fetched) {
+      return model;
+    }
+
+    const shouldReplaceLabel = !model.label.trim() || model.label === model.id;
+    const shouldReplaceContextLength = !model.contextLength || model.contextLength === DEFAULT_MODEL_CONTEXT_LENGTH;
+    const shouldReplaceMaxOutputTokens =
+      !model.maxOutputTokens || model.maxOutputTokens === DEFAULT_MODEL_MAX_OUTPUT_TOKENS;
+
+    return {
+      ...model,
+      label: shouldReplaceLabel ? fetched.label || model.label : model.label,
+      supportsVision: model.supportsVision || fetched.supportsVision,
+      contextLength:
+        shouldReplaceContextLength && fetched.contextLength
+          ? fetched.contextLength
+          : model.contextLength,
+      maxOutputTokens:
+        shouldReplaceMaxOutputTokens && fetched.maxOutputTokens
+          ? fetched.maxOutputTokens
+          : model.maxOutputTokens,
+    };
+  });
+
+  const existingIds = new Set(currentModels.map((model) => model.id));
+  let addedCount = 0;
+  for (const fetched of fetchedModels) {
+    if (existingIds.has(fetched.id)) {
+      continue;
+    }
+    nextModels.push({
+      id: fetched.id,
+      label: fetched.label || fetched.id,
+      supportsVision: fetched.supportsVision,
+      contextLength: fetched.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH,
+      maxOutputTokens: fetched.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+    });
+    existingIds.add(fetched.id);
+    addedCount += 1;
+  }
+
+  return { models: nextModels, addedCount };
+}
+
 /**
  * 供应商管理面板 (cc-switch 风格)
  * 左侧：实例列表（平铺），支持添加/激活/删除
@@ -68,6 +122,7 @@ export function ProviderPanel() {
 
   const [selectedId, setSelectedId] = useState<string | null>(activeProviderId ?? providers[0]?.id ?? null);
   const [saving, setSaving] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [showPresetDialog, setShowPresetDialog] = useState(false);
 
@@ -320,6 +375,65 @@ export function ProviderPanel() {
       setSaving(false);
     }
   }, [selectedProvider, editForm, intl]);
+
+  const handleFetchModels = useCallback(async () => {
+    if (!selectedProvider || selectedProvider.type === "local-pool") return;
+
+    const baseUrl = editForm.baseUrl.trim() || selectedProvider.baseUrl.trim();
+    const apiKey = editForm.apiKey.trim() || selectedProvider.apiKey.trim();
+    const wireApi = editForm.wireApi.trim() || selectedProvider.wireApi.trim() || "chat";
+
+    if (!baseUrl) {
+      setFeedback({ kind: "error", text: intl.formatMessage({ id: "settings.provider.baseUrlRequired" }) });
+      return;
+    }
+
+    setFetchingModels(true);
+    setFeedback(null);
+
+    try {
+      const result = await fetchProviderModels({ baseUrl, apiKey, wireApi });
+      if (!result.supported) {
+        setFeedback({
+          kind: "error",
+          text: intl.formatMessage({ id: "settings.provider.fetchModelsUnsupported" }),
+        });
+        return;
+      }
+      if (result.models.length === 0) {
+        setFeedback({
+          kind: "error",
+          text: intl.formatMessage({ id: "settings.provider.fetchModelsEmpty" }),
+        });
+        return;
+      }
+
+      const store = useAppStore.getState();
+      const currentProvider = store.providers.find((provider) => provider.id === selectedProvider.id) ?? selectedProvider;
+      const merged = mergeFetchedModels(currentProvider.models, result.models);
+      store.updateProvider(selectedProvider.id, { models: merged.models });
+
+      setFeedback({
+        kind: "success",
+        text: intl.formatMessage(
+          { id: "settings.provider.fetchModelsSuccess" },
+          { count: result.models.length, added: merged.addedCount },
+        ),
+      });
+    } catch (error) {
+      console.error("Failed to fetch provider models:", error);
+      const message = error instanceof Error ? error.message : String(error);
+      setFeedback({
+        kind: "error",
+        text: intl.formatMessage(
+          { id: "settings.provider.fetchModelsFailed" },
+          { error: message },
+        ),
+      });
+    } finally {
+      setFetchingModels(false);
+    }
+  }, [editForm.apiKey, editForm.baseUrl, editForm.wireApi, intl, selectedProvider]);
 
   // 添加模型
   const handleAddModel = useCallback(() => {
@@ -589,9 +703,26 @@ export function ProviderPanel() {
 
             {/* 模型列表 */}
             <div className="space-y-2">
-              <h4 className="text-xs font-medium text-[var(--text-strong)]">
-                {intl.formatMessage({ id: "settings.provider.models" })}
-              </h4>
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-xs font-medium text-[var(--text-strong)]">
+                  {intl.formatMessage({ id: "settings.provider.models" })}
+                </h4>
+                {selectedProvider.type !== "local-pool" && (
+                  <button
+                    type="button"
+                    onClick={handleFetchModels}
+                    disabled={fetchingModels}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-subtle)] text-[var(--text-faint)] transition-colors hover:border-[var(--accent-border)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+                    title={intl.formatMessage({ id: "settings.provider.fetchModels" })}
+                  >
+                    {fetchingModels ? (
+                      <IconLoader2 size={12} stroke={2} className="animate-spin" />
+                    ) : (
+                      <IconRefresh size={12} stroke={2} />
+                    )}
+                  </button>
+                )}
+              </div>
               <div className="space-y-1">
                 {pagedModels.map((model) => (
                   <ModelRow

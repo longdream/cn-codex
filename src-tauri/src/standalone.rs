@@ -1,7 +1,10 @@
+use std::collections::HashSet;
 use std::process::Stdio;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use serde::Serialize;
+use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -147,6 +150,213 @@ fn looks_like_json_mode_unsupported(body: &str) -> bool {
         || (lower.contains("unknown parameter") && lower.contains("response_format"))
         || lower.contains("invalid parameter: response_format")
         || lower.contains("response_format.type")
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteProviderModel {
+    pub id: String,
+    pub label: String,
+    pub supports_vision: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchProviderModelsResult {
+    pub supported: bool,
+    pub models: Vec<RemoteProviderModel>,
+}
+
+fn build_models_url(base_url: &str, wire_api: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.ends_with("/models") {
+        return base.to_string();
+    }
+
+    let strip_suffix = |suffix: &str| -> Option<String> {
+        base.strip_suffix(suffix)
+            .map(|prefix| prefix.trim_end_matches('/').to_string())
+    };
+
+    match wire_api {
+        "anthropic" => {
+            if let Some(prefix) = strip_suffix("/messages") {
+                return format!("{prefix}/models");
+            }
+        }
+        "gemini" => {
+            if let Some(prefix) = strip_suffix("/models") {
+                return format!("{prefix}/models");
+            }
+        }
+        _ => {
+            if let Some(prefix) = strip_suffix("/chat/completions") {
+                return format!("{prefix}/models");
+            }
+            if let Some(prefix) = strip_suffix("/responses") {
+                return format!("{prefix}/models");
+            }
+        }
+    }
+
+    format!("{base}/models")
+}
+
+fn normalize_remote_model_id(raw: &str) -> String {
+    raw.trim().trim_start_matches("models/").to_string()
+}
+
+fn get_string_at_paths<'a>(value: &'a Value, paths: &[&str]) -> Option<&'a str> {
+    paths
+        .iter()
+        .find_map(|path| value.pointer(path).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn get_u64_at_paths(value: &Value, paths: &[&str]) -> Option<u64> {
+    paths.iter().find_map(|path| {
+        let candidate = value.pointer(path)?;
+        candidate
+            .as_u64()
+            .or_else(|| candidate.as_i64().and_then(|v| u64::try_from(v).ok()))
+            .or_else(|| {
+                candidate
+                    .as_str()
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+            })
+    })
+}
+
+fn array_path_contains_image(value: &Value, paths: &[&str]) -> bool {
+    paths.iter().any(|path| {
+        value
+            .pointer(path)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items.iter().any(|item| {
+                    item.as_str()
+                        .map(|text| {
+                            let lowered = text.trim().to_ascii_lowercase();
+                            lowered.contains("image") || lowered.contains("vision")
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn parse_remote_model_entry(item: &Value) -> Option<RemoteProviderModel> {
+    let raw_id = get_string_at_paths(item, &["/id", "/name", "/model"])?;
+    let id = normalize_remote_model_id(raw_id);
+    if id.is_empty() {
+        return None;
+    }
+
+    let label = get_string_at_paths(item, &["/display_name", "/displayName", "/label"])
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| id.clone());
+
+    let supports_vision = get_string_at_paths(item, &["/supports_vision", "/supportsVision"])
+        .and_then(|value| value.parse::<bool>().ok())
+        .or_else(|| item.pointer("/supports_vision").and_then(Value::as_bool))
+        .or_else(|| item.pointer("/supportsVision").and_then(Value::as_bool))
+        .or_else(|| {
+            item.pointer("/capabilities/vision")
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false)
+        || array_path_contains_image(
+            item,
+            &[
+                "/modalities",
+                "/input_modalities",
+                "/inputModalities",
+                "/supported_input_modalities",
+                "/capabilities/modalities",
+                "/capabilities/input_modalities",
+                "/capabilities/inputModalities",
+            ],
+        );
+
+    let context_length = get_u64_at_paths(
+        item,
+        &[
+            "/context_length",
+            "/contextLength",
+            "/max_context_tokens",
+            "/max_input_tokens",
+            "/inputTokenLimit",
+            "/capabilities/max_input_tokens",
+        ],
+    );
+
+    let max_output_tokens = get_u64_at_paths(
+        item,
+        &[
+            "/max_output_tokens",
+            "/maxOutputTokens",
+            "/max_tokens",
+            "/outputTokenLimit",
+            "/capabilities/max_output_tokens",
+        ],
+    );
+
+    Some(RemoteProviderModel {
+        id,
+        label,
+        supports_vision,
+        context_length,
+        max_output_tokens,
+    })
+}
+
+fn parse_remote_models_response(value: &Value) -> Vec<RemoteProviderModel> {
+    let entries = value
+        .pointer("/data")
+        .and_then(Value::as_array)
+        .or_else(|| value.pointer("/models").and_then(Value::as_array))
+        .or_else(|| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut seen = HashSet::new();
+    let mut models = Vec::new();
+    for item in entries {
+        let Some(model) = parse_remote_model_entry(&item) else {
+            continue;
+        };
+        if seen.insert(model.id.clone()) {
+            models.push(model);
+        }
+    }
+    models
+}
+
+fn looks_like_models_unsupported(status: reqwest::StatusCode, body: &str) -> bool {
+    if matches!(
+        status,
+        reqwest::StatusCode::NOT_FOUND
+            | reqwest::StatusCode::METHOD_NOT_ALLOWED
+            | reqwest::StatusCode::GONE
+            | reqwest::StatusCode::NOT_IMPLEMENTED
+    ) {
+        return true;
+    }
+
+    let lowered = body.to_ascii_lowercase();
+    lowered.contains("not support")
+        || lowered.contains("unsupported")
+        || lowered.contains("not found")
+        || lowered.contains("no route")
+        || lowered.contains("cannot get /models")
+        || lowered.contains("unknown url")
+        || body.contains("不支持")
 }
 
 fn extract_openai_message_content_text(message: Option<&serde_json::Value>) -> String {
@@ -1230,6 +1440,60 @@ pub async fn test_model_connection(
     }))
 }
 
+#[tauri::command]
+pub async fn fetch_provider_models(
+    base_url: String,
+    api_key: String,
+    wire_api: String,
+) -> AppResult<FetchProviderModelsResult> {
+    info!("[fetch_provider_models] base_url={base_url}, wire_api={wire_api}");
+
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(45))
+        .build()
+        .map_err(|e| AppError::Custom(format!("HTTP client error: {e}")))?;
+
+    let adapter = adapter::get_adapter(&wire_api);
+    let url = build_models_url(&base_url, &wire_api);
+    let headers = adapter.build_headers(&api_key);
+    let (url, headers) =
+        adapter::apply_request_overrides(url, headers, None, None).map_err(AppError::Custom)?;
+
+    let resp = http
+        .get(&url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|e| AppError::Custom(format!("Request failed: {e}")))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::Custom(format!("Failed to read response body: {e}")))?;
+
+    if !status.is_success() {
+        if looks_like_models_unsupported(status, &body) {
+            return Ok(FetchProviderModelsResult {
+                supported: false,
+                models: Vec::new(),
+            });
+        }
+        return Err(AppError::Custom(format!(
+            "Models API error {status}: {body}"
+        )));
+    }
+
+    let parsed: Value = serde_json::from_str(&body)
+        .map_err(|e| AppError::Custom(format!("Invalid models response: {e}")))?;
+    let models = parse_remote_models_response(&parsed);
+    Ok(FetchProviderModelsResult {
+        supported: true,
+        models,
+    })
+}
+
 fn parse_goal_status(value: Option<&str>) -> AppResult<Option<ThreadGoalStatus>> {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -1256,7 +1520,10 @@ fn parse_goal_status(value: Option<&str>) -> AppResult<Option<ThreadGoalStatus>>
 mod tests {
     use serde_json::json;
 
-    use super::{playwright_mcp_config_value, resolve_robot_id_for_run_turn};
+    use super::{
+        build_models_url, looks_like_models_unsupported, parse_remote_models_response,
+        playwright_mcp_config_value, resolve_robot_id_for_run_turn,
+    };
 
     #[test]
     fn resolve_robot_id_for_run_turn_enables_in_goal_and_robot_modify_modes() {
@@ -1291,5 +1558,101 @@ mod tests {
             value.get("args").and_then(|v| v.as_array()),
             Some(&vec![json!("-y"), json!("@playwright/mcp@latest")])
         );
+    }
+
+    #[test]
+    fn build_models_url_normalizes_known_endpoints() {
+        assert_eq!(
+            build_models_url("https://api.openai.com/v1", "chat"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            build_models_url("https://api.openai.com/v1/chat/completions", "chat"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            build_models_url("https://api.openai.com/v1/responses", "responses"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            build_models_url("https://api.anthropic.com/v1/messages", "anthropic"),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            build_models_url("https://generativelanguage.googleapis.com/v1beta", "gemini"),
+            "https://generativelanguage.googleapis.com/v1beta/models"
+        );
+    }
+
+    #[test]
+    fn parse_remote_models_response_handles_openai_like_payloads() {
+        let payload = json!({
+            "data": [
+                {
+                    "id": "gpt-4.1",
+                    "display_name": "GPT-4.1",
+                    "context_length": 1048576,
+                    "capabilities": {
+                        "input_modalities": ["text", "image"]
+                    }
+                },
+                {
+                    "id": "gpt-4.1"
+                },
+                {
+                    "id": "gpt-4.1-mini",
+                    "label": "GPT-4.1 mini",
+                    "supports_vision": false,
+                    "max_output_tokens": 32768
+                }
+            ]
+        });
+
+        let models = parse_remote_models_response(&payload);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-4.1");
+        assert_eq!(models[0].label, "GPT-4.1");
+        assert!(models[0].supports_vision);
+        assert_eq!(models[0].context_length, Some(1_048_576));
+        assert_eq!(models[1].id, "gpt-4.1-mini");
+        assert_eq!(models[1].max_output_tokens, Some(32_768));
+    }
+
+    #[test]
+    fn parse_remote_models_response_handles_gemini_payloads() {
+        let payload = json!({
+            "models": [
+                {
+                    "name": "models/gemini-2.5-pro",
+                    "displayName": "Gemini 2.5 Pro",
+                    "inputTokenLimit": 1048576,
+                    "outputTokenLimit": 65536
+                }
+            ]
+        });
+
+        let models = parse_remote_models_response(&payload);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gemini-2.5-pro");
+        assert_eq!(models[0].label, "Gemini 2.5 Pro");
+        assert_eq!(models[0].context_length, Some(1_048_576));
+        assert_eq!(models[0].max_output_tokens, Some(65_536));
+        assert!(!models[0].supports_vision);
+    }
+
+    #[test]
+    fn looks_like_models_unsupported_detects_common_failures() {
+        assert!(looks_like_models_unsupported(
+            reqwest::StatusCode::NOT_FOUND,
+            "{\"error\":\"not found\"}"
+        ));
+        assert!(looks_like_models_unsupported(
+            reqwest::StatusCode::BAD_REQUEST,
+            "provider does not support /models"
+        ));
+        assert!(!looks_like_models_unsupported(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "invalid api key"
+        ));
     }
 }
