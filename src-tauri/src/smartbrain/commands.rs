@@ -1,6 +1,13 @@
-use tauri::State;
+use std::collections::HashMap;
 
-use crate::error::AppResult;
+use serde::{Deserialize, Serialize};
+use tauri::State;
+use tracing::info;
+
+use crate::adapter;
+use crate::adapter::types::{InternalMessage, text_content};
+use crate::config_system::ConfigToml;
+use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 use super::bm25_index::{BM25Index, SearchFilter, SourceType};
@@ -11,6 +18,233 @@ const FOLDER_IMPORT_CONFIRM_THRESHOLD: usize = 200;
 const FOLDER_IMPORT_PREVIEW_LIMIT: usize = 8;
 const DEFAULT_EXPERIENCE_PAGE_SIZE: u32 = 20;
 const MAX_EXPERIENCE_PAGE_SIZE: u32 = 100;
+const DATABASE_PARSE_SYSTEM_PROMPT: &str = "You extract structured database connection information.\nReturn only a valid JSON object.\nDo not include the raw full connection string in the output.\nIf a field is missing, use null or an empty object.\nUse this exact schema:\n{\n  \"host\": string | null,\n  \"port\": number | null,\n  \"databaseName\": string | null,\n  \"username\": string | null,\n  \"password\": string | null,\n  \"filePath\": string | null,\n  \"schema\": string | null,\n  \"queryParams\": { [key: string]: string }\n}";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct SmartbrainDatabaseParseResult {
+    host: Option<String>,
+    port: Option<u16>,
+    #[serde(rename = "databaseName", alias = "database_name", alias = "database")]
+    database_name: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+    #[serde(rename = "filePath", alias = "file_path")]
+    file_path: Option<String>,
+    schema: Option<String>,
+    #[serde(rename = "queryParams", alias = "query_params")]
+    query_params: HashMap<String, String>,
+}
+
+impl SmartbrainDatabaseParseResult {
+    fn sanitize(self) -> Self {
+        let clean_opt = |value: Option<String>| {
+            value
+                .map(|entry| entry.trim().to_string())
+                .filter(|entry| !entry.is_empty())
+        };
+
+        Self {
+            host: clean_opt(self.host),
+            port: self.port.filter(|port| *port > 0),
+            database_name: clean_opt(self.database_name),
+            username: clean_opt(self.username),
+            password: clean_opt(self.password),
+            file_path: clean_opt(self.file_path),
+            schema: clean_opt(self.schema),
+            query_params: self
+                .query_params
+                .into_iter()
+                .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+                .filter(|(key, value)| !key.is_empty() && !value.is_empty())
+                .collect(),
+        }
+    }
+}
+
+fn build_database_parse_messages(db_type: &str, connection_uri: &str) -> Vec<InternalMessage> {
+    let user_prompt = format!(
+        "Parse this database connection string.\nDatabase type: {db_type}\nConnection string:\n{connection_uri}\n\nRules:\n- Recognize URL, JDBC, ADO.NET, DSN, key-value, and vendor-specific formats.\n- Extract password when present so the UI can auto-fill it.\n- Put non-sensitive extra parameters into queryParams.\n- If the connection targets SQLite, prefer filePath and leave host/database fields null when appropriate.\n- Return JSON only."
+    );
+
+    vec![
+        InternalMessage {
+            role: "system".to_string(),
+            content: text_content(DATABASE_PARSE_SYSTEM_PROMPT),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+        InternalMessage {
+            role: "user".to_string(),
+            content: text_content(user_prompt),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    ]
+}
+
+fn resolve_active_llm_endpoint(
+    config: &ConfigToml,
+) -> Result<
+    (
+        String,
+        String,
+        String,
+        String,
+        Option<HashMap<String, String>>,
+        Option<HashMap<String, String>>,
+    ),
+    String,
+> {
+    let default_model = config.resolve_model();
+    if !config.model_endpoints.is_empty() {
+        let idx = config.active_endpoint_index.unwrap_or(0);
+        let endpoint = &config.model_endpoints[idx.min(config.model_endpoints.len() - 1)];
+        let (_, provider) = config.resolve_provider();
+        let wire_api = endpoint
+            .wire_api
+            .as_deref()
+            .or(provider.wire_api.as_deref())
+            .unwrap_or("chat")
+            .to_string();
+        let model = endpoint
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(default_model.as_str())
+            .to_string();
+        return Ok((
+            endpoint.url.clone(),
+            endpoint.api_key.clone().unwrap_or_default(),
+            wire_api,
+            model,
+            None,
+            None,
+        ));
+    }
+
+    let (provider_id, provider) = config.resolve_provider();
+    let base_url = provider
+        .resolve_base_url()
+        .ok_or_else(|| format!("No base URL configured for provider '{provider_id}'"))?;
+    let api_key = provider.resolve_api_key().unwrap_or_default();
+    if default_model.is_empty() {
+        return Err("No active model configured for intelligent database parsing".to_string());
+    }
+
+    Ok((
+        base_url,
+        api_key,
+        provider.wire_api.as_deref().unwrap_or("chat").to_string(),
+        default_model,
+        provider.query_params.clone(),
+        provider.http_headers.clone(),
+    ))
+}
+
+async fn run_text_prompt_via_active_llm(
+    config: &ConfigToml,
+    messages: &[InternalMessage],
+) -> Result<String, String> {
+    let (base_url, api_key, wire_api, model, query_params, extra_headers) =
+        resolve_active_llm_endpoint(config)?;
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .read_timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|error| format!("Failed to create HTTP client: {error}"))?;
+
+    let adapter = adapter::get_adapter(&wire_api);
+    let url = adapter.build_url(&base_url, &model);
+    let headers = adapter.build_headers(&api_key);
+    let (url, headers) = adapter::apply_request_overrides(
+        url,
+        headers,
+        query_params.as_ref(),
+        extra_headers.as_ref(),
+    )?;
+    let mut body = adapter::build_non_stream_body(
+        &*adapter,
+        &model,
+        messages,
+        None,
+        config.max_output_tokens.or(Some(800)),
+    );
+    if let Some(obj) = body.as_object_mut() {
+        if wire_api == "chat" {
+            obj.insert(
+                "response_format".to_string(),
+                serde_json::json!({ "type": "json_object" }),
+            );
+        }
+    }
+
+    let response = http
+        .post(&url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| format!("Database parse request failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body_text = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Database parse model error ({status}): {body_text}"
+        ));
+    }
+
+    let raw_body = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read database parse response body: {error}"))?;
+    let result_text = crate::standalone::extract_non_streaming_fortune_text(&raw_body)
+        .unwrap_or_else(|_| raw_body.trim().to_string());
+    if result_text.is_empty() {
+        return Err("Database parse model returned empty content".to_string());
+    }
+
+    Ok(result_text)
+}
+
+fn extract_json_object_candidate(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(stripped) = trimmed.strip_prefix("```json") {
+        let candidate = stripped.trim();
+        if let Some(end) = candidate.rfind("```") {
+            return Some(candidate[..end].trim().to_string());
+        }
+    }
+
+    if let Some(stripped) = trimmed.strip_prefix("```") {
+        let candidate = stripped.trim();
+        if let Some(end) = candidate.rfind("```") {
+            return Some(candidate[..end].trim().to_string());
+        }
+    }
+
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    Some(trimmed[start..=end].trim().to_string())
+}
+
+fn parse_database_parse_result(text: &str) -> Result<SmartbrainDatabaseParseResult, String> {
+    let candidate = extract_json_object_candidate(text).unwrap_or_else(|| text.trim().to_string());
+    serde_json::from_str::<SmartbrainDatabaseParseResult>(&candidate)
+        .map(SmartbrainDatabaseParseResult::sanitize)
+        .map_err(|error| format!("Failed to parse intelligent database JSON: {error}"))
+}
 
 fn experience_entry_to_json(e: &super::index::ExperienceEntry) -> serde_json::Value {
     serde_json::json!({
@@ -70,6 +304,39 @@ fn delete_experiences_impl(
     }
 
     deleted
+}
+
+#[tauri::command]
+pub async fn smartbrain_parse_database_connection(
+    state: State<'_, AppState>,
+    db_type: String,
+    connection_uri: String,
+) -> AppResult<serde_json::Value> {
+    let config = state.config_manager.read()?;
+    let messages = build_database_parse_messages(&db_type, &connection_uri);
+    let result_text = run_text_prompt_via_active_llm(&config, &messages)
+        .await
+        .map_err(AppError::Custom)?;
+    let parsed = parse_database_parse_result(&result_text).map_err(AppError::Custom)?;
+
+    info!(
+        "smartbrain database parse completed: db_type={}, host_present={}, database_present={}, user_present={}",
+        db_type,
+        parsed.host.is_some(),
+        parsed.database_name.is_some(),
+        parsed.username.is_some(),
+    );
+
+    Ok(serde_json::json!({
+        "host": parsed.host,
+        "port": parsed.port,
+        "databaseName": parsed.database_name,
+        "username": parsed.username,
+        "password": parsed.password,
+        "filePath": parsed.file_path,
+        "schema": parsed.schema,
+        "queryParams": parsed.query_params,
+    }))
 }
 
 #[tauri::command]

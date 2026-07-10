@@ -431,7 +431,7 @@ fn emit_goal_cleared_event(app_handle: &AppHandle, thread_id: &str) {
     crate::mobile_server::broadcast("thread-goal-cleared", payload);
 }
 
-fn extract_non_streaming_fortune_text(raw_body: &str) -> AppResult<String> {
+pub(crate) fn extract_non_streaming_fortune_text(raw_body: &str) -> AppResult<String> {
     let fallback_text = raw_body.trim().to_string();
     let parsed: serde_json::Value = match serde_json::from_str(raw_body) {
         Ok(value) => value,

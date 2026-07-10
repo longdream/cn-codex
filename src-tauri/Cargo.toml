@@ -69,8 +69,14 @@ local-ip-address = "0.6"
 
 [profile.dev]
 opt-level = 0
-codegen-units = 4
-debug = 1
+codegen-units = 32
+debug = 0
+incremental = true
+
+[profile.dev.build-override]
+opt-level = 0
+codegen-units = 32
+debug = 0
 
 [profile.release]
 opt-level = "s"

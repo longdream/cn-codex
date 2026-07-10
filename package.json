@@ -8,6 +8,9 @@
     "build": "node scripts/run-package-bin.mjs typescript:tsc --noEmit && node scripts/run-package-bin.mjs vite build",
     "preview": "node scripts/run-package-bin.mjs vite preview",
     "tauri": "node scripts/run-package-bin.mjs @tauri-apps/cli",
+    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml --lib",
+    "rust:check:all": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "rust:test:one": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test": "node scripts/run-package-bin.mjs vitest run",
     "test:watch": "node scripts/run-package-bin.mjs vitest"
   },

@@ -6,11 +6,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
+
+mod plan_support;
+mod prompt_context;
+mod protocol_support;
 
 #[cfg(windows)]
 trait CommandNoConsole {
@@ -55,7 +59,7 @@ pub(crate) fn truncate_utf8_by_bytes(value: &str, max_bytes: usize) -> &str {
     }
     &value[..end]
 }
-use crate::config_system::ConfigToml;
+use crate::config_system::{ConfigToml, SmartBrainConfig};
 use crate::error::{AppError, AppResult};
 use crate::hook_runtime::{
     HOOK_AGENT_END, HOOK_AGENT_START, HOOK_COMMAND_EXEC, HOOK_FILE_CHANGE, HOOK_POST_TOOL_USE,
@@ -75,6 +79,15 @@ use crate::thread_store::{
 };
 use crate::tool_executor::ToolExecutor;
 use crate::usage::UsageRecorder;
+use plan_support::{
+    build_active_plan_context_prompt, plan_contents_equivalent, read_plan_file_content,
+    resolve_effective_plan_content, user_requested_new_plan_file,
+};
+use prompt_context::{render_robot_runtime_prompt, render_smartbrain_runtime_prompt};
+use protocol_support::{
+    ProtocolStreamState, ToolCallAccumulator, consume_protocol_text_delta,
+    flush_protocol_stream_state, parse_dsml_tool_calls_block, parse_protocol_text,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRequest {
@@ -2326,7 +2339,8 @@ impl AgentEngine {
         let os_info = std::env::consts::OS;
         let arch_info = std::env::consts::ARCH;
 
-        let user_rules_path = self.cwd.join("codey").join("user-rules.md");
+        let workspace_config_dir = self.cwd.join("codey");
+        let user_rules_path = workspace_config_dir.join("user-rules.md");
         let user_rules_content = std::fs::read_to_string(&user_rules_path).unwrap_or_default();
         let user_instructions = if !user_rules_content.trim().is_empty() {
             let truncated = truncate_utf8_by_bytes(&user_rules_content, 4000);
@@ -2398,51 +2412,10 @@ impl AgentEngine {
         } else {
             ""
         };
-        let smartbrain_instructions = if config.smartbrain_config().inject_summary {
-            let workspace_config_dir = self.cwd.join("codey");
-            let mut parts = Vec::new();
-
-            if let Some(summary) = crate::smartbrain::load_summary(&workspace_config_dir) {
-                parts.push(format!(
-                    "You have accumulated experience from previous sessions. Here is a summary:\n\n\
-                     {summary}\n\n\
-                     For detailed experience notes, use `memory_read` to read `experiences/experience_handbook.md`."
-                ));
-            }
-
-            if let Some(hierarchy) = crate::smartbrain::load_hierarchy(&workspace_config_dir) {
-                let hier_text = hierarchy.summary_text();
-                if !hier_text.is_empty() {
-                    parts.push(format!(
-                        "You also have access to a knowledge base with these categories:\n{hier_text}\n\n\
-                         Use `smartbrain_search` to find relevant knowledge first, then read with continuity: \
-                         always include previous/next sections around chunk hits and keep at least 30 lines overlap \
-                         to avoid cut-off context. If available, follow the `smartbrain-context-read` skill."
-                    ));
-                }
-            }
-
-            if config.smartbrain_config().is_active() {
-                parts.push(
-                    "Knowledge retrieval policy: prefer `smartbrain_search` for large or structured knowledge queries. \
-                     Use `memory_read` pagination (`line_offset`, `max_lines`) for targeted reading with >=30-line overlap windows, and avoid \
-                     broad `memory_search` or shell/python scans over large documents unless explicitly required."
-                        .to_string(),
-                );
-            }
-
-            if parts.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "\n\n## SmartBrain (智脑)\n\n{}\n\n\
-                     When you apply knowledge from SmartBrain, note which experience or knowledge helped.",
-                    parts.join("\n\n")
-                )
-            }
-        } else {
-            String::new()
-        };
+        let smartbrain_instructions =
+            render_smartbrain_runtime_prompt(&workspace_config_dir, &config.smartbrain_config());
+        let robot_runtime_instructions =
+            render_robot_runtime_prompt(&workspace_config_dir, robot_id);
 
         let is_project_mode = effective_cwd != self.cwd;
         let file_creation_policy = if is_project_mode {
@@ -2543,7 +2516,7 @@ impl AgentEngine {
              WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
              use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \
              directories. Alternatively, set the 'workdir' parameter in the shell tool call.\n\
-             {skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{smartbrain_instructions}"
+             {skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{robot_runtime_instructions}{smartbrain_instructions}"
         )
     }
 
@@ -3899,405 +3872,6 @@ impl AgentEngine {
             })
         }
     }
-}
-
-/// tool call 累积器（逐步拼接 SSE 中的碎片）
-#[derive(Default)]
-struct ToolCallAccumulator {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-const THINK_OPEN_TAG: &str = "<think>";
-const THINK_CLOSE_TAG: &str = "</think>";
-const DSML_TOOL_CALLS_OPEN_TAG: &str = "<｜｜DSML｜｜tool_calls>";
-const DSML_TOOL_CALLS_CLOSE_TAG: &str = "</｜｜DSML｜｜tool_calls>";
-const DSML_INVOKE_OPEN_TAG: &str = "<｜｜DSML｜｜invoke";
-const DSML_INVOKE_CLOSE_TAG: &str = "</｜｜DSML｜｜invoke>";
-const DSML_PARAMETER_OPEN_TAG: &str = "<｜｜DSML｜｜parameter";
-const DSML_PARAMETER_CLOSE_TAG: &str = "</｜｜DSML｜｜parameter>";
-
-#[derive(Clone, Copy)]
-enum ProtocolToken {
-    ThinkOpen,
-    ThinkClose,
-    DsmlOpen,
-    DsmlClose,
-}
-
-#[derive(Default)]
-struct ProtocolStreamState {
-    inside_think: bool,
-    inside_dsml: bool,
-    pending: String,
-    dsml_buffer: String,
-}
-
-#[derive(Default)]
-struct ProtocolDeltaResult {
-    visible: String,
-    reasoning: String,
-    dsml_blocks: Vec<String>,
-}
-
-fn next_protocol_token(text: &str) -> Option<(usize, ProtocolToken)> {
-    [
-        (THINK_OPEN_TAG, ProtocolToken::ThinkOpen),
-        (THINK_CLOSE_TAG, ProtocolToken::ThinkClose),
-        (DSML_TOOL_CALLS_OPEN_TAG, ProtocolToken::DsmlOpen),
-        (DSML_TOOL_CALLS_CLOSE_TAG, ProtocolToken::DsmlClose),
-    ]
-    .iter()
-    .filter_map(|(tag, token)| text.find(tag).map(|pos| (pos, *token)))
-    .min_by_key(|(pos, _)| *pos)
-}
-
-fn split_trailing_partial_tag<'a>(text: &'a str, tags: &[&str]) -> (&'a str, &'a str) {
-    let mut best_len = 0_usize;
-    for tag in tags {
-        for (prefix_len, _) in tag.char_indices().skip(1) {
-            let prefix = &tag[..prefix_len];
-            if text.ends_with(prefix) && prefix_len > best_len {
-                best_len = prefix_len;
-            }
-        }
-    }
-    if best_len == 0 {
-        (text, "")
-    } else {
-        text.split_at(text.len().saturating_sub(best_len))
-    }
-}
-
-fn consume_protocol_text_delta(
-    state: &mut ProtocolStreamState,
-    chunk: &str,
-) -> ProtocolDeltaResult {
-    let mut result = ProtocolDeltaResult::default();
-    let mut input = String::new();
-    if !state.pending.is_empty() {
-        input.push_str(&state.pending);
-        state.pending.clear();
-    }
-    input.push_str(chunk);
-
-    let mut rest = input.as_str();
-    while !rest.is_empty() {
-        if state.inside_dsml {
-            if let Some(close_pos) = rest.find(DSML_TOOL_CALLS_CLOSE_TAG) {
-                state.dsml_buffer.push_str(&rest[..close_pos]);
-                if !state.dsml_buffer.trim().is_empty() {
-                    result
-                        .dsml_blocks
-                        .push(std::mem::take(&mut state.dsml_buffer));
-                } else {
-                    state.dsml_buffer.clear();
-                }
-                state.inside_dsml = false;
-                rest = &rest[close_pos + DSML_TOOL_CALLS_CLOSE_TAG.len()..];
-                continue;
-            }
-            let (emit, pending) = split_trailing_partial_tag(rest, &[DSML_TOOL_CALLS_CLOSE_TAG]);
-            state.dsml_buffer.push_str(emit);
-            state.pending = pending.to_string();
-            break;
-        }
-
-        if state.inside_think {
-            if let Some(close_pos) = rest.find(THINK_CLOSE_TAG) {
-                result.reasoning.push_str(&rest[..close_pos]);
-                state.inside_think = false;
-                rest = &rest[close_pos + THINK_CLOSE_TAG.len()..];
-                continue;
-            }
-            let (emit, pending) = split_trailing_partial_tag(rest, &[THINK_CLOSE_TAG]);
-            result.reasoning.push_str(emit);
-            state.pending = pending.to_string();
-            break;
-        }
-
-        if let Some((token_pos, token)) = next_protocol_token(rest) {
-            result.visible.push_str(&rest[..token_pos]);
-            rest = &rest[token_pos..];
-            match token {
-                ProtocolToken::ThinkOpen => {
-                    state.inside_think = true;
-                    rest = &rest[THINK_OPEN_TAG.len()..];
-                }
-                ProtocolToken::DsmlOpen => {
-                    state.inside_dsml = true;
-                    state.dsml_buffer.clear();
-                    rest = &rest[DSML_TOOL_CALLS_OPEN_TAG.len()..];
-                }
-                ProtocolToken::ThinkClose => {
-                    rest = &rest[THINK_CLOSE_TAG.len()..];
-                }
-                ProtocolToken::DsmlClose => {
-                    rest = &rest[DSML_TOOL_CALLS_CLOSE_TAG.len()..];
-                }
-            }
-            continue;
-        }
-
-        let (emit, pending) = split_trailing_partial_tag(
-            rest,
-            &[
-                THINK_OPEN_TAG,
-                THINK_CLOSE_TAG,
-                DSML_TOOL_CALLS_OPEN_TAG,
-                DSML_TOOL_CALLS_CLOSE_TAG,
-            ],
-        );
-        result.visible.push_str(emit);
-        state.pending = pending.to_string();
-        break;
-    }
-
-    result
-}
-
-fn flush_protocol_stream_state(state: &mut ProtocolStreamState) -> ProtocolDeltaResult {
-    let mut result = ProtocolDeltaResult::default();
-    if state.inside_dsml {
-        if !state.pending.is_empty() {
-            state.dsml_buffer.push_str(&state.pending);
-            state.pending.clear();
-        }
-        if !state.dsml_buffer.trim().is_empty() {
-            result
-                .dsml_blocks
-                .push(std::mem::take(&mut state.dsml_buffer));
-        } else {
-            state.dsml_buffer.clear();
-        }
-        state.inside_dsml = false;
-        return result;
-    }
-    if state.inside_think {
-        if !state.pending.is_empty() {
-            result.reasoning.push_str(&state.pending);
-            state.pending.clear();
-        }
-        state.inside_think = false;
-        return result;
-    }
-    if !state.pending.is_empty() {
-        result.visible.push_str(&state.pending);
-        state.pending.clear();
-    }
-    result
-}
-
-fn parse_protocol_text(text: &str) -> ProtocolDeltaResult {
-    let mut state = ProtocolStreamState::default();
-    let mut result = consume_protocol_text_delta(&mut state, text);
-    let tail = flush_protocol_stream_state(&mut state);
-    result.visible.push_str(&tail.visible);
-    result.reasoning.push_str(&tail.reasoning);
-    result.dsml_blocks.extend(tail.dsml_blocks);
-    result
-}
-
-fn extract_tag_attr(tag: &str, attr: &str) -> Option<String> {
-    let needle = format!("{attr}=\"");
-    let start = tag.find(&needle)? + needle.len();
-    let value = &tag[start..];
-    let end = value.find('"')?;
-    Some(value[..end].to_string())
-}
-
-fn parse_dsml_tool_calls_block(block: &str) -> Vec<ToolCallRequest> {
-    let mut calls = Vec::new();
-    let mut rest = block;
-    let mut invoke_index = 0_u32;
-
-    while let Some(invoke_start) = rest.find(DSML_INVOKE_OPEN_TAG) {
-        rest = &rest[invoke_start..];
-        let Some(invoke_tag_end) = rest.find('>') else {
-            break;
-        };
-        let invoke_tag = &rest[..=invoke_tag_end];
-        let Some(tool_name) = extract_tag_attr(invoke_tag, "name") else {
-            rest = &rest[invoke_tag_end + 1..];
-            continue;
-        };
-
-        let invoke_body_start = invoke_tag_end + 1;
-        let Some(invoke_close_pos) = rest[invoke_body_start..].find(DSML_INVOKE_CLOSE_TAG) else {
-            break;
-        };
-        let invoke_body_end = invoke_body_start + invoke_close_pos;
-        let invoke_body = &rest[invoke_body_start..invoke_body_end];
-
-        let mut arguments = serde_json::Map::new();
-        let mut body_rest = invoke_body;
-        while let Some(parameter_start) = body_rest.find(DSML_PARAMETER_OPEN_TAG) {
-            body_rest = &body_rest[parameter_start..];
-            let Some(parameter_tag_end) = body_rest.find('>') else {
-                break;
-            };
-            let parameter_tag = &body_rest[..=parameter_tag_end];
-            let Some(parameter_name) = extract_tag_attr(parameter_tag, "name") else {
-                body_rest = &body_rest[parameter_tag_end + 1..];
-                continue;
-            };
-            let is_string_parameter = extract_tag_attr(parameter_tag, "string")
-                .map(|value| value.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-            let parameter_body_start = parameter_tag_end + 1;
-            let Some(parameter_close_pos) =
-                body_rest[parameter_body_start..].find(DSML_PARAMETER_CLOSE_TAG)
-            else {
-                break;
-            };
-            let parameter_body_end = parameter_body_start + parameter_close_pos;
-            let parameter_value_text = body_rest[parameter_body_start..parameter_body_end].trim();
-            let parameter_value = if is_string_parameter {
-                serde_json::Value::String(parameter_value_text.to_string())
-            } else {
-                serde_json::from_str::<serde_json::Value>(parameter_value_text)
-                    .unwrap_or_else(|_| serde_json::Value::String(parameter_value_text.to_string()))
-            };
-            arguments.insert(parameter_name, parameter_value);
-            body_rest = &body_rest[parameter_body_end + DSML_PARAMETER_CLOSE_TAG.len()..];
-        }
-
-        invoke_index = invoke_index.saturating_add(1);
-        calls.push(ToolCallRequest {
-            id: format!("dsml_{}_{}", sanitize_tool_name(&tool_name), invoke_index),
-            name: tool_name,
-            arguments: serde_json::Value::Object(arguments).to_string(),
-        });
-        rest = &rest[invoke_body_end + DSML_INVOKE_CLOSE_TAG.len()..];
-    }
-
-    calls
-}
-
-fn non_empty_trimmed(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn extract_proposed_plan(text: &str) -> Option<String> {
-    const OPEN_TAG: &str = "<proposed_plan>";
-    const CLOSE_TAG: &str = "</proposed_plan>";
-
-    let start = text.find(OPEN_TAG)?;
-    let content_start = start + OPEN_TAG.len();
-    let end = text[content_start..].find(CLOSE_TAG)?;
-    non_empty_trimmed(&text[content_start..content_start + end])
-}
-
-fn resolve_effective_plan_content(
-    turn_mode: &str,
-    plan_text: Option<&str>,
-    raw_text: &str,
-    cleaned_text: &str,
-) -> Option<String> {
-    let stream_plan = plan_text.and_then(non_empty_trimmed);
-    if turn_mode != "plan" {
-        return stream_plan;
-    }
-
-    stream_plan
-        .or_else(|| extract_proposed_plan(raw_text))
-        .or_else(|| extract_proposed_plan(cleaned_text))
-        .or_else(|| non_empty_trimmed(cleaned_text))
-}
-
-fn user_requested_new_plan_file(user_input: &str) -> bool {
-    let normalized = user_input.trim().to_lowercase();
-    let en_patterns = [
-        "new plan",
-        "new implementation plan",
-        "create a new plan",
-        "start a new plan",
-        "write a new plan",
-        "generate a new plan",
-        "new version of plan",
-        "another plan",
-    ];
-    if en_patterns
-        .iter()
-        .any(|pattern| normalized.contains(pattern))
-    {
-        return true;
-    }
-
-    let zh_patterns = [
-        "新计划",
-        "新建计划",
-        "重新生成计划",
-        "重新做计划",
-        "重新写计划",
-        "再来一份计划",
-        "再生成一份计划",
-        "换一份计划",
-        "新版本计划",
-    ];
-    zh_patterns
-        .iter()
-        .any(|pattern| user_input.trim().contains(pattern))
-}
-
-fn resolve_plan_storage_path(stored_path: &str, workspace_root: &Path) -> PathBuf {
-    let candidate = PathBuf::from(stored_path);
-    if candidate.is_absolute() {
-        candidate
-    } else {
-        workspace_root.join(candidate)
-    }
-}
-
-fn read_plan_file_content(stored_path: &str, workspace_root: &Path) -> Option<String> {
-    let path = resolve_plan_storage_path(stored_path, workspace_root);
-    match std::fs::read_to_string(&path) {
-        Ok(content) => non_empty_trimmed(&content),
-        Err(err) => {
-            warn!("Failed to read active plan file {}: {err}", path.display());
-            None
-        }
-    }
-}
-
-fn plan_contents_equivalent(left: &str, right: &str) -> bool {
-    normalize_plan_content_for_compare(left) == normalize_plan_content_for_compare(right)
-}
-
-fn normalize_plan_content_for_compare(text: &str) -> String {
-    text.replace("\r\n", "\n").trim().to_string()
-}
-
-fn build_active_plan_context_prompt(path: &str, revision: u64, content: &str) -> String {
-    const MAX_PLAN_CONTEXT_CHARS: usize = 12_000;
-    let total_chars = content.chars().count();
-    let truncated_content: String = if total_chars > MAX_PLAN_CONTEXT_CHARS {
-        content.chars().take(MAX_PLAN_CONTEXT_CHARS).collect()
-    } else {
-        content.to_string()
-    };
-    let truncation_note = if total_chars > MAX_PLAN_CONTEXT_CHARS {
-        "\n\nNOTE: The active plan content was truncated for context size. \
-         Keep revisions compatible with the visible content and preserve existing structure."
-    } else {
-        ""
-    };
-
-    format!(
-        "An active implementation plan already exists in this thread. \
-         Unless the user explicitly requests a new plan/version, revise this plan in place. \
-         Return the fully revised plan (not just a delta) inside <proposed_plan> tags.\n\
-         \nActive plan path: {path}\n\
-         Active plan revision: {}\n\
-         \n<current_active_plan>\n{truncated_content}\n</current_active_plan>{truncation_note}",
-        revision.max(1)
-    )
 }
 
 fn is_retryable_rate_limit_error(message: &str) -> bool {
@@ -6754,6 +6328,88 @@ mod tests {
         assert!(prompt.contains("connector `connector_calendar`"));
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn smartbrain_runtime_prompt_includes_database_names_without_summary_injection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_config_dir = temp_dir.path().join("codey");
+        let usage_db = crate::usage::UsageDb::open(&workspace_config_dir.join("usage.db")).unwrap();
+        usage_db
+            .state_set(
+                SMARTBRAIN_DB_SOURCES_STATE_KEY,
+                r#"[{
+                  "name": "合同数据库",
+                  "dbType": "mysql",
+                  "enabled": true,
+                  "host": "10.136.0.134",
+                  "port": 3306,
+                  "databaseName": "psa_crm_pact_test",
+                  "username": "root",
+                  "password": "top-secret",
+                  "permissions": {
+                    "readSchema": true,
+                    "readData": true,
+                    "writeData": false
+                  }
+                }]"#,
+            )
+            .unwrap();
+        usage_db
+            .state_set(
+                SMARTBRAIN_DB_SETTINGS_STATE_KEY,
+                r##"{
+                  "defaultRowLimit": 200,
+                  "defaultTimeoutSec": 15,
+                  "requireReadonlyReminder": true,
+                  "skipWhenNoPermission": true,
+                  "rulesMarkdown": "# 数据库安全规则\n- 只读优先"
+                }"##,
+            )
+            .unwrap();
+
+        let prompt = render_smartbrain_runtime_prompt(
+            &workspace_config_dir,
+            &SmartBrainConfig {
+                enabled: true,
+                inject_summary: false,
+                ..SmartBrainConfig::default()
+            },
+        );
+
+        assert!(prompt.contains("合同数据库"));
+        assert!(prompt.contains("psa_crm_pact_test"));
+        assert!(prompt.contains("不要再次向用户索要主机、端口、用户名、密码或完整连接串"));
+        assert!(prompt.contains("密码已在配置中单独保存"));
+        assert!(!prompt.contains("top-secret"));
+    }
+
+    #[test]
+    fn robot_runtime_prompt_includes_saved_robot_system_prompt() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_config_dir = temp_dir.path().join("codey");
+        let config = crate::robot_loader::RobotConfig {
+            name: "数据库机器人".to_string(),
+            description: String::new(),
+            icon: String::new(),
+            skills: Vec::new(),
+            plugin_skills: Vec::new(),
+            workflow: vec!["查询合同数据库".to_string()],
+            workflow_nodes: vec![crate::robot_loader::WorkflowNode {
+                objective: "查询合同数据库".to_string(),
+                skills: vec!["smartbrain-context-read".to_string()],
+                plugin_skills: Vec::new(),
+            }],
+            system_prompt: "优先使用合同数据库回答问题。".to_string(),
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        crate::robot_loader::save_robot(&workspace_config_dir, "db-bot", &config).unwrap();
+
+        let prompt = render_robot_runtime_prompt(&workspace_config_dir, Some("db-bot"));
+        assert!(prompt.contains("db-bot"));
+        assert!(prompt.contains("优先使用合同数据库回答问题。"));
     }
 
     #[test]

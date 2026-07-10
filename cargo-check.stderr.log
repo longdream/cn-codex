@@ -1,0 +1,168 @@
+   Compiling aws-lc-sys v0.41.0
+    Checking tauri-runtime-wry v2.11.2
+   Compiling noop_proc_macro v0.3.0
+   Compiling utf8-zero v0.8.1
+   Compiling rustversion v1.0.22
+    Checking matrixmultiply v0.3.10
+    Checking windows_x86_64_msvc v0.53.1
+   Compiling darling v0.20.11
+   Compiling ureq v3.3.0
+    Checking tauri v2.11.2
+    Checking rav1e v0.8.1
+   Compiling onig_sys v69.9.3
+   Compiling hmac-sha256 v1.1.14
+   Compiling lzma-rust2 v0.15.8
+   Compiling rustls v0.23.40
+   Compiling portable-atomic v1.13.1
+    Checking tiff v0.10.3
+   Compiling ort-sys v2.0.0-rc.12
+    Checking moxcms v0.7.11
+    Checking sha1 v0.10.6
+    Checking ravif v0.12.0
+    Checking exr v1.74.0
+    Checking transpose v0.2.3
+    Checking h2 v0.4.14
+   Compiling derive_builder_core v0.20.2
+    Checking png v0.18.1
+    Checking windows-targets v0.53.5
+   Compiling tauri-plugin-fs v2.5.1
+    Checking primal-check v0.3.4
+    Checking approx v0.5.1
+   Compiling ahash v0.8.12
+   Compiling darling_core v0.23.0
+   Compiling winapi v0.3.9
+   Compiling esaxx-rs v0.1.10
+   Compiling unicase v2.9.0
+    Checking console v0.16.3
+   Compiling mime_guess v2.0.5
+    Checking hyper v1.10.1
+    Checking simba v0.10.0
+   Compiling darling_macro v0.23.0
+    Checking rustfft v6.4.1
+    Checking image v0.25.9
+   Compiling derive_builder_macro v0.20.2
+    Checking windows-sys v0.60.2
+    Checking rand v0.10.1
+    Checking castaway v0.2.4
+    Checking num-iter v0.1.45
+   Compiling nalgebra-macros v0.3.0
+   Compiling monostate-impl v0.1.18
+   Compiling memoffset v0.6.5
+   Compiling vcpkg v0.2.15
+   Compiling macro_rules_attribute-proc_macro v0.2.2
+    Checking num v0.4.3
+    Checking nalgebra v0.35.0
+    Checking monostate v0.1.18
+    Checking spm_precompiled v0.1.4
+   Compiling libsqlite3-sys v0.32.0
+    Checking macro_rules_attribute v0.2.2
+    Checking compact_str v0.9.1
+    Checking hyper-util v0.1.20
+    Checking indicatif v0.18.4
+    Checking tracing-subscriber v0.3.23
+    Checking rustdct v0.7.1
+    Checking rand_distr v0.6.0
+    Checking derive_builder v0.20.2
+   Compiling darling v0.23.0
+    Checking rand_chacha v0.3.1
+    Checking tower v0.5.3
+    Checking ndarray v0.17.2
+    Checking rayon-cond v0.4.0
+   Compiling tauri-plugin-opener v2.5.4
+   Compiling tauri-plugin-dialog v2.7.1
+   Compiling tauri-plugin-process v2.3.1
+   Compiling tauri-plugin-notification v2.3.3
+   Compiling tauri-plugin-shell v2.3.5
+    Checking serial-core v0.4.0
+    Checking dary_heap v0.3.9
+   Compiling winreg v0.10.1
+   Compiling rfd v0.16.0
+   Compiling zip v2.4.2
+    Checking zopfli v0.8.3
+    Checking ort v2.0.0-rc.12
+    Checking tauri-winrt-notification v0.7.2
+    Checking serial-windows v0.4.0
+    Checking rand v0.8.6
+    Checking imageproc v0.27.0
+   Compiling oar-ocr-derive v0.7.1
+    Checking onig v6.5.3
+    Checking tungstenite v0.29.0
+    Checking md-5 v0.10.6
+    Checking clipper2-rust v1.0.3
+    Checking serde_spanned v0.6.9
+    Checking toml_datetime v0.6.3
+    Checking tokenizers v0.23.1
+    Checking nix v0.25.1
+    Checking tokio-tungstenite v0.29.0
+    Checking tungstenite v0.24.0
+    Checking toml_edit v0.20.2
+    Checking tower-http v0.6.11
+    Checking lopdf v0.34.0
+    Checking serial v0.4.0
+    Checking notify-rust v4.17.0
+    Checking unicode-normalization v0.1.25
+    Checking hashlink v0.10.0
+    Checking oar-ocr-core v0.7.1
+    Checking adobe-cmap-parser v0.4.1
+    Checking type1-encoding-parser v0.1.1
+    Checking filedescriptor v0.8.3
+    Checking shared_child v1.1.1
+    Checking axum-core v0.5.6
+    Checking shared_library v0.1.9
+    Checking serde_urlencoded v0.7.1
+    Checking codepage v0.1.2
+    Checking quick-xml v0.31.0
+   Compiling cn-codex v0.1.0 (E:\work\RustWorks\cn-codex\src-tauri)
+    Checking euclid v0.20.14
+    Checking serde_path_to_error v0.1.20
+    Checking os_pipe v1.2.3
+    Checking postscript v0.14.1
+    Checking downcast-rs v1.2.1
+    Checking shell-words v1.1.1
+    Checking fallible-streaming-iterator v0.1.9
+    Checking unsafe-libyaml v0.2.11
+    Checking symlink v0.1.0
+    Checking fallible-iterator v0.3.0
+    Checking matchit v0.8.4
+    Checking oar-ocr v0.7.1
+    Checking portable-pty v0.8.1
+    Checking pdf-extract v0.7.12
+    Checking tracing-appender v0.2.5
+    Checking serde_yaml v0.9.34+deprecated
+    Checking axum v0.8.9
+    Checking rusqlite v0.34.0
+    Checking calamine v0.26.1
+    Checking toml v0.8.2
+    Checking tokio-tungstenite v0.24.0
+    Checking tempfile v3.27.0
+    Checking qrcode v0.14.1
+    Checking chardetng v1.0.0
+    Checking chrono v0.4.45
+    Checking local-ip-address v0.6.13
+   Compiling async-trait v0.1.89
+   Compiling aws-lc-rs v1.17.0
+    Checking rustls-webpki v0.103.13
+    Checking tokio-rustls v0.26.4
+    Checking rustls-platform-verifier v0.7.0
+    Checking hyper-rustls v0.27.9
+    Checking reqwest v0.13.4
+warning: variable does not need to be mutable
+    --> src\commands\skill_lab.rs:1580:9
+     |
+1580 |     let mut body =
+     |         ----^^^^
+     |         |
+     |         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> src\standalone.rs:1267:17
+     |
+1267 |             let mut fallback_body =
+     |                 ----^^^^^^^^^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: `cn-codex` (lib) generated 2 warnings (run `cargo fix --lib -p cn-codex` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5m 56s

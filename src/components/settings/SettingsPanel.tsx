@@ -12,14 +12,13 @@ import { SkillLabPanel } from "./SkillLabPanel";
 import { RobotsPanel } from "./RobotsPanel";
 import { WorkflowsPanel } from "./WorkflowsPanel";
 import { UsageDashboard } from "./UsageDashboard";
-import { ExperiencePanel } from "./ExperiencePanel";
-import { KnowledgePanel } from "./KnowledgePanel";
 import { ImageGenerationPanel } from "./ImageGenerationPanel";
+import { SmartbrainPanel } from "./SmartbrainPanel";
 interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type SettingsTab = "provider" | "image" | "usage" | "integration" | "plugins" | "skills" | "skill-lab" | "robots" | "workflows" | "experience" | "knowledge" | "rules" | "general";
+type SettingsTab = "provider" | "image" | "usage" | "integration" | "plugins" | "skills" | "skill-lab" | "robots" | "workflows" | "smartbrain" | "rules" | "general";
 
 function displayFileName(path: string): string {
   const normalized = path.replace(/\\/g, "/");
@@ -258,14 +257,9 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       detail: intl.formatMessage({ id: "settings.workflows.description" }),
     },
     {
-      id: "experience",
-      label: intl.formatMessage({ id: "settings.experience" }),
-      detail: intl.formatMessage({ id: "settings.experience.description" }),
-    },
-    {
-      id: "knowledge",
-      label: intl.formatMessage({ id: "settings.knowledge" }),
-      detail: intl.formatMessage({ id: "settings.knowledge.description" }),
+      id: "smartbrain",
+      label: intl.formatMessage({ id: "settings.smartbrain" }),
+      detail: intl.formatMessage({ id: "settings.smartbrain.description" }),
     },
     {
       id: "rules",
@@ -769,8 +763,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "skill-lab" && <SkillLabPanel />}
             {tab === "robots" && <RobotsPanel />}
             {tab === "workflows" && <WorkflowsPanel />}
-            {tab === "experience" && <ExperiencePanel />}
-            {tab === "knowledge" && <KnowledgePanel />}
+            {tab === "smartbrain" && <SmartbrainPanel enabled={smartbrainEnabled} />}
             {tab === "rules" && (
               <div className="space-y-5">
                 <section className="settings-card space-y-3">

@@ -589,6 +589,7 @@ pub fn run() {
             smartbrain::commands::smartbrain_upload_knowledge,
             smartbrain::commands::smartbrain_upload_knowledge_folder,
             smartbrain::commands::smartbrain_search,
+            smartbrain::commands::smartbrain_parse_database_connection,
             smartbrain::commands::smartbrain_rebuild_index,
             smartbrain::commands::smartbrain_migrate_to_okf,
             // Workflow

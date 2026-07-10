@@ -1,14 +1,20 @@
 import {
+  IconAlertTriangle,
   IconArrowDown,
   IconArrowUp,
+  IconCheck,
+  IconChevronDown,
+  IconFiles,
   IconGitBranch,
   IconGitCherryPick,
   IconGitCommit,
   IconHistory,
+  IconMinus,
+  IconPlus,
   IconRefresh,
   IconRotateClockwise2,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import {
   gitBranchList,
@@ -24,15 +30,23 @@ import {
   gitStage,
   gitStatus,
   gitUnstage,
+  type GitActionResponse,
   type GitLogEntry,
   type GitStatusEntry,
   type GitStatusResponse,
 } from "../../api/git";
 
-type GitView = "changes" | "commit" | "history";
+type GitSection = "changes" | "branches" | "history" | "danger";
+type DiffMode = "working" | "staged";
+type CommitMode = "commit" | "commitAndPush";
 
 interface GitPanelProps {
   workspaceCwd: string | null;
+}
+
+interface DiffSelection {
+  path: string;
+  mode: DiffMode;
 }
 
 function normalizeError(error: unknown): string {
@@ -62,19 +76,30 @@ function statusColor(status: string): string {
   }
 }
 
+function uniqPaths(entries: GitStatusEntry[]): string[] {
+  return [...new Set(entries.map((entry) => entry.path))];
+}
+
+function formatActionNotice(result: GitActionResponse): string {
+  if (result.stderr?.trim()) {
+    return `${result.message}\n${result.stderr.trim()}`;
+  }
+  return result.message;
+}
+
 export function GitPanel({ workspaceCwd }: GitPanelProps) {
   const intl = useIntl();
-  const [view, setView] = useState<GitView>("changes");
+  const commitMenuRef = useRef<HTMLDivElement | null>(null);
+  const [section, setSection] = useState<GitSection>("changes");
   const [status, setStatus] = useState<GitStatusResponse | null>(null);
   const [history, setHistory] = useState<GitLogEntry[]>([]);
   const [branches, setBranches] = useState<Array<{ name: string; current: boolean; upstream?: string | null }>>([]);
   const [selectedBranch, setSelectedBranch] = useState("");
-  const [syncBranch, setSyncBranch] = useState("");
   const [newBranchName, setNewBranchName] = useState("");
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [diffMode, setDiffMode] = useState<"working" | "staged">("working");
+  const [selectedDiff, setSelectedDiff] = useState<DiffSelection | null>(null);
   const [diffText, setDiffText] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
+  const [commitMenuOpen, setCommitMenuOpen] = useState(false);
   const [resetMode, setResetMode] = useState<"soft" | "mixed" | "hard">("mixed");
   const [resetTarget, setResetTarget] = useState("HEAD");
   const [revertCommit, setRevertCommit] = useState("");
@@ -86,6 +111,12 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
   const [noticeText, setNoticeText] = useState<string | null>(null);
 
   const currentBranch = useMemo(() => branches.find((item) => item.current)?.name ?? "", [branches]);
+  const changes = status?.changes ?? [];
+  const stagedEntries = useMemo(() => changes.filter((entry) => entry.staged), [changes]);
+  const unstagedEntries = useMemo(() => changes.filter((entry) => entry.unstaged), [changes]);
+  const untrackedEntries = useMemo(() => changes.filter((entry) => entry.untracked), [changes]);
+  const allChangePaths = useMemo(() => uniqPaths(changes), [changes]);
+  const stagedPaths = useMemo(() => uniqPaths(stagedEntries), [stagedEntries]);
 
   const refreshAll = useCallback(async () => {
     if (!workspaceCwd) {
@@ -93,8 +124,7 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
       setHistory([]);
       setBranches([]);
       setSelectedBranch("");
-      setSyncBranch("");
-      setSelectedPath(null);
+      setSelectedDiff(null);
       setDiffText("");
       return;
     }
@@ -111,7 +141,6 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
       setHistory(logResp.entries);
       setBranches(branchResp.branches);
       setSelectedBranch((prev) => prev || branchResp.current || branchResp.branches[0]?.name || "");
-      setSyncBranch((prev) => prev || branchResp.current || "");
     } catch (error) {
       setErrorText(normalizeError(error));
     } finally {
@@ -120,12 +149,12 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
   }, [workspaceCwd]);
 
   const loadDiff = useCallback(
-    async (path: string, mode: "working" | "staged") => {
+    async (selection: DiffSelection) => {
       if (!workspaceCwd) {
         return;
       }
       try {
-        const resp = await gitDiff(workspaceCwd, path, mode === "staged");
+        const resp = await gitDiff(workspaceCwd, selection.path, selection.mode === "staged");
         setDiffText(resp.text);
       } catch (error) {
         setDiffText(intl.formatMessage({ id: "git.diffLoadFailed" }, { error: normalizeError(error) }));
@@ -139,36 +168,47 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
   }, [refreshAll]);
 
   useEffect(() => {
-    if (!selectedPath) {
+    if (!selectedDiff) {
       setDiffText("");
       return;
     }
-    void loadDiff(selectedPath, diffMode);
-  }, [diffMode, loadDiff, selectedPath]);
+    void loadDiff(selectedDiff);
+  }, [loadDiff, selectedDiff]);
 
   useEffect(() => {
-    if (!selectedPath || !status) {
+    if (!selectedDiff || !status) {
       return;
     }
-    // 刷新后如果该文件已经不在变更列表，自动清理右侧 diff，避免显示过时内容。
-    const stillExists = status.changes.some((entry) => entry.path === selectedPath);
+    const stillExists = status.changes.some((entry) => entry.path === selectedDiff.path);
     if (!stillExists) {
-      setSelectedPath(null);
+      setSelectedDiff(null);
       setDiffText("");
     }
-  }, [selectedPath, status]);
+  }, [selectedDiff, status]);
+
+  useEffect(() => {
+    if (!commitMenuOpen) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      if (commitMenuRef.current && !commitMenuRef.current.contains(event.target as Node)) {
+        setCommitMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [commitMenuOpen]);
 
   const runAction = useCallback(
-    async (actionLabel: string, action: () => Promise<{ message: string; stdout: string; stderr: string }>) => {
+    async (actionLabel: string, action: () => Promise<GitActionResponse>) => {
       setBusyAction(actionLabel);
       setNoticeText(null);
       setErrorText(null);
       try {
         const result = await action();
-        setNoticeText(result.message || intl.formatMessage({ id: "git.actionDone" }, { action: actionLabel }));
-        if (result.stderr?.trim()) {
-          setNoticeText(`${result.message}\n${result.stderr.trim()}`);
-        }
+        setNoticeText(formatActionNotice(result));
         await refreshAll();
       } catch (error) {
         setErrorText(normalizeError(error));
@@ -176,38 +216,98 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
         setBusyAction(null);
       }
     },
-    [intl, refreshAll],
+    [refreshAll],
   );
 
-  const handleStageToggle = useCallback(
-    async (entry: GitStatusEntry) => {
+  const handleSelectDiff = useCallback((path: string, mode: DiffMode) => {
+    setSelectedDiff({ path, mode });
+  }, []);
+
+  const handleStagePath = useCallback(
+    async (path: string) => {
       if (!workspaceCwd) {
         return;
       }
-      if (entry.staged) {
-        await runAction(intl.formatMessage({ id: "git.unstage" }), () => gitUnstage([entry.path], workspaceCwd));
-      } else {
-        await runAction(intl.formatMessage({ id: "git.stage" }), () => gitStage([entry.path], workspaceCwd));
-      }
+      await runAction(intl.formatMessage({ id: "git.stage" }), () => gitStage([path], workspaceCwd));
     },
     [intl, runAction, workspaceCwd],
   );
 
-  const handleCommit = useCallback(async () => {
-    if (!workspaceCwd) {
+  const handleUnstagePath = useCallback(
+    async (path: string) => {
+      if (!workspaceCwd) {
+        return;
+      }
+      await runAction(intl.formatMessage({ id: "git.unstage" }), () => gitUnstage([path], workspaceCwd));
+    },
+    [intl, runAction, workspaceCwd],
+  );
+
+  const handleStageAll = useCallback(async () => {
+    if (!workspaceCwd || allChangePaths.length === 0) {
       return;
     }
-    const trimmed = commitMessage.trim();
-    if (!trimmed) {
-      setErrorText(intl.formatMessage({ id: "git.commitEmptyError" }));
+    await runAction(intl.formatMessage({ id: "git.stageAll" }), () => gitStage(allChangePaths, workspaceCwd));
+  }, [allChangePaths, intl, runAction, workspaceCwd]);
+
+  const handleUnstageAll = useCallback(async () => {
+    if (!workspaceCwd || stagedPaths.length === 0) {
       return;
     }
-    await runAction(intl.formatMessage({ id: "git.tabCommit" }), async () => {
-      const result = await gitCommit(trimmed, workspaceCwd);
-      setCommitMessage("");
-      return result;
-    });
-  }, [commitMessage, intl, runAction, workspaceCwd]);
+    await runAction(intl.formatMessage({ id: "git.unstageAll" }), () => gitUnstage(stagedPaths, workspaceCwd));
+  }, [intl, runAction, stagedPaths, workspaceCwd]);
+
+  const handleCommit = useCallback(
+    async (mode: CommitMode) => {
+      if (!workspaceCwd) {
+        return;
+      }
+
+      const trimmed = commitMessage.trim();
+      if (!trimmed) {
+        setErrorText(intl.formatMessage({ id: "git.commitEmptyError" }));
+        return;
+      }
+
+      const actionLabel = intl.formatMessage({ id: mode === "commit" ? "git.tabCommit" : "git.commitAndPush" });
+      setCommitMenuOpen(false);
+      setBusyAction(actionLabel);
+      setNoticeText(null);
+      setErrorText(null);
+
+      try {
+        const commitResult = await gitCommit(trimmed, workspaceCwd);
+        setCommitMessage("");
+
+        if (mode === "commitAndPush") {
+          try {
+            const pushResult = await gitPush(workspaceCwd, "origin", currentBranch || undefined, false);
+            setNoticeText(
+              formatActionNotice({
+                ...pushResult,
+                message: `${commitResult.message} ${pushResult.message}`.trim(),
+                stderr: [commitResult.stderr, pushResult.stderr].filter(Boolean).join("\n"),
+              }),
+            );
+          } catch (error) {
+            setErrorText(
+              `${intl.formatMessage({ id: "git.pushFailedAfterCommit" }, { error: normalizeError(error) })}\n${formatActionNotice(commitResult)}`,
+            );
+          }
+        } else {
+          setNoticeText(formatActionNotice(commitResult));
+        }
+
+        setSection("changes");
+        await refreshAll();
+      } catch (error) {
+        setErrorText(normalizeError(error));
+      } finally {
+        setBusyAction(null);
+      }
+    },
+    [commitMessage, currentBranch, intl, refreshAll, workspaceCwd],
+  );
 
   const handleCheckout = useCallback(async () => {
     if (!workspaceCwd || !selectedBranch) {
@@ -229,7 +329,6 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
       const result = await gitCheckout(trimmed, true, workspaceCwd);
       setNewBranchName("");
       setSelectedBranch(trimmed);
-      setSyncBranch(trimmed);
       return result;
     });
   }, [intl, newBranchName, runAction, workspaceCwd]);
@@ -238,15 +337,15 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
     if (!workspaceCwd) {
       return;
     }
-    await runAction(intl.formatMessage({ id: "git.pull" }), () => gitPull(workspaceCwd, "origin", syncBranch || currentBranch || undefined, false));
-  }, [currentBranch, intl, runAction, syncBranch, workspaceCwd]);
+    await runAction(intl.formatMessage({ id: "git.pull" }), () => gitPull(workspaceCwd, "origin", currentBranch || undefined, false));
+  }, [currentBranch, intl, runAction, workspaceCwd]);
 
   const handlePush = useCallback(async () => {
     if (!workspaceCwd) {
       return;
     }
-    await runAction(intl.formatMessage({ id: "git.push" }), () => gitPush(workspaceCwd, "origin", syncBranch || currentBranch || undefined, false));
-  }, [currentBranch, intl, runAction, syncBranch, workspaceCwd]);
+    await runAction(intl.formatMessage({ id: "git.push" }), () => gitPush(workspaceCwd, "origin", currentBranch || undefined, false));
+  }, [currentBranch, intl, runAction, workspaceCwd]);
 
   const handleReset = useCallback(async () => {
     if (!workspaceCwd) {
@@ -304,131 +403,249 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
     );
   }
 
-  const changes = status?.changes ?? [];
   const stagedCount = status?.stagedCount ?? 0;
+  const iconButtonClass =
+    "flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35";
+
+  const renderChangeRow = (
+    entry: GitStatusEntry,
+    diffMode: DiffMode,
+    actionType: "stage" | "unstage",
+  ) => {
+    const isSelected = selectedDiff?.path === entry.path && selectedDiff.mode === diffMode;
+    return (
+      <div
+        key={`${diffMode}-${entry.path}-${entry.status}`}
+        className={`border-b border-[var(--border-subtle)] px-2 py-2 last:border-b-0 ${
+          isSelected ? "bg-[var(--accent-soft)]" : "hover:bg-[var(--surface-elevated)]"
+        }`}
+      >
+        <div className="flex items-start gap-2">
+          <button
+            type="button"
+            onClick={() => handleSelectDiff(entry.path, diffMode)}
+            className="min-w-0 flex-1 text-left"
+          >
+            <div className="flex items-center gap-2">
+              <span className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${statusColor(entry.status)}`}>
+                {entry.status}
+              </span>
+              {entry.staged && entry.unstaged && (
+                <span className="rounded-full bg-[var(--surface-elevated)] px-1.5 py-0.5 text-[9px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "git.partialChanges" })}
+                </span>
+              )}
+            </div>
+            {entry.oldPath ? (
+              <div className="mt-0.5 break-all text-[11px] text-[var(--text-faint)]">
+                {entry.oldPath} -&gt; {entry.path}
+              </div>
+            ) : (
+              <div className="mt-0.5 break-all text-[12px] text-[var(--text-base)]">{entry.path}</div>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => void (actionType === "stage" ? handleStagePath(entry.path) : handleUnstagePath(entry.path))}
+            disabled={busyAction !== null}
+            className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-subtle)] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-soft)] hover:text-[var(--text-strong)] disabled:opacity-35"
+            title={intl.formatMessage({ id: actionType === "stage" ? "git.stage" : "git.unstage" })}
+          >
+            {actionType === "stage" ? <IconPlus size={12} stroke={2} /> : <IconMinus size={12} stroke={2} />}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderChangeSection = (
+    titleId: string,
+    entries: GitStatusEntry[],
+    diffMode: DiffMode,
+    actionType: "stage" | "unstage",
+  ) => {
+    if (entries.length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="border-b border-[var(--border-subtle)] last:border-b-0">
+        <div className="flex items-center justify-between px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-faint)]">
+          <span>{intl.formatMessage({ id: titleId })}</span>
+          <span>{entries.length}</span>
+        </div>
+        {entries.map((entry) => renderChangeRow(entry, diffMode, actionType))}
+      </div>
+    );
+  };
+
+  const sectionButton = (
+    nextSection: GitSection,
+    icon: JSX.Element,
+    titleId: string,
+  ) => (
+    <button
+      type="button"
+      onClick={() => setSection(nextSection)}
+      className={`flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] transition-colors ${
+        section === nextSection
+          ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+          : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+      }`}
+      title={intl.formatMessage({ id: titleId })}
+      aria-label={intl.formatMessage({ id: titleId })}
+    >
+      {icon}
+    </button>
+  );
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-strong)]">
-            <IconGitBranch size={14} stroke={1.8} />
-            <span className="truncate">{currentBranch || status?.branch || "unknown"}</span>
+      <div className="border-b border-[var(--border-subtle)] px-3 py-3">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-strong)]">
+              <IconGitBranch size={14} stroke={1.8} />
+              <span className="truncate">{currentBranch || status?.branch || "unknown"}</span>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-[var(--text-faint)]">
+              {status?.upstream && (
+                <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-1.5 py-0.5">
+                  {status.upstream}
+                </span>
+              )}
+              {status?.ahead ? (
+                <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-1.5 py-0.5">
+                  ↑{status.ahead}
+                </span>
+              ) : null}
+              {status?.behind ? (
+                <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-1.5 py-0.5">
+                  ↓{status.behind}
+                </span>
+              ) : null}
+            </div>
           </div>
-          <div className="truncate text-[11px] text-[var(--text-faint)]">
-            {workspaceCwd}
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => void refreshAll()}
+              className={iconButtonClass}
+              title={intl.formatMessage({ id: "git.refreshTitle" })}
+            >
+              <IconRefresh size={14} stroke={1.8} className={loading ? "animate-spin" : ""} />
+            </button>
+            <button
+              type="button"
+              onClick={() => void handlePull()}
+              disabled={busyAction !== null}
+              className={iconButtonClass}
+              title={intl.formatMessage({ id: "git.pull" })}
+            >
+              <IconArrowDown size={14} stroke={1.8} />
+            </button>
+            <button
+              type="button"
+              onClick={() => void handlePush()}
+              disabled={busyAction !== null}
+              className={iconButtonClass}
+              title={intl.formatMessage({ id: "git.push" })}
+            >
+              <IconArrowUp size={14} stroke={1.8} />
+            </button>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void refreshAll()}
-          className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-          title={intl.formatMessage({ id: "git.refreshTitle" })}
-        >
-          <IconRefresh size={14} stroke={1.8} className={loading ? "animate-spin" : ""} />
-        </button>
-      </div>
 
-      <div className="flex flex-wrap items-center gap-1 border-b border-[var(--border-subtle)] px-2 py-2">
-        <button
-          type="button"
-          onClick={() => setView("changes")}
-          className={`rounded-[var(--radius-sm)] px-2 py-1 text-xs ${
-            view === "changes"
-              ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-              : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-          }`}
-        >
-          {intl.formatMessage({ id: "git.tabChanges" })}
-        </button>
-        <button
-          type="button"
-          onClick={() => setView("commit")}
-          className={`rounded-[var(--radius-sm)] px-2 py-1 text-xs ${
-            view === "commit"
-              ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-              : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-          }`}
-        >
-          {intl.formatMessage({ id: "git.tabCommit" })}
-        </button>
-        <button
-          type="button"
-          onClick={() => setView("history")}
-          className={`rounded-[var(--radius-sm)] px-2 py-1 text-xs ${
-            view === "history"
-              ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-              : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-          }`}
-        >
-          {intl.formatMessage({ id: "git.tabHistory" })}
-        </button>
+        <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] p-2.5">
+          <textarea
+            value={commitMessage}
+            onChange={(event) => setCommitMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                event.preventDefault();
+                void handleCommit(event.shiftKey ? "commitAndPush" : "commit");
+              }
+            }}
+            placeholder={intl.formatMessage({ id: "git.commitPlaceholder" })}
+            className="min-h-[74px] w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] px-2.5 py-2 text-xs text-[var(--text-base)] outline-none transition-colors focus:border-[var(--accent-border)]"
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+              <button
+                type="button"
+                onClick={() => void handleStageAll()}
+                disabled={busyAction !== null || allChangePaths.length === 0}
+                className={`${iconButtonClass} shrink-0`}
+                title={intl.formatMessage({ id: "git.stageAll" })}
+              >
+                <IconPlus size={13} stroke={2} />
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleUnstageAll()}
+                disabled={busyAction !== null || stagedPaths.length === 0}
+                className={`${iconButtonClass} shrink-0`}
+                title={intl.formatMessage({ id: "git.unstageAll" })}
+              >
+                <IconMinus size={13} stroke={2} />
+              </button>
+              <span className="min-w-0 rounded-full border border-[var(--border-subtle)] bg-[var(--surface-main)] px-2 py-1 text-[10px] text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "git.stagedFileCount" }, { count: stagedCount })}
+              </span>
+            </div>
+
+            <div ref={commitMenuRef} className="relative ml-auto flex shrink-0 items-stretch">
+              <button
+                type="button"
+                onClick={() => void handleCommit("commit")}
+                disabled={busyAction !== null || stagedCount <= 0}
+                className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-l-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 py-1.5 text-xs font-medium text-[var(--accent-strong)] transition-colors hover:bg-[rgba(34,197,94,0.18)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <IconCheck size={13} stroke={2} />
+                {intl.formatMessage({ id: "git.tabCommit" })}
+              </button>
+              <button
+                type="button"
+                onClick={() => setCommitMenuOpen((open) => !open)}
+                disabled={busyAction !== null || stagedCount <= 0}
+                className="shrink-0 rounded-r-[var(--radius-sm)] border border-l-0 border-[var(--accent-border)] bg-[var(--accent-soft)] px-2 text-[var(--accent-strong)] transition-colors hover:bg-[rgba(34,197,94,0.18)] disabled:cursor-not-allowed disabled:opacity-40"
+                title={intl.formatMessage({ id: "git.commitMenu" })}
+              >
+                <IconChevronDown size={13} stroke={2} />
+              </button>
+              {commitMenuOpen && (
+                <div className="absolute right-0 top-[calc(100%+6px)] z-10 min-w-[170px] rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-1 shadow-[var(--shadow-strong)]">
+                  <button
+                    type="button"
+                    onClick={() => void handleCommit("commit")}
+                    className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+                  >
+                    <IconGitCommit size={13} stroke={1.9} />
+                    {intl.formatMessage({ id: "git.tabCommit" })}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleCommit("commitAndPush")}
+                    className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+                  >
+                    <IconArrowUp size={13} stroke={1.9} />
+                    {intl.formatMessage({ id: "git.commitAndPush" })}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="mt-2 text-[10px] text-[var(--text-faint)]">
+            {intl.formatMessage({ id: "git.commitShortcutHint" })}
+          </div>
+        </div>
       </div>
 
       <div className="flex items-center gap-1 border-b border-[var(--border-subtle)] px-2 py-2">
-        <select
-          value={selectedBranch}
-          onChange={(event) => setSelectedBranch(event.target.value)}
-          className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
-        >
-          {branches.map((branch) => (
-            <option key={branch.name} value={branch.name}>
-              {branch.name}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={() => void handleCheckout()}
-          disabled={!selectedBranch || busyAction !== null}
-          className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
-        >
-          {intl.formatMessage({ id: "git.checkout" })}
-        </button>
-      </div>
-
-      <div className="flex items-center gap-1 border-b border-[var(--border-subtle)] px-2 py-2">
-        <input
-          value={newBranchName}
-          onChange={(event) => setNewBranchName(event.target.value)}
-          placeholder={intl.formatMessage({ id: "git.newBranchPlaceholder" })}
-          className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
-        />
-        <button
-          type="button"
-          onClick={() => void handleCreateBranch()}
-          disabled={busyAction !== null}
-          className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
-        >
-          {intl.formatMessage({ id: "git.createAndCheckout" })}
-        </button>
-      </div>
-
-      <div className="flex items-center gap-1 border-b border-[var(--border-subtle)] px-2 py-2">
-        <input
-          value={syncBranch}
-          onChange={(event) => setSyncBranch(event.target.value)}
-          placeholder={intl.formatMessage({ id: "git.syncBranchPlaceholder" })}
-          className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
-        />
-        <button
-          type="button"
-          onClick={() => void handlePull()}
-          disabled={busyAction !== null}
-          className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
-        >
-          <IconArrowDown size={12} />
-          {intl.formatMessage({ id: "git.pull" })}
-        </button>
-        <button
-          type="button"
-          onClick={() => void handlePush()}
-          disabled={busyAction !== null}
-          className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
-        >
-          <IconArrowUp size={12} />
-          {intl.formatMessage({ id: "git.push" })}
-        </button>
+        {sectionButton("changes", <IconFiles size={14} stroke={1.8} />, "git.openChanges")}
+        {sectionButton("branches", <IconGitBranch size={14} stroke={1.8} />, "git.openBranches")}
+        {sectionButton("history", <IconHistory size={14} stroke={1.8} />, "git.openHistory")}
+        {sectionButton("danger", <IconAlertTriangle size={14} stroke={1.8} />, "git.openDanger")}
       </div>
 
       {(errorText || noticeText) && (
@@ -444,64 +661,43 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
       )}
 
       <div className="min-h-0 flex-1 overflow-hidden px-2 py-2">
-        {view === "changes" ? (
+        {section === "changes" ? (
           <div className="flex h-full min-h-0 flex-col gap-2">
-            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-[11px] text-[var(--text-muted)]">
-              staged: {status?.stagedCount ?? 0} | unstaged: {status?.unstagedCount ?? 0} | untracked: {status?.untrackedCount ?? 0}
+            <div className="flex flex-wrap gap-1 text-[10px] text-[var(--text-faint)]">
+              <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+                {intl.formatMessage({ id: "git.sectionStaged" })} {status?.stagedCount ?? 0}
+              </span>
+              <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+                {intl.formatMessage({ id: "git.sectionChanges" })} {status?.unstagedCount ?? 0}
+              </span>
+              <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
+                {intl.formatMessage({ id: "git.sectionUntracked" })} {status?.untrackedCount ?? 0}
+              </span>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
+
+            <div className="min-h-0 overflow-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
               {changes.length === 0 ? (
                 <div className="p-3 text-xs text-[var(--text-faint)]">{intl.formatMessage({ id: "git.workingClean" })}</div>
               ) : (
-                changes.map((entry) => (
-                  <div
-                    key={`${entry.path}-${entry.status}`}
-                    className={`border-b border-[var(--border-subtle)] px-2 py-2 last:border-b-0 ${
-                      selectedPath === entry.path ? "bg-[var(--accent-soft)]" : "hover:bg-[var(--surface-elevated)]"
-                    }`}
-                  >
-                    <div className="flex items-start gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedPath(entry.path);
-                          void loadDiff(entry.path, diffMode);
-                        }}
-                        className="min-w-0 flex-1 text-left"
-                      >
-                        <div className={`text-[11px] font-semibold uppercase ${statusColor(entry.status)}`}>
-                          {entry.status}
-                        </div>
-                        {entry.oldPath ? (
-                          <div className="break-all text-[11px] text-[var(--text-faint)]">
-                            {entry.oldPath} -&gt; {entry.path}
-                          </div>
-                        ) : (
-                          <div className="break-all text-[12px] text-[var(--text-base)]">{entry.path}</div>
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleStageToggle(entry)}
-                        disabled={busyAction !== null}
-                        className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-[11px] text-[var(--text-base)] hover:bg-[var(--surface-soft)] disabled:opacity-40"
-                      >
-                        {entry.staged ? intl.formatMessage({ id: "git.unstage" }) : intl.formatMessage({ id: "git.stage" })}
-                      </button>
-                    </div>
-                  </div>
-                ))
+                <>
+                  {renderChangeSection("git.sectionStaged", stagedEntries, "staged", "unstage")}
+                  {renderChangeSection("git.sectionChanges", unstagedEntries, "working", "stage")}
+                  {renderChangeSection("git.sectionUntracked", untrackedEntries, "working", "stage")}
+                </>
               )}
             </div>
+
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
               <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-2 py-1">
-                <span className="truncate text-[11px] text-[var(--text-faint)]">{selectedPath ?? intl.formatMessage({ id: "git.selectFileForDiff" })}</span>
+                <span className="truncate text-[11px] text-[var(--text-faint)]">
+                  {selectedDiff?.path ?? intl.formatMessage({ id: "git.selectFileForDiff" })}
+                </span>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={() => setDiffMode("working")}
+                    onClick={() => selectedDiff && handleSelectDiff(selectedDiff.path, "working")}
                     className={`rounded-[var(--radius-sm)] px-2 py-0.5 text-[11px] ${
-                      diffMode === "working"
+                      selectedDiff?.mode === "working"
                         ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
                         : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)]"
                     }`}
@@ -510,9 +706,9 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setDiffMode("staged")}
+                    onClick={() => selectedDiff && handleSelectDiff(selectedDiff.path, "staged")}
                     className={`rounded-[var(--radius-sm)] px-2 py-0.5 text-[11px] ${
-                      diffMode === "staged"
+                      selectedDiff?.mode === "staged"
                         ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
                         : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)]"
                     }`}
@@ -526,29 +722,84 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
               </pre>
             </div>
           </div>
-        ) : view === "commit" ? (
+        ) : section === "branches" ? (
           <div className="flex h-full flex-col gap-2">
-            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-[11px] text-[var(--text-muted)]">
-              {intl.formatMessage({ id: "git.stagedFileCount" }, { count: stagedCount })}
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2.5 py-2 text-[11px] text-[var(--text-muted)]">
+              {intl.formatMessage({ id: "git.branchSectionHint" })}
             </div>
-            <textarea
-              value={commitMessage}
-              onChange={(event) => setCommitMessage(event.target.value)}
-              placeholder={intl.formatMessage({ id: "git.commitPlaceholder" })}
-              className="min-h-[100px] w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] px-2 py-2 text-xs text-[var(--text-base)]"
-            />
-            <button
-              type="button"
-              onClick={() => void handleCommit()}
-              disabled={busyAction !== null || stagedCount <= 0}
-              className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-3 py-2 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
-            >
-              <IconGitCommit size={14} />
-              {intl.formatMessage({ id: "git.tabCommit" })}
-            </button>
-
-            <div className="mt-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
-              <div className="mb-2 text-[11px] font-semibold text-[var(--text-muted)]">{intl.formatMessage({ id: "git.advancedDanger" })}</div>
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
+              <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.checkout" })}</div>
+              <div className="flex items-center gap-1">
+                <select
+                  value={selectedBranch}
+                  onChange={(event) => setSelectedBranch(event.target.value)}
+                  className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
+                >
+                  {branches.map((branch) => (
+                    <option key={branch.name} value={branch.name}>
+                      {branch.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => void handleCheckout()}
+                  disabled={!selectedBranch || busyAction !== null}
+                  className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
+                >
+                  <IconGitBranch size={12} stroke={1.9} />
+                  {intl.formatMessage({ id: "git.checkout" })}
+                </button>
+              </div>
+            </div>
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
+              <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.createAndCheckout" })}</div>
+              <div className="flex items-center gap-1">
+                <input
+                  value={newBranchName}
+                  onChange={(event) => setNewBranchName(event.target.value)}
+                  placeholder={intl.formatMessage({ id: "git.newBranchPlaceholder" })}
+                  className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleCreateBranch()}
+                  disabled={busyAction !== null}
+                  className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
+                >
+                  <IconPlus size={12} stroke={1.9} />
+                  {intl.formatMessage({ id: "git.createAndCheckout" })}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : section === "history" ? (
+          <div className="thin-scrollbar h-full overflow-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
+            {history.length === 0 ? (
+              <div className="p-3 text-xs text-[var(--text-faint)]">{intl.formatMessage({ id: "git.noHistory" })}</div>
+            ) : (
+              history.map((entry) => (
+                <div key={entry.hash} className="border-b border-[var(--border-subtle)] px-3 py-2 last:border-b-0">
+                  <div className="flex items-center gap-2 text-[11px] text-[var(--text-faint)]">
+                    <span className="inline-flex items-center gap-1">
+                      <IconGitCommit size={12} stroke={1.8} />
+                      {entry.shortHash}
+                    </span>
+                    <span>{entry.author}</span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-[var(--text-base)]">{entry.message}</div>
+                  <div className="mt-0.5 text-[11px] text-[var(--text-faint)]">{entry.date}</div>
+                </div>
+              ))
+            )}
+          </div>
+        ) : (
+          <div className="flex h-full flex-col gap-2">
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--danger-soft)] px-2.5 py-2 text-[11px] text-[var(--danger)]">
+              {intl.formatMessage({ id: "git.dangerSectionHint" })}
+            </div>
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
+              <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.executeReset" })}</div>
               <div className="grid grid-cols-2 gap-2">
                 <select
                   value={resetMode}
@@ -571,12 +822,15 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                   disabled={busyAction !== null}
                   className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] hover:bg-[var(--surface-elevated)] disabled:opacity-40"
                 >
-                  <IconRotateClockwise2 size={13} />
+                  <IconRotateClockwise2 size={13} stroke={1.8} />
                   {intl.formatMessage({ id: "git.executeReset" })}
                 </button>
               </div>
+            </div>
 
-              <div className="mt-2 grid grid-cols-2 gap-2">
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
+              <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.executeRevert" })}</div>
+              <div className="grid grid-cols-2 gap-2">
                 <input
                   value={revertCommit}
                   onChange={(event) => setRevertCommit(event.target.value)}
@@ -589,16 +843,19 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                   disabled={busyAction !== null}
                   className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] hover:bg-[var(--surface-elevated)] disabled:opacity-40"
                 >
-                  <IconHistory size={13} />
+                  <IconHistory size={13} stroke={1.8} />
                   {intl.formatMessage({ id: "git.executeRevert" })}
                 </button>
               </div>
+            </div>
 
-              <div className="mt-2 grid grid-cols-2 gap-2">
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
+              <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.cherryPickLabel" })}</div>
+              <div className="grid grid-cols-2 gap-2">
                 <input
                   value={cherryCommit}
                   onChange={(event) => setCherryCommit(event.target.value)}
-                  placeholder="cherry-pick commit"
+                  placeholder={intl.formatMessage({ id: "git.cherryPickPlaceholder" })}
                   className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
                 />
                 <button
@@ -607,8 +864,8 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                   disabled={busyAction !== null}
                   className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] hover:bg-[var(--surface-elevated)] disabled:opacity-40"
                 >
-                  <IconGitCherryPick size={13} />
-                  Cherry-pick
+                  <IconGitCherryPick size={13} stroke={1.8} />
+                  {intl.formatMessage({ id: "git.cherryPickLabel" })}
                 </button>
               </div>
               <label className="mt-2 flex items-center gap-1 text-[11px] text-[var(--text-faint)]">
@@ -620,26 +877,6 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
                 {intl.formatMessage({ id: "git.cherryPickNoCommit" })}
               </label>
             </div>
-          </div>
-        ) : (
-          <div className="thin-scrollbar h-full overflow-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
-            {history.length === 0 ? (
-              <div className="p-3 text-xs text-[var(--text-faint)]">{intl.formatMessage({ id: "git.noHistory" })}</div>
-            ) : (
-              history.map((entry) => (
-                <div key={entry.hash} className="border-b border-[var(--border-subtle)] px-3 py-2 last:border-b-0">
-                  <div className="flex items-center gap-2 text-[11px] text-[var(--text-faint)]">
-                    <span className="inline-flex items-center gap-1">
-                      <IconGitCommit size={12} />
-                      {entry.shortHash}
-                    </span>
-                    <span>{entry.author}</span>
-                  </div>
-                  <div className="mt-0.5 text-xs text-[var(--text-base)]">{entry.message}</div>
-                  <div className="mt-0.5 text-[11px] text-[var(--text-faint)]">{entry.date}</div>
-                </div>
-              ))
-            )}
           </div>
         )}
       </div>
