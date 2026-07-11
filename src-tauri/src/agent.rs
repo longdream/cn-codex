@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -81,7 +81,7 @@ use crate::tool_executor::ToolExecutor;
 use crate::usage::UsageRecorder;
 use plan_support::{
     build_active_plan_context_prompt, plan_contents_equivalent, read_plan_file_content,
-    resolve_effective_plan_content, user_requested_new_plan_file,
+    resolve_effective_plan_content, resolve_plan_storage_path, user_requested_new_plan_file,
 };
 use prompt_context::{render_robot_runtime_prompt, render_smartbrain_runtime_prompt};
 use protocol_support::{
@@ -1078,28 +1078,8 @@ impl AgentEngine {
                                 && !node_done_signal
                                 && assistant_is_waiting_for_user(&cleaned_text);
                             if waiting_for_user_requirements {
-                                // 倒计时等待：给用户 30 秒补充信息，超时后自动按已有信息继续。
-                                const ROBOT_WAIT_TIMEOUT_MS: u64 = 30_000;
                                 let wait_call_id = format!("robot-wait-{}", uuid::Uuid::new_v4());
-                                info!(
-                                    "Robot workflow waiting for user input (timeout={ROBOT_WAIT_TIMEOUT_MS}ms, callId={wait_call_id})"
-                                );
-
-                                // 发送等待事件，让前端展示倒计时 UI
-                                emit_and_broadcast(
-                                    app_handle,
-                                    "robot-waiting-for-input",
-                                    serde_json::json!({
-                                        "threadId": thread_id,
-                                        "callId": &wait_call_id,
-                                        "countdownMs": ROBOT_WAIT_TIMEOUT_MS,
-                                        "assistantText": &cleaned_text,
-                                    }),
-                                );
-
-                                // 通过 approval 通道等待用户回复或超时
-                                let request_id =
-                                    crate::protocol::RequestId::String(wait_call_id.clone());
+                                let request_id = crate::protocol::RequestId::String(wait_call_id.clone());
                                 app_handle
                                     .emit(
                                         "server-request",
@@ -1110,66 +1090,31 @@ impl AgentEngine {
                                             "params": {
                                                 "threadId": thread_id,
                                                 "callId": &wait_call_id,
-                                                "countdownMs": ROBOT_WAIT_TIMEOUT_MS,
                                                 "assistantText": &cleaned_text,
                                             },
                                         }),
                                     )
                                     .ok();
 
-                                let wait_result =
-                                    crate::tool_executor::wait_for_approval_result_public(
-                                        app_handle,
-                                        &request_id,
-                                        ROBOT_WAIT_TIMEOUT_MS,
-                                    )
-                                    .await;
-
-                                // 通知前端倒计时结束
-                                emit_and_broadcast(
+                                match crate::tool_executor::wait_for_approval_result_public(
                                     app_handle,
-                                    "robot-wait-resolved",
-                                    serde_json::json!({
-                                        "threadId": thread_id,
-                                        "callId": &wait_call_id,
-                                    }),
-                                );
-
-                                match wait_result {
+                                    &request_id,
+                                    86_400_000,
+                                )
+                                .await
+                                {
                                     Ok(user_reply) => {
-                                        // 用户在倒计时内回复了补充信息（前端传 { "userReply": "..." }）
                                         let reply_text = user_reply
                                             .get("userReply")
-                                            .and_then(|v| v.as_str())
+                                            .and_then(|value| value.as_str())
                                             .unwrap_or("")
                                             .trim()
                                             .to_string();
-
                                         if reply_text.is_empty() {
-                                            // resolve 但无有效文本，等同于跳过
-                                            info!(
-                                                "Robot wait resolved with empty reply, auto-continuing"
-                                            );
-                                            let auto_msg = ThreadMessage {
-                                                id: uuid::Uuid::new_v4().to_string(),
-                                                role: "system".to_string(),
-                                                content: "用户未在限定时间内补充需求，请根据已有信息和上下文继续执行当前节点任务。".to_string(),
-                                                timestamp: now_secs(),
-                                                tool_call_id: None,
-                                                tool_name: None,
-                                                tool_calls: None,
-                                                attachments: Vec::new(),
-                                            };
-                                            self.thread_store
-                                                .add_message(thread_id, auto_msg)
-                                                .await?;
-                                            continue;
+                                            info!("Robot wait resolved without a reply; keeping the workflow paused");
+                                            stop_hooks_satisfied = true;
+                                            break;
                                         }
-
-                                        info!(
-                                            "User replied during robot wait: {} chars",
-                                            reply_text.len()
-                                        );
                                         let user_msg = ThreadMessage {
                                             id: uuid::Uuid::new_v4().to_string(),
                                             role: "user".to_string(),
@@ -1183,28 +1128,10 @@ impl AgentEngine {
                                         self.thread_store.add_message(thread_id, user_msg).await?;
                                         continue;
                                     }
-                                    Err(_timeout_or_reject) => {
-                                        // 超时无回复，注入系统消息自动继续
-                                        info!(
-                                            "Robot wait timed out, auto-continuing with existing info"
-                                        );
-                                        let auto_continue_msg = ThreadMessage {
-                                            id: uuid::Uuid::new_v4().to_string(),
-                                            role: "system".to_string(),
-                                            content:
-                                                "用户未在限定时间内补充需求，请根据已有信息和上下文继续执行当前节点任务。"
-                                                    .to_string(),
-                                            timestamp: now_secs(),
-                                            tool_call_id: None,
-                                            tool_name: None,
-                                            tool_calls: None,
-                                            attachments: Vec::new(),
-                                        };
-                                        self.thread_store
-                                            .add_message(thread_id, auto_continue_msg)
-                                            .await?;
-                                        // 超时后继续 agent 循环
-                                        continue;
+                                    Err(reason) => {
+                                        info!("Robot wait ended without user input: {reason}");
+                                        stop_hooks_satisfied = true;
+                                        break;
                                     }
                                 }
                             }
@@ -2340,8 +2267,8 @@ impl AgentEngine {
         let arch_info = std::env::consts::ARCH;
 
         let workspace_config_dir = self.cwd.join("codey");
-        let user_rules_path = workspace_config_dir.join("user-rules.md");
-        let user_rules_content = std::fs::read_to_string(&user_rules_path).unwrap_or_default();
+        let user_rules_content =
+            crate::commands::rules::read_user_rules_with_default(&workspace_config_dir);
         let user_instructions = if !user_rules_content.trim().is_empty() {
             let truncated = truncate_utf8_by_bytes(&user_rules_content, 4000);
             format!("\n\n## User Rules (from codey/user-rules.md)\n{truncated}")

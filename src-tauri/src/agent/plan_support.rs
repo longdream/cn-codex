@@ -73,7 +73,7 @@ pub(crate) fn user_requested_new_plan_file(user_input: &str) -> bool {
         .any(|pattern| user_input.trim().contains(pattern))
 }
 
-fn resolve_plan_storage_path(stored_path: &str, workspace_root: &Path) -> PathBuf {
+pub(crate) fn resolve_plan_storage_path(stored_path: &str, workspace_root: &Path) -> PathBuf {
     let candidate = PathBuf::from(stored_path);
     if candidate.is_absolute() {
         candidate

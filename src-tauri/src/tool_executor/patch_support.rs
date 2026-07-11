@@ -42,7 +42,7 @@ pub(crate) enum ParsedPatchAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PatchHunk {
+pub(crate) struct PatchHunk {
     old_lines: Vec<String>,
     new_lines: Vec<String>,
 }

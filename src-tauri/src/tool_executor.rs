@@ -40,19 +40,25 @@ mod code_review_support;
 mod memory_support;
 mod patch_support;
 use code_review_support::{
-    CodeReviewArgs, CodeReviewSummary, ReviewFinding, analyze_code_review_diff,
-    code_review_git_args, code_review_scope_label, code_review_untracked_paths,
-    format_code_review_output, validate_code_review_base_ref, validate_code_review_paths,
+    CodeReviewArgs, analyze_code_review_diff, code_review_git_args, code_review_scope_label,
+    code_review_untracked_paths, format_code_review_output, validate_code_review_base_ref,
+    validate_code_review_paths,
 };
+#[cfg(test)]
+use code_review_support::{CodeReviewSummary, ReviewFinding};
 use memory_support::{
-    MemoryListEntry, MemoryOutputFormat, MemorySearchMatch, MemorySearchResult,
-    format_memory_list_output, format_memory_search_output, parse_memory_cursor,
-    read_okf_body_lines, resolve_memory_path, search_memory_files,
+    MemoryListEntry, MemoryOutputFormat, format_memory_list_output, format_memory_search_output,
+    parse_memory_cursor, read_okf_body_lines, resolve_memory_path, search_memory_files,
 };
+#[cfg(test)]
+use memory_support::{MemorySearchMatch, MemorySearchResult};
 use patch_support::{
-    ApplyPatchProgressChange, ApplyPatchReport, ApplyPatchReportChange,
-    apply_patch_progress_changes, apply_patch_to_workspace, extract_patch_argument,
-    format_apply_patch_report, parse_patch_actions, patch_display_label,
+    ApplyPatchProgressChange, apply_patch_progress_changes, apply_patch_to_workspace,
+    extract_patch_argument, format_apply_patch_report, parse_patch_actions, patch_display_label,
+};
+#[cfg(test)]
+use patch_support::{
+    ApplyPatchReport, ApplyPatchReportChange,
 };
 
 /// Provider configuration for internal subagents (set by parent agent before each turn).
@@ -3457,44 +3463,20 @@ impl ToolExecutor {
             }
         }
 
-        // 新流程：apply_patch 先落入“待审阅会话”，不立即写盘。
-        // 用户在聊天区 Keep / Keep All 后，再通过 file_review_apply 执行真正写盘。
-        let review = match crate::file_review::build_pending_patch_review(
-            &self.cwd, thread_id, call_id, &patch,
-        ) {
-            Ok(review) => review,
-            Err(msg) => {
-                let msg = format!("Error applying patch: {msg}");
+        let result = match apply_patch_to_workspace(&self.cwd, &patch) {
+            Ok(report) => {
+                let msg = format_apply_patch_report(&report);
+                self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", 0, &msg);
+                msg
+            }
+            Err(err) => {
+                let msg = format!("Error applying patch: {err}");
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
-                return Ok(msg);
+                msg
             }
         };
-        let review_file_count = review.files.len();
-        {
-            let state = app_handle.state::<AppState>();
-            let mut sessions = state.file_review_sessions.write().await;
-            sessions.insert(
-                crate::file_review::pending_review_key(thread_id, call_id),
-                review,
-            );
-        }
-        let ready_payload = serde_json::json!({
-            "threadId": thread_id,
-            "callId": call_id,
-            "itemId": call_id,
-            "fileCount": review_file_count,
-        });
-        app_handle
-            .emit("file-review-ready", ready_payload.clone())
-            .ok();
-        crate::mobile_server::broadcast("file-review-ready", ready_payload);
 
-        let msg = format!(
-            "Patch parsed successfully. {} file(s) queued for review. Use Keep / Keep All to apply changes.",
-            review_file_count
-        );
-        self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", 0, &msg);
-        Ok(msg)
+        Ok(result)
     }
 
     async fn exec_list_dir(

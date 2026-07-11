@@ -926,7 +926,7 @@
   "settings.rules": "User Rules",
   "settings.rules.description": "Custom AI behavior rules injected into the system prompt.",
   "settings.rules.hint": "Write user rules here (Markdown format). These rules are injected into the AI system prompt and apply to all conversations.",
-  "settings.rules.placeholder": "# My Rules\n\n- Reply in English\n- Use concise implementations\n- Always explain before making changes",
+  "settings.rules.placeholder": "# Default Rules\n\n- Reply in Simplified Chinese unless the user asks otherwise\n- Do not output garbled Chinese text or broken escaping\n- Use standard Markdown formatting, and always add a language tag to code fences\n- Prefer UTF-8 semantics when generating code, comments, or documents that contain Chinese",
   "settings.rules.save": "Save",
   "settings.rules.saving": "Saving...",
   "settings.rules.saved": "Saved",

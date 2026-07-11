@@ -1195,12 +1195,19 @@ export function useTauriEvents() {
         }>("server-request", (e) => {
           const method = e.payload.method ?? "";
 
-          // 机器人等待输入走专用事件通道，不进入 ApprovalModal
-          if (method === "robot_waiting_for_input") return;
+          const isRobotWait = method === "robot_waiting_for_input";
 
           const isUserInput =
             method.includes("request_user_input") ||
             method.includes("requestUserInput");
+
+          if (useAppStore.getState().autoApprove && isRobotWait) {
+            const requestId = e.payload.requestId ?? e.payload.id ?? "";
+            resolveApproval(requestId, { userReply: "请按你提出的推荐方案继续执行。" }).catch((err) =>
+              console.error("Auto-approve robot input failed:", err),
+            );
+            return;
+          }
 
           if (useAppStore.getState().autoApprove && !isUserInput) {
             const reqId = e.payload.requestId ?? e.payload.id ?? "";

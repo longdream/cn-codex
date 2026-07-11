@@ -1980,17 +1980,7 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
   useEffect(() => {
     setRequestError(review?.error ?? null);
   }, [review?.error]);
-
-  if (!review) {
-    return null;
-  }
-
-  const selectedPath = review.selectedPath ?? review.files[0]?.path ?? null;
-  const selectedFile = selectedPath
-    ? review.files.find((file) => file.path === selectedPath) ?? review.files[0]
-    : review.files[0];
-  const keepCount = review.files.filter((file) => file.keep).length;
-  const applying = review.status === "applying";
+  const applying = review?.status === "applying";
 
   const handleApply = useCallback(async () => {
     if (!review) {
@@ -2049,6 +2039,16 @@ function PatchReviewPanel({ toolId }: { toolId: string }) {
       setRequestError(message);
     }
   }, [applying, review, removeReview, setReviewStatus, toolId]);
+
+  if (!review) {
+    return null;
+  }
+
+  const selectedPath = review.selectedPath ?? review.files[0]?.path ?? null;
+  const selectedFile = selectedPath
+    ? review.files.find((file) => file.path === selectedPath) ?? review.files[0]
+    : review.files[0];
+  const keepCount = review.files.filter((file) => file.keep).length;
 
   const selectedAfterContent = selectedFile?.editedContent ?? selectedFile?.candidateContent ?? "";
   const selectedBeforeContent = selectedFile?.baseContent ?? "";

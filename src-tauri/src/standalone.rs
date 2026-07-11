@@ -1264,7 +1264,7 @@ pub async fn fortune_llm_call(
         if wire_api == "chat" && looks_like_json_mode_unsupported(&body_text) {
             info!("[fortune_llm_call] response_format unsupported, retrying without json mode");
             used_json_mode = false;
-            let mut fallback_body =
+            let fallback_body =
                 adapter::build_non_stream_body(&*adapter, &model, &messages, None, Some(4096));
             response = http
                 .post(&url)

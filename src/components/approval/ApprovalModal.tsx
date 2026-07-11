@@ -67,6 +67,7 @@ export function ApprovalModal() {
     current.method.includes("request_permissions") ||
     current.method.includes("requestPermissions")
   );
+  const isRobotWait = current?.method === "robot_waiting_for_input";
   const userInputQuestions = useMemo(
     () => (isUserInput ? userInputQuestionsFromParams(current?.params ?? {}) : []),
     [current?.params, isUserInput],
@@ -93,7 +94,9 @@ export function ApprovalModal() {
       return;
     }
 
-    const decision = isUserInput
+    const decision = isRobotWait
+      ? { userReply: answers.robotReply?.trim() ?? "" }
+      : isUserInput
       ? {
           answers: Object.fromEntries(
             userInputQuestions.map((question) => [
@@ -124,7 +127,7 @@ export function ApprovalModal() {
       console.error("Approve failed:", err);
     }
     setRequests((previous) => previous.slice(1));
-  }, [answers, current, isPermissions, isUserInput, userInputQuestions]);
+  }, [answers, current, isPermissions, isRobotWait, isUserInput, userInputQuestions]);
 
   const handleReject = useCallback(async () => {
     if (!current) {
@@ -151,7 +154,9 @@ export function ApprovalModal() {
       ? intl.formatMessage({ id: "approval.fileChange" })
       : isPermissions
         ? intl.formatMessage({ id: "approval.permissionRequest" })
-        : intl.formatMessage({ id: "approval.title" });
+        : isRobotWait
+          ? "需要你的回复"
+          : intl.formatMessage({ id: "approval.title" });
 
   return (
     <div className="fixed bottom-0 left-0 right-0 top-8 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
@@ -173,6 +178,20 @@ export function ApprovalModal() {
         </div>
 
         <div className="thin-scrollbar max-h-[70vh] overflow-y-auto px-5 py-4">
+          {isRobotWait && (
+            <section className="space-y-3 rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] p-4">
+              <p className="whitespace-pre-wrap text-sm text-[var(--text-base)]">
+                {String(current.params.assistantText ?? "AI 正在等待你的补充信息。")}
+              </p>
+              <textarea
+                autoFocus
+                value={answers.robotReply ?? ""}
+                onChange={(event) => setAnswers((previous) => ({ ...previous, robotReply: event.target.value }))}
+                placeholder="输入你的回复"
+                className="min-h-24 w-full resize-y rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3 text-sm text-[var(--text-base)] outline-none focus:border-[var(--accent)]"
+              />
+            </section>
+          )}
           {(isCommand || isFile) && (
             <p className="mb-4 text-sm text-[var(--text-muted)]">
               {intl.formatMessage({ id: "approval.description" })}
