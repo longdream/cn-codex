@@ -69,8 +69,10 @@ enum PreparedPatchAction {
 
 pub(crate) fn extract_patch_argument(arguments: &str) -> Result<String, String> {
     let trimmed = arguments.trim();
-    if trimmed.starts_with("*** Begin Patch") {
-        return Ok(trimmed.to_string());
+    if !(trimmed.starts_with('{') || trimmed.starts_with('['))
+        && let Ok(patch) = extract_embedded_patch_block(trimmed)
+    {
+        return Ok(patch);
     }
 
     let value: serde_json::Value =
@@ -83,7 +85,7 @@ pub(crate) fn extract_patch_argument(arguments: &str) -> Result<String, String> 
             "Invalid apply_patch args: expected raw patch text or a string field named 'patch' or 'command'".to_string()
         })?;
 
-    Ok(patch.to_string())
+    extract_embedded_patch_block(patch)
 }
 
 pub(crate) fn patch_display_label(patch: &str) -> String {
@@ -305,14 +307,11 @@ fn claim_patch_path(
 }
 
 pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>, String> {
-    let normalized = patch.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = extract_embedded_patch_block(patch)?;
     let lines: Vec<&str> = normalized.lines().collect();
-    let Some(begin) = lines.iter().position(|line| *line == "*** Begin Patch") else {
-        return Err("patch must start with *** Begin Patch".to_string());
-    };
 
     let mut actions = Vec::new();
-    let mut i = begin + 1;
+    let mut i = 1;
     while i < lines.len() {
         let line = lines[i];
         if line == "*** End Patch" {
@@ -357,6 +356,11 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
                         return Err(format!("multiple move destinations for {path}"));
                     }
                     move_to = Some(dest.trim().to_string());
+                    i += 1;
+                    continue;
+                }
+
+                if line.starts_with("*** Desc: ") {
                     i += 1;
                     continue;
                 }
@@ -437,6 +441,42 @@ fn is_patch_section_boundary(line: &str) -> bool {
         || line.starts_with("*** Delete File: ")
 }
 
+fn extract_embedded_patch_block(input: &str) -> Result<String, String> {
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.lines().collect();
+    let Some(begin) = lines.iter().position(|line| is_patch_begin_marker(line)) else {
+        return Err("patch must start with *** Begin Patch".to_string());
+    };
+    let Some(end) = lines.iter().rposition(|line| is_patch_end_marker(line)) else {
+        return Err("patch must end with *** End Patch".to_string());
+    };
+    if end < begin {
+        return Err("patch must end with *** End Patch".to_string());
+    }
+
+    Ok(lines[begin..=end]
+        .iter()
+        .map(|line| normalize_patch_directive_line(line))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn is_patch_begin_marker(line: &str) -> bool {
+    matches!(normalize_patch_directive_line(line).as_str(), "*** Begin Patch")
+}
+
+fn is_patch_end_marker(line: &str) -> bool {
+    matches!(normalize_patch_directive_line(line).as_str(), "*** End Patch")
+}
+
+fn normalize_patch_directive_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("*** ") {
+        return line.to_string();
+    }
+    trimmed.strip_suffix(" ***").unwrap_or(trimmed).to_string()
+}
+
 #[allow(dead_code)]
 fn apply_update_hunks(
     lines: &mut Vec<String>,
@@ -454,10 +494,8 @@ fn apply_update_hunks(
 
         let pos = find_subsequence(lines, &hunk.old_lines, cursor)
             .or_else(|| find_subsequence(lines, &hunk.old_lines, 0))
-            .ok_or_else(|| {
-                let preview = hunk.old_lines.join("\\n");
-                format!("failed to match hunk in {path}: {preview}")
-            })?;
+            .or_else(|| find_unique_relaxed_subsequence(lines, &hunk.old_lines))
+            .ok_or_else(|| format_hunk_match_error(path, &hunk.old_lines))?;
         let end = pos + hunk.old_lines.len();
         lines.splice(pos..end, hunk.new_lines.clone());
         cursor = pos + hunk.new_lines.len();
@@ -482,6 +520,54 @@ fn find_subsequence(lines: &[String], needle: &[String], start: usize) -> Option
             .zip(needle.iter())
             .all(|(a, b)| a == b)
     })
+}
+
+fn find_unique_relaxed_subsequence(lines: &[String], needle: &[String]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > lines.len() {
+        return None;
+    }
+
+    let mut matched = None;
+    for index in 0..=lines.len() - needle.len() {
+        let is_match = lines[index..index + needle.len()]
+            .iter()
+            .zip(needle.iter())
+            .all(|(actual, expected)| relaxed_patch_line(actual) == relaxed_patch_line(expected));
+        if is_match {
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(index);
+        }
+    }
+    matched
+}
+
+fn relaxed_patch_line(line: &str) -> &str {
+    line.trim_start_matches('\u{feff}').trim_end()
+}
+
+fn format_hunk_match_error(path: &str, old_lines: &[String]) -> String {
+    const MAX_PREVIEW_LINES: usize = 8;
+    const MAX_PREVIEW_CHARS: usize = 600;
+
+    let mut preview = old_lines
+        .iter()
+        .take(MAX_PREVIEW_LINES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\\n");
+    if preview.chars().count() > MAX_PREVIEW_CHARS {
+        preview = preview.chars().take(MAX_PREVIEW_CHARS).collect();
+        preview.push_str("...");
+    } else if old_lines.len() > MAX_PREVIEW_LINES {
+        preview.push_str("\\n...");
+    }
+
+    format!(
+        "failed to match hunk in {path} ({} expected lines). The file content has changed or the patch context is stale. Re-read the current file and retry apply_patch with a smaller hunk containing only the changed lines and a few current context lines. Preview: {preview}",
+        old_lines.len()
+    )
 }
 
 #[allow(dead_code)]
@@ -629,4 +715,107 @@ pub(crate) fn format_apply_patch_report(report: &ApplyPatchReport) -> String {
         }
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ParsedPatchAction, PatchHunk, apply_update_hunks, extract_patch_argument,
+        parse_patch_actions,
+    };
+
+    #[test]
+    fn extract_patch_argument_accepts_wrapped_raw_patch_block() {
+        let raw = r#"D:\rustwork\cn-codex-lite-rs\src\App.tsx ***
+*** Begin Patch ***
+*** Update File: D:\rustwork\cn-codex-lite-rs\src\App.tsx ***
+@@ -1 +1 @@
+-old
++new
+*** End Patch ***
+output
+Error applying patch: patch must start with *** Begin Patch"#;
+
+        let patch = extract_patch_argument(raw).unwrap();
+        assert!(patch.starts_with("*** Begin Patch\n"));
+        assert!(patch.contains("*** Update File: D:\\rustwork\\cn-codex-lite-rs\\src\\App.tsx"));
+        assert!(patch.ends_with("*** End Patch"));
+    }
+
+    #[test]
+    fn parse_patch_actions_accepts_trailing_stars_and_wrappers() {
+        let raw = r#"src/App.tsx ***
+*** Begin Patch ***
+*** Update File: src/App.tsx ***
+@@ -1 +1 @@
+-old
++new
+*** End Patch ***
+Applied patch src/App.tsx ***
+done"#;
+
+        let actions = parse_patch_actions(raw).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            ParsedPatchAction::Update { path, .. } => assert_eq!(path, "src/App.tsx"),
+            other => panic!("expected update action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_patch_actions_ignores_desc_metadata_lines() {
+        let raw = r#"*** Begin Patch
+*** Update File: src/style.css
+*** Desc: Remove UTF-8 BOM (U+FEFF) from the first line
+--- a/src/style.css
++++ b/src/style.css
+@@ -1 +1 @@
+-old
++new
+*** End Patch"#;
+
+        let actions = parse_patch_actions(raw).unwrap();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            ParsedPatchAction::Update { path, .. } => assert_eq!(path, "src/style.css"),
+            other => panic!("expected update action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_update_hunks_accepts_unique_trailing_whitespace_and_bom_differences() {
+        let mut lines = vec![
+            "\u{feff}function parseChart() {   ".to_string(),
+            "  return old;\t".to_string(),
+            "}".to_string(),
+        ];
+        let hunks = vec![PatchHunk {
+            old_lines: vec![
+                "function parseChart() {".to_string(),
+                "  return old;".to_string(),
+                "}".to_string(),
+            ],
+            new_lines: vec![
+                "function parseChart() {".to_string(),
+                "  return updated;".to_string(),
+                "}".to_string(),
+            ],
+        }];
+
+        apply_update_hunks(&mut lines, &hunks, "src/App.tsx").unwrap();
+        assert_eq!(lines[1], "  return updated;");
+    }
+
+    #[test]
+    fn apply_update_hunks_rejects_ambiguous_relaxed_matches() {
+        let mut lines = vec!["same ".to_string(), "same\t".to_string()];
+        let hunks = vec![PatchHunk {
+            old_lines: vec!["same".to_string()],
+            new_lines: vec!["changed".to_string()],
+        }];
+
+        let error = apply_update_hunks(&mut lines, &hunks, "src/App.tsx").unwrap_err();
+        assert!(error.contains("Re-read the current file"));
+        assert!(error.contains("smaller hunk"));
+    }
 }

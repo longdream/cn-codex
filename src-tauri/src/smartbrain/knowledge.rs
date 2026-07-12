@@ -1637,10 +1637,11 @@ async fn organize_via_llm(
     let mut result_text = String::new();
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut utf8_decoder = crate::utf8_stream::Utf8StreamDecoder::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Stream error: {e}"))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        utf8_decoder.push(&mut buffer, &chunk);
 
         while let Some(line_end) = buffer.find('\n') {
             let line = buffer[..line_end].trim().to_string();

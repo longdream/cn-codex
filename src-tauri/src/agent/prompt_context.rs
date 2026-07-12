@@ -6,8 +6,8 @@ use crate::config_system::SmartBrainConfig;
 
 use super::truncate_utf8_by_bytes;
 
-const SMARTBRAIN_DB_SOURCES_STATE_KEY: &str = "smartbrain.db.sources";
-const SMARTBRAIN_DB_SETTINGS_STATE_KEY: &str = "smartbrain.db.settings";
+pub(super) const SMARTBRAIN_DB_SOURCES_STATE_KEY: &str = "smartbrain.db.sources";
+pub(super) const SMARTBRAIN_DB_SETTINGS_STATE_KEY: &str = "smartbrain.db.settings";
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]

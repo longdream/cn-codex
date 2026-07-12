@@ -57,9 +57,7 @@ use patch_support::{
     extract_patch_argument, format_apply_patch_report, parse_patch_actions, patch_display_label,
 };
 #[cfg(test)]
-use patch_support::{
-    ApplyPatchReport, ApplyPatchReportChange,
-};
+use patch_support::{ApplyPatchReport, ApplyPatchReportChange};
 
 /// Provider configuration for internal subagents (set by parent agent before each turn).
 #[derive(Debug, Clone, Default)]
@@ -969,7 +967,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "shell_command",
-                    "description": "Codex-compatible shell tool. Runs a PowerShell command on Windows or a shell script on Unix and returns output. Supports workdir, timeout_ms (or block_until_ms), login, sandbox_permissions, justification, prefix_rule, and additional_permissions.",
+                    "description": "Codex-compatible shell tool. Runs a PowerShell command on Windows or a shell script on Unix and returns output. On Windows, pass a complete literal PowerShell command: never use Markdown checkbox placeholders such as '[ ]', never begin a pipeline with '|', and use $_ (not $*) inside Where-Object/ForEach-Object blocks. Supports workdir, timeout_ms (or block_until_ms), login, sandbox_permissions, justification, prefix_rule, and additional_permissions.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1449,7 +1447,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "apply_patch",
-                    "description": "Default tool for editing existing text files, whether one file or many. Applies contextual diffs while preserving encoding and line endings, and supports add/update/delete/move in Codex apply_patch format. Relative paths are preferred; absolute paths must resolve inside the workspace. Prefer the raw/freeform patch body when supported; function-call providers may use JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
+                    "description": "Default tool for editing existing text files, whether one file or many. Applies contextual diffs while preserving encoding and line endings, and supports add/update/delete/move in Codex apply_patch format. Read the current file before editing and keep update hunks small: include only changed lines plus a few exact current context lines. If a hunk does not match, re-read the file and retry apply_patch with refreshed, smaller context. Relative paths are preferred; absolute paths must resolve inside the workspace. Prefer the raw/freeform patch body when supported; function-call providers may use JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -2865,6 +2863,18 @@ impl ToolExecutor {
         if cmd_display.trim().is_empty() {
             return Ok("Error: empty command".to_string());
         }
+        if cfg!(target_os = "windows") {
+            if let Some(msg) = powershell_command_validation_error(&cmd_display) {
+                self.emit_tool_start(app_handle, thread_id, call_id, tool_name, &cmd_display);
+                self.emit_tool_end(app_handle, thread_id, call_id, tool_name, -1, &msg);
+                return Ok(msg);
+            }
+        }
+        if let Some(msg) = shell_file_editing_violation(&cmd_display) {
+            self.emit_tool_start(app_handle, thread_id, call_id, tool_name, &cmd_display);
+            self.emit_tool_end(app_handle, thread_id, call_id, tool_name, -1, &msg);
+            return Ok(msg);
+        }
 
         let workdir = resolve_command_cwd(&self.cwd, args.workdir.as_deref());
         if !workdir.is_dir() {
@@ -3050,6 +3060,31 @@ impl ToolExecutor {
         if cmd.is_empty() {
             let msg = "Error: exec_command cmd must not be empty".to_string();
             self.emit_tool_start(app_handle, thread_id, call_id, "exec_command", "empty");
+            self.emit_tool_end(app_handle, thread_id, call_id, "exec_command", -1, &msg);
+            return Ok(msg);
+        }
+        let uses_powershell = cfg!(target_os = "windows")
+            && args
+                .shell
+                .as_deref()
+                .map(|shell| {
+                    let name = Path::new(shell)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    name.contains("powershell") || name == "pwsh" || name == "pwsh.exe"
+                })
+                .unwrap_or(true);
+        if uses_powershell {
+            if let Some(msg) = powershell_command_validation_error(cmd) {
+                self.emit_tool_start(app_handle, thread_id, call_id, "exec_command", cmd);
+                self.emit_tool_end(app_handle, thread_id, call_id, "exec_command", -1, &msg);
+                return Ok(msg);
+            }
+        }
+        if let Some(msg) = shell_file_editing_violation(cmd) {
+            self.emit_tool_start(app_handle, thread_id, call_id, "exec_command", cmd);
             self.emit_tool_end(app_handle, thread_id, call_id, "exec_command", -1, &msg);
             return Ok(msg);
         }
@@ -11043,6 +11078,59 @@ fn shell_command_display(command: &ShellCommandArg) -> String {
     }
 }
 
+fn powershell_command_validation_error(command: &str) -> Option<String> {
+    for (index, line) in command.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        let checkbox_placeholder = ["[ ]", "[x]"].iter().any(|prefix| {
+            lower.strip_prefix(prefix).is_some_and(|rest| {
+                let rest = rest.trim_start();
+                rest.is_empty() || rest.starts_with('|') || rest.starts_with('#')
+            })
+        });
+        let broken_closing_placeholder = trimmed.strip_prefix(']').is_some_and(|rest| {
+            let rest = rest.trim_start();
+            rest.is_empty() || rest.starts_with('|') || rest.starts_with('#')
+        });
+
+        if checkbox_placeholder || broken_closing_placeholder || trimmed.starts_with('|') {
+            return Some(format!(
+                "Error: invalid PowerShell command on line {}: found an empty/Markdown placeholder or a pipeline with no input. Do not use placeholder text such as '[ ] # try shell'. Rebuild and retry the tool call with one complete literal command, for example '$items | Select-Object Name'.",
+                index + 1
+            ));
+        }
+
+        if trimmed.contains("$*.") {
+            return Some(format!(
+                "Error: invalid PowerShell pipeline variable '$*' on line {}. Use '$_' inside Where-Object or ForEach-Object blocks, for example 'Where-Object {{ $_.FullName -match \"pattern\" }}', then retry the tool call.",
+                index + 1
+            ));
+        }
+    }
+
+    None
+}
+
+fn shell_file_editing_violation(command: &str) -> Option<String> {
+    let lower = command.to_ascii_lowercase();
+    let blocked_patterns = [
+        "set-content",
+        "out-file",
+        "add-content",
+        "writealltext(",
+        "writeallbytes(",
+        ".write_text(",
+        ".write_bytes(",
+        "sed -i",
+    ];
+    let matched = blocked_patterns
+        .iter()
+        .find(|pattern| lower.contains(**pattern))?;
+    Some(format!(
+        "Error: shell-based file editing is disabled ({matched}). Use apply_patch for existing files or write_file for new UTF-8 files. This prevents Chinese and other non-ASCII text from being corrupted by shell encoding defaults."
+    ))
+}
+
 fn resolve_shell_timeout_ms(args: &ShellArgs) -> Result<u64, String> {
     let timeout_ms = args
         .timeout_ms
@@ -11061,14 +11149,18 @@ fn resolve_shell_timeout_ms(args: &ShellArgs) -> Result<u64, String> {
     Ok(timeout_ms)
 }
 
-const POWERSHELL_UTF8_OUTPUT_PREFIX: &str =
-    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;\n";
+const POWERSHELL_UTF8_PREFIX_MARKER: &str = "# cn-codex-utf8";
+const POWERSHELL_UTF8_OUTPUT_PREFIX: &str = "# cn-codex-utf8\n\
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false);\n\
+[Console]::InputEncoding = $utf8NoBom;\n\
+[Console]::OutputEncoding = $utf8NoBom;\n\
+$OutputEncoding = $utf8NoBom;\n\
+$PSDefaultParameterValues['*:Encoding'] = 'utf8';\n";
 
 fn inject_powershell_utf8_prefix(script: &str) -> String {
-    let trimmed = script.trim_start();
-    if trimmed
-        .to_ascii_lowercase()
-        .starts_with("[console]::outputencoding")
+    if script
+        .trim_start()
+        .starts_with(POWERSHELL_UTF8_PREFIX_MARKER)
     {
         script.to_string()
     } else {
@@ -11276,6 +11368,7 @@ async fn collect_exec_output<R>(
 {
     let mut buf = [0u8; 4096];
     let mut wrote_prefix = false;
+    let mut decoder = crate::utf8_stream::Utf8StreamDecoder::new();
     loop {
         let Ok(n) = reader.read(&mut buf).await else {
             break;
@@ -11283,7 +11376,11 @@ async fn collect_exec_output<R>(
         if n == 0 {
             break;
         }
-        let chunk = decode_command_output_bytes(&buf[..n]);
+        let mut chunk = String::new();
+        decoder.push(&mut chunk, &buf[..n]);
+        if chunk.is_empty() {
+            continue;
+        }
         let mut output = output.lock().await;
         if let Some(prefix) = prefix
             && !wrote_prefix
@@ -11292,6 +11389,18 @@ async fn collect_exec_output<R>(
             wrote_prefix = true;
         }
         output.push_str(&chunk);
+    }
+
+    let mut tail = String::new();
+    decoder.finish(&mut tail);
+    if !tail.is_empty() {
+        let mut output = output.lock().await;
+        if let Some(prefix) = prefix
+            && !wrote_prefix
+        {
+            output.push_str(prefix);
+        }
+        output.push_str(&tail);
     }
 }
 
@@ -14585,6 +14694,76 @@ index 1111111..2222222 100644
         assert_eq!(alias_timeout.timeout_ms, None);
         assert_eq!(alias_timeout.block_until_ms, Some(45000));
         assert_eq!(resolve_shell_timeout_ms(&alias_timeout).unwrap(), 45000);
+    }
+
+    #[test]
+    fn powershell_prefix_configures_console_pipeline_and_file_cmdlet_utf8() {
+        let script =
+            inject_powershell_utf8_prefix("Get-Content index.html -Raw | Set-Content index.html");
+
+        assert!(script.starts_with(POWERSHELL_UTF8_PREFIX_MARKER));
+        assert!(script.contains("[Console]::InputEncoding"));
+        assert!(script.contains("[Console]::OutputEncoding"));
+        assert!(script.contains("$OutputEncoding"));
+        assert!(script.contains("$PSDefaultParameterValues['*:Encoding'] = 'utf8'"));
+    }
+
+    #[test]
+    fn powershell_prefix_is_not_added_twice() {
+        let script = inject_powershell_utf8_prefix("Write-Output '中文'");
+        assert_eq!(inject_powershell_utf8_prefix(&script), script);
+    }
+
+    #[test]
+    fn shell_file_editing_guard_blocks_encoding_risk_commands() {
+        for command in [
+            "Get-Content index.html -Raw | Set-Content index.html -Encoding UTF8",
+            "$text | Out-File index.html",
+            "Path('index.html').write_text(text)",
+            "sed -i 's/old/new/' index.html",
+        ] {
+            let error = shell_file_editing_violation(command).expect(command);
+            assert!(error.contains("Use apply_patch"));
+            assert!(error.contains("encoding"));
+        }
+
+        assert!(shell_file_editing_violation("cargo test --lib").is_none());
+        assert!(shell_file_editing_violation("Get-Content index.html -Raw").is_none());
+    }
+
+    #[test]
+    fn powershell_validation_rejects_missing_pipeline_input_and_bad_current_item() {
+        for command in [
+            "[ ] | Select-Object Name",
+            "[x] | Select-Object -First 30 LineNumber,Filename,Line",
+            "[ ] # try shell",
+            "] # try shell",
+            "  | Where-Object { $_.Name -match 'skill' }",
+        ] {
+            let error = powershell_command_validation_error(command).expect(command);
+            assert!(error.contains("placeholder"));
+            assert!(error.contains("retry"));
+        }
+
+        let error = powershell_command_validation_error(
+            "Get-ChildItem | Where-Object { $*.FullName -match 'skill' }",
+        )
+        .expect("bad current-item variable");
+        assert!(error.contains("Use '$_'"));
+    }
+
+    #[test]
+    fn powershell_validation_accepts_complete_pipelines() {
+        for command in [
+            "$items | Select-Object Name",
+            "Get-ChildItem | Where-Object { $_.FullName -match 'skill' }",
+            "cargo test --lib",
+        ] {
+            assert!(
+                powershell_command_validation_error(command).is_none(),
+                "{command}"
+            );
+        }
     }
 
     #[test]

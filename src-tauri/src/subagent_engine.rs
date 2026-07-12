@@ -418,6 +418,7 @@ async fn stream_completion_internal(
     let mut finish_reason: Option<String> = None;
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut utf8_decoder = crate::utf8_stream::Utf8StreamDecoder::new();
 
     while let Some(chunk) = stream.next().await {
         if cancel_flag.load(Ordering::SeqCst) {
@@ -433,7 +434,7 @@ async fn stream_completion_internal(
                 return Err(AppError::Custom(format!("Stream read error: {e}")));
             }
         };
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        utf8_decoder.push(&mut buffer, &chunk);
 
         while let Some(line_end) = buffer.find('\n') {
             let line = buffer[..line_end].trim().to_string();

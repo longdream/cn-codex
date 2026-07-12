@@ -770,8 +770,11 @@ function LegacyToolExecRow({ message }: { message: ChatMessage }) {
 }
 
 function ToolCallsCard({ calls }: { calls: ToolCallItem[] }) {
-  const hasRunning = calls.some((c) => c.status === "running");
-  const groups = groupToolCalls(calls);
+  const visibleCalls = calls.filter((call) => !isHiddenShellToolCall(call));
+  const hasRunning = visibleCalls.some((c) => c.status === "running");
+  const groups = groupToolCalls(visibleCalls);
+
+  if (groups.length === 0) return null;
 
   return (
     <div className="max-w-[980px] space-y-2">
@@ -838,9 +841,13 @@ function groupToolCalls(calls: ToolCallItem[]): ToolGroup[] {
 
   for (const call of calls) {
     const t = call.name as ToolGroup["type"];
-    if (t === "shell" || t === "shell_command" || t === "exec_command") {
-      groups.push({ type: t, items: [call] });
-      current = null;
+    if (isShellToolName(t)) {
+      if (current && isShellToolName(current.type)) {
+        current.items.push(call);
+      } else {
+        current = { type: t, items: [call] };
+        groups.push(current);
+      }
     } else {
       if (current && current.type === t) {
         current.items.push(call);
@@ -851,6 +858,32 @@ function groupToolCalls(calls: ToolCallItem[]): ToolGroup[] {
     }
   }
   return groups;
+}
+
+function isShellToolName(name: string): boolean {
+  return name === "shell" || name === "shell_command" || name === "exec_command";
+}
+
+function isHiddenShellToolCall(call: ToolCallItem): boolean {
+  if (!isShellToolName(call.name)) return false;
+  try {
+    const parsed = JSON.parse(call.arguments) as Record<string, unknown>;
+    const command = call.name === "exec_command" ? parsed.cmd : parsed.command;
+    if (typeof command === "string") {
+      const normalized = command.trim();
+      if (!normalized) return true;
+      return normalized.split(/\r?\n/).some((line) => {
+        const trimmed = line.trimStart().toLowerCase();
+        return /^(?:\[ \]|\[x\]|\])(?:\s*(?:#|\||$))/.test(trimmed);
+      });
+    }
+    if (Array.isArray(command)) {
+      return command.every((part) => typeof part === "string" && part.trim().length === 0);
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function toolGroupIcon(type: string) {
@@ -914,7 +947,7 @@ function toolGroupSummary(group: ToolGroup): string {
     case "shell":
     case "shell_command":
     case "exec_command":
-      return group.items[0].displayLabel;
+      return n === 1 ? group.items[0].displayLabel : `Ran ${n} shell commands`;
     case "write_stdin":
       return n === 1 ? `Wrote stdin ${group.items[0].displayLabel}` : `Wrote stdin ${n} times`;
     case "close_exec_session":

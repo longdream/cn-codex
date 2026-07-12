@@ -228,6 +228,7 @@ pub async fn run_compaction(
 
     use futures_util::StreamExt;
     let mut buffer = String::new();
+    let mut utf8_decoder = crate::utf8_stream::Utf8StreamDecoder::new();
     let cancelled = |flag: Option<&Arc<AtomicBool>>| flag.is_some_and(|f| f.load(Ordering::SeqCst));
 
     while let Some(chunk) = stream.next().await {
@@ -236,7 +237,7 @@ pub async fn run_compaction(
             return Err(AppError::Custom("Compaction cancelled".to_string()));
         }
         let chunk = chunk.map_err(|e| AppError::Custom(format!("Stream error: {e}")))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        utf8_decoder.push(&mut buffer, &chunk);
 
         while let Some(line_end) = buffer.find('\n') {
             let line = buffer[..line_end].trim().to_string();

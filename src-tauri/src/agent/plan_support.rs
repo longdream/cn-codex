@@ -11,7 +11,7 @@ fn non_empty_trimmed(text: &str) -> Option<String> {
     }
 }
 
-fn extract_proposed_plan(text: &str) -> Option<String> {
+pub(super) fn extract_proposed_plan(text: &str) -> Option<String> {
     const OPEN_TAG: &str = "<proposed_plan>";
     const CLOSE_TAG: &str = "</proposed_plan>";
 

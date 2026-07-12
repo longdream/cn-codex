@@ -654,6 +654,7 @@ async fn run_fortune_detail_stream(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut utf8_decoder = crate::utf8_stream::Utf8StreamDecoder::new();
     let mut full_text = String::new();
     let mut finish_reason: Option<String> = None;
 
@@ -676,7 +677,7 @@ async fn run_fortune_detail_stream(
             }
         };
 
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        utf8_decoder.push(&mut buffer, &chunk);
         while let Some(line_end) = buffer.find('\n') {
             let line = buffer[..line_end].to_string();
             buffer = buffer[line_end + 1..].to_string();

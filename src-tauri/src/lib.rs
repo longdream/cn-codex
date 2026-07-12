@@ -29,6 +29,7 @@ pub mod terminal;
 pub mod thread_store;
 pub mod tool_executor;
 pub mod usage;
+pub mod utf8_stream;
 pub mod workflow;
 
 use state::AppState;
@@ -534,6 +535,7 @@ pub fn run() {
             commands::window_toggle_devtools,
             commands::get_user_home_dir,
             commands::read_directory,
+            commands::delete_path,
             commands::read_file_for_attach,
             commands::read_text_file_preview,
             commands::write_text_file_preview,

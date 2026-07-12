@@ -1920,6 +1920,17 @@ fn resolve_existing_file_path(path: &str) -> AppResult<(String, std::path::PathB
     Ok((display_path, file_path))
 }
 
+fn resolve_existing_path(path: &str) -> AppResult<(String, std::path::PathBuf)> {
+    let display_path = normalize_windows_verbatim_prefix(path);
+    let target_path = std::path::PathBuf::from(&display_path);
+    if !target_path.exists() {
+        return Err(AppError::Custom(format!(
+            "Path does not exist: {display_path}"
+        )));
+    }
+    Ok((display_path, target_path))
+}
+
 fn normalize_workspace_root_hint(workspace_root: Option<String>) -> Option<String> {
     workspace_root
         .as_deref()
@@ -1944,16 +1955,23 @@ async fn ensure_workspace_file_access(
     state: &State<'_, AppState>,
     file_path: &Path,
 ) -> AppResult<()> {
+    ensure_workspace_path_access(state, file_path).await
+}
+
+async fn ensure_workspace_path_access(
+    state: &State<'_, AppState>,
+    target_path: &Path,
+) -> AppResult<()> {
     let workspace_root = workspace_root_from_state(state).await?;
-    let canonical_target = file_path
+    let canonical_target = target_path
         .canonicalize()
-        .unwrap_or_else(|_| file_path.to_path_buf());
+        .unwrap_or_else(|_| target_path.to_path_buf());
     if canonical_target.starts_with(&workspace_root) {
         return Ok(());
     }
 
     Err(AppError::Custom(format!(
-        "File path is outside workspace and cannot be edited: {}",
+        "Path is outside workspace and cannot be edited: {}",
         normalize_windows_verbatim_prefix(&canonical_target.to_string_lossy())
     )))
 }
@@ -2187,6 +2205,32 @@ pub async fn read_directory(path: String) -> AppResult<Vec<FileEntry>> {
     files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     dirs.append(&mut files);
     Ok(dirs)
+}
+
+#[tauri::command]
+pub async fn delete_path(
+    path: String,
+    recursive: Option<bool>,
+) -> AppResult<()> {
+    let (display_path, target_path) = resolve_existing_path(&path)?;
+
+    let metadata = fs::symlink_metadata(&target_path)
+        .map_err(|e| AppError::Custom(format!("Failed to read path metadata: {e}")))?;
+
+    if metadata.is_dir() {
+        if !recursive.unwrap_or(false) {
+            return Err(AppError::Custom(format!(
+                "Refusing to delete directory without recursive confirmation: {display_path}"
+            )));
+        }
+        fs::remove_dir_all(&target_path)
+            .map_err(|e| AppError::Custom(format!("Failed to delete directory: {e}")))?;
+    } else {
+        fs::remove_file(&target_path)
+            .map_err(|e| AppError::Custom(format!("Failed to delete file: {e}")))?;
+    }
+
+    Ok(())
 }
 
 const MAX_ATTACH_SIZE: u64 = 2 * 1024 * 1024;
@@ -2502,6 +2546,23 @@ mod tests {
 
         let err = resolve_existing_file_path(&temp_dir.to_string_lossy()).unwrap_err();
         assert!(err.to_string().contains("Path is not a file"));
+
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_existing_path_accepts_directory() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cn_codex_window_test_dir_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let (_, resolved) = resolve_existing_path(&temp_dir.to_string_lossy()).unwrap();
+        assert!(resolved.is_dir());
 
         fs::remove_dir_all(&temp_dir).unwrap();
     }

@@ -67,6 +67,7 @@ pub async fn terminal_create(
     let reader_sid = sid.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut utf8_decoder = crate::utf8_stream::Utf8StreamDecoder::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
@@ -77,7 +78,11 @@ pub async fn terminal_create(
                     break;
                 }
                 Ok(n) => {
-                    let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let mut text = String::new();
+                    utf8_decoder.push(&mut text, &buf[..n]);
+                    if text.is_empty() {
+                        continue;
+                    }
                     let _ = app_handle.emit(
                         "terminal-output",
                         serde_json::json!({ "sessionId": reader_sid, "data": text }),

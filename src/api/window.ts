@@ -271,6 +271,10 @@ export async function readDirectory(path: string): Promise<FileEntry[]> {
   return invoke<FileEntry[]>("read_directory", { path });
 }
 
+export async function deletePath(path: string, recursive = false): Promise<void> {
+  await invoke("delete_path", { path, recursive });
+}
+
 export interface FileAttachResult {
   name: string;
   mimeType: string;

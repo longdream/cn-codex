@@ -15,10 +15,12 @@ import {
   IconMarkdown,
   IconMessagePlus,
   IconPhoto,
+  IconTrash,
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
 import {
+  deletePath,
   readTextFilePreview,
   readDirectory,
   revealInExplorer,
@@ -145,6 +147,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     node: TreeNode;
   } | null>(null);
   const [detailOpenError, setDetailOpenError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const loadChildren = useCallback(async (path: string): Promise<TreeNode[]> => {
     const entries = await readDirectory(path);
@@ -167,6 +170,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     setError(null);
     // 切换项目目录时清空“打开详情窗失败”提示，避免旧错误误导用户。
     setDetailOpenError(null);
+    setActionError(null);
 
     loadChildren(rootPath)
       .then((children) => {
@@ -249,6 +253,45 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     [],
   );
 
+  const removeNode = useCallback((nodePath: string) => {
+    const prune = (items: TreeNode[]): TreeNode[] =>
+      items
+        .filter((node) => node.path !== nodePath)
+        .map((node) => ({
+          ...node,
+          children: node.children ? prune(node.children) : node.children,
+        }));
+    setNodes((prev) => prune(prev));
+  }, []);
+
+  const handleDeleteNode = useCallback(async (node: TreeNode) => {
+    const confirmed = node.isDir
+      ? window.confirm(
+        intl.formatMessage(
+          { id: "fileTree.confirmDeleteFolder" },
+          { name: node.name },
+        ),
+      )
+      : window.confirm(
+        intl.formatMessage(
+          { id: "fileTree.confirmDeleteFile" },
+          { name: node.name },
+        ),
+      );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setActionError(null);
+    try {
+      await deletePath(node.path, node.isDir);
+      removeNode(node.path);
+    } catch (err) {
+      setActionError(String(err));
+    }
+  }, [intl, removeNode]);
+
   const contextMenuItems: ContextMenuEntry[] = contextMenu
     ? [
         ...(!contextMenu.node.isDir
@@ -306,6 +349,17 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
           icon: <IconFolderOpen size={14} stroke={1.8} />,
           onClick: () => void revealInExplorer(contextMenu.node.path),
         },
+        {
+          id: "delete",
+          label: contextMenu.node.isDir
+            ? intl.formatMessage({ id: "fileTree.deleteFolder" })
+            : intl.formatMessage({ id: "fileTree.deleteFile" }),
+          icon: <IconTrash size={14} stroke={1.8} />,
+          danger: true,
+          onClick: () => {
+            void handleDeleteNode(contextMenu.node);
+          },
+        },
       ]
     : [];
 
@@ -361,6 +415,11 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
       {detailOpenError && (
         <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
           打开文档详情窗失败：{detailOpenError}
+        </div>
+      )}
+      {actionError && (
+        <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
+          {intl.formatMessage({ id: "fileTree.deleteFailed" }, { error: actionError })}
         </div>
       )}
       {nodes.length === 0 ? (

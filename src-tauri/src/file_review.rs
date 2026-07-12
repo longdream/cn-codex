@@ -452,14 +452,11 @@ struct PatchHunk {
 }
 
 fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>, String> {
-    let normalized = patch.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = extract_embedded_patch_block(patch)?;
     let lines: Vec<&str> = normalized.lines().collect();
-    let Some(begin) = lines.iter().position(|line| *line == "*** Begin Patch") else {
-        return Err("patch must start with *** Begin Patch".to_string());
-    };
 
     let mut actions = Vec::new();
-    let mut i = begin + 1;
+    let mut i = 1;
     while i < lines.len() {
         let line = lines[i];
         if line == "*** End Patch" {
@@ -508,8 +505,23 @@ fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>, String> {
                     continue;
                 }
 
+                if line.starts_with("*** Desc: ") {
+                    i += 1;
+                    continue;
+                }
+
                 if line == "*** End of File" {
                     i += 1;
+                    continue;
+                }
+
+                if current.is_none()
+                    && line.starts_with("--- ")
+                    && lines
+                        .get(i + 1)
+                        .is_some_and(|next| next.starts_with("+++ "))
+                {
+                    i += 2;
                     continue;
                 }
 
@@ -571,6 +583,42 @@ fn is_patch_section_boundary(line: &str) -> bool {
         || line.starts_with("*** Delete File: ")
 }
 
+fn extract_embedded_patch_block(input: &str) -> Result<String, String> {
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.lines().collect();
+    let Some(begin) = lines.iter().position(|line| is_patch_begin_marker(line)) else {
+        return Err("patch must start with *** Begin Patch".to_string());
+    };
+    let Some(end) = lines.iter().rposition(|line| is_patch_end_marker(line)) else {
+        return Err("patch must end with *** End Patch".to_string());
+    };
+    if end < begin {
+        return Err("patch must end with *** End Patch".to_string());
+    }
+
+    Ok(lines[begin..=end]
+        .iter()
+        .map(|line| normalize_patch_directive_line(line))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn is_patch_begin_marker(line: &str) -> bool {
+    matches!(normalize_patch_directive_line(line).as_str(), "*** Begin Patch")
+}
+
+fn is_patch_end_marker(line: &str) -> bool {
+    matches!(normalize_patch_directive_line(line).as_str(), "*** End Patch")
+}
+
+fn normalize_patch_directive_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("*** ") {
+        return line.to_string();
+    }
+    trimmed.strip_suffix(" ***").unwrap_or(trimmed).to_string()
+}
+
 fn apply_update_hunks(
     lines: &mut Vec<String>,
     hunks: &[PatchHunk],
@@ -587,10 +635,8 @@ fn apply_update_hunks(
 
         let pos = find_subsequence(lines, &hunk.old_lines, cursor)
             .or_else(|| find_subsequence(lines, &hunk.old_lines, 0))
-            .ok_or_else(|| {
-                let preview = hunk.old_lines.join("\\n");
-                format!("failed to match hunk in {path}: {preview}")
-            })?;
+            .or_else(|| find_unique_relaxed_subsequence(lines, &hunk.old_lines))
+            .ok_or_else(|| format_hunk_match_error(path, &hunk.old_lines))?;
         let end = pos + hunk.old_lines.len();
         lines.splice(pos..end, hunk.new_lines.clone());
         cursor = pos + hunk.new_lines.len();
@@ -617,21 +663,37 @@ fn find_subsequence(lines: &[String], needle: &[String], start: usize) -> Option
 }
 
 fn resolve_patch_path(root: &Path, input: &str) -> Result<PathBuf, String> {
-    let trimmed = input.trim().replace('\\', "/");
+    let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("patch path must not be empty".to_string());
     }
-    if trimmed.contains(':') {
-        return Err(format!("patch path must be relative: {input}"));
+
+    let raw = Path::new(trimmed);
+    if raw.is_absolute() {
+        let target = normalize_absolute_patch_path(raw, input)?;
+        let absolute_root = if root.is_absolute() {
+            normalize_absolute_patch_path(root, &root.display().to_string())?
+        } else {
+            let cwd = std::env::current_dir()
+                .map_err(|e| format!("failed to resolve workspace path: {e}"))?;
+            normalize_absolute_patch_path(&cwd.join(root), &root.display().to_string())?
+        };
+        if !path_is_within(&absolute_root, &target) {
+            return Err(format!(
+                "absolute patch path must be inside the workspace {}: {input}",
+                absolute_root.display()
+            ));
+        }
+        return Ok(target);
     }
 
-    let raw = Path::new(&trimmed);
-    if raw.is_absolute() {
-        return Err(format!("patch path must be relative: {input}"));
+    let portable = trimmed.replace('\\', "/");
+    if portable.contains(':') {
+        return Err(format!("invalid patch path: {input}"));
     }
 
     let mut path = root.to_path_buf();
-    for component in raw.components() {
+    for component in Path::new(&portable).components() {
         match component {
             Component::Normal(part) => path.push(part),
             Component::CurDir => {}
@@ -645,6 +707,89 @@ fn resolve_patch_path(root: &Path, input: &str) -> Result<PathBuf, String> {
     }
 
     Ok(path)
+}
+
+fn find_unique_relaxed_subsequence(lines: &[String], needle: &[String]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > lines.len() {
+        return None;
+    }
+
+    let mut matched = None;
+    for index in 0..=lines.len() - needle.len() {
+        let is_match = lines[index..index + needle.len()]
+            .iter()
+            .zip(needle.iter())
+            .all(|(actual, expected)| relaxed_patch_line(actual) == relaxed_patch_line(expected));
+        if is_match {
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(index);
+        }
+    }
+    matched
+}
+
+fn relaxed_patch_line(line: &str) -> &str {
+    line.trim_start_matches('\u{feff}').trim_end()
+}
+
+fn format_hunk_match_error(path: &str, old_lines: &[String]) -> String {
+    const MAX_PREVIEW_LINES: usize = 8;
+    const MAX_PREVIEW_CHARS: usize = 600;
+
+    let mut preview = old_lines
+        .iter()
+        .take(MAX_PREVIEW_LINES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\\n");
+    if preview.chars().count() > MAX_PREVIEW_CHARS {
+        preview = preview.chars().take(MAX_PREVIEW_CHARS).collect();
+        preview.push_str("...");
+    } else if old_lines.len() > MAX_PREVIEW_LINES {
+        preview.push_str("\\n...");
+    }
+
+    format!(
+        "failed to match hunk in {path} ({} expected lines). The file content has changed or the patch context is stale. Re-read the current file and retry apply_patch with a smaller hunk containing only the changed lines and a few current context lines. Preview: {preview}",
+        old_lines.len()
+    )
+}
+
+fn normalize_absolute_patch_path(path: &Path, input: &str) -> Result<PathBuf, String> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(format!("patch path must not contain '..': {input}"));
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+fn path_is_within(root: &Path, target: &Path) -> bool {
+    let root_components = comparable_path_components(root);
+    let target_components = comparable_path_components(target);
+    target_components.starts_with(&root_components)
+}
+
+fn comparable_path_components(path: &Path) -> Vec<String> {
+    path.components()
+        .map(|component| {
+            let value = component.as_os_str().to_string_lossy().into_owned();
+            if cfg!(windows) {
+                value.to_lowercase()
+            } else {
+                value
+            }
+        })
+        .collect()
 }
 
 fn normalize_patch_display_path(input: &str) -> String {
@@ -727,6 +872,107 @@ mod tests {
             "old\nline\n"
         );
         assert!(!src.join("new.txt").exists());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn build_review_accepts_workspace_absolute_path_and_unified_headers() {
+        let root =
+            std::env::temp_dir().join(format!("cn-codex-review-absolute-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("index.html");
+        std::fs::write(&target, "<title>ABCDE</title>\n").unwrap();
+        let patch = format!(
+            "*** Begin Patch\n*** Update File: {}\n--- a/index.html\n+++ b/index.html\n@@ -1 +1 @@\n-<title>ABCDE</title>\n+<title>时尚代码</title>\n*** End Patch",
+            target.display()
+        );
+
+        let review = build_pending_patch_review(&root, "thread-1", "call-1", &patch).unwrap();
+
+        assert_eq!(review.files.len(), 1);
+        assert_eq!(
+            review.files[0].candidate_content.as_deref(),
+            Some("<title>时尚代码</title>\n")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "<title>ABCDE</title>\n"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn build_review_accepts_wrapped_patch_block_with_trailing_stars() {
+        let root =
+            std::env::temp_dir().join(format!("cn-codex-review-wrapper-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("index.html");
+        std::fs::write(&target, "<title>ABCDE</title>\n").unwrap();
+        let patch = format!(
+            r#"D:\rustwork\cn-codex-lite-rs\src\App.tsx ***
+*** Begin Patch ***
+*** Update File: {} ***
+@@ -1 +1 @@
+-<title>ABCDE</title>
++<title>鏃跺皻浠ｇ爜</title>
+*** End Patch ***
+Applied patch src/App.tsx ***
+done"#,
+            target.display()
+        );
+
+        let review = build_pending_patch_review(&root, "thread-1", "call-1", &patch).unwrap();
+
+        assert_eq!(review.files.len(), 1);
+        assert_eq!(
+            review.files[0].candidate_content.as_deref(),
+            Some("<title>鏃跺皻浠ｇ爜</title>\n")
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn build_review_accepts_desc_metadata_lines() {
+        let root =
+            std::env::temp_dir().join(format!("cn-codex-review-desc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("style.css");
+        std::fs::write(&target, "old\n").unwrap();
+        let patch = format!(
+            "*** Begin Patch\n*** Update File: {}\n*** Desc: Remove UTF-8 BOM (U+FEFF) from the first line\n--- a/src/style.css\n+++ b/src/style.css\n@@ -1 +1 @@\n-old\n+new\n*** End Patch",
+            target.display()
+        );
+
+        let review = build_pending_patch_review(&root, "thread-1", "call-1", &patch).unwrap();
+
+        assert_eq!(review.files.len(), 1);
+        assert_eq!(review.files[0].candidate_content.as_deref(), Some("new\n"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn build_review_accepts_unique_trailing_whitespace_context_difference() {
+        let root = std::env::temp_dir().join(format!(
+            "cn-codex-review-relaxed-context-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("App.tsx");
+        std::fs::write(&target, "function parseChart() {   \n  return old;\t\n}\n").unwrap();
+        let patch = r#"*** Begin Patch
+*** Update File: App.tsx
+@@
+ function parseChart() {
+-  return old;
++  return updated;
+ }
+*** End Patch"#;
+
+        let review = build_pending_patch_review(&root, "thread-1", "call-1", patch).unwrap();
+        assert_eq!(
+            review.files[0].candidate_content.as_deref(),
+            Some("function parseChart() {\n  return updated;\n}\n")
+        );
         std::fs::remove_dir_all(root).ok();
     }
 

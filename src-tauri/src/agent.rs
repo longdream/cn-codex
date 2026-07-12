@@ -59,7 +59,9 @@ pub(crate) fn truncate_utf8_by_bytes(value: &str, max_bytes: usize) -> &str {
     }
     &value[..end]
 }
-use crate::config_system::{ConfigToml, SmartBrainConfig};
+use crate::config_system::ConfigToml;
+#[cfg(test)]
+use crate::config_system::SmartBrainConfig;
 use crate::error::{AppError, AppResult};
 use crate::hook_runtime::{
     HOOK_AGENT_END, HOOK_AGENT_START, HOOK_COMMAND_EXEC, HOOK_FILE_CHANGE, HOOK_POST_TOOL_USE,
@@ -79,10 +81,14 @@ use crate::thread_store::{
 };
 use crate::tool_executor::ToolExecutor;
 use crate::usage::UsageRecorder;
+#[cfg(test)]
+use plan_support::extract_proposed_plan;
 use plan_support::{
     build_active_plan_context_prompt, plan_contents_equivalent, read_plan_file_content,
     resolve_effective_plan_content, resolve_plan_storage_path, user_requested_new_plan_file,
 };
+#[cfg(test)]
+use prompt_context::{SMARTBRAIN_DB_SETTINGS_STATE_KEY, SMARTBRAIN_DB_SOURCES_STATE_KEY};
 use prompt_context::{render_robot_runtime_prompt, render_smartbrain_runtime_prompt};
 use protocol_support::{
     ProtocolStreamState, ToolCallAccumulator, consume_protocol_text_delta,
@@ -699,7 +705,9 @@ impl AgentEngine {
 
         let mut intent_retries: u32 = 0;
         const MAX_INTENT_RETRIES: u32 = 2;
+        const MAX_EMPTY_COMPLETION_RETRIES: u32 = 2;
         const MAX_RATE_LIMIT_RETRIES: u32 = 6;
+        const MAX_STREAM_READ_RETRIES: u32 = 2;
         let max_goal_continuations: usize = 10;
         // 使用固定且可解释的上下文窗口来源，避免前端分母与后端运行时配置漂移。
         let model_context_window_tokens = resolve_model_context_window_tokens(config);
@@ -709,6 +717,9 @@ impl AgentEngine {
         let mut last_prompt_tokens: u64 = 0;
         let mut mid_turn_compacted = false;
         let mut rate_limit_retry_count: u32 = 0;
+        let mut stream_read_retry_count: u32 = 0;
+        let mut empty_completion_retry_count: u32 = 0;
+        let mut tool_calls_executed = false;
         let mut terminated_by_error = false;
         let mut force_new_plan_on_next_emit =
             turn_mode == "plan" && user_requested_new_plan_file(user_input);
@@ -893,6 +904,7 @@ impl AgentEngine {
                             ref plan_text,
                         }) => {
                             rate_limit_retry_count = 0;
+                            stream_read_retry_count = 0;
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
                                 "Iteration {iteration}: Message ({} chars), usage={:?}",
@@ -914,7 +926,7 @@ impl AgentEngine {
                                     recorder.record(&provider_id, &model, thread_id, u);
                                 }
                             }
-                            let (cleaned_text, node_done_signal, node_delivery_summary) =
+                            let (mut cleaned_text, node_done_signal, node_delivery_summary) =
                                 if robot_progress.is_some() {
                                     let (cleaned, done, summary) =
                                         parse_robot_node_completion(text);
@@ -923,13 +935,32 @@ impl AgentEngine {
                                     (text.clone(), false, None)
                                 };
 
-                            if cleaned_text.is_empty() && iteration > 0 {
-                                info!("Empty message after tool execution, sending minimal signal");
-                                emit_and_broadcast(
-                                    app_handle,
-                                    "agent-message-delta",
-                                    serde_json::json!({ "threadId": thread_id, "delta": "(completed)" }),
-                                );
+                            if cleaned_text.is_empty()
+                                && tool_calls_executed
+                                && robot_progress.is_none()
+                            {
+                                if empty_completion_retry_count < MAX_EMPTY_COMPLETION_RETRIES {
+                                    empty_completion_retry_count =
+                                        empty_completion_retry_count.saturating_add(1);
+                                    warn!(
+                                        "Empty response after tool execution; requesting continuation ({empty_completion_retry_count}/{MAX_EMPTY_COMPLETION_RETRIES})"
+                                    );
+                                    let nudge_msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "system".to_string(),
+                                        content: "The previous response was empty after tool execution. Continue the task with the required tools if work remains; otherwise provide a concise final summary. Do not return an empty response."
+                                            .to_string(),
+                                        timestamp: now_secs(),
+                                        tool_call_id: None,
+                                        tool_name: None,
+                                        tool_calls: None,
+                                        attachments: Vec::new(),
+                                    };
+                                    self.thread_store.add_message(thread_id, nudge_msg).await?;
+                                    continue;
+                                }
+                                cleaned_text = "Tool execution finished, but the model returned an empty final response after two continuation attempts."
+                                    .to_string();
                             }
 
                             if turn_mode != "plan"
@@ -1281,6 +1312,8 @@ impl AgentEngine {
                             usage,
                         }) => {
                             rate_limit_retry_count = 0;
+                            stream_read_retry_count = 0;
+                            tool_calls_executed = true;
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
                                 "Iteration {iteration}: ToolCalls ({}): {:?}, preceding_text={} chars, usage={:?}",
@@ -1773,6 +1806,36 @@ impl AgentEngine {
                             }
                         }
                         Err(e) => {
+                            let error_message = e.to_string();
+                            if is_retryable_stream_read_error(&error_message)
+                                && stream_read_retry_count < MAX_STREAM_READ_RETRIES
+                            {
+                                rate_limit_retry_count = 0;
+                                stream_read_retry_count = stream_read_retry_count.saturating_add(1);
+                                let retry_in_ms = stream_read_backoff_ms(stream_read_retry_count);
+                                warn!(
+                                    "Iteration {iteration}: response stream interrupted, retrying in {retry_in_ms} ms ({stream_read_retry_count}/{MAX_STREAM_READ_RETRIES}): {error_message}"
+                                );
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "server-error",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "message": "The response stream was interrupted. Reconnecting automatically...",
+                                        "detail": error_message,
+                                        "retryable": true,
+                                        "retryInMs": retry_in_ms,
+                                        "attempt": stream_read_retry_count,
+                                        "maxAttempts": MAX_STREAM_READ_RETRIES,
+                                    }),
+                                );
+                                tokio::time::sleep(Duration::from_millis(retry_in_ms)).await;
+                                if self.is_cancelled() {
+                                    terminated_by_error = true;
+                                    break;
+                                }
+                                continue;
+                            }
                             // 资源池故障转移：标记当前端点失败，尝试切换到下一个
                             if let (Some(pk), Some(pr), Some(ep_idx)) =
                                 (&pool_key, &pool_resolver, pool_endpoint_index)
@@ -1817,13 +1880,15 @@ impl AgentEngine {
                                         "active-endpoint-index",
                                         serde_json::json!({ "index": next_ep.endpoint_index }),
                                     );
+                                    rate_limit_retry_count = 0;
+                                    stream_read_retry_count = 0;
                                     continue;
                                 }
                             }
-                            let error_message = e.to_string();
                             if is_retryable_rate_limit_error(&error_message)
                                 && rate_limit_retry_count < MAX_RATE_LIMIT_RETRIES
                             {
+                                stream_read_retry_count = 0;
                                 rate_limit_retry_count = rate_limit_retry_count.saturating_add(1);
                                 let retry_in_ms = rate_limit_backoff_ms(rate_limit_retry_count);
                                 warn!(
@@ -2431,7 +2496,7 @@ impl AgentEngine {
              FILE EDITING RULES:\n\
              1. Use `apply_patch` as the default for every edit to an existing text file, including single-file edits. It applies contextual diffs and avoids rewriting unrelated content.\n\
              2. Use `write_file` only to create a new file or when the user explicitly requests a complete file rewrite.\n\
-             3. `apply_patch` supports single-file and multi-file add/update/delete/move operations. Read the relevant file content before constructing an update hunk.\n\
+             3. `apply_patch` supports single-file and multi-file add/update/delete/move operations. Read the relevant file content before constructing an update hunk. Keep hunks small: include only changed lines plus a few exact current context lines. If a hunk fails to match, immediately re-read that file and retry `apply_patch` with refreshed, smaller context; do not stop at the first patch error.\n\
              4. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
                 Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
              5. Do not use python scripts to read or write files. Use `read_file`, `apply_patch`, or (for new files) `write_file` instead.\n\
@@ -2440,6 +2505,10 @@ impl AgentEngine {
              Prefer paths relative to the working directory. Absolute paths are accepted only when they resolve inside the current workspace.\n\
              \n\
              {file_creation_policy}\n\
+             \n\
+             POWERSHELL COMMAND SAFETY: Send a complete literal command in every shell tool call. \
+             Never emit empty shell calls or substitute an omitted command or variable with placeholder text such as `[ ]`, `[ ] # try shell`, or `] # try shell`; never start a pipeline with `|`. \
+             Inside `Where-Object` and `ForEach-Object`, the current pipeline item is `$_` (never `$*`).\n\
              \n\
              WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
              use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \
@@ -3088,10 +3157,11 @@ impl AgentEngine {
         let mut result_text = String::new();
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut utf8_decoder = crate::utf8_stream::Utf8StreamDecoder::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk
                 .map_err(|e| AppError::Custom(format!("Vision fallback stream read error: {e}")))?;
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            utf8_decoder.push(&mut buffer, &chunk);
 
             while let Some(line_end) = buffer.find('\n') {
                 let line = buffer[..line_end].trim().to_string();
@@ -3316,6 +3386,7 @@ impl AgentEngine {
         let mut usage_info: Option<UsageInfo> = None;
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut utf8_decoder = crate::utf8_stream::Utf8StreamDecoder::new();
         let mut bytes_read: usize = 0;
         let stream_start = Instant::now();
         let mut plan_buffer = String::new();
@@ -3356,7 +3427,7 @@ impl AgentEngine {
                 }
             };
             bytes_read += chunk.len();
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            utf8_decoder.push(&mut buffer, &chunk);
 
             while let Some(line_end) = buffer.find('\n') {
                 let line = buffer[..line_end].trim().to_string();
@@ -3808,6 +3879,21 @@ fn is_retryable_rate_limit_error(message: &str) -> bool {
         || lower.contains("rate limit")
         || lower.contains("too many requests")
         || lower.contains("rate_limited")
+}
+
+fn is_retryable_stream_read_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("stream read error")
+        || lower.contains("error decoding response body")
+        || lower.contains("connection reset")
+        || lower.contains("connection closed")
+        || lower.contains("unexpected eof")
+        || lower.contains("incomplete message")
+}
+
+fn stream_read_backoff_ms(attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(4);
+    (1_000_u64 << shift).min(10_000)
 }
 
 fn rate_limit_backoff_ms(attempt: u32) -> u64 {
@@ -4709,7 +4795,12 @@ fn read_text_file_snapshot(cwd: &Path, path: &str) -> Option<String> {
     if slice.contains(&0) {
         return None;
     }
-    Some(String::from_utf8_lossy(slice).to_string())
+    let safe_slice = match std::str::from_utf8(slice) {
+        Ok(_) => slice,
+        Err(error) if error.error_len().is_none() => &slice[..error.valid_up_to()],
+        Err(_) => slice,
+    };
+    Some(String::from_utf8_lossy(safe_slice).to_string())
 }
 
 async fn handle_update_goal(
@@ -5413,6 +5504,27 @@ mod tests {
     }
 
     #[test]
+    fn retryable_stream_read_error_detects_transient_body_failures() {
+        for message in [
+            "Stream read error after 6671 bytes, 125.3s elapsed: error decoding response body",
+            "connection reset by peer",
+            "unexpected EOF while reading response",
+            "hyper error: incomplete message",
+        ] {
+            assert!(is_retryable_stream_read_error(message), "{message}");
+        }
+        assert!(!is_retryable_stream_read_error("LLM API error (401)"));
+    }
+
+    #[test]
+    fn stream_read_backoff_is_short_and_bounded() {
+        assert_eq!(stream_read_backoff_ms(1), 1_000);
+        assert_eq!(stream_read_backoff_ms(2), 2_000);
+        assert_eq!(stream_read_backoff_ms(3), 4_000);
+        assert_eq!(stream_read_backoff_ms(99), 10_000);
+    }
+
+    #[test]
     fn parse_protocol_text_extracts_think_blocks() {
         let parsed = parse_protocol_text("前文<think>推理过程</think>后文");
         assert_eq!(parsed.visible, "前文后文");
@@ -5866,6 +5978,26 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].id, "call_apply_patch_0");
         assert_eq!(calls[1].id, "call-real");
+    }
+
+    #[test]
+    fn normalize_tool_call_requests_preserves_invalid_calls_for_protocol_recovery() {
+        let calls = normalize_tool_call_requests(vec![
+            ToolCallRequest {
+                id: "empty-shell".to_string(),
+                name: "shell_command".to_string(),
+                arguments: r#"{"command":""}"#.to_string(),
+            },
+            ToolCallRequest {
+                id: "placeholder-shell".to_string(),
+                name: "shell_command".to_string(),
+                arguments: r##"{"command":"[ ] # try shell"}"##.to_string(),
+            },
+        ]);
+
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "empty-shell");
+        assert_eq!(calls[1].id, "placeholder-shell");
     }
 
     #[test]
