@@ -121,8 +121,8 @@ html {
 
 body {
   overflow: hidden;
-  user-select: none;
-  -webkit-user-select: none;
+  user-select: text;
+  -webkit-user-select: text;
   background: transparent;
   color: var(--text-base);
   font-size: var(--text-body);

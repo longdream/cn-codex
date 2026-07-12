@@ -88,7 +88,10 @@ pub async fn git_status(
 ) -> AppResult<GitStatusResponse> {
     let service = git_service_from_state(&state, cwd).await?;
     let output = service
-        .run(&["status", "--porcelain=1", "-b"], DEFAULT_MAX_OUTPUT_BYTES)
+        .run(
+            &["-c", "core.quotePath=false", "status", "--porcelain=1", "-b"],
+            DEFAULT_MAX_OUTPUT_BYTES,
+        )
         .await?;
     Ok(parse_git_status_output(&output.stdout))
 }
@@ -602,7 +605,63 @@ fn parse_status_entry(line: &str) -> Option<GitStatusEntry> {
 }
 
 fn clean_git_path(raw: &str) -> String {
-    raw.trim().trim_matches('"').replace('\\', "/")
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        return decode_git_quoted_path(&trimmed[1..trimmed.len() - 1]);
+    }
+    trimmed.to_string()
+}
+
+fn decode_git_quoted_path(value: &str) -> String {
+    let source = value.as_bytes();
+    let mut decoded = Vec::with_capacity(source.len());
+    let mut index = 0;
+
+    while index < source.len() {
+        if source[index] != b'\\' {
+            decoded.push(source[index]);
+            index += 1;
+            continue;
+        }
+
+        index += 1;
+        if index >= source.len() {
+            decoded.push(b'\\');
+            break;
+        }
+
+        if source[index].is_ascii_digit() && source[index] < b'8' {
+            let mut value = 0_u8;
+            let mut digits = 0;
+            while index < source.len()
+                && digits < 3
+                && source[index].is_ascii_digit()
+                && source[index] < b'8'
+            {
+                value = value
+                    .saturating_mul(8)
+                    .saturating_add(source[index] - b'0');
+                index += 1;
+                digits += 1;
+            }
+            decoded.push(value);
+            continue;
+        }
+
+        decoded.push(match source[index] {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b't' => b'\t',
+            b'n' => b'\n',
+            b'v' => 0x0b,
+            b'f' => 0x0c,
+            b'r' => b'\r',
+            escaped => escaped,
+        });
+        index += 1;
+    }
+
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 fn status_label(x: char, y: char, untracked: bool) -> String {
@@ -706,6 +765,21 @@ mod tests {
         assert_eq!(parsed.changes[0].old_path.as_deref(), Some("old/name.ts"));
         assert_eq!(parsed.changes[1].status, "untracked");
         assert!(parsed.changes[1].untracked);
+    }
+
+    #[test]
+    fn parse_git_status_decodes_quoted_utf8_paths() {
+        let output = "## main\n?? \"publish/docs/\\346\\265\\213\\350\\257\\225.txt\"\n";
+        let parsed = parse_git_status_output(output);
+
+        assert_eq!(parsed.changes.len(), 1);
+        assert_eq!(parsed.changes[0].path, "publish/docs/测试.txt");
+        assert!(parsed.changes[0].untracked);
+    }
+
+    #[test]
+    fn clean_git_path_preserves_unquoted_utf8_paths() {
+        assert_eq!(clean_git_path("publish/docs/测试.txt"), "publish/docs/测试.txt");
     }
 
     #[test]
