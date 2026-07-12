@@ -533,6 +533,111 @@ async function saveJsonState<T>(key: string, value: T): Promise<void> {
   });
 }
 
+export function mergeSmartbrainDbParsedFields(
+  existing: Partial<SmartbrainDbSource>,
+  parsed: Partial<SmartbrainDbSource>,
+): Partial<SmartbrainDbSource> {
+  return {
+    host: existing.host?.trim() || parsed.host?.trim() || "",
+    port:
+      typeof existing.port === "number" && Number.isFinite(existing.port)
+        ? existing.port
+        : parsed.port ?? null,
+    databaseName: existing.databaseName?.trim() || parsed.databaseName?.trim() || "",
+    username: existing.username?.trim() || parsed.username?.trim() || "",
+    password: existing.password?.trim() || parsed.password?.trim() || "",
+    filePath: existing.filePath?.trim() || parsed.filePath?.trim() || "",
+    schema: existing.schema?.trim() || parsed.schema?.trim() || "",
+    queryParams:
+      existing.queryParams && Object.keys(existing.queryParams).length > 0
+        ? existing.queryParams
+        : parsed.queryParams ?? {},
+  };
+}
+
+function replaceKeyValueConnectionField(connectionUri: string, aliases: string[], nextValue: string): string {
+  const segments = connectionUri.split(";");
+  let replaced = false;
+  const nextSegments = segments.map((segment) => {
+    const trimmed = segment.trim();
+    if (!trimmed) {
+      return segment;
+    }
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex <= 0) {
+      return segment;
+    }
+    const key = normalizeConnectionKey(trimmed.slice(0, separatorIndex));
+    if (!aliases.map(normalizeConnectionKey).includes(key)) {
+      return segment;
+    }
+    replaced = true;
+    const leading = segment.match(/^\s*/)?.[0] ?? "";
+    const originalKey = trimmed.slice(0, separatorIndex);
+    return `${leading}${originalKey}=${nextValue}`;
+  });
+  if (!replaced) {
+    const suffix = connectionUri.trim().endsWith(";") ? "" : ";";
+    return `${connectionUri.trimEnd()}${suffix}Database=${nextValue};`;
+  }
+  return nextSegments.join(";");
+}
+
+export function applyDatabaseNameToConnectionUri(
+  dbType: SmartbrainDbType,
+  connectionUri: string,
+  databaseName: string,
+): string {
+  const trimmedUri = connectionUri.trim();
+  const trimmedName = databaseName.trim();
+  if (!trimmedUri || !trimmedName || dbType === "sqlite") {
+    return connectionUri;
+  }
+
+  if (looksLikeKeyValueConnectionString(trimmedUri)) {
+    return replaceKeyValueConnectionField(trimmedUri, ["database", "initial catalog"], trimmedName);
+  }
+
+  try {
+    const normalizedUri = normalizeDbProtocol(dbType, trimmedUri);
+    const url = new URL(normalizedUri);
+    url.pathname = `/${trimmedName}`;
+    // Preserve original scheme style when user omitted protocol.
+    if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmedUri)) {
+      return `${url.host}${url.pathname}${url.search}${url.hash}`;
+    }
+    return url.toString();
+  } catch {
+    return connectionUri;
+  }
+}
+
+export async function listSmartbrainDatabases(source: {
+  dbType: SmartbrainDbType;
+  host?: string;
+  port?: number | null;
+  username?: string;
+  password?: string;
+  connectionUri?: string;
+  databaseName?: string;
+  filePath?: string;
+}): Promise<string[]> {
+  const result = await invoke<{ databases?: string[] } | string[]>("smartbrain_list_databases", {
+    dbType: source.dbType,
+    host: source.host ?? "",
+    port: source.port ?? null,
+    username: source.username ?? "",
+    password: source.password ?? "",
+    connectionUri: source.connectionUri ?? "",
+    databaseName: source.databaseName ?? "",
+    filePath: source.filePath ?? "",
+  });
+  if (Array.isArray(result)) {
+    return result.filter((item) => typeof item === "string" && item.trim().length > 0);
+  }
+  return (result.databases ?? []).filter((item) => typeof item === "string" && item.trim().length > 0);
+}
+
 export async function loadSmartbrainDbSources(): Promise<SmartbrainDbSource[]> {
   const loaded = await loadJsonState<SmartbrainDbSource[]>(DB_SOURCES_KEY, []);
   return loaded.map((item) => ({

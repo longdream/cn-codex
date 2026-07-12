@@ -565,6 +565,13 @@
   "settings.smartbrain.database.parseSuccess": "连接地址解析成功，参数已回填。",
   "settings.smartbrain.database.enabled": "启用此数据库",
   "settings.smartbrain.database.databaseName": "数据库名",
+  "settings.smartbrain.database.databaseNamePlaceholder": "可手动填写，或点击右侧刷新后下拉选择",
+  "settings.smartbrain.database.refreshDatabases": "刷新数据库列表",
+  "settings.smartbrain.database.selectDatabase": "选择数据库",
+  "settings.smartbrain.database.refreshNeedConnection": "请先填写 Host 或连接地址后再刷新数据库列表。",
+  "settings.smartbrain.database.refreshSuccess": "已拉取 {count} 个数据库，可在下拉框中选择。",
+  "settings.smartbrain.database.refreshEmpty": "连接成功，但没有返回可选择的数据库。",
+  "settings.smartbrain.database.refreshFailed": "刷新数据库列表失败：{error}",
   "settings.smartbrain.database.username": "用户名",
   "settings.smartbrain.database.password": "密码",
   "settings.smartbrain.database.passwordPlaceholder": "自动回填或手动输入数据库密码",
@@ -1034,5 +1041,8 @@
   "settings.workflows.empty": "暂无已保存的 Workflow",
   "settings.workflows.nodeCount": "{count} 个节点",
   "settings.workflows.delete": "删除",
-  "settings.workflows.deleteConfirm": "确认删除此 Workflow？"
+  "settings.workflows.deleteConfirm": "确认删除此 Workflow？",
+  "git.progressCommitting": "提交中",
+  "git.progressPushing": "推送中",
+  "git.progressPulling": "拉取中"
 }

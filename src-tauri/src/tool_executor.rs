@@ -1162,7 +1162,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "write_file",
-                    "description": "Write content to a file at the given path. Creates the file if it does not exist.",
+                    "description": "Create a new UTF-8 text file with the given content, or completely rewrite a file only when explicitly required. For changes to an existing text file, use apply_patch so unrelated content, encoding, and line endings are preserved.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1449,7 +1449,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "apply_patch",
-                    "description": "Queue a multi-file patch for pre-apply review in Codex apply_patch format. Prefer sending the raw/freeform patch body when the provider supports it; this function wrapper also accepts JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
+                    "description": "Default tool for editing existing text files, whether one file or many. Applies contextual diffs while preserving encoding and line endings, and supports add/update/delete/move in Codex apply_patch format. Relative paths are preferred; absolute paths must resolve inside the workspace. Prefer the raw/freeform patch body when supported; function-call providers may use JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -3470,7 +3470,9 @@ impl ToolExecutor {
                 msg
             }
             Err(err) => {
-                let msg = format!("Error applying patch: {err}");
+                let msg = format!(
+                    "Error applying patch: {err}\nDo not fall back to Python, PowerShell, sed, or other shell-based file editing. Correct the patch path or context and retry apply_patch so text encoding is preserved."
+                );
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
                 msg
             }
@@ -12409,6 +12411,12 @@ mod tests {
                 .unwrap_or_default()
                 .contains("raw/freeform")
         );
+        let description = apply_patch
+            .pointer("/function/description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(description.contains("Default tool"));
+        assert!(description.contains("whether one file or many"));
         assert!(
             apply_patch
                 .pointer("/function/parameters/properties/patch")
@@ -14368,6 +14376,111 @@ index 1111111..2222222 100644
         let err = apply_patch_to_workspace(&root, patch).unwrap_err();
 
         assert!(err.contains("must not contain '..'"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn apply_patch_accepts_absolute_paths_inside_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "cn-codex-apply-patch-absolute-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("index.html");
+        std::fs::write(&target, "<title>ABCDE</title>\n").unwrap();
+        let patch = format!(
+            "*** Begin Patch\n*** Update File: {}\n@@\n-<title>ABCDE</title>\n+<title>时尚代码</title>\n*** End Patch",
+            target.display()
+        );
+
+        apply_patch_to_workspace(&root, &patch).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "<title>时尚代码</title>\n"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn apply_patch_rejects_absolute_paths_outside_workspace() {
+        let workspace = std::env::temp_dir().join(format!(
+            "cn-codex-apply-patch-workspace-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "cn-codex-apply-patch-outside-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: {}\n+outside\n*** End Patch",
+            outside.join("file.txt").display()
+        );
+
+        let err = apply_patch_to_workspace(&workspace, &patch).unwrap_err();
+
+        assert!(err.contains("must be inside the workspace"));
+        assert!(!outside.join("file.txt").exists());
+        std::fs::remove_dir_all(workspace).ok();
+    }
+
+    #[test]
+    fn apply_patch_accepts_unified_diff_file_headers() {
+        let root = std::env::temp_dir().join(format!(
+            "cn-codex-apply-patch-unified-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("index.html"), "<title>ABCDE</title>\n").unwrap();
+        let patch = r#"*** Begin Patch
+*** Update File: index.html
+--- a/index.html
++++ b/index.html
+@@ -1 +1 @@
+-<title>ABCDE</title>
++<title>时尚代码</title>
+*** End Patch"#;
+
+        apply_patch_to_workspace(&root, patch).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("index.html")).unwrap(),
+            "<title>时尚代码</title>\n"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn apply_patch_preflights_all_actions_before_writing() {
+        let root = std::env::temp_dir().join(format!(
+            "cn-codex-apply-patch-preflight-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("first.txt"), "before\n").unwrap();
+        std::fs::write(root.join("exists.txt"), "keep\n").unwrap();
+
+        let patch = r#"*** Begin Patch
+*** Update File: first.txt
+@@
+-before
++after
+*** Add File: exists.txt
++replacement
+*** End Patch"#;
+
+        let err = apply_patch_to_workspace(&root, patch).unwrap_err();
+
+        assert!(err.contains("file already exists"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("first.txt")).unwrap(),
+            "before\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("exists.txt")).unwrap(),
+            "keep\n"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 

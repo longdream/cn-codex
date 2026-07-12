@@ -313,7 +313,7 @@ fn responses_tool_from_function_spec(tool: &serde_json::Value) -> Option<serde_j
         return Some(serde_json::json!({
             "type": "custom",
             "name": "apply_patch",
-            "description": "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+            "description": "Use `apply_patch` as the default for every edit to an existing text file, including single-file edits. It applies contextual diffs while preserving existing text encoding and line endings. Relative paths are preferred; absolute paths must remain inside the workspace. This is a FREEFORM tool, so do not wrap the patch in JSON.",
             "format": {
                 "type": "grammar",
                 "syntax": "lark",

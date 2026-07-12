@@ -1,7 +1,7 @@
 import { IconBrowser, IconCheck, IconChevronLeft, IconChevronRight, IconExternalLink, IconFolderOpen, IconGitBranch, IconHome, IconMessagePlus, IconPencil, IconRefresh, IconTerminal2, IconX } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import { useAppStore } from "../../stores/appStore";
 import { browserApplyDomEdit, browserGetEditContext, browserGetNavigationState, browserGoBack, browserGoForward, browserNavigateHome, browserPollPickedElement, browserRefreshPreview, browserStartPickMode, browserStopPickMode, revealInExplorer, windowAttachBrowser, windowCloseBrowser, windowDetachBrowser, windowNavigateBrowser, windowOpenBrowser, windowResizeBrowser, type BrowserDomEditRequest, type BrowserEditContext, type BrowserNavigationState, type BrowserPickedElement } from "../../api/window";
@@ -19,6 +19,61 @@ function latestBrowserToolCall(messages: ReturnType<typeof useAppStore.getState>
     }
   }
   return null;
+}
+
+type BrowserToolCallLite = {
+  id: string;
+  status: string;
+  output?: string;
+};
+
+let cachedBrowserMessagesRef: ReturnType<typeof useAppStore.getState>["messages"] | null = null;
+let cachedBrowserToolCallSignature: string | null = null;
+
+function selectLatestBrowserToolCallSignature(
+  messages: ReturnType<typeof useAppStore.getState>["messages"],
+): string | null {
+  // Critical: this selector is evaluated on every store update, including streaming tokens.
+  // Cache by messages reference so chat output stays O(1) and does not freeze the right panel.
+  if (messages === cachedBrowserMessagesRef) {
+    return cachedBrowserToolCallSignature;
+  }
+  cachedBrowserMessagesRef = messages;
+  const match = latestBrowserToolCall(messages);
+  if (!match) {
+    cachedBrowserToolCallSignature = null;
+    return null;
+  }
+  // Primitive signature keeps zustand v5 selector stable without equalityFn.
+  cachedBrowserToolCallSignature = JSON.stringify({
+    id: match.id,
+    status: match.status,
+    output: match.output ?? null,
+  });
+  return cachedBrowserToolCallSignature;
+}
+
+function parseBrowserToolCallSignature(signature: string | null): BrowserToolCallLite | null {
+  if (!signature) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(signature) as {
+      id?: unknown;
+      status?: unknown;
+      output?: unknown;
+    };
+    if (typeof parsed.id !== "string" || typeof parsed.status !== "string") {
+      return null;
+    }
+    return {
+      id: parsed.id,
+      status: parsed.status,
+      output: typeof parsed.output === "string" ? parsed.output : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function parseBrowserRunOutput(output?: string): {
@@ -128,7 +183,12 @@ export function RightPanel() {
   const setBrowserActive = useAppStore((s) => s.setBrowserActive);
   const setBrowserDetached = useAppStore((s) => s.setBrowserDetached);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
-  const messages = useAppStore((s) => s.messages);
+  // Only track the latest browser_run tool call so chat streaming does not re-render the whole right panel.
+  const browserCallSignature = useAppStore((s) => selectLatestBrowserToolCallSignature(s.messages));
+  const browserCall = useMemo(
+    () => parseBrowserToolCallSignature(browserCallSignature),
+    [browserCallSignature],
+  );
   const currentThreadId = useAppStore((s) => s.currentThreadId);
   const addAttachedFile = useAppStore((s) => s.addAttachedFile);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
@@ -154,7 +214,6 @@ export function RightPanel() {
   const [applyingEdit, setApplyingEdit] = useState(false);
   const [addressInput, setAddressInput] = useState("");
 
-  const browserCall = useMemo(() => latestBrowserToolCall(messages), [messages]);
   const browserOutput = useMemo(
     () => parseBrowserRunOutput(browserCall?.output),
     [browserCall?.output],
@@ -1088,18 +1147,30 @@ export function RightPanel() {
             )}
           </div>
         </div>
-      ) : rightPanelTab === "terminal" ? (
-        <TerminalPanel />
-      ) : rightPanelTab === "git" ? (
-        <GitPanel workspaceCwd={workspaceCwd} />
       ) : (
-        <ProjectTab workspaceCwd={workspaceCwd} />
+        <RightPanelSecondaryTab tab={rightPanelTab} workspaceCwd={workspaceCwd} />
       )}
     </aside>
   );
 }
 
-function ProjectTab({ workspaceCwd }: { workspaceCwd: string | null }) {
+const RightPanelSecondaryTab = memo(function RightPanelSecondaryTab({
+  tab,
+  workspaceCwd,
+}: {
+  tab: "project" | "terminal" | "git" | "browser";
+  workspaceCwd: string | null;
+}) {
+  if (tab === "terminal") {
+    return <TerminalPanel />;
+  }
+  if (tab === "git") {
+    return <GitPanel workspaceCwd={workspaceCwd} />;
+  }
+  return <ProjectTab workspaceCwd={workspaceCwd} />;
+});
+
+const ProjectTab = memo(function ProjectTab({ workspaceCwd }: { workspaceCwd: string | null }) {
   const intl = useIntl();
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -1137,4 +1208,4 @@ function ProjectTab({ workspaceCwd }: { workspaceCwd: string | null }) {
       <FileTree rootPath={workspaceCwd} refreshKey={refreshKey} />
     </div>
   );
-}
+});

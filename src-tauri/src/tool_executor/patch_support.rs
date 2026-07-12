@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
@@ -45,6 +46,25 @@ pub(crate) enum ParsedPatchAction {
 pub(crate) struct PatchHunk {
     old_lines: Vec<String>,
     new_lines: Vec<String>,
+}
+
+enum PreparedPatchAction {
+    Add {
+        path: String,
+        target: PathBuf,
+        content: String,
+    },
+    Update {
+        path: String,
+        source: PathBuf,
+        target: PathBuf,
+        updated: String,
+        move_to: Option<String>,
+    },
+    Delete {
+        path: String,
+        target: PathBuf,
+    },
 }
 
 pub(crate) fn extract_patch_argument(arguments: &str) -> Result<String, String> {
@@ -122,39 +142,24 @@ pub(crate) fn apply_patch_to_workspace(
         return Err("patch contains no file changes".to_string());
     }
 
-    for action in &actions {
-        match action {
-            ParsedPatchAction::Add { path, .. }
-            | ParsedPatchAction::Update { path, .. }
-            | ParsedPatchAction::Delete { path } => {
-                resolve_patch_path(root, path)?;
-            }
-        }
-
-        if let ParsedPatchAction::Update {
-            move_to: Some(dest),
-            ..
-        } = action
-        {
-            resolve_patch_path(root, dest)?;
-        }
-    }
+    // Resolve every path and apply every hunk in memory before touching disk. This
+    // prevents a malformed later action from leaving an earlier file modified.
+    let prepared = prepare_patch_actions(root, actions)?;
 
     let mut report = ApplyPatchReport {
         changes: Vec::new(),
     };
-    for action in actions {
+    for action in prepared {
         match action {
-            ParsedPatchAction::Add { path, lines } => {
-                let target = resolve_patch_path(root, &path)?;
-                if target.exists() {
-                    return Err(format!("cannot add {path}: file already exists"));
-                }
+            PreparedPatchAction::Add {
+                path,
+                target,
+                content,
+            } => {
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("failed to create parent for {path}: {e}"))?;
                 }
-                let content = join_file_lines(&lines, "\n", !lines.is_empty());
                 std::fs::write(&target, content)
                     .map_err(|e| format!("failed to write {path}: {e}"))?;
                 report.changes.push(ApplyPatchReportChange {
@@ -163,28 +168,14 @@ pub(crate) fn apply_patch_to_workspace(
                     move_to: None,
                 });
             }
-            ParsedPatchAction::Update {
+            PreparedPatchAction::Update {
                 path,
+                source,
+                target,
+                updated,
                 move_to,
-                hunks,
             } => {
-                let source = resolve_patch_path(root, &path)?;
-                if !source.is_file() {
-                    return Err(format!("cannot update {path}: file does not exist"));
-                }
-
-                let original = std::fs::read_to_string(&source)
-                    .map_err(|e| format!("failed to read {path}: {e}"))?;
-                let eol = detect_eol(&original);
-                let (mut lines, final_newline) = split_file_lines(&original);
-                apply_update_hunks(&mut lines, &hunks, &path)?;
-                let updated = join_file_lines(&lines, eol, final_newline);
-
-                if let Some(dest) = move_to {
-                    let target = resolve_patch_path(root, &dest)?;
-                    if target != source && target.exists() {
-                        return Err(format!("cannot move {path} to {dest}: destination exists"));
-                    }
+                if let Some(dest) = &move_to {
                     if let Some(parent) = target.parent() {
                         std::fs::create_dir_all(parent)
                             .map_err(|e| format!("failed to create parent for {dest}: {e}"))?;
@@ -198,7 +189,7 @@ pub(crate) fn apply_patch_to_workspace(
                     report.changes.push(ApplyPatchReportChange {
                         path: normalize_patch_display_path(&path),
                         action: "renamed",
-                        move_to: Some(normalize_patch_display_path(&dest)),
+                        move_to: Some(normalize_patch_display_path(dest)),
                     });
                 } else {
                     std::fs::write(&source, updated)
@@ -210,11 +201,7 @@ pub(crate) fn apply_patch_to_workspace(
                     });
                 }
             }
-            ParsedPatchAction::Delete { path } => {
-                let target = resolve_patch_path(root, &path)?;
-                if !target.is_file() {
-                    return Err(format!("cannot delete {path}: file does not exist"));
-                }
+            PreparedPatchAction::Delete { path, target } => {
                 std::fs::remove_file(&target)
                     .map_err(|e| format!("failed to delete {path}: {e}"))?;
                 report.changes.push(ApplyPatchReportChange {
@@ -227,6 +214,94 @@ pub(crate) fn apply_patch_to_workspace(
     }
 
     Ok(report)
+}
+
+fn prepare_patch_actions(
+    root: &Path,
+    actions: Vec<ParsedPatchAction>,
+) -> Result<Vec<PreparedPatchAction>, String> {
+    let mut claimed_paths = HashSet::new();
+    let mut prepared = Vec::with_capacity(actions.len());
+
+    for action in actions {
+        match action {
+            ParsedPatchAction::Add { path, lines } => {
+                let target = resolve_patch_path(root, &path)?;
+                claim_patch_path(&mut claimed_paths, &target, &path)?;
+                if target.exists() {
+                    return Err(format!("cannot add {path}: file already exists"));
+                }
+                prepared.push(PreparedPatchAction::Add {
+                    path,
+                    target,
+                    content: join_file_lines(&lines, "\n", !lines.is_empty()),
+                });
+            }
+            ParsedPatchAction::Update {
+                path,
+                move_to,
+                hunks,
+            } => {
+                let source = resolve_patch_path(root, &path)?;
+                claim_patch_path(&mut claimed_paths, &source, &path)?;
+                if !source.is_file() {
+                    return Err(format!("cannot update {path}: file does not exist"));
+                }
+
+                let target = if let Some(dest) = &move_to {
+                    let target = resolve_patch_path(root, dest)?;
+                    if target != source {
+                        claim_patch_path(&mut claimed_paths, &target, dest)?;
+                        if target.exists() {
+                            return Err(format!(
+                                "cannot move {path} to {dest}: destination exists"
+                            ));
+                        }
+                    }
+                    target
+                } else {
+                    source.clone()
+                };
+
+                let original = std::fs::read_to_string(&source)
+                    .map_err(|e| format!("failed to read {path}: {e}"))?;
+                let eol = detect_eol(&original);
+                let (mut lines, final_newline) = split_file_lines(&original);
+                apply_update_hunks(&mut lines, &hunks, &path)?;
+                prepared.push(PreparedPatchAction::Update {
+                    path,
+                    source,
+                    target,
+                    updated: join_file_lines(&lines, eol, final_newline),
+                    move_to,
+                });
+            }
+            ParsedPatchAction::Delete { path } => {
+                let target = resolve_patch_path(root, &path)?;
+                claim_patch_path(&mut claimed_paths, &target, &path)?;
+                if !target.is_file() {
+                    return Err(format!("cannot delete {path}: file does not exist"));
+                }
+                prepared.push(PreparedPatchAction::Delete { path, target });
+            }
+        }
+    }
+
+    Ok(prepared)
+}
+
+fn claim_patch_path(
+    claimed_paths: &mut HashSet<PathBuf>,
+    path: &Path,
+    display_path: &str,
+) -> Result<(), String> {
+    if claimed_paths.insert(path.to_path_buf()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "patch contains multiple actions for the same path: {display_path}"
+        ))
+    }
 }
 
 pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>, String> {
@@ -288,6 +363,19 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
 
                 if line == "*** End of File" {
                     i += 1;
+                    continue;
+                }
+
+                // Some providers wrap a standard unified diff inside a Codex
+                // Update File section. These headers identify the same file and
+                // are metadata, not deleted/added source lines.
+                if current.is_none()
+                    && line.starts_with("--- ")
+                    && lines
+                        .get(i + 1)
+                        .is_some_and(|next| next.starts_with("+++ "))
+                {
+                    i += 2;
                     continue;
                 }
 
@@ -398,21 +486,37 @@ fn find_subsequence(lines: &[String], needle: &[String], start: usize) -> Option
 
 #[allow(dead_code)]
 fn resolve_patch_path(root: &Path, input: &str) -> Result<PathBuf, String> {
-    let trimmed = input.trim().replace('\\', "/");
+    let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("patch path must not be empty".to_string());
     }
-    if trimmed.contains(':') {
-        return Err(format!("patch path must be relative: {input}"));
+
+    let raw = Path::new(trimmed);
+    if raw.is_absolute() {
+        let target = normalize_patch_path(raw, input)?;
+        let absolute_root = if root.is_absolute() {
+            normalize_patch_path(root, &root.display().to_string())?
+        } else {
+            let cwd = std::env::current_dir()
+                .map_err(|e| format!("failed to resolve workspace path: {e}"))?;
+            normalize_patch_path(&cwd.join(root), &root.display().to_string())?
+        };
+        if !path_is_within(&absolute_root, &target) {
+            return Err(format!(
+                "absolute patch path must be inside the workspace {}: {input}",
+                absolute_root.display()
+            ));
+        }
+        return Ok(target);
     }
 
-    let raw = Path::new(&trimmed);
-    if raw.is_absolute() {
-        return Err(format!("patch path must be relative: {input}"));
+    let portable = trimmed.replace('\\', "/");
+    if portable.contains(':') {
+        return Err(format!("invalid patch path: {input}"));
     }
 
     let mut path = root.to_path_buf();
-    for component in raw.components() {
+    for component in Path::new(&portable).components() {
         match component {
             Component::Normal(part) => path.push(part),
             Component::CurDir => {}
@@ -426,6 +530,41 @@ fn resolve_patch_path(root: &Path, input: &str) -> Result<PathBuf, String> {
     }
 
     Ok(path)
+}
+
+fn normalize_patch_path(path: &Path, input: &str) -> Result<PathBuf, String> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(format!("patch path must not contain '..': {input}"));
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+fn path_is_within(root: &Path, target: &Path) -> bool {
+    let root_components = comparable_path_components(root);
+    let target_components = comparable_path_components(target);
+    target_components.starts_with(&root_components)
+}
+
+fn comparable_path_components(path: &Path) -> Vec<String> {
+    path.components()
+        .map(|component| {
+            let value = component.as_os_str().to_string_lossy().into_owned();
+            if cfg!(windows) {
+                value.to_lowercase()
+            } else {
+                value
+            }
+        })
+        .collect()
 }
 
 fn normalize_patch_display_path(input: &str) -> String {

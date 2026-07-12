@@ -2429,14 +2429,15 @@ impl AgentEngine {
                 Never end silently after tool execution.\n\
              \n\
              FILE EDITING RULES:\n\
-             1. To create or overwrite files, use the `write_file` tool directly.\n\
-             2. To apply multi-file edits (add/update/delete/move), use the `apply_patch` tool.\n\
-             3. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
+             1. Use `apply_patch` as the default for every edit to an existing text file, including single-file edits. It applies contextual diffs and avoids rewriting unrelated content.\n\
+             2. Use `write_file` only to create a new file or when the user explicitly requests a complete file rewrite.\n\
+             3. `apply_patch` supports single-file and multi-file add/update/delete/move operations. Read the relevant file content before constructing an update hunk.\n\
+             4. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
                 Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
-             4. Do not use python scripts to read or write files. Use `read_file` and `write_file`/`apply_patch` instead.\n\
+             5. Do not use python scripts to read or write files. Use `read_file`, `apply_patch`, or (for new files) `write_file` instead.\n\
+             6. Preserve the existing text encoding and line endings when editing. New source and web files must be UTF-8. Never use a shell fallback after an edit-tool error because PowerShell or shell defaults can corrupt non-ASCII text such as Chinese; fix the tool arguments and retry `apply_patch`.\n\
              \n\
-             All file paths in tool calls should be relative to the working directory unless \
-             the user specifies an absolute path.\n\
+             Prefer paths relative to the working directory. Absolute paths are accepted only when they resolve inside the current workspace.\n\
              \n\
              {file_creation_policy}\n\
              \n\

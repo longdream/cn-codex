@@ -4,7 +4,11 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-import { parseSmartbrainConnectionUriLocally } from "../components/settings/smartbrainDatabaseState";
+import {
+  applyDatabaseNameToConnectionUri,
+  mergeSmartbrainDbParsedFields,
+  parseSmartbrainConnectionUriLocally,
+} from "../components/settings/smartbrainDatabaseState";
 
 describe("smartbrainDatabaseState", () => {
   it("parses MySQL key-value connection strings", () => {
@@ -40,5 +44,46 @@ describe("smartbrainDatabaseState", () => {
       schema: "public",
       sslmode: "disable",
     });
+  });
+
+  it("keeps existing database fields when merging parse results", () => {
+    const merged = mergeSmartbrainDbParsedFields(
+      {
+        host: "10.0.0.8",
+        port: 3307,
+        databaseName: "manual_db",
+        username: "manual_user",
+        password: "manual_pass",
+      },
+      {
+        host: "parsed-host",
+        port: 3306,
+        databaseName: "parsed_db",
+        username: "parsed_user",
+        password: "parsed_pass",
+      },
+    );
+
+    expect(merged.host).toBe("10.0.0.8");
+    expect(merged.port).toBe(3307);
+    expect(merged.databaseName).toBe("manual_db");
+    expect(merged.username).toBe("manual_user");
+    expect(merged.password).toBe("manual_pass");
+  });
+
+  it("updates database name inside connection strings", () => {
+    const url = applyDatabaseNameToConnectionUri(
+      "mysql",
+      "mysql://root:secret@10.0.0.1:3306/old_db",
+      "new_db",
+    );
+    expect(url).toContain("/new_db");
+
+    const kv = applyDatabaseNameToConnectionUri(
+      "mysql",
+      "Server=10.0.0.1;Port=3306;Database=old_db;Uid=root;Pwd=secret;",
+      "new_db",
+    );
+    expect(kv.toLowerCase()).toContain("database=new_db");
   });
 });

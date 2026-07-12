@@ -565,6 +565,13 @@
   "settings.smartbrain.database.parseSuccess": "Connection URI parsed successfully.",
   "settings.smartbrain.database.enabled": "Enable this database",
   "settings.smartbrain.database.databaseName": "Database name",
+  "settings.smartbrain.database.databaseNamePlaceholder": "Type manually, or refresh to choose from the list",
+  "settings.smartbrain.database.refreshDatabases": "Refresh database list",
+  "settings.smartbrain.database.selectDatabase": "Select a database",
+  "settings.smartbrain.database.refreshNeedConnection": "Please fill in Host or connection URI before refreshing the database list.",
+  "settings.smartbrain.database.refreshSuccess": "Loaded {count} databases. Choose one from the dropdown.",
+  "settings.smartbrain.database.refreshEmpty": "Connected successfully, but no databases were returned.",
+  "settings.smartbrain.database.refreshFailed": "Failed to refresh database list: {error}",
   "settings.smartbrain.database.username": "Username",
   "settings.smartbrain.database.password": "Password",
   "settings.smartbrain.database.passwordPlaceholder": "Auto-fill or enter the database password",
@@ -1034,5 +1041,8 @@
   "settings.workflows.empty": "No saved workflows",
   "settings.workflows.nodeCount": "{count} nodes",
   "settings.workflows.delete": "Delete",
-  "settings.workflows.deleteConfirm": "Are you sure you want to delete this workflow?"
+  "settings.workflows.deleteConfirm": "Are you sure you want to delete this workflow?",
+  "git.progressCommitting": "Committing",
+  "git.progressPushing": "Pushing",
+  "git.progressPulling": "Pulling"
 }

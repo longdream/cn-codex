@@ -14,7 +14,7 @@ import {
   IconRefresh,
   IconRotateClockwise2,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import {
   gitBranchList,
@@ -87,7 +87,7 @@ function formatActionNotice(result: GitActionResponse): string {
   return result.message;
 }
 
-export function GitPanel({ workspaceCwd }: GitPanelProps) {
+function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   const intl = useIntl();
   const commitMenuRef = useRef<HTMLDivElement | null>(null);
   const [section, setSection] = useState<GitSection>("changes");
@@ -107,6 +107,8 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
   const [cherryNoCommit, setCherryNoCommit] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [actionProgress, setActionProgress] = useState(0);
+  const [actionPhase, setActionPhase] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [noticeText, setNoticeText] = useState<string | null>(null);
 
@@ -202,18 +204,45 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
   }, [commitMenuOpen]);
 
   const runAction = useCallback(
-    async (actionLabel: string, action: () => Promise<GitActionResponse>) => {
+    async (actionLabel: string, action: () => Promise<GitActionResponse>, options?: { showProgress?: boolean }) => {
+      const showProgress = options?.showProgress === true;
       setBusyAction(actionLabel);
+      setActionPhase(showProgress ? actionLabel : null);
+      setActionProgress(showProgress ? 12 : 0);
       setNoticeText(null);
       setErrorText(null);
+      let progressTimer: number | null = null;
+      if (showProgress) {
+        progressTimer = window.setInterval(() => {
+          setActionProgress((prev) => {
+            if (prev <= 0 || prev >= 90) return prev;
+            return Math.min(90, prev + 4);
+          });
+        }, 350);
+      }
       try {
+        if (showProgress) {
+          setActionProgress(28);
+        }
         const result = await action();
+        if (showProgress) {
+          setActionProgress(82);
+        }
         setNoticeText(formatActionNotice(result));
         await refreshAll();
+        if (showProgress) {
+          setActionProgress(100);
+          await new Promise((resolve) => window.setTimeout(resolve, 220));
+        }
       } catch (error) {
         setErrorText(normalizeError(error));
       } finally {
+        if (progressTimer !== null) {
+          window.clearInterval(progressTimer);
+        }
         setBusyAction(null);
+        setActionPhase(null);
+        setActionProgress(0);
       }
     },
     [refreshAll],
@@ -272,16 +301,28 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
       const actionLabel = intl.formatMessage({ id: mode === "commit" ? "git.tabCommit" : "git.commitAndPush" });
       setCommitMenuOpen(false);
       setBusyAction(actionLabel);
+      setActionPhase(intl.formatMessage({ id: "git.progressCommitting" }));
+      setActionProgress(mode === "commitAndPush" ? 18 : 28);
       setNoticeText(null);
       setErrorText(null);
+      let progressTimer: number | null = window.setInterval(() => {
+        setActionProgress((prev) => {
+          if (prev <= 0 || prev >= 90) return prev;
+          return Math.min(90, prev + 3);
+        });
+      }, 350);
 
       try {
         const commitResult = await gitCommit(trimmed, workspaceCwd);
         setCommitMessage("");
+        setActionProgress(mode === "commitAndPush" ? 48 : 78);
 
         if (mode === "commitAndPush") {
+          setActionPhase(intl.formatMessage({ id: "git.progressPushing" }));
+          setActionProgress(62);
           try {
             const pushResult = await gitPush(workspaceCwd, "origin", currentBranch || undefined, false);
+            setActionProgress(88);
             setNoticeText(
               formatActionNotice({
                 ...pushResult,
@@ -300,10 +341,18 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
 
         setSection("changes");
         await refreshAll();
+        setActionProgress(100);
       } catch (error) {
         setErrorText(normalizeError(error));
       } finally {
+        if (progressTimer !== null) {
+          window.clearInterval(progressTimer);
+        }
+        // Keep the completed bar visible briefly so push feedback is noticeable.
+        await new Promise((resolve) => window.setTimeout(resolve, 220));
         setBusyAction(null);
+        setActionPhase(null);
+        setActionProgress(0);
       }
     },
     [commitMessage, currentBranch, intl, refreshAll, workspaceCwd],
@@ -337,14 +386,22 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
     if (!workspaceCwd) {
       return;
     }
-    await runAction(intl.formatMessage({ id: "git.pull" }), () => gitPull(workspaceCwd, "origin", currentBranch || undefined, false));
+    await runAction(
+      intl.formatMessage({ id: "git.pull" }),
+      () => gitPull(workspaceCwd, "origin", currentBranch || undefined, false),
+      { showProgress: true },
+    );
   }, [currentBranch, intl, runAction, workspaceCwd]);
 
   const handlePush = useCallback(async () => {
     if (!workspaceCwd) {
       return;
     }
-    await runAction(intl.formatMessage({ id: "git.push" }), () => gitPush(workspaceCwd, "origin", currentBranch || undefined, false));
+    await runAction(
+      intl.formatMessage({ id: "git.push" }),
+      () => gitPush(workspaceCwd, "origin", currentBranch || undefined, false),
+      { showProgress: true },
+    );
   }, [currentBranch, intl, runAction, workspaceCwd]);
 
   const handleReset = useCallback(async () => {
@@ -882,10 +939,29 @@ export function GitPanel({ workspaceCwd }: GitPanelProps) {
       </div>
 
       {busyAction && (
-        <div className="border-t border-[var(--border-subtle)] px-3 py-2 text-[11px] text-[var(--text-faint)]">
-          {intl.formatMessage({ id: "git.busyRunning" }, { action: busyAction })}
+        <div className="border-t border-[var(--border-subtle)] px-3 py-2">
+          <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-[var(--text-faint)]">
+            <span className="min-w-0 truncate">
+              {actionPhase
+                ? intl.formatMessage({ id: "git.busyRunning" }, { action: actionPhase })
+                : intl.formatMessage({ id: "git.busyRunning" }, { action: busyAction })}
+            </span>
+            {actionProgress > 0 && (
+              <span className="shrink-0 font-mono text-[10px] text-[var(--text-muted)]">{Math.max(0, Math.min(100, actionProgress))}%</span>
+            )}
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-[var(--surface-soft)]">
+            <div
+              className={`h-full rounded-full bg-[var(--accent)] transition-[width] duration-300 ease-out ${
+                actionProgress > 0 ? "" : "animate-pulse"
+              }`}
+              style={{ width: `${actionProgress > 0 ? Math.max(8, Math.min(100, actionProgress)) : 35}%` }}
+            />
+          </div>
         </div>
       )}
     </div>
   );
 }
+
+export const GitPanel = memo(GitPanelComponent);

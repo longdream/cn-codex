@@ -6,17 +6,22 @@ import {
   IconEye,
   IconEyeOff,
   IconPlus,
+  IconRefresh,
   IconSparkles,
   IconTrash,
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import {
+  applyDatabaseNameToConnectionUri,
   createEmptySmartbrainDbSource,
   isSourceEffectivelyEnabled,
+  listSmartbrainDatabases,
   loadSmartbrainDbSettings,
   loadSmartbrainDbSources,
+  mergeSmartbrainDbParsedFields,
   parseSmartbrainConnectionUri,
+  parseSmartbrainConnectionUriLocally,
   saveSmartbrainDbSources,
   sourceHasAnyPermission,
   type SmartbrainDbSource,
@@ -44,6 +49,8 @@ export function SmartbrainDatabasePanel() {
   const [showPassword, setShowPassword] = useState(false);
   const [notice, setNotice] = useState<{ kind: "success" | "error" | "warning"; text: string } | null>(null);
   const [skipWhenNoPermission, setSkipWhenNoPermission] = useState(true);
+  const [databaseOptions, setDatabaseOptions] = useState<string[]>([]);
+  const [refreshingDatabases, setRefreshingDatabases] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -55,7 +62,9 @@ export function SmartbrainDatabasePanel() {
       setSources(loadedSources);
       setSkipWhenNoPermission(loadedSettings.skipWhenNoPermission);
       if (loadedSources.length > 0) {
-        setSelectedId((prev) => prev && loadedSources.some((item) => item.id === prev) ? prev : loadedSources[0].id);
+        setSelectedId((prev) =>
+          prev && loadedSources.some((item) => item.id === prev) ? prev : loadedSources[0].id,
+        );
       } else {
         setSelectedId(null);
         setDraft(createEmptySmartbrainDbSource());
@@ -76,6 +85,7 @@ export function SmartbrainDatabasePanel() {
     const selected = sources.find((item) => item.id === selectedId);
     if (selected) {
       setDraft(selected);
+      setDatabaseOptions([]);
     }
   }, [selectedId, sources]);
 
@@ -83,6 +93,7 @@ export function SmartbrainDatabasePanel() {
     setSelectedId(null);
     setDraft(createEmptySmartbrainDbSource());
     setShowPassword(false);
+    setDatabaseOptions([]);
     setNotice(null);
   }, []);
 
@@ -92,7 +103,7 @@ export function SmartbrainDatabasePanel() {
       const parsed = await parseSmartbrainConnectionUri(draft.dbType, draft.connectionUri);
       setDraft((prev) => ({
         ...prev,
-        ...parsed,
+        ...mergeSmartbrainDbParsedFields(prev, parsed),
       }));
       setNotice({
         kind: "success",
@@ -110,7 +121,7 @@ export function SmartbrainDatabasePanel() {
 
   const handleSave = useCallback(async () => {
     const trimmedUri = draft.connectionUri.trim();
-    if (!trimmedUri) {
+    if (!trimmedUri && draft.dbType !== "sqlite") {
       setNotice({
         kind: "error",
         text: intl.formatMessage({ id: "settings.smartbrain.database.uriRequired" }),
@@ -118,31 +129,43 @@ export function SmartbrainDatabasePanel() {
       return;
     }
 
-    let nextDraft = {
+    let nextDraft: SmartbrainDbSource = {
       ...draft,
       connectionUri: trimmedUri,
+      host: draft.host.trim(),
+      databaseName: draft.databaseName.trim(),
+      username: draft.username.trim(),
+      password: draft.password,
+      filePath: draft.filePath.trim(),
+      schema: draft.schema.trim(),
       updatedAt: Math.floor(Date.now() / 1000),
     };
 
-    try {
-      const parsed = await parseSmartbrainConnectionUri(nextDraft.dbType, trimmedUri);
-      nextDraft = {
-        ...nextDraft,
-        ...parsed,
-      };
-    } catch (error) {
-      setNotice({
-        kind: "error",
-        text: typeof error === "string" ? error : (error as Error).message,
-      });
-      return;
+    if (trimmedUri) {
+      try {
+        const parsed = await parseSmartbrainConnectionUri(nextDraft.dbType, trimmedUri);
+        // Keep user-edited values when present; only fill blanks from parse result.
+        nextDraft = {
+          ...nextDraft,
+          ...mergeSmartbrainDbParsedFields(nextDraft, parsed),
+        };
+      } catch (error) {
+        // If the user already filled structured fields, allow save without parse.
+        if (!nextDraft.host && !nextDraft.databaseName && !nextDraft.filePath) {
+          setNotice({
+            kind: "error",
+            text: typeof error === "string" ? error : (error as Error).message,
+          });
+          return;
+        }
+      }
     }
 
     if (!nextDraft.name.trim()) {
       nextDraft.name =
         nextDraft.dbType === "sqlite"
-          ? nextDraft.databaseName || "SQLite"
-          : `${nextDraft.dbType}:${nextDraft.host || "database"}`;
+          ? nextDraft.databaseName || nextDraft.filePath || "SQLite"
+          : `${nextDraft.dbType}:${nextDraft.host || nextDraft.databaseName || "database"}`;
     }
 
     const nextSources = selectedId
@@ -164,7 +187,10 @@ export function SmartbrainDatabasePanel() {
     } catch (error) {
       setNotice({
         kind: "error",
-        text: intl.formatMessage({ id: "settings.smartbrain.database.saveFailed" }, { error: String(error) }),
+        text: intl.formatMessage(
+          { id: "settings.smartbrain.database.saveFailed" },
+          { error: String(error) },
+        ),
       });
     } finally {
       setSaving(false);
@@ -189,6 +215,7 @@ export function SmartbrainDatabasePanel() {
         setSelectedId(null);
         setDraft(createEmptySmartbrainDbSource());
         setShowPassword(false);
+        setDatabaseOptions([]);
       }
       setNotice({
         kind: "success",
@@ -197,26 +224,128 @@ export function SmartbrainDatabasePanel() {
     } catch (error) {
       setNotice({
         kind: "error",
-        text: intl.formatMessage({ id: "settings.smartbrain.database.saveFailed" }, { error: String(error) }),
+        text: intl.formatMessage(
+          { id: "settings.smartbrain.database.saveFailed" },
+          { error: String(error) },
+        ),
       });
     } finally {
       setSaving(false);
     }
   }, [intl, selectedId, sources]);
 
-  const effectiveEnabled = isSourceEffectivelyEnabled(
-    draft,
-    {
-      defaultRowLimit: 0,
-      defaultTimeoutSec: 0,
-      requireReadonlyReminder: true,
-      skipWhenNoPermission,
-      denyDdl: true,
-      denyDrop: true,
-      denyDeleteWithoutWritePermission: true,
-      rulesMarkdown: "",
-    },
-  );
+  const handleRefreshDatabases = useCallback(async () => {
+    let working = { ...draft };
+
+    if (working.connectionUri.trim()) {
+      try {
+        const parsed = parseSmartbrainConnectionUriLocally(working.dbType, working.connectionUri);
+        working = {
+          ...working,
+          ...mergeSmartbrainDbParsedFields(working, parsed),
+        };
+        setDraft((prev) => ({
+          ...prev,
+          ...mergeSmartbrainDbParsedFields(prev, parsed),
+        }));
+      } catch {
+        // Keep manual fields when the connection string cannot be parsed locally.
+      }
+    }
+
+    if (working.dbType === "sqlite") {
+      const path = working.filePath.trim() || working.databaseName.trim() || working.connectionUri.trim();
+      if (!path) {
+        setNotice({
+          kind: "error",
+          text: intl.formatMessage({ id: "settings.smartbrain.database.refreshNeedConnection" }),
+        });
+        return;
+      }
+      const fileName = path.split(/[\\/]/).filter(Boolean).pop() || path;
+      setDatabaseOptions([fileName]);
+      setDraft((prev) => ({
+        ...prev,
+        databaseName: prev.databaseName.trim() || fileName,
+        filePath: prev.filePath.trim() || path,
+      }));
+      setNotice({
+        kind: "success",
+        text: intl.formatMessage({ id: "settings.smartbrain.database.refreshSuccess" }, { count: 1 }),
+      });
+      return;
+    }
+
+    if (!working.host.trim() && !working.connectionUri.trim()) {
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage({ id: "settings.smartbrain.database.refreshNeedConnection" }),
+      });
+      return;
+    }
+
+    setRefreshingDatabases(true);
+    try {
+      const databases = await listSmartbrainDatabases({
+        dbType: working.dbType,
+        host: working.host,
+        port: working.port,
+        username: working.username,
+        password: working.password,
+        connectionUri: working.connectionUri,
+        databaseName: working.databaseName,
+        filePath: working.filePath,
+      });
+      setDatabaseOptions(databases);
+
+      if (databases.length === 0) {
+        setNotice({
+          kind: "warning",
+          text: intl.formatMessage({ id: "settings.smartbrain.database.refreshEmpty" }),
+        });
+        return;
+      }
+
+      setNotice({
+        kind: "success",
+        text: intl.formatMessage(
+          { id: "settings.smartbrain.database.refreshSuccess" },
+          { count: databases.length },
+        ),
+      });
+
+      const currentName = working.databaseName.trim();
+      if (!currentName || !databases.includes(currentName)) {
+        const nextName = databases[0];
+        setDraft((prev) => ({
+          ...prev,
+          databaseName: nextName,
+          connectionUri: applyDatabaseNameToConnectionUri(prev.dbType, prev.connectionUri, nextName),
+        }));
+      }
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage(
+          { id: "settings.smartbrain.database.refreshFailed" },
+          { error: typeof error === "string" ? error : (error as Error).message },
+        ),
+      });
+    } finally {
+      setRefreshingDatabases(false);
+    }
+  }, [draft, intl]);
+
+  const effectiveEnabled = isSourceEffectivelyEnabled(draft, {
+    defaultRowLimit: 0,
+    defaultTimeoutSec: 0,
+    requireReadonlyReminder: true,
+    skipWhenNoPermission,
+    denyDdl: true,
+    denyDrop: true,
+    denyDeleteWithoutWritePermission: true,
+    rulesMarkdown: "",
+  });
 
   return (
     <div className="space-y-5">
@@ -246,12 +375,12 @@ export function SmartbrainDatabasePanel() {
 
         {notice && (
           <div
-            className={`rounded-[var(--radius-sm)] px-3 py-2 text-xs ${
+            className={`rounded-[var(--radius-md)] border px-3 py-2 text-xs ${
               notice.kind === "success"
-                ? "bg-green-500/10 text-green-400"
+                ? "border-green-500/25 bg-green-500/10 text-green-400"
                 : notice.kind === "warning"
-                  ? "bg-amber-500/10 text-amber-400"
-                  : "bg-red-500/10 text-red-400"
+                  ? "border-amber-500/25 bg-amber-500/10 text-amber-400"
+                  : "border-red-500/25 bg-red-500/10 text-red-400"
             }`}
           >
             {notice.text}
@@ -270,19 +399,16 @@ export function SmartbrainDatabasePanel() {
               </div>
             ) : (
               sources.map((source) => {
-                const itemEnabled = isSourceEffectivelyEnabled(
-                  source,
-                  {
-                    defaultRowLimit: 0,
-                    defaultTimeoutSec: 0,
-                    requireReadonlyReminder: true,
-                    skipWhenNoPermission,
-                    denyDdl: true,
-                    denyDrop: true,
-                    denyDeleteWithoutWritePermission: true,
-                    rulesMarkdown: "",
-                  },
-                );
+                const itemEnabled = isSourceEffectivelyEnabled(source, {
+                  defaultRowLimit: 0,
+                  defaultTimeoutSec: 0,
+                  requireReadonlyReminder: true,
+                  skipWhenNoPermission,
+                  denyDdl: true,
+                  denyDrop: true,
+                  denyDeleteWithoutWritePermission: true,
+                  rulesMarkdown: "",
+                });
                 return (
                   <button
                     key={source.id}
@@ -322,7 +448,10 @@ export function SmartbrainDatabasePanel() {
                 <select
                   value={draft.dbType}
                   onChange={(event) =>
-                    setDraft((prev) => ({ ...prev, dbType: event.target.value as SmartbrainDbType }))
+                    setDraft((prev) => ({
+                      ...prev,
+                      dbType: event.target.value as SmartbrainDbType,
+                    }))
                   }
                   className="app-select w-full"
                 >
@@ -383,24 +512,114 @@ export function SmartbrainDatabasePanel() {
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1">
                 <label className="text-[11px] text-[var(--text-faint)]">Host</label>
-                <input value={draft.host} readOnly className="app-input w-full opacity-80" />
+                <input
+                  value={draft.host}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, host: event.target.value }))}
+                  className="app-input w-full"
+                />
               </div>
               <div className="space-y-1">
                 <label className="text-[11px] text-[var(--text-faint)]">Port</label>
-                <input value={draft.port ?? ""} readOnly className="app-input w-full opacity-80" />
+                <input
+                  type="number"
+                  min={1}
+                  value={draft.port ?? ""}
+                  onChange={(event) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      port: event.target.value ? Number(event.target.value) : null,
+                    }))
+                  }
+                  className="app-input w-full"
+                />
               </div>
+
               <div className="space-y-1">
                 <label className="text-[11px] text-[var(--text-faint)]">
                   {intl.formatMessage({ id: "settings.smartbrain.database.databaseName" })}
                 </label>
-                <input value={draft.databaseName} readOnly className="app-input w-full opacity-80" />
+                <div className="flex items-center gap-2">
+                  <input
+                    value={draft.databaseName}
+                    onChange={(event) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        databaseName: event.target.value,
+                        connectionUri: applyDatabaseNameToConnectionUri(
+                          prev.dbType,
+                          prev.connectionUri,
+                          event.target.value,
+                        ),
+                      }))
+                    }
+                    list="smartbrain-database-options"
+                    placeholder={intl.formatMessage({
+                      id: "settings.smartbrain.database.databaseNamePlaceholder",
+                    })}
+                    className="app-input min-w-0 flex-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleRefreshDatabases()}
+                    disabled={refreshingDatabases}
+                    className="app-button-secondary flex h-9 w-9 items-center justify-center px-0 disabled:opacity-50"
+                    title={intl.formatMessage({ id: "settings.smartbrain.database.refreshDatabases" })}
+                  >
+                    <IconRefresh
+                      size={14}
+                      stroke={1.8}
+                      className={refreshingDatabases ? "animate-spin" : undefined}
+                    />
+                  </button>
+                </div>
+                {databaseOptions.length > 0 && (
+                  <select
+                    value={databaseOptions.includes(draft.databaseName) ? draft.databaseName : ""}
+                    onChange={(event) => {
+                      const nextName = event.target.value;
+                      if (!nextName) {
+                        return;
+                      }
+                      setDraft((prev) => ({
+                        ...prev,
+                        databaseName: nextName,
+                        connectionUri: applyDatabaseNameToConnectionUri(
+                          prev.dbType,
+                          prev.connectionUri,
+                          nextName,
+                        ),
+                      }));
+                    }}
+                    className="app-select w-full"
+                  >
+                    <option value="">
+                      {intl.formatMessage({ id: "settings.smartbrain.database.selectDatabase" })}
+                    </option>
+                    {databaseOptions.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <datalist id="smartbrain-database-options">
+                  {databaseOptions.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
               </div>
+
               <div className="space-y-1">
                 <label className="text-[11px] text-[var(--text-faint)]">
                   {intl.formatMessage({ id: "settings.smartbrain.database.username" })}
                 </label>
-                <input value={draft.username} readOnly className="app-input w-full opacity-80" />
+                <input
+                  value={draft.username}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, username: event.target.value }))}
+                  className="app-input w-full"
+                />
               </div>
+
               <div className="space-y-1">
                 <label className="text-[11px] text-[var(--text-faint)]">
                   {intl.formatMessage({ id: "settings.smartbrain.database.password" })}
@@ -431,6 +650,7 @@ export function SmartbrainDatabasePanel() {
                   {intl.formatMessage({ id: "settings.smartbrain.database.passwordHint" })}
                 </div>
               </div>
+
               <div className="space-y-1">
                 <label className="text-[11px] text-[var(--text-faint)]">Schema</label>
                 <input
@@ -439,11 +659,16 @@ export function SmartbrainDatabasePanel() {
                   className="app-input w-full"
                 />
               </div>
+
               <div className="space-y-1">
                 <label className="text-[11px] text-[var(--text-faint)]">
                   {intl.formatMessage({ id: "settings.smartbrain.database.filePath" })}
                 </label>
-                <input value={draft.filePath} readOnly className="app-input w-full opacity-80" />
+                <input
+                  value={draft.filePath}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, filePath: event.target.value }))}
+                  className="app-input w-full"
+                />
               </div>
             </div>
 
@@ -524,18 +749,14 @@ export function SmartbrainDatabasePanel() {
               <button
                 type="button"
                 onClick={() => void handleSave()}
-                disabled={saving || parsing}
+                disabled={saving || parsing || refreshingDatabases}
                 className="rounded-lg bg-[var(--accent-strong)] px-4 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
               >
                 {saving
                   ? intl.formatMessage({ id: "settings.smartbrain.database.saving" })
                   : intl.formatMessage({ id: "settings.smartbrain.database.save" })}
               </button>
-              <button
-                type="button"
-                onClick={handleCreateNew}
-                className="app-button-secondary text-xs"
-              >
+              <button type="button" onClick={handleCreateNew} className="app-button-secondary text-xs">
                 {intl.formatMessage({ id: "settings.smartbrain.database.resetDraft" })}
               </button>
               {selectedId && (
