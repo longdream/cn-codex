@@ -173,7 +173,6 @@ export function RightPanel() {
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
   const rightPanelWidth = useAppStore((s) => s.rightPanelWidth);
   const browserPanelUrl = useAppStore((s) => s.browserPanelUrl);
-  const browserPanelTitle = useAppStore((s) => s.browserPanelTitle);
   const browserPanelStatus = useAppStore((s) => s.browserPanelStatus);
   const browserCanGoBack = useAppStore((s) => s.browserCanGoBack);
   const browserCanGoForward = useAppStore((s) => s.browserCanGoForward);
@@ -213,6 +212,12 @@ export function RightPanel() {
   const [editFontSize, setEditFontSize] = useState("");
   const [applyingEdit, setApplyingEdit] = useState(false);
   const [addressInput, setAddressInput] = useState("");
+
+  const browserToolbarCompact = rightPanelWidth < 420;
+  const browserToolbarExtraCompact = rightPanelWidth < 360;
+  const browserToolbarUltraCompact = rightPanelWidth < 320;
+  const browserEditorCompact = rightPanelWidth < 430;
+  const browserEditorExtraCompact = rightPanelWidth < 360;
 
   const browserOutput = useMemo(
     () => parseBrowserRunOutput(browserCall?.output),
@@ -905,7 +910,7 @@ export function RightPanel() {
       {rightPanelTab === "browser" ? (
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* Browser address bar */}
-          <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-1.5">
+          <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-1.5">
             <div className="flex min-w-0 flex-1 items-center gap-1">
               <button
                 type="button"
@@ -917,36 +922,42 @@ export function RightPanel() {
               >
                 <IconChevronLeft size={13} stroke={1.9} />
               </button>
-              <button
-                type="button"
-                onClick={handleBrowserForward}
-                disabled={!browserReady || !browserCanGoForward}
-                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
-                title={intl.formatMessage({ id: "rightPanel.browserForward" })}
-                aria-label={intl.formatMessage({ id: "rightPanel.browserForward" })}
-              >
-                <IconChevronRight size={13} stroke={1.9} />
-              </button>
-              <button
-                type="button"
-                onClick={handleBrowserRefresh}
-                disabled={!browserReady}
-                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
-                title={intl.formatMessage({ id: "rightPanel.browserRefresh" })}
-                aria-label={intl.formatMessage({ id: "rightPanel.browserRefresh" })}
-              >
-                <IconRefresh size={12} stroke={1.9} />
-              </button>
-              <button
-                type="button"
-                onClick={handleBrowserHome}
-                disabled={!browserReady}
-                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
-                title={intl.formatMessage({ id: "rightPanel.browserHome" })}
-                aria-label={intl.formatMessage({ id: "rightPanel.browserHome" })}
-              >
-                <IconHome size={12} stroke={1.9} />
-              </button>
+              {!browserToolbarUltraCompact && (
+                <button
+                  type="button"
+                  onClick={handleBrowserForward}
+                  disabled={!browserReady || !browserCanGoForward}
+                  className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
+                  title={intl.formatMessage({ id: "rightPanel.browserForward" })}
+                  aria-label={intl.formatMessage({ id: "rightPanel.browserForward" })}
+                >
+                  <IconChevronRight size={13} stroke={1.9} />
+                </button>
+              )}
+              {!browserToolbarCompact && (
+                <button
+                  type="button"
+                  onClick={handleBrowserRefresh}
+                  disabled={!browserReady}
+                  className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
+                  title={intl.formatMessage({ id: "rightPanel.browserRefresh" })}
+                  aria-label={intl.formatMessage({ id: "rightPanel.browserRefresh" })}
+                >
+                  <IconRefresh size={12} stroke={1.9} />
+                </button>
+              )}
+              {!browserToolbarExtraCompact && (
+                <button
+                  type="button"
+                  onClick={handleBrowserHome}
+                  disabled={!browserReady}
+                  className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-35"
+                  title={intl.formatMessage({ id: "rightPanel.browserHome" })}
+                  aria-label={intl.formatMessage({ id: "rightPanel.browserHome" })}
+                >
+                  <IconHome size={12} stroke={1.9} />
+                </button>
+              )}
               <span
                 className={`h-2 w-2 flex-shrink-0 rounded-full ${
                   browserActive
@@ -975,58 +986,54 @@ export function RightPanel() {
                   }
                 }}
               />
-              {browserPanelTitle && (
-                <span
-                  className="max-w-[140px] truncate text-[10px] text-[var(--text-faint)]"
-                  title={browserPanelTitle}
-                >
-                  {browserPanelTitle}
-                </span>
-              )}
             </div>
-            <button
-              type="button"
-              onClick={handleToggleEditMode}
-              disabled={!canToggleEditMode}
-              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-40"
-              title={editModeTitle}
-              aria-label={editModeTitle}
-            >
-              <IconPencil size={13} stroke={1.8} />
-            </button>
-            <button
-              type="button"
-              onClick={handleInsertPickedToChat}
-              disabled={!pickedElement}
-              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-40"
-              title={intl.formatMessage({ id: "rightPanel.webEditAddToChat" })}
-              aria-label={intl.formatMessage({ id: "rightPanel.webEditAddToChat" })}
-            >
-              <IconMessagePlus size={13} stroke={1.8} />
-            </button>
-            <button
-              type="button"
-              onClick={handleToggleDetachMode}
-              className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] transition-colors ${
-                browserDetached
-                  ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-                  : "text-[var(--text-faint)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-              }`}
-              title={detachModeTitle}
-              aria-label={detachModeTitle}
-            >
-              <IconExternalLink size={12} stroke={1.9} />
-            </button>
-            {(browserActive || browserDetached) && (
+            <div className="ml-auto flex flex-shrink-0 items-center gap-1">
               <button
                 type="button"
-                onClick={handleCloseBrowser}
-                className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--danger)]"
-                title={intl.formatMessage({ id: "rightPanel.closeBrowser" })}
+                onClick={handleToggleEditMode}
+                disabled={!canToggleEditMode}
+                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-40"
+                title={editModeTitle}
+                aria-label={editModeTitle}
               >
-                <IconX size={12} stroke={2} />
+                <IconPencil size={13} stroke={1.8} />
               </button>
-            )}
+              {!browserToolbarExtraCompact && (
+                <button
+                  type="button"
+                  onClick={handleInsertPickedToChat}
+                  disabled={!pickedElement}
+                  className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:cursor-not-allowed disabled:opacity-40"
+                  title={intl.formatMessage({ id: "rightPanel.webEditAddToChat" })}
+                  aria-label={intl.formatMessage({ id: "rightPanel.webEditAddToChat" })}
+                >
+                  <IconMessagePlus size={13} stroke={1.8} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleToggleDetachMode}
+                className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] transition-colors ${
+                  browserDetached
+                    ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                    : "text-[var(--text-faint)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+                }`}
+                title={detachModeTitle}
+                aria-label={detachModeTitle}
+              >
+                <IconExternalLink size={12} stroke={1.9} />
+              </button>
+              {(browserActive || browserDetached) && (
+                <button
+                  type="button"
+                  onClick={handleCloseBrowser}
+                  className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--danger)]"
+                  title={intl.formatMessage({ id: "rightPanel.closeBrowser" })}
+                >
+                  <IconX size={12} stroke={2} />
+                </button>
+              )}
+            </div>
           </div>
 
           {(browserEditMode || pickedElement || browserEditError) && (
@@ -1052,7 +1059,7 @@ export function RightPanel() {
                   <div className="truncate font-mono text-[10px] text-[var(--text-muted)]">
                     {pickedElement.selector || pickedElement.selectorCandidates[0]}
                   </div>
-                  <div className="grid grid-cols-[1fr_88px_72px] gap-1">
+                  <div className={`grid gap-1 ${browserEditorExtraCompact ? "grid-cols-1" : browserEditorCompact ? "grid-cols-[1fr_88px]" : "grid-cols-[1fr_88px_72px]"}`}>
                     <input
                       type="text"
                       value={editText}
