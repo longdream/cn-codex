@@ -886,6 +886,8 @@
   "titleBar.minimize": "Minimize",
   "titleBar.maximize": "Maximize",
   "titleBar.close": "Close",
+  "titleBar.update": "Update",
+  "titleBar.updateTooltip": "New version {version} available. Click to review and update.",
   "approval.permissionRequest": "Permission Request",
   "chat.waitingForAI": "Waiting for AI response...",
   "chat.aiResponseDone": "AI response complete",

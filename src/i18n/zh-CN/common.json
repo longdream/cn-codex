@@ -886,6 +886,8 @@
   "titleBar.minimize": "最小化",
   "titleBar.maximize": "最大化",
   "titleBar.close": "关闭",
+  "titleBar.update": "更新",
+  "titleBar.updateTooltip": "发现新版本 {version}，点击查看并更新",
   "approval.permissionRequest": "权限请求",
   "chat.waitingForAI": "等待 AI 响应...",
   "chat.aiResponseDone": "AI 响应结束",

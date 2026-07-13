@@ -1,8 +1,9 @@
 {
-  "version": "0.1.0",
-  "url": "http://47.113.221.244:5005/files/CN-Codex-0.1.0.exe",
-  "sha256": "",
-  "notes": "初始自动更新通道。请将新版本 exe 上传到 files/ 并更新本文件。",
+  "version": "1.0.0",
+  "url": "http://47.113.221.244:5005/files/CN-Codex-1.0.0.zip",
+  "sha256": "6c9f19ac07769d9ca63a932c8c02d7485fde9971c4d5898aa6a085cb3799c441",
+  "notes": "CN-Codex 1.0.0",
   "force": false,
-  "publishedAt": "2026-03-21T00:00:00Z"
+  "publishedAt": "2026-07-13T13:27:23Z",
+  "packageType": "zip"
 }

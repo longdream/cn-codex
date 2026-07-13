@@ -1,41 +1,51 @@
 import { IconDownload, IconRefresh, IconX } from "@tabler/icons-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
-import { updateCheck, updateStart, type UpdateCheckResult } from "../../api/update";
+import { updateCheck, updateStart } from "../../api/update";
 import { useAppStore } from "../../stores/appStore";
+import { useUpdateStore } from "../../stores/updateStore";
 
 export function UpdateModal() {
   const intl = useIntl();
   const initialized = useAppStore((s) => s.initialized);
-  const [info, setInfo] = useState<UpdateCheckResult | null>(null);
-  const [visible, setVisible] = useState(false);
+  const info = useUpdateStore((s) => s.info);
+  const showModal = useUpdateStore((s) => s.showModal);
+  const checked = useUpdateStore((s) => s.checked);
+  const setInfo = useUpdateStore((s) => s.setInfo);
+  const setShowModal = useUpdateStore((s) => s.setShowModal);
+  const setChecked = useUpdateStore((s) => s.setChecked);
+  const dismiss = useUpdateStore((s) => s.dismiss);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const checkedRef = useRef(false);
 
   useEffect(() => {
-    if (!initialized || checkedRef.current) {
+    if (!initialized || checked) {
       return;
     }
-    checkedRef.current = true;
+    setChecked(true);
 
     void (async () => {
       try {
         const result = await updateCheck();
-        if (result.updateAvailable && result.url) {
+        console.info("[update] check result:", result);
+        if (result.updateAvailable && result.url?.trim()) {
           setInfo(result);
-          setVisible(true);
+          // 有新版本时直接在右上角显示按钮，不强制弹窗打断用户。
+          setShowModal(false);
+        } else {
+          setInfo(null);
         }
       } catch (err) {
         // Auto-update is best-effort and should never block app startup.
         console.warn("[update] check failed:", err);
+        setInfo(null);
       }
     })();
-  }, [initialized]);
+  }, [checked, initialized, setChecked, setInfo, setShowModal]);
 
   const handleLater = useCallback(() => {
-    setVisible(false);
-  }, []);
+    dismiss();
+  }, [dismiss]);
 
   const handleUpdate = useCallback(async () => {
     if (!info?.url) {
@@ -53,7 +63,7 @@ export function UpdateModal() {
     }
   }, [info]);
 
-  if (!visible || !info) {
+  if (!showModal || !info) {
     return null;
   }
 

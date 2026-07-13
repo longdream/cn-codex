@@ -171,7 +171,7 @@ echo     build\latest.json
 echo.
 echo   Server overwrite package:
 echo     build\update-artifacts\update-upload\latest.json
-echo     build\update-artifacts\update-upload\files\CN-Codex-%APP_VERSION%.exe
+echo     build\update-artifacts\update-upload\files\CN-Codex-%APP_VERSION%.zip
 echo.
 echo   Upload to server ^(example^):
 echo     scp -r build\update-artifacts\update-upload\* root@47.113.221.244:/opt/cn-codex-update/public/

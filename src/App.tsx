@@ -454,21 +454,24 @@ function App() {
               <div className="app-main">
                 <ChatPage />
               </div>
-              {rightPanelVisible && (
-                <>
-                  <div
-                    role="separator"
-                    aria-label="Resize right panel"
-                    aria-orientation="vertical"
-                    className="app-resizer app-resizer-right"
-                    onPointerDown={startResize("right")}
-                    onPointerMove={handleResizerPointerMove}
-                    onPointerUp={handleResizerPointerUp}
-                    onPointerCancel={handleResizerPointerCancel}
-                  />
-                  <RightPanel />
-                </>
-              )}
+              {/* 右侧面板始终挂载：关闭时只隐藏，避免卸载 TerminalPanel 导致终端进程被关闭 */}
+              <div
+                className="flex h-full flex-shrink-0"
+                style={rightPanelVisible ? undefined : { display: "none" }}
+                aria-hidden={!rightPanelVisible}
+              >
+                <div
+                  role="separator"
+                  aria-label="Resize right panel"
+                  aria-orientation="vertical"
+                  className="app-resizer app-resizer-right"
+                  onPointerDown={startResize("right")}
+                  onPointerMove={handleResizerPointerMove}
+                  onPointerUp={handleResizerPointerUp}
+                  onPointerCancel={handleResizerPointerCancel}
+                />
+                <RightPanel />
+              </div>
             </div>
             <StatusBar />
           </div>

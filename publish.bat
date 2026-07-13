@@ -347,6 +347,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%scripts\prepar
   -Version "%APP_VERSION%" ^
   -MainExe "%MAIN_EXE%" ^
   -UpdaterExe "%UPDATER_EXE%" ^
+  -PortableDir "%PUBLISH_DIR%" ^
   -OutDir "%ARTIFACTS_DIR%" ^
   -BaseUrl "%UPDATE_BASE_URL%" ^
   -Notes "%UPDATE_NOTES%"
@@ -378,7 +379,7 @@ echo Auto-update artifacts:
 echo   client: CN-Codex.exe + updater.exe
 echo   server: publish\update-artifacts\update-upload\
 echo     - latest.json
-echo     - files\CN-Codex-%APP_VERSION%.exe
+echo     - files\CN-Codex-%APP_VERSION%.zip
 echo.
 echo Upload example:
 echo   scp -r publish\update-artifacts\update-upload\* root@47.113.221.244:/opt/cn-codex-update/public/

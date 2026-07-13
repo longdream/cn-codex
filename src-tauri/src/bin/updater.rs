@@ -2,7 +2,7 @@
 
 use std::{
     fs::{self, File},
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -14,6 +14,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zip::ZipArchive;
 
 const DEFAULT_MANIFEST_URL: &str = "http://47.113.221.244:5005/latest.json";
 
@@ -35,7 +36,7 @@ enum Commands {
         #[arg(long, default_value_t = 12)]
         timeout_secs: u64,
     },
-    /// Download latest exe, replace target, then relaunch.
+    /// Download package (zip preferred, exe fallback), replace files, then relaunch.
     Update {
         #[arg(long)]
         url: String,
@@ -173,42 +174,91 @@ async fn run_update(
     // Give Windows a short moment to release file handles.
     thread::sleep(Duration::from_millis(500));
 
-    progress.set_status("正在下载新版本...");
-    let temp_path = target.with_extension("exe.new");
-    if let Err(err) = download_with_progress(&url, &temp_path, &progress).await {
+    let install_dir = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => {
+            progress.fail("无法解析安装目录");
+            return 1;
+        }
+    };
+
+    let work_dir = install_dir.join(".cn-codex-update-work");
+    let _ = fs::remove_dir_all(&work_dir);
+    if let Err(err) = fs::create_dir_all(&work_dir) {
+        progress.fail(&format!("创建临时目录失败: {err}"));
+        return 1;
+    }
+
+    let package_name = package_filename_from_url(&url);
+    let package_path = work_dir.join(&package_name);
+
+    progress.set_status("正在下载更新包...");
+    if let Err(err) = download_with_progress(&url, &package_path, &progress).await {
         progress.fail(&format!("下载失败: {err}"));
-        let _ = fs::remove_file(&temp_path);
+        let _ = fs::remove_dir_all(&work_dir);
         return 1;
     }
 
     if !sha256.trim().is_empty() {
         progress.set_status("正在校验文件...");
-        match file_sha256(&temp_path) {
+        match file_sha256(&package_path) {
             Ok(actual) if actual.eq_ignore_ascii_case(sha256.trim()) => {}
             Ok(actual) => {
                 progress.fail(&format!(
                     "SHA256 校验失败\n期望: {}\n实际: {actual}",
                     sha256.trim()
                 ));
-                let _ = fs::remove_file(&temp_path);
+                let _ = fs::remove_dir_all(&work_dir);
                 return 1;
             }
             Err(err) => {
                 progress.fail(&format!("计算 SHA256 失败: {err}"));
-                let _ = fs::remove_file(&temp_path);
+                let _ = fs::remove_dir_all(&work_dir);
                 return 1;
             }
         }
     }
 
-    progress.set_status("正在替换主程序...");
-    progress.set_progress(98);
-    if let Err(err) = replace_executable(&temp_path, &target) {
+    let apply_result = if is_zip_package(&url, &package_path) {
+        progress.set_status("正在解压更新包...");
+        progress.set_progress(92);
+        let extract_dir = work_dir.join("extract");
+        if let Err(err) = fs::create_dir_all(&extract_dir) {
+            progress.fail(&format!("创建解压目录失败: {err}"));
+            let _ = fs::remove_dir_all(&work_dir);
+            return 1;
+        }
+        if let Err(err) = extract_zip(&package_path, &extract_dir) {
+            progress.fail(&format!("解压失败: {err}"));
+            let _ = fs::remove_dir_all(&work_dir);
+            return 1;
+        }
+
+        let package_root = match resolve_package_root(&extract_dir) {
+            Ok(root) => root,
+            Err(err) => {
+                progress.fail(&err);
+                let _ = fs::remove_dir_all(&work_dir);
+                return 1;
+            }
+        };
+
+        progress.set_status("正在替换程序文件...");
+        progress.set_progress(96);
+        apply_extracted_package(&package_root, &install_dir)
+    } else {
+        progress.set_status("正在替换主程序...");
+        progress.set_progress(96);
+        replace_executable(&package_path, &target)
+    };
+
+    if let Err(err) = apply_result {
         progress.fail(&format!("覆盖失败: {err}"));
-        let _ = fs::remove_file(&temp_path);
+        let _ = fs::remove_dir_all(&work_dir);
         return 1;
     }
-    let _ = fs::remove_file(&temp_path);
+
+    let _ = fs::remove_dir_all(&work_dir);
 
     progress.set_status("更新完成，正在启动...");
     progress.set_progress(100);
@@ -322,6 +372,255 @@ fn replace_executable(temp_path: &Path, target: &Path) -> Result<(), String> {
     } else {
         fs::rename(temp_path, target).map_err(|err| err.to_string())
     }
+}
+
+fn package_filename_from_url(url: &str) -> String {
+    url.split(['?', '#'])
+        .next()
+        .and_then(|path| path.rsplit('/').next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| "CN-Codex-update.bin".to_string())
+}
+
+fn is_zip_package(url: &str, package_path: &Path) -> bool {
+    let name = package_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if name.ends_with(".zip") {
+        return true;
+    }
+    let url_name = package_filename_from_url(url).to_ascii_lowercase();
+    url_name.ends_with(".zip")
+}
+
+fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
+    let file = File::open(zip_path).map_err(|err| format!("open zip failed: {err}"))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|err| format!("read zip failed: {err}"))?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|err| format!("read zip entry failed: {err}"))?;
+        let Some(rel) = entry.enclosed_name() else {
+            continue;
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+
+        let out_path = dest_dir.join(&rel);
+        if entry.is_dir() || rel.to_string_lossy().ends_with('/') {
+            fs::create_dir_all(&out_path).map_err(|err| {
+                format!("create dir {} failed: {err}", out_path.display())
+            })?;
+            continue;
+        }
+
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                format!("create parent {} failed: {err}", parent.display())
+            })?;
+        }
+
+        let mut outfile =
+            File::create(&out_path).map_err(|err| format!("create {} failed: {err}", out_path.display()))?;
+        io::copy(&mut entry, &mut outfile)
+            .map_err(|err| format!("extract {} failed: {err}", out_path.display()))?;
+    }
+
+    Ok(())
+}
+
+fn resolve_package_root(extract_dir: &Path) -> Result<PathBuf, String> {
+    let mut entries = fs::read_dir(extract_dir)
+        .map_err(|err| format!("read extract dir failed: {err}"))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name();
+            let text = name.to_string_lossy();
+            !text.eq_ignore_ascii_case(".ds_store") && text != "__MACOSX"
+        })
+        .collect::<Vec<_>>();
+
+    if entries.is_empty() {
+        return Err("更新包为空".to_string());
+    }
+
+    if entries.len() == 1 {
+        let only = &entries[0];
+        let path = only.path();
+        if path.is_dir() {
+            // Common layout: CN-Codex-x.y.z/...portable files
+            return Ok(path);
+        }
+    }
+
+    // Flat layout: files directly under extract dir.
+    let _ = entries.sort_by_key(|entry| entry.file_name());
+    Ok(extract_dir.to_path_buf())
+}
+
+fn apply_extracted_package(package_root: &Path, install_dir: &Path) -> Result<(), String> {
+    let mut files = Vec::new();
+    collect_files(package_root, package_root, &mut files)?;
+    if files.is_empty() {
+        return Err("更新包内没有可替换文件".to_string());
+    }
+
+    for rel in files {
+        if is_protected_user_path(&rel) {
+            let existing = install_dir.join(&rel);
+            if existing.exists() {
+                // Keep local user data / runtime state.
+                continue;
+            }
+        }
+
+        let src = package_root.join(&rel);
+        let dest = install_dir.join(&rel);
+        copy_file_replace(&src, &dest)?;
+    }
+
+    Ok(())
+}
+
+fn collect_files(root: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries =
+        fs::read_dir(current).map_err(|err| format!("read {} failed: {err}", current.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("read dir entry failed: {err}"))?;
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(root)
+            .map_err(|err| format!("strip prefix failed: {err}"))?
+            .to_path_buf();
+        if path.is_dir() {
+            collect_files(root, &path, out)?;
+        } else if path.is_file() {
+            out.push(rel);
+        }
+    }
+    Ok(())
+}
+
+fn is_protected_user_path(rel: &Path) -> bool {
+    let normalized = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join("/");
+    let lower = normalized.to_ascii_lowercase();
+
+    matches!(
+        lower.as_str(),
+        "codey/config.toml"
+            | "codey/usage.db"
+            | "codey/usage.db-wal"
+            | "codey/usage.db-shm"
+            | "codey/hooks.json"
+            | "codey/browser/visible-browser.json"
+            | "latest.json"
+    ) || lower.starts_with("codey/sessions/")
+        || lower.starts_with("codey/memories/")
+        || lower.starts_with("codey/browser/webview-data/")
+        || lower.starts_with("codey/browser/screenshots/")
+        || lower.starts_with(".cn-codex-update-work/")
+}
+
+fn copy_file_replace(src: &Path, dest: &Path) -> Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("create {} failed: {err}", parent.display()))?;
+    }
+
+    // Running updater.exe cannot overwrite itself; write side-car and keep going.
+    if is_self_updater_path(dest) {
+        let side = dest.with_extension("exe.new");
+        let _ = fs::remove_file(&side);
+        match fs::copy(src, dest) {
+            Ok(_) => {
+                let _ = fs::remove_file(&side);
+                return Ok(());
+            }
+            Err(_) => {
+                fs::copy(src, &side).map_err(|err| {
+                    format!(
+                        "copy updater to {} failed (self locked): {err}",
+                        side.display()
+                    )
+                })?;
+                return Ok(());
+            }
+        }
+    }
+
+    match fs::copy(src, dest) {
+        Ok(_) => Ok(()),
+        Err(copy_err) => {
+            // Windows may lock the previous binary briefly; try rename swap.
+            let temp = dest.with_extension(format!(
+                "{}.new",
+                dest.extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("bin")
+            ));
+            let _ = fs::remove_file(&temp);
+            fs::copy(src, &temp).map_err(|err| {
+                format!(
+                    "copy {} -> {} failed: {copy_err}; stage failed: {err}",
+                    src.display(),
+                    dest.display()
+                )
+            })?;
+
+            if dest.exists() {
+                let backup = dest.with_extension(format!(
+                    "{}.bak",
+                    dest.extension()
+                        .and_then(|ext| ext.to_str())
+                        .unwrap_or("bin")
+                ));
+                let _ = fs::remove_file(&backup);
+                if let Err(rename_err) = fs::rename(dest, &backup) {
+                    let _ = fs::remove_file(&temp);
+                    return Err(format!(
+                        "backup {} failed: {rename_err}",
+                        dest.display()
+                    ));
+                }
+                match fs::rename(&temp, dest) {
+                    Ok(()) => {
+                        let _ = fs::remove_file(&backup);
+                        Ok(())
+                    }
+                    Err(final_err) => {
+                        let _ = fs::rename(&backup, dest);
+                        let _ = fs::remove_file(&temp);
+                        Err(format!(
+                            "replace {} failed: {final_err}",
+                            dest.display()
+                        ))
+                    }
+                }
+            } else {
+                fs::rename(&temp, dest).map_err(|err| {
+                    format!("move {} -> {} failed: {err}", temp.display(), dest.display())
+                })
+            }
+        }
+    }
+}
+
+fn is_self_updater_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| name.eq_ignore_ascii_case("updater.exe") || name.eq_ignore_ascii_case("updater"))
+        .unwrap_or(false)
 }
 
 fn launch_process(path: &Path) -> Result<(), String> {

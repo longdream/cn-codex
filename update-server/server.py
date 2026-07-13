@@ -8,7 +8,7 @@ No third-party dependencies.
 Provides:
   GET /            latest version page
   GET /latest.json update manifest
-  GET /files/*     executable downloads
+  GET /files/*     package downloads (zip preferred)
   GET /healthz     health check
 """
 
@@ -198,7 +198,8 @@ def render_index_html(info):
       <div class="row"><span class="label">更新说明</span><span class="value">{notes}</span></div>
       <div class="row"><span class="label">下载地址</span><span class="value">{url}</span></div>
     </div>
-    <a class="button" href="{url}">下载最新 CN-Codex.exe</a>
+    <a class="button" href="{url}">下载最新更新包</a>
+    <p style="margin-top:12px">推荐下载 zip 便携包，客户端会自动解压并覆盖安装目录。</p>
     <p style="margin-top:18px">接口：<code>GET /latest.json</code></p>
   </main>
 </body>

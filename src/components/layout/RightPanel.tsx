@@ -172,6 +172,7 @@ export function RightPanel() {
   const intl = useIntl();
   const rightPanelTab = useAppStore((s) => s.rightPanelTab);
   const rightPanelWidth = useAppStore((s) => s.rightPanelWidth);
+  const rightPanelVisible = useAppStore((s) => s.rightPanelVisible);
   const browserPanelUrl = useAppStore((s) => s.browserPanelUrl);
   const browserPanelStatus = useAppStore((s) => s.browserPanelStatus);
   const browserCanGoBack = useAppStore((s) => s.browserCanGoBack);
@@ -271,7 +272,7 @@ export function RightPanel() {
   }, [browserActive]);
 
   useEffect(() => {
-    if (!browserActive || rightPanelTab !== "browser") return;
+    if (!browserActive || !rightPanelVisible || rightPanelTab !== "browser") return;
     const el = browserContainerRef.current;
     if (!el) return;
 
@@ -294,7 +295,7 @@ export function RightPanel() {
       window.removeEventListener("resize", onWindowResize);
       if (resizeTimerRef.current) cancelAnimationFrame(resizeTimerRef.current);
     };
-  }, [browserActive, rightPanelTab, syncBrowserPosition]);
+  }, [browserActive, rightPanelVisible, rightPanelTab, syncBrowserPosition]);
 
   const handleOpenBrowser = useCallback((url?: string) => {
     const el = browserContainerRef.current;
@@ -633,26 +634,36 @@ export function RightPanel() {
 
   // 切换 tab 时隐藏/恢复 webview 位置（不关闭）
   useEffect(() => {
-    if (browserActive && rightPanelTab !== "browser") {
+    // 右侧面板关闭或切到非浏览器 tab 时，把原生 WebView 移出视野，但不关闭页面。
+    if (browserActive && (!rightPanelVisible || rightPanelTab !== "browser")) {
       void windowResizeBrowser(-9999, -9999, 0, 0);
-    } else if (browserActive && rightPanelTab === "browser") {
+    } else if (browserActive && rightPanelVisible && rightPanelTab === "browser") {
       syncBrowserPosition();
     }
-  }, [rightPanelTab, browserActive, syncBrowserPosition]);
+  }, [rightPanelTab, rightPanelVisible, browserActive, syncBrowserPosition]);
 
   // browser_run 开始时强制重新定位 WebView，避免黑屏
   useEffect(() => {
-    if (browserSyncTrigger > 0 && browserActive && rightPanelTab === "browser") {
+    if (
+      browserSyncTrigger > 0 &&
+      browserActive &&
+      rightPanelVisible &&
+      rightPanelTab === "browser"
+    ) {
       syncBrowserPosition();
     }
-  }, [browserSyncTrigger, browserActive, rightPanelTab, syncBrowserPosition]);
+  }, [browserSyncTrigger, browserActive, rightPanelVisible, rightPanelTab, syncBrowserPosition]);
 
   // 后端 CDP 就绪后重新定位 WebView（解决后端 -9999 覆盖前端定位的竞态）
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void listen("browser-webview-ready", () => {
-      if (browserActiveRef.current && rightPanelTabRef.current === "browser") {
+      if (
+        browserActiveRef.current &&
+        useAppStore.getState().rightPanelVisible &&
+        rightPanelTabRef.current === "browser"
+      ) {
         syncBrowserPositionRef.current();
         setTimeout(() => syncBrowserPositionRef.current(), 100);
       }
@@ -671,12 +682,12 @@ export function RightPanel() {
 
   // browserActive 变为 true 时延迟同步位置（确保 DOM 已布局）
   useEffect(() => {
-    if (browserActive && rightPanelTab === "browser") {
+    if (browserActive && rightPanelVisible && rightPanelTab === "browser") {
       const timer = setTimeout(syncBrowserPosition, 50);
       requestAnimationFrame(syncBrowserPosition);
       return () => clearTimeout(timer);
     }
-  }, [browserActive, rightPanelTab, syncBrowserPosition]);
+  }, [browserActive, rightPanelVisible, rightPanelTab, syncBrowserPosition]);
 
   // 切换对话时：若恢复的浏览器状态为活跃且浏览器未打开，则自动打开并导航到保存的 URL。
   useEffect(() => {
@@ -691,10 +702,23 @@ export function RightPanel() {
 
   // 当切到 browser tab 时自动激活 webview（仅在后端未主动创建时触发）
   useEffect(() => {
-    if (rightPanelTab === "browser" && !browserActive && !browserDetached) {
+    if (
+      rightPanelVisible &&
+      rightPanelTab === "browser" &&
+      !browserActive &&
+      !browserDetached
+    ) {
       handleOpenBrowser(browserPanelUrl ?? browserOutput?.finalUrl);
     }
-  }, [rightPanelTab, browserActive, browserDetached, handleOpenBrowser, browserPanelUrl, browserOutput?.finalUrl]);
+  }, [
+    rightPanelVisible,
+    rightPanelTab,
+    browserActive,
+    browserDetached,
+    handleOpenBrowser,
+    browserPanelUrl,
+    browserOutput?.finalUrl,
+  ]);
 
   useEffect(() => {
     refreshEditContext();
@@ -814,8 +838,7 @@ export function RightPanel() {
 
   useEffect(() => {
     return () => {
-      // 组件卸载（例如右侧面板被整体隐藏）时强制关闭 WebView。
-      // 这是防止白屏覆盖残留的最终兜底逻辑。
+      // 应用级卸载时关闭 WebView。关闭右侧面板不再卸载本组件，因此不会误杀页面。
       void browserStopPickMode().catch(() => undefined).finally(() => {
         void windowCloseBrowser().finally(() => {
           setBrowserActive(false);
@@ -907,7 +930,7 @@ export function RightPanel() {
         </button>
       </div>
 
-      {rightPanelTab === "browser" ? (
+      {rightPanelTab === "browser" && (
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* Browser address bar */}
           <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-1.5">
@@ -1154,9 +1177,19 @@ export function RightPanel() {
             )}
           </div>
         </div>
-      ) : (
-        <RightPanelSecondaryTab tab={rightPanelTab} workspaceCwd={workspaceCwd} />
       )}
+
+      {/* 次级面板始终挂载：切换到浏览器 tab 或关闭右侧时只隐藏，终端进程继续运行 */}
+      <div
+        className={
+          rightPanelTab === "browser"
+            ? "hidden"
+            : "flex min-h-0 flex-1 flex-col overflow-hidden"
+        }
+        aria-hidden={rightPanelTab === "browser"}
+      >
+        <RightPanelSecondaryTab tab={rightPanelTab} workspaceCwd={workspaceCwd} />
+      </div>
     </aside>
   );
 }
@@ -1168,13 +1201,37 @@ const RightPanelSecondaryTab = memo(function RightPanelSecondaryTab({
   tab: "project" | "terminal" | "git" | "browser";
   workspaceCwd: string | null;
 }) {
-  if (tab === "terminal") {
-    return <TerminalPanel />;
-  }
-  if (tab === "git") {
-    return <GitPanel workspaceCwd={workspaceCwd} />;
-  }
-  return <ProjectTab workspaceCwd={workspaceCwd} />;
+  // 终端打开后保持挂载：切换到项目/Git 时只隐藏，避免 PTY 被卸载关闭。
+  const [terminalMounted, setTerminalMounted] = useState(tab === "terminal");
+
+  useEffect(() => {
+    if (tab === "terminal") {
+      setTerminalMounted(true);
+    }
+  }, [tab]);
+
+  return (
+    <>
+      {tab === "git" ? (
+        <GitPanel workspaceCwd={workspaceCwd} />
+      ) : tab === "project" || tab === "browser" ? (
+        <ProjectTab workspaceCwd={workspaceCwd} />
+      ) : null}
+
+      {terminalMounted && (
+        <div
+          className={
+            tab === "terminal"
+              ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+              : "hidden"
+          }
+          aria-hidden={tab !== "terminal"}
+        >
+          <TerminalPanel />
+        </div>
+      )}
+    </>
+  );
 });
 
 const ProjectTab = memo(function ProjectTab({ workspaceCwd }: { workspaceCwd: string | null }) {

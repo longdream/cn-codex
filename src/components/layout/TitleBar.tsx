@@ -6,7 +6,8 @@ import {
   windowToggleMaximize,
 } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
-import { IconLayoutSidebarRight, IconQrcode } from "@tabler/icons-react";
+import { useUpdateStore } from "../../stores/updateStore";
+import { IconDownload, IconLayoutSidebarRight, IconQrcode } from "@tabler/icons-react";
 import { QrCodePopover } from "../common/QrCodePopover";
 
 function runWindowAction(action: () => Promise<void>, label: string) {
@@ -28,6 +29,8 @@ export function TitleBar() {
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const setRightPanelVisible = useAppStore((s) => s.setRightPanelVisible);
   const [showQr, setShowQr] = useState(false);
+  const updateInfo = useUpdateStore((s) => s.info);
+  const setShowUpdateModal = useUpdateStore((s) => s.setShowModal);
 
   const handleDoubleClick = () => {
     runWindowAction(windowToggleMaximize, "toggle maximize");
@@ -53,6 +56,24 @@ export function TitleBar() {
       </div>
 
       <div className="flex h-full items-center">
+        {updateInfo ? (
+          <button
+            type="button"
+            aria-label={intl.formatMessage({ id: "titleBar.update" })}
+            title={intl.formatMessage(
+              { id: "titleBar.updateTooltip" },
+              { version: updateInfo.latestVersion },
+            )}
+            onClick={() => setShowUpdateModal(true)}
+            className="flex h-full items-center gap-1.5 px-3 text-[11px] font-medium text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent-soft)]"
+          >
+            <IconDownload size={14} stroke={1.9} />
+            <span>{intl.formatMessage({ id: "titleBar.update" })}</span>
+            <span className="rounded-full bg-[var(--accent)] px-1.5 py-0.5 text-[10px] leading-none text-white">
+              {updateInfo.latestVersion}
+            </span>
+          </button>
+        ) : null}
         <div className="relative">
           <button
             type="button"

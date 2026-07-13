@@ -171,6 +171,10 @@ AI 自动创建专业角色，绑定技能和工作流节点，实现自动化�
 - [使用指南](http://47.113.221.244:8081/usage.html) — 从首次启动到高级功能的完整说明
 - [GitHub](https://github.com/longdream/cn-codex) — 源代码和问题反馈
 
+### 运维文档
+
+- [服务器更新与重启说明](docs/SERVER-UPDATE-RESTART.md) — 更新 `latest.json` / 发布包、重启 `cn-codex-update` 与 `cn-codex-relay`
+
 ---
 
 ## 开源协议
