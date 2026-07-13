@@ -88,6 +88,13 @@ pub struct AppState {
     /// - 该状态用于详情页读写校验时放宽到该子目录根；
     /// - 关闭详情窗后清空，避免后续会话复用旧根目录。
     pub document_detail_active_root: Arc<RwLock<Option<String>>>,
+    /// 当前文档详情窗期望定位的行号（可选，1-based）。
+    ///
+    /// 说明：
+    /// - 内容搜索结果打开文件时可带上行号；
+    /// - 详情窗初始化时读取该值，避免首开窗口错过事件；
+    /// - 关闭详情窗后清空。
+    pub document_detail_active_line: Arc<RwLock<Option<u32>>>,
     /// 当前 RunSummary Diff 独立窗口激活的载荷。
     ///
     /// 说明：
@@ -277,6 +284,7 @@ impl AppState {
             file_review_sessions: Arc::new(RwLock::new(HashMap::new())),
             document_detail_active_path: Arc::new(RwLock::new(None)),
             document_detail_active_root: Arc::new(RwLock::new(None)),
+            document_detail_active_line: Arc::new(RwLock::new(None)),
             runsummary_diff_payload: Arc::new(RwLock::new(None)),
             browser_last_url: Arc::new(RwLock::new(None)),
             browser_active_root: Arc::new(RwLock::new(None)),

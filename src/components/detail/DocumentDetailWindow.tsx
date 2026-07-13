@@ -21,6 +21,7 @@ import {
   readTextFilePreview,
   windowCloseDocumentDetail,
   windowGetDocumentDetailPath,
+  windowGetDocumentDetailLine,
   windowMinimize,
   writeTextFilePreview,
   type TextFilePreviewResult,
@@ -282,6 +283,7 @@ function runWindowAction(action: () => Promise<void>, label: string): void {
 export function DocumentDetailWindow() {
   const intl = useIntl();
   const [activePath, setActivePath] = useState<string | null>(null);
+  const [pendingLine, setPendingLine] = useState<number | null>(null);
   const [preview, setPreview] = useState<TextFilePreviewResult | null>(null);
   const [isImage, setIsImage] = useState(false);
   const [draftContent, setDraftContent] = useState("");
@@ -531,10 +533,13 @@ export function DocumentDetailWindow() {
 
   useEffect(() => {
     let cancelled = false;
-    void windowGetDocumentDetailPath().then((path) => {
-      if (cancelled) return;
-      setActivePath(path ?? null);
-    });
+    void Promise.all([windowGetDocumentDetailPath(), windowGetDocumentDetailLine()]).then(
+      ([path, line]) => {
+        if (cancelled) return;
+        setActivePath(path ?? null);
+        setPendingLine(typeof line === "number" && line > 0 ? Math.floor(line) : null);
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -552,8 +557,60 @@ export function DocumentDetailWindow() {
   }, [activePath, loadPreview]);
 
   useEffect(() => {
+    if (!pendingLine || loading || !preview || isImage || showMarkdownPreview) {
+      return;
+    }
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const targetLine = Math.max(1, pendingLine);
+    const lines = draftContent.replace(/\r\n?/g, "\n").split("\n");
+    const safeLine = Math.min(targetLine, Math.max(1, lines.length));
+    let offset = 0;
+    for (let i = 0; i < safeLine - 1; i += 1) {
+      offset += lines[i].length + 1;
+    }
+    const lineText = lines[safeLine - 1] ?? "";
+    const end = offset + lineText.length;
+
+    // 等布局稳定后再定位，避免刚写入内容时 scrollHeight 还不准。
+    const timer = window.setTimeout(() => {
+      try {
+        textarea.focus();
+        textarea.setSelectionRange(offset, end);
+        const style = window.getComputedStyle(textarea);
+        const lineHeight = Number.parseFloat(style.lineHeight) || 20;
+        const targetTop = Math.max(0, (safeLine - 1) * lineHeight - textarea.clientHeight / 3);
+        textarea.scrollTop = targetTop;
+        syncHighlightScroll();
+      } finally {
+        setPendingLine(null);
+      }
+    }, 40);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    pendingLine,
+    loading,
+    preview,
+    isImage,
+    showMarkdownPreview,
+    draftContent,
+    syncHighlightScroll,
+  ]);
+
+  useEffect(() => {
+    if (pendingLine) {
+      // 内容搜索跳转时优先进入源码视图，确保行定位可用。
+      setMarkdownViewMode("source");
+      return;
+    }
     setMarkdownViewMode(languageLabel === "markdown" ? "preview" : "source");
-  }, [preview?.path, languageLabel]);
+  }, [preview?.path, languageLabel, pendingLine]);
 
   useEffect(() => {
     if (!showMarkdownPreview) return;
@@ -563,10 +620,16 @@ export function DocumentDetailWindow() {
 
   useEffect(() => {
     let unlisten: UnlistenFn | null = null;
-    void listen<{ path?: string }>(`document-detail-open`, (event) => {
+    void listen<{ path?: string; line?: number | null }>(`document-detail-open`, (event) => {
       const nextPath = event.payload?.path?.trim();
       if (!nextPath) return;
       setActivePath(nextPath);
+      const nextLine = event.payload?.line;
+      setPendingLine(
+        typeof nextLine === "number" && Number.isFinite(nextLine) && nextLine > 0
+          ? Math.floor(nextLine)
+          : null,
+      );
     }).then((fn) => {
       unlisten = fn;
     });

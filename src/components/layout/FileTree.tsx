@@ -154,6 +154,10 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [includeQuery, setIncludeQuery] = useState("");
+  const [debouncedInclude, setDebouncedInclude] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [collapsedContentGroups, setCollapsedContentGroups] = useState<Record<string, boolean>>({});
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
@@ -211,6 +215,15 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   }, [searchQuery]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedInclude(includeQuery.trim());
+    }, 280);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [includeQuery]);
+
+  useEffect(() => {
     if (!rootPath) {
       setSearchMatches([]);
       setSearchError(null);
@@ -230,7 +243,10 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     setSearching(true);
     setSearchError(null);
 
-    void searchWorkspaceFiles(rootPath, debouncedQuery, 120)
+    void searchWorkspaceFiles(rootPath, debouncedQuery, 120, {
+      caseSensitive,
+      include: debouncedInclude,
+    })
       .then((result) => {
         if (cancelled) return;
         setSearchMatches(result.matches);
@@ -248,7 +264,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     return () => {
       cancelled = true;
     };
-  }, [rootPath, debouncedQuery, refreshKey]);
+  }, [rootPath, debouncedQuery, debouncedInclude, caseSensitive, refreshKey]);
 
   const nameMatches = useMemo(
     () => searchMatches.filter((item) => item.kind === "name"),
@@ -258,6 +274,31 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     () => searchMatches.filter((item) => item.kind === "content"),
     [searchMatches],
   );
+  const contentGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        path: string;
+        name: string;
+        relativePath: string;
+        matches: WorkspaceSearchMatch[];
+      }
+    >();
+    for (const item of contentMatches) {
+      const existing = groups.get(item.path);
+      if (existing) {
+        existing.matches.push(item);
+      } else {
+        groups.set(item.path, {
+          path: item.path,
+          name: item.name,
+          relativePath: item.relativePath,
+          matches: [item],
+        });
+      }
+    }
+    return Array.from(groups.values());
+  }, [contentMatches]);
   const isSearchMode = debouncedQuery.length > 0;
 
   const toggleExpand = useCallback(
@@ -444,16 +485,19 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     e.dataTransfer.effectAllowed = "copy";
   }, []);
 
-  const handleOpenFile = useCallback(async (node: TreeNode) => {
-    if (node.isDir) return;
-    setDetailOpenError(null);
-    try {
-      // 文档详情窗由后端做“单实例复用”，这里仅传文件路径作为打开入口。
-      await windowOpenDocumentDetail(node.path, rootPath ?? undefined);
-    } catch (err) {
-      setDetailOpenError(String(err));
-    }
-  }, []);
+  const handleOpenFile = useCallback(
+    async (node: TreeNode, line?: number | null) => {
+      if (node.isDir) return;
+      setDetailOpenError(null);
+      try {
+        // 文档详情窗由后端做“单实例复用”；内容搜索可额外带上目标行号。
+        await windowOpenDocumentDetail(node.path, rootPath ?? undefined, line);
+      } catch (err) {
+        setDetailOpenError(String(err));
+      }
+    },
+    [rootPath],
+  );
 
   if (!rootPath) {
     return (
@@ -506,12 +550,33 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
             </button>
           )}
         </div>
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <input
+            type="text"
+            value={includeQuery}
+            onChange={(e) => setIncludeQuery(e.target.value)}
+            placeholder={intl.formatMessage({ id: "fileTree.searchIncludePlaceholder" })}
+            className="h-6 min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-panel)] px-2 text-[10px] text-[var(--text-base)] outline-none transition-colors placeholder:text-[var(--text-faint)] focus:border-[var(--accent)]"
+          />
+          <button
+            type="button"
+            onClick={() => setCaseSensitive((value) => !value)}
+            className={`flex h-6 min-w-6 items-center justify-center rounded-[var(--radius-sm)] border px-1.5 text-[10px] font-semibold transition-colors ${
+              caseSensitive
+                ? "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                : "border-[var(--border-subtle)] text-[var(--text-faint)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+            }`}
+            title={intl.formatMessage({ id: "fileTree.searchCaseSensitive" })}
+          >
+            Aa
+          </button>
+        </div>
       </div>
 
       <div className="relative flex-1 overflow-y-auto overflow-x-hidden">
         {detailOpenError && (
           <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
-            打开文档详情窗失败：{detailOpenError}
+            {intl.formatMessage({ id: "fileTree.openDetailFailed" }, { error: detailOpenError })}
           </div>
         )}
         {actionError && (
@@ -548,6 +613,8 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                     <SearchResultItem
                       key={`name:${item.path}`}
                       item={item}
+                      query={debouncedQuery}
+                      caseSensitive={caseSensitive}
                       onOpen={() => {
                         if (item.isDir) return;
                         void handleOpenFile({
@@ -563,30 +630,70 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                   ))}
                 </div>
               )}
-              {contentMatches.length > 0 && (
+              {contentGroups.length > 0 && (
                 <div>
                   <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-faint)]">
                     {intl.formatMessage(
                       { id: "fileTree.searchContentResults" },
-                      { count: contentMatches.length },
+                      { count: contentMatches.length, files: contentGroups.length },
                     )}
                   </div>
-                  {contentMatches.map((item, index) => (
-                    <SearchResultItem
-                      key={`content:${item.path}:${item.line ?? 0}:${index}`}
-                      item={item}
-                      onOpen={() => {
-                        void handleOpenFile({
-                          name: item.name,
-                          path: item.path,
-                          isDir: false,
-                          size: 0,
-                          loaded: true,
-                          expanded: false,
-                        });
-                      }}
-                    />
-                  ))}
+                  {contentGroups.map((group) => {
+                    const collapsed = Boolean(collapsedContentGroups[group.path]);
+                    return (
+                      <div key={`group:${group.path}`} className="mb-0.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCollapsedContentGroups((prev) => ({
+                              ...prev,
+                              [group.path]: !prev[group.path],
+                            }))
+                          }
+                          className="flex w-full items-center gap-1 px-3 py-1 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+                          title={group.path}
+                        >
+                          <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-[var(--text-faint)]">
+                            {collapsed ? (
+                              <IconChevronRight size={12} stroke={2} />
+                            ) : (
+                              <IconChevronDown size={12} stroke={2} />
+                            )}
+                          </span>
+                          <span className="flex-shrink-0">{fileIcon(group.name, 14)}</span>
+                          <span className="min-w-0 flex-1 truncate text-[12px] text-[var(--text-base)]">
+                            {group.name}
+                          </span>
+                          <span className="flex-shrink-0 text-[10px] text-[var(--text-faint)]">
+                            {group.matches.length}
+                          </span>
+                        </button>
+                        {!collapsed &&
+                          group.matches.map((item, index) => (
+                            <SearchResultItem
+                              key={`content:${item.path}:${item.line ?? 0}:${index}`}
+                              item={item}
+                              query={debouncedQuery}
+                              caseSensitive={caseSensitive}
+                              compact
+                              onOpen={() => {
+                                void handleOpenFile(
+                                  {
+                                    name: item.name,
+                                    path: item.path,
+                                    isDir: false,
+                                    size: 0,
+                                    loaded: true,
+                                    expanded: false,
+                                  },
+                                  item.line,
+                                );
+                              }}
+                            />
+                          ))}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               {searchTruncated && (
@@ -707,41 +814,104 @@ function FileTreeNode({
   );
 }
 
+function highlightMatchText(
+  text: string,
+  query: string,
+  caseSensitive: boolean,
+): Array<{ text: string; matched: boolean }> {
+  if (!query) {
+    return [{ text, matched: false }];
+  }
+  const source = caseSensitive ? text : text.toLowerCase();
+  const needle = caseSensitive ? query : query.toLowerCase();
+  const parts: Array<{ text: string; matched: boolean }> = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const found = source.indexOf(needle, cursor);
+    if (found < 0) {
+      parts.push({ text: text.slice(cursor), matched: false });
+      break;
+    }
+    if (found > cursor) {
+      parts.push({ text: text.slice(cursor, found), matched: false });
+    }
+    parts.push({ text: text.slice(found, found + needle.length), matched: true });
+    cursor = found + Math.max(needle.length, 1);
+  }
+  return parts.length > 0 ? parts : [{ text, matched: false }];
+}
+
 function SearchResultItem({
   item,
   onOpen,
+  query = "",
+  caseSensitive = false,
+  compact = false,
 }: {
   item: WorkspaceSearchMatch;
   onOpen: () => void;
+  query?: string;
+  caseSensitive?: boolean;
+  compact?: boolean;
 }) {
+  const previewParts = item.preview
+    ? highlightMatchText(item.preview, query, caseSensitive)
+    : [];
+
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="flex w-full flex-col gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+      className={`flex w-full flex-col gap-0.5 text-left transition-colors hover:bg-[var(--surface-elevated)] ${
+        compact ? "px-3 py-1 pl-8" : "px-3 py-1.5"
+      }`}
       title={item.path}
     >
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span className="flex-shrink-0">
-          {item.isDir ? (
-            <IconFolder size={14} stroke={1.5} className="text-[var(--accent)]" />
-          ) : (
-            fileIcon(item.name, 14)
-          )}
-        </span>
-        <span className="min-w-0 truncate text-[12px] text-[var(--text-base)]">
-          {item.name}
-          {typeof item.line === "number" ? (
-            <span className="text-[var(--text-faint)]">:{item.line}</span>
-          ) : null}
-        </span>
-      </div>
-      <div className="min-w-0 truncate pl-5 text-[10px] text-[var(--text-faint)]">
-        {item.relativePath}
-      </div>
+      {!compact && (
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="flex-shrink-0">
+            {item.isDir ? (
+              <IconFolder size={14} stroke={1.5} className="text-[var(--accent)]" />
+            ) : (
+              fileIcon(item.name, 14)
+            )}
+          </span>
+          <span className="min-w-0 truncate text-[12px] text-[var(--text-base)]">
+            {item.name}
+            {typeof item.line === "number" ? (
+              <span className="text-[var(--text-faint)]">:{item.line}</span>
+            ) : null}
+          </span>
+        </div>
+      )}
+      {!compact && (
+        <div className="min-w-0 truncate pl-5 text-[10px] text-[var(--text-faint)]">
+          {item.relativePath}
+        </div>
+      )}
+      {compact && typeof item.line === "number" ? (
+        <div className="min-w-0 truncate text-[10px] text-[var(--text-faint)]">
+          {item.line}
+        </div>
+      ) : null}
       {item.preview ? (
-        <div className="min-w-0 truncate pl-5 font-mono text-[10px] text-[var(--text-muted)]">
-          {item.preview}
+        <div
+          className={`min-w-0 truncate font-mono text-[10px] text-[var(--text-muted)] ${
+            compact ? "" : "pl-5"
+          }`}
+        >
+          {previewParts.map((part, index) =>
+            part.matched ? (
+              <mark
+                key={`m-${index}`}
+                className="rounded-[2px] bg-[var(--accent-soft)] px-[1px] text-[var(--accent-strong)]"
+              >
+                {part.text}
+              </mark>
+            ) : (
+              <span key={`t-${index}`}>{part.text}</span>
+            ),
+          )}
         </div>
       ) : null}
     </button>

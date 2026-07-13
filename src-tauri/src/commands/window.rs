@@ -693,9 +693,11 @@ pub async fn window_open_document_detail(
     state: State<'_, AppState>,
     path: String,
     workspace_root: Option<String>,
+    line: Option<u32>,
 ) -> AppResult<DocumentDetailWindowInfo> {
     let (display_path, _) = resolve_existing_file_path(&path)?;
     let active_root = normalize_workspace_root_hint(workspace_root);
+    let active_line = line.filter(|value| *value > 0);
     {
         // 先写入“当前目标路径”，保障详情窗首次启动时可通过 command 主动读取。
         let mut guard = state.document_detail_active_path.write().await;
@@ -704,6 +706,10 @@ pub async fn window_open_document_detail(
     {
         let mut guard = state.document_detail_active_root.write().await;
         *guard = active_root;
+    }
+    {
+        let mut guard = state.document_detail_active_line.write().await;
+        *guard = active_line;
     }
 
     if let Some(window) = app.get_webview_window(DOCUMENT_DETAIL_WINDOW_LABEL) {
@@ -714,7 +720,10 @@ pub async fn window_open_document_detail(
         let _ = app.emit_to(
             DOCUMENT_DETAIL_WINDOW_LABEL,
             DOCUMENT_DETAIL_OPEN_EVENT,
-            serde_json::json!({ "path": display_path.clone() }),
+            serde_json::json!({
+                "path": display_path.clone(),
+                "line": active_line,
+            }),
         );
         return Ok(DocumentDetailWindowInfo {
             label: DOCUMENT_DETAIL_WINDOW_LABEL.to_string(),
@@ -741,17 +750,25 @@ pub async fn window_open_document_detail(
 
     let active_path = state.document_detail_active_path.clone();
     let active_root = state.document_detail_active_root.clone();
+    let active_line = state.document_detail_active_line.clone();
     detail_window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
             let active_path = active_path.clone();
             let active_root = active_root.clone();
+            let active_line = active_line.clone();
             tauri::async_runtime::spawn(async move {
                 {
                     let mut guard = active_path.write().await;
                     *guard = None;
                 }
-                let mut guard = active_root.write().await;
-                *guard = None;
+                {
+                    let mut guard = active_root.write().await;
+                    *guard = None;
+                }
+                {
+                    let mut guard = active_line.write().await;
+                    *guard = None;
+                }
             });
         }
     });
@@ -775,8 +792,14 @@ pub async fn window_close_document_detail(
         let mut guard = state.document_detail_active_path.write().await;
         *guard = None;
     }
-    let mut guard = state.document_detail_active_root.write().await;
-    *guard = None;
+    {
+        let mut guard = state.document_detail_active_root.write().await;
+        *guard = None;
+    }
+    {
+        let mut guard = state.document_detail_active_line.write().await;
+        *guard = None;
+    }
     Ok(())
 }
 
@@ -785,6 +808,13 @@ pub async fn window_get_document_detail_path(
     state: State<'_, AppState>,
 ) -> AppResult<Option<String>> {
     Ok(state.document_detail_active_path.read().await.clone())
+}
+
+#[tauri::command]
+pub async fn window_get_document_detail_line(
+    state: State<'_, AppState>,
+) -> AppResult<Option<u32>> {
+    Ok(*state.document_detail_active_line.read().await)
 }
 
 #[tauri::command]
@@ -2314,19 +2344,25 @@ fn relative_path_display(root: &Path, path: &Path) -> String {
         .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
 }
 
-fn clip_preview(line: &str, query_lower: &str) -> String {
+fn clip_preview(line: &str, query: &str, case_sensitive: bool) -> String {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return String::new();
     }
-    let lower = trimmed.to_lowercase();
     let max_len = 160usize;
     if trimmed.chars().count() <= max_len {
         return trimmed.to_string();
     }
-    let match_idx = lower.find(query_lower).unwrap_or(0);
+    let match_idx = if case_sensitive {
+        trimmed.find(query).unwrap_or(0)
+    } else {
+        trimmed
+            .to_lowercase()
+            .find(&query.to_lowercase())
+            .unwrap_or(0)
+    };
     // 以匹配位置为中心按字符截取，避免按字节切分中文导致 panic。
-    let char_match = lower[..match_idx].chars().count();
+    let char_match = trimmed[..match_idx].chars().count();
     let chars: Vec<char> = trimmed.chars().collect();
     let start = char_match.saturating_sub(40);
     let end = (start + max_len).min(chars.len());
@@ -2340,6 +2376,32 @@ fn clip_preview(line: &str, query_lower: &str) -> String {
     preview
 }
 
+fn text_contains(haystack: &str, needle: &str, case_sensitive: bool) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    if case_sensitive {
+        haystack.contains(needle)
+    } else {
+        haystack.to_lowercase().contains(needle)
+    }
+}
+
+fn matches_include_filter(relative_path: &str, include: Option<&str>) -> bool {
+    let Some(filter) = include else {
+        return true;
+    };
+    let normalized_path = relative_path.replace('\\', "/").to_lowercase();
+    let normalized_filter = filter.replace('\\', "/").to_lowercase();
+    if normalized_filter.starts_with("*.") {
+        return normalized_path.ends_with(&normalized_filter[1..]);
+    }
+    if normalized_filter.starts_with('.') && !normalized_filter.contains('/') {
+        return normalized_path.ends_with(&normalized_filter);
+    }
+    normalized_path.contains(&normalized_filter)
+}
+
 fn collect_workspace_search(
     root: &Path,
     query: &str,
@@ -2347,14 +2409,24 @@ fn collect_workspace_search(
     max_files: usize,
     max_matches_per_file: usize,
     max_file_bytes: u64,
+    case_sensitive: bool,
+    include: Option<&str>,
 ) -> WorkspaceSearchResult {
     let query_trimmed = query.trim();
-    let query_lower = query_trimmed.to_lowercase();
+    let query_for_match = if case_sensitive {
+        query_trimmed.to_string()
+    } else {
+        query_trimmed.to_lowercase()
+    };
+    let include_filter = include
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.replace('\\', "/").to_lowercase());
     let mut matches = Vec::new();
     let mut truncated = false;
     let mut searched_files = 0u32;
 
-    if query_lower.is_empty() {
+    if query_for_match.is_empty() {
         return WorkspaceSearchResult {
             query: query_trimmed.to_string(),
             matches,
@@ -2408,11 +2480,15 @@ fn collect_workspace_search(
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            if name.to_lowercase().contains(&query_lower) && matches.len() < max_results {
+            let relative = relative_path_display(root, &path);
+            if matches_include_filter(&relative, include_filter.as_deref())
+                && text_contains(&name, &query_for_match, case_sensitive)
+                && matches.len() < max_results
+            {
                 matches.push(WorkspaceSearchMatch {
                     path: super::normalize_windows_verbatim_prefix(&path.to_string_lossy()),
                     name: name.clone(),
-                    relative_path: relative_path_display(root, &path),
+                    relative_path: relative,
                     kind: "name".to_string(),
                     line: None,
                     preview: None,
@@ -2450,7 +2526,11 @@ fn collect_workspace_search(
             let abs_path = super::normalize_windows_verbatim_prefix(&path.to_string_lossy());
             let relative = relative_path_display(root, &path);
 
-            if name.to_lowercase().contains(&query_lower) {
+            if !matches_include_filter(&relative, include_filter.as_deref()) {
+                continue;
+            }
+
+            if text_contains(&name, &query_for_match, case_sensitive) {
                 matches.push(WorkspaceSearchMatch {
                     path: abs_path.clone(),
                     name: name.clone(),
@@ -2480,14 +2560,14 @@ fn collect_workspace_search(
             let content = String::from_utf8_lossy(&bytes);
             let mut file_match_count = 0usize;
             for (idx, line) in content.lines().enumerate() {
-                if line.to_lowercase().contains(&query_lower) {
+                if text_contains(line, &query_for_match, case_sensitive) {
                     matches.push(WorkspaceSearchMatch {
                         path: abs_path.clone(),
                         name: name.clone(),
                         relative_path: relative.clone(),
                         kind: "content".to_string(),
                         line: Some((idx + 1) as u32),
-                        preview: Some(clip_preview(line, &query_lower)),
+                        preview: Some(clip_preview(line, &query_for_match, case_sensitive)),
                         is_dir: false,
                     });
                     file_match_count += 1;
@@ -2517,6 +2597,8 @@ pub async fn search_workspace_files(
     root: String,
     query: String,
     max_results: Option<u32>,
+    case_sensitive: Option<bool>,
+    include: Option<String>,
 ) -> AppResult<WorkspaceSearchResult> {
     let display_root = normalize_windows_verbatim_prefix(&root);
     let root_path = PathBuf::from(&display_root);
@@ -2530,6 +2612,10 @@ pub async fn search_workspace_files(
         .map(|v| v as usize)
         .unwrap_or(DEFAULT_SEARCH_MAX_RESULTS)
         .clamp(1, 500);
+    let case_sensitive = case_sensitive.unwrap_or(false);
+    let include = include
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
     // 同步扫盘放到阻塞线程，避免卡住 async runtime。
     let result = tokio::task::spawn_blocking(move || {
@@ -2540,6 +2626,8 @@ pub async fn search_workspace_files(
             DEFAULT_SEARCH_MAX_FILES,
             DEFAULT_SEARCH_MAX_MATCHES_PER_FILE,
             DEFAULT_SEARCH_MAX_FILE_BYTES,
+            case_sensitive,
+            include.as_deref(),
         )
     })
     .await
@@ -3052,6 +3140,8 @@ mod tests {
             1000,
             5,
             1024 * 1024,
+            false,
+            None,
         );
         assert!(result.matches.iter().any(|item| {
             item.kind == "name" && item.name.contains("unique_search_target")

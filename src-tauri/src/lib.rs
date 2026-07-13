@@ -530,6 +530,7 @@ pub fn run() {
             commands::window_open_document_detail,
             commands::window_close_document_detail,
             commands::window_get_document_detail_path,
+            commands::window_get_document_detail_line,
             commands::window_open_runsummary_diff,
             commands::window_close_runsummary_diff,
             commands::window_get_runsummary_diff_payload,

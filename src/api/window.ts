@@ -219,10 +219,14 @@ export async function browserGetNavigationState(): Promise<BrowserNavigationStat
 export async function windowOpenDocumentDetail(
   path: string,
   workspaceRoot?: string,
+  line?: number | null,
 ): Promise<DocumentDetailWindowInfo> {
   return invoke<DocumentDetailWindowInfo>("window_open_document_detail", {
     path,
     workspaceRoot: workspaceRoot ?? null,
+    line: typeof line === "number" && Number.isFinite(line) && line > 0
+      ? Math.floor(line)
+      : null,
   });
 }
 
@@ -232,6 +236,10 @@ export async function windowCloseDocumentDetail(): Promise<void> {
 
 export async function windowGetDocumentDetailPath(): Promise<string | null> {
   return invoke<string | null>("window_get_document_detail_path");
+}
+
+export async function windowGetDocumentDetailLine(): Promise<number | null> {
+  return invoke<number | null>("window_get_document_detail_line");
 }
 
 export async function windowOpenRunSummaryDiff(
@@ -292,11 +300,17 @@ export async function searchWorkspaceFiles(
   root: string,
   query: string,
   maxResults?: number,
+  options?: {
+    caseSensitive?: boolean;
+    include?: string;
+  },
 ): Promise<WorkspaceSearchResult> {
   return invoke<WorkspaceSearchResult>("search_workspace_files", {
     root,
     query,
     maxResults: maxResults ?? null,
+    caseSensitive: options?.caseSensitive ?? false,
+    include: options?.include?.trim() ? options.include.trim() : null,
   });
 }
 

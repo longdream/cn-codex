@@ -40,6 +40,10 @@ describe("window API", () => {
     });
     expect(mockInvoke).toHaveBeenCalledWith("window_open_browser", {
       url: "localhost:1420",
+      x: null,
+      y: null,
+      width: null,
+      height: null,
     });
   });
 
@@ -55,6 +59,10 @@ describe("window API", () => {
     await windowOpenBrowser(" ");
     expect(mockInvoke).toHaveBeenCalledWith("window_open_browser", {
       url: null,
+      x: null,
+      y: null,
+      width: null,
+      height: null,
     });
   });
 
@@ -122,6 +130,30 @@ describe("window API", () => {
       root: "E:/work/demo",
       query: "hello",
       maxResults: 50,
+      caseSensitive: false,
+      include: null,
+    });
+  });
+
+  it("forwards content search options to tauri invoke", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      query: "Hello",
+      matches: [],
+      truncated: false,
+      searchedFiles: 0,
+    });
+
+    await searchWorkspaceFiles("E:/work/demo", "Hello", 80, {
+      caseSensitive: true,
+      include: "src/**/*.ts",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("search_workspace_files", {
+      root: "E:/work/demo",
+      query: "Hello",
+      maxResults: 80,
+      caseSensitive: true,
+      include: "src/**/*.ts",
     });
   });
 });
