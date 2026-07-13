@@ -32,21 +32,6 @@ function Read-FirstMeaningfulLine([string]$Path) {
   return ""
 }
 
-function Read-PackageVersion([string]$PackageJsonPath) {
-  if (-not (Test-Path -LiteralPath $PackageJsonPath)) {
-    return ""
-  }
-
-  try {
-    $content = Get-Content -LiteralPath $PackageJsonPath -Raw
-    $parsed = $content | ConvertFrom-Json
-    $version = "$($parsed.version)".Trim()
-    return $version
-  } catch {
-    return ""
-  }
-}
-
 function Invoke-CheckedCommand {
   param(
     [Parameter(Mandatory = $true)][string]$Command,
@@ -245,8 +230,7 @@ function Resolve-InstalledWebView2RuntimeDir {
 }
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$PackageJsonPath = Join-Path $RepoRoot "package.json"
-$AppVersion = Read-PackageVersion $PackageJsonPath
+$AppVersion = & (Join-Path $RepoRoot "scripts/read-app-version.ps1")
 if (-not $AppVersion) {
   $AppVersion = "unknown"
 }
@@ -441,6 +425,19 @@ foreach ($pattern in $ArtifactPatterns) {
   }
   Get-ChildItem -LiteralPath $ReleaseDir -File -Filter $pattern -ErrorAction SilentlyContinue |
     Copy-Item -Destination $PublishRootDir -Force
+}
+
+Write-Step "Copying updater.exe"
+$UpdaterSourcePath = Join-Path $ReleaseDir "updater.exe"
+$UpdaterDestPath = Join-Path $PublishRootDir "updater.exe"
+if ($DryRun) {
+  Write-Host "[dry-run] would copy $UpdaterSourcePath -> $UpdaterDestPath"
+} else {
+  if (-not (Test-Path -LiteralPath $UpdaterSourcePath)) {
+    throw "updater.exe not found in $ReleaseDir. Build may have failed."
+  }
+  Copy-Item -LiteralPath $UpdaterSourcePath -Destination $UpdaterDestPath -Force
+  Write-Host " - updater.exe copied"
 }
 
 if ($IsFixedMode) {

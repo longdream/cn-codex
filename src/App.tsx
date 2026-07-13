@@ -16,6 +16,7 @@ import { TitleBar } from "./components/layout/TitleBar";
 import { ApprovalModal } from "./components/approval/ApprovalModal";
 import { FortuneBubble } from "./components/common/FortuneBubble";
 import { RecordingToggle } from "./components/common/RecordingToggle";
+import { UpdateModal } from "./components/common/UpdateModal";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { WorkflowExtractModal } from "./components/workflow/WorkflowExtractModal";
 import { useTauriEvents } from "./hooks/useTauriEvents";
@@ -477,6 +478,7 @@ function App() {
         <WorkflowExtractModal />
         <FortuneBubble />
         <RecordingToggle />
+        <UpdateModal />
       </IntlProvider>
     </ErrorBoundary>
   );

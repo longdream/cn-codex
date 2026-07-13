@@ -10,6 +10,7 @@ import {
   browserGoBack,
   browserGoForward,
   browserNavigateHome,
+  searchWorkspaceFiles,
   windowClose,
   windowMinimize,
   windowOpenBrowser,
@@ -93,5 +94,34 @@ describe("window API", () => {
     expect(mockInvoke).toHaveBeenNthCalledWith(2, "browser_go_forward");
     expect(mockInvoke).toHaveBeenNthCalledWith(3, "browser_navigate_home");
     expect(mockInvoke).toHaveBeenNthCalledWith(4, "browser_get_navigation_state");
+  });
+
+  it("routes workspace file content search through tauri invoke", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      query: "hello",
+      matches: [
+        {
+          path: "E:/work/demo/src/a.ts",
+          name: "a.ts",
+          relativePath: "src/a.ts",
+          kind: "content",
+          line: 12,
+          preview: "console.log('hello')",
+          isDir: false,
+        },
+      ],
+      truncated: false,
+      searchedFiles: 3,
+    });
+
+    await expect(searchWorkspaceFiles("E:/work/demo", "hello", 50)).resolves.toMatchObject({
+      query: "hello",
+      searchedFiles: 3,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("search_workspace_files", {
+      root: "E:/work/demo",
+      query: "hello",
+      maxResults: 50,
+    });
   });
 });

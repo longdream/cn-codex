@@ -271,6 +271,35 @@ export async function readDirectory(path: string): Promise<FileEntry[]> {
   return invoke<FileEntry[]>("read_directory", { path });
 }
 
+export interface WorkspaceSearchMatch {
+  path: string;
+  name: string;
+  relativePath: string;
+  kind: "name" | "content" | string;
+  line?: number | null;
+  preview?: string | null;
+  isDir: boolean;
+}
+
+export interface WorkspaceSearchResult {
+  query: string;
+  matches: WorkspaceSearchMatch[];
+  truncated: boolean;
+  searchedFiles: number;
+}
+
+export async function searchWorkspaceFiles(
+  root: string,
+  query: string,
+  maxResults?: number,
+): Promise<WorkspaceSearchResult> {
+  return invoke<WorkspaceSearchResult>("search_workspace_files", {
+    root,
+    query,
+    maxResults: maxResults ?? null,
+  });
+}
+
 export async function deletePath(path: string, recursive = false): Promise<void> {
   await invoke("delete_path", { path, recursive });
 }

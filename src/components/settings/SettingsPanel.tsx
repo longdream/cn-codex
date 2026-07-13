@@ -1,6 +1,7 @@
 import { IconBrain, IconExternalLink, IconLoader2, IconX } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore, type BaziProfile } from "../../stores/settingsStore";
@@ -45,6 +46,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [rulesLoaded, setRulesLoaded] = useState(false);
   const [rulesSaving, setRulesSaving] = useState(false);
   const [rulesSaved, setRulesSaved] = useState(false);
+  const [appVersion, setAppVersion] = useState("1.0.0");
 
   const fortuneEnabled = useSettingsStore((state) => state.fortuneEnabled);
   const setFortuneEnabled = useSettingsStore((state) => state.setFortuneEnabled);
@@ -69,6 +71,22 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       setBaziDraft({ ...baziProfile });
     }
   }, [baziProfile]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getVersion()
+      .then((version) => {
+        if (!cancelled && version.trim()) {
+          setAppVersion(version.trim());
+        }
+      })
+      .catch(() => {
+        // Keep the fallback when running outside Tauri runtime.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const shichenOptions = [
     "zi", "chou", "yin", "mao", "chen", "si",
@@ -739,6 +757,14 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     </p>
                     <p className="text-[13px] font-medium text-[var(--text-strong)]">
                       {intl.formatMessage({ id: "settings.about.personalIntro" })}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs text-[var(--text-faint)]">
+                      {intl.formatMessage({ id: "settings.about.version" })}
+                    </p>
+                    <p className="text-[13px] font-medium text-[var(--text-strong)]">
+                      {appVersion}
                     </p>
                   </div>
                   <a

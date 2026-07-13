@@ -11,6 +11,7 @@ pub mod rules;
 pub mod skill;
 pub mod skill_lab;
 pub mod usage;
+pub mod update;
 pub mod window;
 
 use serde::Serialize;
@@ -33,6 +34,7 @@ pub use rules::*;
 pub use skill::*;
 pub use skill_lab::*;
 pub use usage::*;
+pub use update::*;
 pub use window::*;
 
 #[derive(Debug, Clone, Serialize)]

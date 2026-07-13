@@ -1,0 +1,8 @@
+﻿cargo :    Compiling cn-codex v0.1.0 (E:\work\RustWorks\cn-codex\src-tauri)
+所在位置 行:7 字符: 1
++ cargo build -p cn-codex --bin updater --manifest-path src-tauri\Cargo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling cn...odex\src-tauri):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    Finished `dev` profile [unoptimized] target(s) in 4.58s

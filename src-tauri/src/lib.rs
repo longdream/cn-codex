@@ -502,6 +502,9 @@ pub fn run() {
             commands::usage_get_recent,
             commands::usage_set_pricing,
             commands::usage_get_pricing,
+            // Auto update
+            commands::update_check,
+            commands::update_start,
             // Window controls
             commands::window_start_dragging,
             commands::window_minimize,
@@ -535,6 +538,7 @@ pub fn run() {
             commands::window_toggle_devtools,
             commands::get_user_home_dir,
             commands::read_directory,
+            commands::search_workspace_files,
             commands::delete_path,
             commands::read_file_for_attach,
             commands::read_text_file_preview,

@@ -15,16 +15,20 @@ import {
   IconMarkdown,
   IconMessagePlus,
   IconPhoto,
+  IconSearch,
   IconTrash,
+  IconX,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
 import {
   deletePath,
   readTextFilePreview,
   readDirectory,
   revealInExplorer,
+  searchWorkspaceFiles,
   type FileEntry,
+  type WorkspaceSearchMatch,
   windowNavigateBrowser,
   windowOpenDocumentDetail,
 } from "../../api/window";
@@ -148,6 +152,12 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   } | null>(null);
   const [detailOpenError, setDetailOpenError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
+  const [searchTruncated, setSearchTruncated] = useState(false);
 
   const loadChildren = useCallback(async (path: string): Promise<TreeNode[]> => {
     const entries = await readDirectory(path);
@@ -190,6 +200,65 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
       cancelled = true;
     };
   }, [rootPath, refreshKey, loadChildren]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(searchQuery.trim());
+    }, 280);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!rootPath) {
+      setSearchMatches([]);
+      setSearchError(null);
+      setSearching(false);
+      setSearchTruncated(false);
+      return;
+    }
+    if (!debouncedQuery) {
+      setSearchMatches([]);
+      setSearchError(null);
+      setSearching(false);
+      setSearchTruncated(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSearching(true);
+    setSearchError(null);
+
+    void searchWorkspaceFiles(rootPath, debouncedQuery, 120)
+      .then((result) => {
+        if (cancelled) return;
+        setSearchMatches(result.matches);
+        setSearchTruncated(result.truncated);
+        setSearching(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setSearchMatches([]);
+        setSearchTruncated(false);
+        setSearchError(String(err));
+        setSearching(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rootPath, debouncedQuery, refreshKey]);
+
+  const nameMatches = useMemo(
+    () => searchMatches.filter((item) => item.kind === "name"),
+    [searchMatches],
+  );
+  const contentMatches = useMemo(
+    () => searchMatches.filter((item) => item.kind === "content"),
+    [searchMatches],
+  );
+  const isSearchMode = debouncedQuery.length > 0;
 
   const toggleExpand = useCallback(
     async (nodePath: string) => {
@@ -394,7 +463,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     );
   }
 
-  if (loading) {
+  if (loading && !isSearchMode) {
     return (
       <div className="flex flex-1 items-center justify-center p-4 text-xs text-[var(--text-faint)]">
         {intl.formatMessage({ id: "fileTree.loading" })}
@@ -402,7 +471,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     );
   }
 
-  if (error) {
+  if (error && !isSearchMode) {
     return (
       <div className="flex flex-1 items-center justify-center p-4 text-xs text-[var(--danger)]">
         {error}
@@ -411,43 +480,149 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   }
 
   return (
-    <div className="relative flex-1 overflow-y-auto overflow-x-hidden">
-      {detailOpenError && (
-        <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
-          打开文档详情窗失败：{detailOpenError}
+    <div className="relative flex flex-1 flex-col overflow-hidden">
+      <div className="border-b border-[var(--border-subtle)] px-2 py-2">
+        <div className="relative">
+          <IconSearch
+            size={13}
+            stroke={1.8}
+            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[var(--text-faint)]"
+          />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={intl.formatMessage({ id: "fileTree.searchPlaceholder" })}
+            className="h-7 w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-panel)] py-1 pl-7 pr-7 text-[11px] text-[var(--text-base)] outline-none transition-colors placeholder:text-[var(--text-faint)] focus:border-[var(--accent)]"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+              title={intl.formatMessage({ id: "fileTree.searchClear" })}
+            >
+              <IconX size={12} stroke={1.8} />
+            </button>
+          )}
         </div>
-      )}
-      {actionError && (
-        <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
-          {intl.formatMessage({ id: "fileTree.deleteFailed" }, { error: actionError })}
-        </div>
-      )}
-      {nodes.length === 0 ? (
-        <div className="p-4 text-center text-xs text-[var(--text-faint)]">
-          {intl.formatMessage({ id: "fileTree.emptyDir" })}
-        </div>
-      ) : (
-        <div className="py-1">
-          {nodes.map((node) => (
-            <FileTreeNode
-              key={node.path}
-              node={node}
-              depth={0}
-              onToggle={toggleExpand}
-              onOpenFile={handleOpenFile}
-              onContextMenu={handleContextMenu}
-              onDragStart={handleDragStart}
-            />
-          ))}
-        </div>
-      )}
-      {contextMenu && (
-        <ContextMenu
-          position={{ x: contextMenu.x, y: contextMenu.y }}
-          items={contextMenuItems}
-          onClose={() => setContextMenu(null)}
-        />
-      )}
+      </div>
+
+      <div className="relative flex-1 overflow-y-auto overflow-x-hidden">
+        {detailOpenError && (
+          <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
+            打开文档详情窗失败：{detailOpenError}
+          </div>
+        )}
+        {actionError && (
+          <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
+            {intl.formatMessage({ id: "fileTree.deleteFailed" }, { error: actionError })}
+          </div>
+        )}
+        {searchError && (
+          <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
+            {intl.formatMessage({ id: "fileTree.searchFailed" }, { error: searchError })}
+          </div>
+        )}
+
+        {isSearchMode ? (
+          searching ? (
+            <div className="p-4 text-center text-xs text-[var(--text-faint)]">
+              {intl.formatMessage({ id: "fileTree.searching" })}
+            </div>
+          ) : searchMatches.length === 0 ? (
+            <div className="p-4 text-center text-xs text-[var(--text-faint)]">
+              {intl.formatMessage({ id: "fileTree.searchEmpty" })}
+            </div>
+          ) : (
+            <div className="py-1">
+              {nameMatches.length > 0 && (
+                <div className="mb-1">
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-faint)]">
+                    {intl.formatMessage(
+                      { id: "fileTree.searchNameResults" },
+                      { count: nameMatches.length },
+                    )}
+                  </div>
+                  {nameMatches.map((item) => (
+                    <SearchResultItem
+                      key={`name:${item.path}`}
+                      item={item}
+                      onOpen={() => {
+                        if (item.isDir) return;
+                        void handleOpenFile({
+                          name: item.name,
+                          path: item.path,
+                          isDir: false,
+                          size: 0,
+                          loaded: true,
+                          expanded: false,
+                        });
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+              {contentMatches.length > 0 && (
+                <div>
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-faint)]">
+                    {intl.formatMessage(
+                      { id: "fileTree.searchContentResults" },
+                      { count: contentMatches.length },
+                    )}
+                  </div>
+                  {contentMatches.map((item, index) => (
+                    <SearchResultItem
+                      key={`content:${item.path}:${item.line ?? 0}:${index}`}
+                      item={item}
+                      onOpen={() => {
+                        void handleOpenFile({
+                          name: item.name,
+                          path: item.path,
+                          isDir: false,
+                          size: 0,
+                          loaded: true,
+                          expanded: false,
+                        });
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+              {searchTruncated && (
+                <div className="px-3 py-2 text-[10px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "fileTree.searchTruncated" })}
+                </div>
+              )}
+            </div>
+          )
+        ) : nodes.length === 0 ? (
+          <div className="p-4 text-center text-xs text-[var(--text-faint)]">
+            {intl.formatMessage({ id: "fileTree.emptyDir" })}
+          </div>
+        ) : (
+          <div className="py-1">
+            {nodes.map((node) => (
+              <FileTreeNode
+                key={node.path}
+                node={node}
+                depth={0}
+                onToggle={toggleExpand}
+                onOpenFile={handleOpenFile}
+                onContextMenu={handleContextMenu}
+                onDragStart={handleDragStart}
+              />
+            ))}
+          </div>
+        )}
+        {contextMenu && (
+          <ContextMenu
+            position={{ x: contextMenu.x, y: contextMenu.y }}
+            items={contextMenuItems}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -529,5 +704,46 @@ function FileTreeNode({
         </>
       )}
     </>
+  );
+}
+
+function SearchResultItem({
+  item,
+  onOpen,
+}: {
+  item: WorkspaceSearchMatch;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex w-full flex-col gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+      title={item.path}
+    >
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="flex-shrink-0">
+          {item.isDir ? (
+            <IconFolder size={14} stroke={1.5} className="text-[var(--accent)]" />
+          ) : (
+            fileIcon(item.name, 14)
+          )}
+        </span>
+        <span className="min-w-0 truncate text-[12px] text-[var(--text-base)]">
+          {item.name}
+          {typeof item.line === "number" ? (
+            <span className="text-[var(--text-faint)]">:{item.line}</span>
+          ) : null}
+        </span>
+      </div>
+      <div className="min-w-0 truncate pl-5 text-[10px] text-[var(--text-faint)]">
+        {item.relativePath}
+      </div>
+      {item.preview ? (
+        <div className="min-w-0 truncate pl-5 font-mono text-[10px] text-[var(--text-muted)]">
+          {item.preview}
+        </div>
+      ) : null}
+    </button>
   );
 }

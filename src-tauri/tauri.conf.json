@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegram/nicegram-tauri/main/crates/tauri-config-schema/schema.json",
   "productName": "CN-Codex",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.cn-codex.app",
   "build": {
     "beforeDevCommand": "node scripts/run-package-bin.mjs vite",

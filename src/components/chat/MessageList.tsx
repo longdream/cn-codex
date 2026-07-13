@@ -39,6 +39,11 @@ import type { ChatMessage, RunSummary, ToolCallItem } from "../../stores/appStor
 import type { BinaryAttachedFile } from "../../types/provider";
 import { useAppStore } from "../../stores/appStore";
 import { formatDuration } from "../../utils/formatDuration";
+import {
+  parsePatchDiffEntries,
+  type PatchDiffEntry,
+} from "../../utils/parsePatchDiff";
+import { ApplyPatchDiffPreview } from "./ApplyPatchDiffPreview";
 import { ChartBlock } from "./ChartBlock";
 import { CodeBlock } from "./CodeBlock";
 import { PlanCard } from "./PlanCard";
@@ -315,7 +320,7 @@ function RunSummaryCard({
   const goalBudgetTokens = summary.goalBudgetTokens;
   const globalCwd = useAppStore((s) => s.workspaceCwd);
   const workspaceCwd = summary.cwd ?? globalCwd;
-  const patchDiffEntries = useRef<RunSummaryPatchDiffEntry[]>([]);
+  const patchDiffEntries = useRef<PatchDiffEntry[]>([]);
 
   useEffect(() => {
     // 仅提取“当前 RunSummary 所属轮次”的 apply_patch 补丁，
@@ -511,15 +516,6 @@ function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
-interface RunSummaryPatchDiffEntry {
-  // 一个补丁项可能同时命中旧路径/新路径（例如 rename）。
-  paths: string[];
-  // 作为 Diff 左侧输入的文本。
-  beforeContent: string;
-  // 作为 Diff 右侧输入的文本。
-  afterContent: string;
-}
-
 interface RunSummarySnapshotEntry {
   path: string;
   action: string;
@@ -547,7 +543,7 @@ function findRunSummarySnapshotEntry(
 function collectRunSummaryPatchDiffEntries(
   messages: ChatMessage[],
   summaryIndex: number,
-): RunSummaryPatchDiffEntry[] {
+): PatchDiffEntry[] {
   // 以“上一条 RunSummary”作为轮次边界，只解析当前轮消息中的补丁。
   let startIndex = 0;
   for (let i = summaryIndex - 1; i >= 0; i -= 1) {
@@ -557,7 +553,7 @@ function collectRunSummaryPatchDiffEntries(
     }
   }
 
-  const entries: RunSummaryPatchDiffEntry[] = [];
+  const entries: PatchDiffEntry[] = [];
   for (let i = startIndex; i < summaryIndex; i += 1) {
     const message = messages[i];
     for (const call of message.toolCalls ?? []) {
@@ -593,98 +589,6 @@ function patchTextFromToolCall(call: ToolCallItem): string | null {
   return patchCandidate;
 }
 
-function parsePatchDiffEntries(patch: string): RunSummaryPatchDiffEntry[] {
-  // 解析 apply_patch 文本得到每个文件的 before/after 内容块。
-  // 说明：这里是“补丁级还原”，用于 Diff 可视化，不做完整文件重建。
-  const lines = patch.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  const result: RunSummaryPatchDiffEntry[] = [];
-  let idx = 0;
-
-  const isBoundary = (line: string): boolean => {
-    return (
-      line.startsWith("*** Add File: ") ||
-      line.startsWith("*** Update File: ") ||
-      line.startsWith("*** Delete File: ") ||
-      line.startsWith("*** End Patch")
-    );
-  };
-
-  while (idx < lines.length) {
-    const line = lines[idx];
-
-    if (line.startsWith("*** Add File: ")) {
-      const path = line.slice("*** Add File: ".length).trim();
-      idx += 1;
-      const afterLines: string[] = [];
-      while (idx < lines.length && !isBoundary(lines[idx])) {
-        const body = lines[idx];
-        if (body.startsWith("+")) {
-          afterLines.push(body.slice(1));
-        }
-        idx += 1;
-      }
-      result.push({
-        paths: [path],
-        beforeContent: "",
-        afterContent: afterLines.join("\n"),
-      });
-      continue;
-    }
-
-    if (line.startsWith("*** Delete File: ")) {
-      const path = line.slice("*** Delete File: ".length).trim();
-      idx += 1;
-      result.push({
-        paths: [path],
-        // 删除文件在补丁里通常不含完整正文，这里用占位确保弹窗有明确反馈。
-        beforeContent: "[deleted file]",
-        afterContent: "",
-      });
-      continue;
-    }
-
-    if (line.startsWith("*** Update File: ")) {
-      const path = line.slice("*** Update File: ".length).trim();
-      let moveTo: string | null = null;
-      const beforeLines: string[] = [];
-      const afterLines: string[] = [];
-      idx += 1;
-      while (idx < lines.length && !isBoundary(lines[idx])) {
-        const body = lines[idx];
-        if (body.startsWith("*** Move to: ")) {
-          moveTo = body.slice("*** Move to: ".length).trim();
-          idx += 1;
-          continue;
-        }
-        if (body.startsWith("@@")) {
-          idx += 1;
-          continue;
-        }
-        if (body.startsWith("-")) {
-          beforeLines.push(body.slice(1));
-        } else if (body.startsWith("+")) {
-          afterLines.push(body.slice(1));
-        } else if (body.startsWith(" ")) {
-          const context = body.slice(1);
-          beforeLines.push(context);
-          afterLines.push(context);
-        }
-        idx += 1;
-      }
-      result.push({
-        paths: moveTo ? [path, moveTo] : [path],
-        beforeContent: beforeLines.join("\n"),
-        afterContent: afterLines.join("\n"),
-      });
-      continue;
-    }
-
-    idx += 1;
-  }
-
-  return result;
-}
-
 function normalizePathForDiffMatch(path: string): string {
   // 统一路径格式，兼容 Windows 与 Unix 分隔符差异。
   return path
@@ -709,8 +613,8 @@ function patchPathMatches(targetPath: string, patchPath: string): boolean {
 
 function findRunSummaryPatchDiffEntry(
   filePath: string,
-  entries: RunSummaryPatchDiffEntry[],
-): RunSummaryPatchDiffEntry | null {
+  entries: PatchDiffEntry[],
+): PatchDiffEntry | null {
   // 反向查找可保证“同轮多次修改同文件”时优先展示最后一次补丁形态。
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     if (entries[i].paths.some((path) => patchPathMatches(filePath, path))) {
@@ -1452,11 +1356,7 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
               ))}
             </div>
           )}
-          {patch && (
-            <pre className="chat-tool-output max-h-[160px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[var(--chat-prose)]">
-              {patch.slice(0, 800)}{patch.length > 800 ? "..." : ""}
-            </pre>
-          )}
+          {patch && <ApplyPatchDiffPreview patch={patch} />}
           <PatchReviewPanel toolId={item.id} />
         </div>
       )}

@@ -1,0 +1,75 @@
+﻿cargo :    Compiling quote v1.0.46
+所在位置 行:7 字符: 1
++ cargo build --manifest-path update-server\Cargo.toml 2>&1 | Tee-Objec ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling quote v1.0.46:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+   Compiling mio v1.2.1
+   Compiling tracing-core v0.1.36
+   Compiling serde_core v1.0.228
+   Compiling httparse v1.10.1
+   Compiling zmij v1.0.22
+   Compiling serde v1.0.228
+   Compiling anstyle v1.0.14
+   Compiling syn v2.0.118
+   Compiling utf8parse v0.2.2
+   Compiling tower-layer v0.3.3
+   Compiling mime v0.3.17
+   Compiling futures-task v0.3.32
+   Compiling httpdate v1.0.3
+   Compiling once_cell_polyfill v1.70.2
+   Compiling unicase v2.9.0
+   Compiling slab v0.4.12
+   Compiling percent-encoding v2.3.2
+   Compiling anstyle-parse v1.0.0
+   Compiling anstyle-wincon v3.0.11
+   Compiling futures-util v0.3.32
+   Compiling mime_guess v2.0.5
+   Compiling http-body-util v0.1.3
+   Compiling anstyle-query v1.1.5
+   Compiling futures-channel v0.3.32
+   Compiling regex-syntax v0.8.11
+   Compiling sync_wrapper v1.0.2
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling tokio-macros v2.7.0
+   Compiling tracing-attributes v0.1.31
+   Compiling serde_derive v1.0.228
+   Compiling colorchoice v1.0.5
+   Compiling serde_json v1.0.150
+   Compiling atomic-waker v1.1.2
+   Compiling regex-automata v0.4.15
+   Compiling anstream v1.0.0
+   Compiling form_urlencoded v1.2.2
+   Compiling tracing v0.1.44
+   Compiling tokio v1.52.3
+   Compiling memchr v2.8.3
+   Compiling lazy_static v1.5.0
+   Compiling clap_lex v1.1.0
+   Compiling futures-sink v0.3.32
+   Compiling heck v0.5.0
+   Compiling strsim v0.11.1
+   Compiling ryu v1.0.23
+   Compiling sharded-slab v0.1.7
+   Compiling axum-core v0.5.6
+   Compiling matchers v0.2.0
+   Compiling clap_derive v4.6.1
+   Compiling hyper v1.10.1
+   Compiling clap_builder v4.6.0
+   Compiling tokio-util v0.7.18
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling serde_urlencoded v0.7.1
+   Compiling serde_path_to_error v0.1.20
+   Compiling tracing-log v0.2.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling thread_local v1.1.10
+   Compiling bitflags v2.13.0
+   Compiling http-range-header v0.4.2
+   Compiling matchit v0.8.4
+   Compiling clap v4.6.1
+   Compiling tracing-subscriber v0.3.23
+   Compiling tower-http v0.6.11
+   Compiling axum v0.8.9
+   Compiling cn-codex-update-server v0.1.0 (E:\work\RustWorks\cn-codex\update-server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 09s

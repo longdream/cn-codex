@@ -809,6 +809,18 @@ textarea:focus {
   line-height: 1.45;
 }
 
+.patch-diff-lines-inline {
+  overflow: visible;
+  font-family:
+    "JetBrains Mono",
+    "Cascadia Code",
+    "SFMono-Regular",
+    Consolas,
+    monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .patch-diff-line {
   display: grid;
   grid-template-columns: 54px 54px 20px max-content;

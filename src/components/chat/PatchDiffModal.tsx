@@ -2,10 +2,8 @@ import { IconLoader2, IconX } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useIntl, type IntlShape } from "react-intl";
 import { readTextFilePreview, writeTextFilePreview } from "../../api/window";
-import {
-  buildPatchLineDiff,
-  type PatchDiffLine,
-} from "../../utils/lineDiff";
+import { buildPatchLineDiff } from "../../utils/lineDiff";
+import { PatchDiffLines } from "../diff/PatchDiffLines";
 import { CodeBlock } from "./CodeBlock";
 
 interface PatchDiffModalProps {
@@ -27,12 +25,6 @@ type PersistNotice = {
   type: "success" | "error";
   message: string;
 };
-
-function linePrefix(type: PatchDiffLine["type"]): string {
-  if (type === "add") return "+";
-  if (type === "remove") return "-";
-  return " ";
-}
 
 function fileLanguageFromPath(path: string): string {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
@@ -388,29 +380,10 @@ export function PatchDiffModal({
             <div className="patch-diff-panel-title">
               {intl.formatMessage({ id: "patchDiff.diffLabel" })}
             </div>
-            <div className="patch-diff-lines-scroll thin-scrollbar">
-              {lines.length === 0 ? (
-                <div className="px-3 py-3 text-[11px] text-[var(--chat-muted)]">
-                  {emptyHint ?? intl.formatMessage({ id: "diff.noLineDiff" })}
-                </div>
-              ) : (
-                lines.map((line, index) => (
-                  <div
-                    key={`${index}:${line.type}:${line.oldLineNumber ?? 0}:${line.newLineNumber ?? 0}`}
-                    className={`patch-diff-line patch-diff-line--${line.type}`}
-                  >
-                    <span className="patch-diff-line-number">
-                      {line.oldLineNumber ?? ""}
-                    </span>
-                    <span className="patch-diff-line-number">
-                      {line.newLineNumber ?? ""}
-                    </span>
-                    <span className="patch-diff-line-prefix">{linePrefix(line.type)}</span>
-                    <span className="patch-diff-line-text">{line.text}</span>
-                  </div>
-                ))
-              )}
-            </div>
+            <PatchDiffLines
+              lines={lines}
+              emptyHint={emptyHint ?? intl.formatMessage({ id: "diff.noLineDiff" })}
+            />
           </section>
         </div>
       </div>

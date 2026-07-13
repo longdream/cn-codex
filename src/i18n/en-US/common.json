@@ -501,6 +501,14 @@
   "fileTree.preview": "Preview",
   "fileTree.code": "Code",
   "fileTree.previewTruncated": "File is large, showing only the first 512 KB.",
+  "fileTree.searchPlaceholder": "Search files or content...",
+  "fileTree.searchClear": "Clear search",
+  "fileTree.searching": "Searching...",
+  "fileTree.searchEmpty": "No matches found",
+  "fileTree.searchFailed": "Search failed: {error}",
+  "fileTree.searchNameResults": "Files ({count})",
+  "fileTree.searchContentResults": "Content ({count})",
+  "fileTree.searchTruncated": "Too many results, showing partial matches",
   "settings.smartbrain": "SmartBrain",
   "settings.smartbrain.description": "Manage experience and knowledge base for continuous AI learning.",
   "settings.experience": "Experience",
@@ -627,7 +635,6 @@
   "settings.smartbrain.knowledge.deleteConfirm": "Are you sure you want to delete this knowledge document?",
   "chat.addToSmartBrain": "Add to SmartBrain",
   "chat.addedToSmartBrain": "Added to SmartBrain",
-
   "git.noProject": "No project directory selected. Git panel unavailable.",
   "git.refreshTitle": "Refresh Git status",
   "git.tabChanges": "Changes",
@@ -683,7 +690,6 @@
   "git.confirmRevert": "Confirm revert commit {commit}? This will create a new reverse commit.",
   "git.confirmCherryPick": "Confirm cherry-pick {commit} {hint}?",
   "git.cherryPickNoCommitHint": "(no auto-commit)",
-
   "tool.executing": "Executing...",
   "tool.shell": "Run command",
   "tool.readFile": "Read file",
@@ -706,7 +712,6 @@
   "streaming.structuring": "Structuring answer...",
   "streaming.summarizing": "Summarizing...",
   "streaming.processing": "Processing request...",
-
   "docDetail.title": "Document Detail",
   "docDetail.unsaved": "Unsaved",
   "docDetail.save": "Save",
@@ -740,7 +745,6 @@
   "docDetail.preview": "Preview",
   "docDetail.source": "Source",
   "docDetail.imagePreviewLabel": "Image Preview",
-
   "diff.title": "RunSummary Diff",
   "diff.sourceSnapshot": "Snapshot",
   "diff.sourcePatch": "Patch fallback",
@@ -765,7 +769,6 @@
   "diff.keepFailed": "Keep failed: {error}",
   "diff.restoreSuccess": "Restore succeeded, restored {path} ({size} bytes)",
   "diff.restoreFailed": "Restore failed: {error}",
-
   "patchDiff.title": "Diff Preview (Keep writes to disk)",
   "patchDiff.close": "Close",
   "patchDiff.source": "Source: ",
@@ -803,16 +806,13 @@
   "patchDiff.willBeDeleted": "(will be deleted)",
   "patchDiff.selectAtLeastOne": "Please select at least one file to keep.",
   "patchDiff.viewDiffTitle": "View patch diff",
-
   "qr.scanToAccess": "Scan to access on mobile",
   "qr.webServerNotStarted": "Web server not started",
   "qr.enableInSettings": "Go to Settings → General to enable the web server",
-
   "error.title": "Application Error",
   "error.description": "An unexpected error occurred. Please restart the application.",
   "error.unknown": "Unknown error",
   "error.tryAgain": "Try Again",
-
   "settings.webServer": "Web Server (mobile sync)",
   "settings.webServer.description": "Enable to access chat on mobile by scanning QR code",
   "settings.webServer.loading": "Processing...",
@@ -853,7 +853,6 @@
   "usage.requests": "Requests",
   "usage.cost": "Cost",
   "usage.empty": "No usage data yet. Start chatting to begin recording.",
-
   "rightPanel.browser": "Browser",
   "rightPanel.project": "Project",
   "rightPanel.terminal": "Terminal",
@@ -880,15 +879,12 @@
   "rightPanel.attachBrowser": "Return browser to right panel",
   "rightPanel.detachedHint": "Browser is currently shown in a standalone window. Close that window or click below to return it to the right panel.",
   "rightPanel.returnToPanel": "Return To Panel",
-
   "titleBar.qrCode": "Mobile QR Code",
   "titleBar.togglePanel": "Toggle project panel",
   "titleBar.minimize": "Minimize",
   "titleBar.maximize": "Maximize",
   "titleBar.close": "Close",
-
   "approval.permissionRequest": "Permission Request",
-
   "chat.waitingForAI": "Waiting for AI response...",
   "chat.aiResponseDone": "AI response complete",
   "chat.conversationTerminated": "Conversation terminated",
@@ -920,7 +916,6 @@
   "approval.allow": "Allow",
   "approval.alwaysAllow": "Always allow",
   "approval.other": "Other",
-
   "provider.preset.volcengine": "Volcengine Ark",
   "provider.preset.qwen": "Tongyi Qwen",
   "provider.preset.zhipu": "Zhipu AI",
@@ -932,9 +927,7 @@
   "provider.transport.responses": "OpenAI Responses API",
   "provider.transport.anthropic": "Anthropic Messages API",
   "provider.transport.gemini": "Google Gemini API",
-
   "fileTree.openDetailFailed": "Failed to open document detail: {error}",
-
   "settings.rules": "User Rules",
   "settings.rules.description": "Custom AI behavior rules injected into the system prompt.",
   "settings.rules.hint": "Write user rules here (Markdown format). These rules are injected into the AI system prompt and apply to all conversations.",
@@ -942,7 +935,6 @@
   "settings.rules.save": "Save",
   "settings.rules.saving": "Saving...",
   "settings.rules.saved": "Saved",
-
   "settings.fortune": "Fortune Forecast",
   "settings.fortune.description": "Daily fortune forecast based on Qi Men Dun Jia. When enabled, a fortune bubble appears at the bottom-right on app startup.",
   "settings.fortune.enabled": "Enabled",
@@ -981,7 +973,6 @@
   "settings.fortune.shichen.you": "You (17:00-19:00)",
   "settings.fortune.shichen.xu": "Xu (19:00-21:00)",
   "settings.fortune.shichen.hai": "Hai (21:00-23:00)",
-
   "settings.pool.localPool": "Local Pool",
   "settings.pool.localPoolDesc": "No top-level Base URL or API Key needed. Configure them per endpoint in each model.",
   "settings.pool.endpoints": "Endpoints",
@@ -1003,7 +994,6 @@
   "settings.pool.saveEndpoint": "Save",
   "settings.pool.cancelEdit": "Cancel",
   "settings.pool.activeEndpoint": "Active",
-
   "fortune.bubble.title": "Qi Men Dun Jia · Today",
   "fortune.bubble.loading": "Calculating today's fortune...",
   "fortune.bubble.error": "Fortune calculation failed, click to retry",
@@ -1049,5 +1039,14 @@
   "settings.workflows.deleteConfirm": "Are you sure you want to delete this workflow?",
   "git.progressCommitting": "Committing",
   "git.progressPushing": "Pushing",
-  "git.progressPulling": "Pulling"
+  "git.progressPulling": "Pulling",
+  "update.badge": "Auto Update",
+  "update.title": "Update Available",
+  "update.description": "Current version {current}, latest version {latest}. Updating will close the app and show a download progress window.",
+  "update.notes": "Release notes",
+  "update.url": "Download URL",
+  "update.later": "Later",
+  "update.now": "Update Now",
+  "update.starting": "Starting updater...",
+  "settings.about.version": "Version"
 }

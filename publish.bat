@@ -13,6 +13,10 @@ set "ICONS_DIR=%PROJECT_DIR%src-tauri\icons"
 set "FORCE_FULL_REBUILD=0"
 if /I "%~1"=="clean" set "FORCE_FULL_REBUILD=1"
 
+:: Auto-update package defaults
+if not defined UPDATE_BASE_URL set "UPDATE_BASE_URL=http://47.113.221.244:5005"
+if not defined UPDATE_NOTES set "UPDATE_NOTES="
+
 :: ---------------------------------------------------------------------------
 :: Release build hardening:
 :: 1) Force-disable Cargo incremental for deterministic release artifacts.
@@ -68,7 +72,7 @@ if not exist "%ICONS_DIR%\128x128.png" (
 )
 
 :: Clean previous publish folder
-echo [1/7] Cleaning previous publish folder...
+echo [1/9] Cleaning previous publish folder...
 if exist "%PUBLISH_DIR%" (
     rmdir /s /q "%PUBLISH_DIR%"
 )
@@ -76,7 +80,7 @@ mkdir "%PUBLISH_DIR%"
 
 :: Install frontend dependencies only when node_modules is missing.
 :: This avoids unnecessary dependency resolution on every publish run.
-echo [2/7] Checking frontend dependencies...
+echo [2/9] Checking frontend dependencies...
 cd /d "%PROJECT_DIR%"
 if not exist "%PROJECT_DIR%node_modules" (
     echo   - node_modules not found, running pnpm install...
@@ -94,7 +98,7 @@ if not exist "%PROJECT_DIR%node_modules" (
 )
 
 :: Build mobile-web
-echo [3/8] Building mobile-web...
+echo [3/9] Building mobile-web...
 cd /d "%PROJECT_DIR%mobile-web"
 if not exist "%PROJECT_DIR%mobile-web\node_modules" (
     echo   - Installing mobile-web dependencies...
@@ -115,7 +119,7 @@ echo   - mobile-web built to mobile-dist/
 cd /d "%PROJECT_DIR%"
 
 :: Build Tauri app in release mode (portable only, no installer bundle)
-echo [4/8] Building Tauri release (portable, no installer)...
+echo [4/9] Building Tauri release (portable, no installer, bins: cn-codex + updater)...
 :: For release speed, default is incremental publish without cargo clean.
 :: If cache corruption is suspected, run "publish.bat clean" for full rebuild.
 if "%FORCE_FULL_REBUILD%"=="1" (
@@ -141,14 +145,39 @@ if %errorlevel% neq 0 (
 )
 
 :: Copy artifacts to publish folder
-echo [5/8] Copying portable artifacts to publish folder...
+echo [5/9] Copying portable artifacts to publish folder...
 
 set "RELEASE_DIR=%PROJECT_DIR%src-tauri\target\release"
+set "MAIN_EXE=%RELEASE_DIR%\cn-codex.exe"
+set "UPDATER_EXE=%RELEASE_DIR%\updater.exe"
 
 :: Copy the exe directly
-if exist "%RELEASE_DIR%\cn-codex.exe" (
-    copy "%RELEASE_DIR%\cn-codex.exe" "%PUBLISH_DIR%\CN-Codex.exe" >nul
+if exist "%MAIN_EXE%" (
+    copy "%MAIN_EXE%" "%PUBLISH_DIR%\CN-Codex.exe" >nul
     echo   - CN-Codex.exe
+) else (
+    echo [ERROR] Main exe not found: %MAIN_EXE%
+    pause
+    exit /b 1
+)
+
+:: Ensure updater.exe exists next to the main portable binary.
+if not exist "%UPDATER_EXE%" (
+    echo   - updater.exe missing after tauri build, building updater bin explicitly...
+    call cargo build --release --manifest-path "%PROJECT_DIR%src-tauri\Cargo.toml" --bin updater
+    if %errorlevel% neq 0 (
+        echo [ERROR] Failed to build updater.exe
+        pause
+        exit /b 1
+    )
+)
+if exist "%UPDATER_EXE%" (
+    copy "%UPDATER_EXE%" "%PUBLISH_DIR%\updater.exe" >nul
+    echo   - updater.exe
+) else (
+    echo [ERROR] updater.exe not found: %UPDATER_EXE%
+    pause
+    exit /b 1
 )
 
 :: NOTE: Installer artifacts are intentionally skipped.
@@ -160,7 +189,7 @@ for %%f in ("%RELEASE_DIR%\*.dll") do (
 )
 
 :: Copy codey/ resources (skills + plugins only)
-echo [6/8] Copying codey runtime resources (skills/plugins/robots)...
+echo [6/9] Copying codey runtime resources (skills/plugins/robots)...
 
 set "CODEY_DEST=%PUBLISH_DIR%\codey"
 mkdir "%CODEY_DEST%"
@@ -237,7 +266,7 @@ if exist "%CODEY_DEST%\browser\visible-browser.json" del "%CODEY_DEST%\browser\v
 for /d %%d in ("%PUBLISH_DIR%\EBWebView*") do rmdir /s /q "%%d" 2>nul
 
 :: Copy mobile-dist to publish
-echo [7/8] Copying mobile-dist...
+echo [7/9] Copying mobile-dist...
 set "MOBILE_DIST_SRC=%PROJECT_DIR%mobile-dist"
 set "MOBILE_DIST_DEST=%PUBLISH_DIR%\mobile-dist"
 if exist "%MOBILE_DIST_SRC%" (
@@ -249,7 +278,7 @@ if exist "%MOBILE_DIST_SRC%" (
 )
 
 :: Bundle embedded Node.js portable runtime into codey/node/
-echo [8/8] Bundling embedded Node.js portable...
+echo [8/9] Bundling embedded Node.js portable...
 
 set "NODE_VERSION=22.16.0"
 set "NODE_ARCHIVE=node-v%NODE_VERSION%-win-x64.zip"
@@ -301,6 +330,36 @@ if exist "%NODE_TMP%" rmdir /s /q "%NODE_TMP%"
 
 :skip_node
 
+:: Prepare server overwrite package: latest.json + versioned main exe
+echo [9/9] Preparing update-server upload package...
+for /f "usebackq delims=" %%v in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%scripts\read-app-version.ps1"`) do set "APP_VERSION=%%v"
+if not defined APP_VERSION (
+    echo [ERROR] Failed to resolve app version
+    pause
+    exit /b 1
+)
+
+set "ARTIFACTS_DIR=%PUBLISH_DIR%\update-artifacts"
+if exist "%ARTIFACTS_DIR%" rmdir /s /q "%ARTIFACTS_DIR%"
+mkdir "%ARTIFACTS_DIR%"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%scripts\prepare-update-artifacts.ps1" ^
+  -Version "%APP_VERSION%" ^
+  -MainExe "%MAIN_EXE%" ^
+  -UpdaterExe "%UPDATER_EXE%" ^
+  -OutDir "%ARTIFACTS_DIR%" ^
+  -BaseUrl "%UPDATE_BASE_URL%" ^
+  -Notes "%UPDATE_NOTES%"
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to prepare update artifacts
+    pause
+    exit /b 1
+)
+
+copy /Y "%ARTIFACTS_DIR%\latest.json" "%PUBLISH_DIR%\latest.json" >nul
+echo   - latest.json
+echo   - update-artifacts\update-upload\ ^(server overwrite package^)
+
 echo.
 echo Build complete!
 echo.
@@ -314,6 +373,15 @@ dir /b "%PUBLISH_DIR%"
 echo.
 echo codey/ resources:
 dir /b "%CODEY_DEST%"
+echo.
+echo Auto-update artifacts:
+echo   client: CN-Codex.exe + updater.exe
+echo   server: publish\update-artifacts\update-upload\
+echo     - latest.json
+echo     - files\CN-Codex-%APP_VERSION%.exe
+echo.
+echo Upload example:
+echo   scp -r publish\update-artifacts\update-upload\* root@47.113.221.244:/opt/cn-codex-update/public/
 echo.
 echo NOTE: Users need to configure their model provider
 echo       via Settings on first launch.

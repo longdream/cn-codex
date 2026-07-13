@@ -1,0 +1,8 @@
+{
+  "version": "0.1.0",
+  "url": "http://47.113.221.244:5005/files/CN-Codex-0.1.0.exe",
+  "sha256": "",
+  "notes": "初始自动更新通道。请将新版本 exe 上传到 files/ 并更新本文件。",
+  "force": false,
+  "publishedAt": "2026-03-21T00:00:00Z"
+}

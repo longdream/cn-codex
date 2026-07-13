@@ -1,0 +1,6 @@
+﻿CN-Codex update server listening on http://127.0.0.1:5005
+public dir: E:\work\RustWorks\cn-codex\update-server\public
+127.0.0.1 - "GET /latest.json HTTP/1.1" 200 -
+127.0.0.1 - "GET /healthz HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /latest.json HTTP/1.1" 200 -

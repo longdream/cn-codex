@@ -2207,6 +2207,347 @@ pub async fn read_directory(path: String) -> AppResult<Vec<FileEntry>> {
     Ok(dirs)
 }
 
+const DEFAULT_SEARCH_MAX_RESULTS: usize = 100;
+const DEFAULT_SEARCH_MAX_FILES: usize = 8_000;
+const DEFAULT_SEARCH_MAX_MATCHES_PER_FILE: usize = 5;
+const DEFAULT_SEARCH_MAX_FILE_BYTES: u64 = 1024 * 1024;
+const SEARCH_TEXT_EXTENSIONS: &[&str] = &[
+    "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "jsonc", "md", "mdx", "txt", "log",
+    "rs", "py", "go", "java", "c", "h", "cpp", "cc", "cxx", "hpp", "cs", "kt", "swift",
+    "html", "htm", "css", "scss", "less", "sass", "vue", "svelte", "xml", "yml", "yaml",
+    "toml", "ini", "cfg", "conf", "env", "sql", "sh", "bash", "zsh", "ps1", "bat", "cmd",
+    "csv", "tsv", "graphql", "gql", "proto", "rb", "php", "lua", "r", "dart", "scala",
+    "dockerfile", "makefile", "cmake", "gradle", "properties", "gitignore", "editorconfig",
+];
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSearchMatch {
+    pub path: String,
+    pub name: String,
+    pub relative_path: String,
+    /// "name" = 文件名匹配；"content" = 文件内容匹配。
+    pub kind: String,
+    pub line: Option<u32>,
+    pub preview: Option<String>,
+    pub is_dir: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSearchResult {
+    pub query: String,
+    pub matches: Vec<WorkspaceSearchMatch>,
+    pub truncated: bool,
+    pub searched_files: u32,
+}
+
+fn is_hidden_or_ignored_name(name: &str) -> bool {
+    if name == "." || name == ".." {
+        return true;
+    }
+    if HIDDEN_DIRS.contains(&name) {
+        return true;
+    }
+    // 常见构建/缓存目录，避免内容搜索扫到巨型依赖树。
+    matches!(
+        name,
+        "build"
+            | "out"
+            | "coverage"
+            | ".cache"
+            | ".turbo"
+            | ".parcel-cache"
+            | ".vite"
+            | "vendor"
+            | "Pods"
+            | "DerivedData"
+            | ".cn-codex"
+            | "logs"
+            | "release"
+            | "publish"
+            | "mobile-dist"
+            | "node_modules"
+            | "target"
+            | "dist"
+    )
+}
+
+fn is_probably_text_file(path: &Path) -> bool {
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let lower_name = file_name.to_ascii_lowercase();
+    if matches!(
+        lower_name.as_str(),
+        "dockerfile"
+            | "makefile"
+            | "cmakelists.txt"
+            | "license"
+            | "readme"
+            | "cargo.lock"
+            | "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+    ) {
+        return true;
+    }
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if ext.is_empty() {
+        // 无扩展名时允许尝试读取小文件，后续仍会做二进制检测。
+        return true;
+    }
+    SEARCH_TEXT_EXTENSIONS.iter().any(|item| *item == ext)
+}
+
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(4096).any(|b| *b == 0)
+}
+
+fn relative_path_display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
+}
+
+fn clip_preview(line: &str, query_lower: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lower = trimmed.to_lowercase();
+    let max_len = 160usize;
+    if trimmed.chars().count() <= max_len {
+        return trimmed.to_string();
+    }
+    let match_idx = lower.find(query_lower).unwrap_or(0);
+    // 以匹配位置为中心按字符截取，避免按字节切分中文导致 panic。
+    let char_match = lower[..match_idx].chars().count();
+    let chars: Vec<char> = trimmed.chars().collect();
+    let start = char_match.saturating_sub(40);
+    let end = (start + max_len).min(chars.len());
+    let mut preview: String = chars[start..end].iter().collect();
+    if start > 0 {
+        preview = format!("…{preview}");
+    }
+    if end < chars.len() {
+        preview = format!("{preview}…");
+    }
+    preview
+}
+
+fn collect_workspace_search(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_files: usize,
+    max_matches_per_file: usize,
+    max_file_bytes: u64,
+) -> WorkspaceSearchResult {
+    let query_trimmed = query.trim();
+    let query_lower = query_trimmed.to_lowercase();
+    let mut matches = Vec::new();
+    let mut truncated = false;
+    let mut searched_files = 0u32;
+
+    if query_lower.is_empty() {
+        return WorkspaceSearchResult {
+            query: query_trimmed.to_string(),
+            matches,
+            truncated: false,
+            searched_files: 0,
+        };
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if matches.len() >= max_results {
+            truncated = true;
+            break;
+        }
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if is_hidden_or_ignored_name(&name) {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                dirs.push(path);
+            } else if metadata.is_file() {
+                files.push((path, metadata.len()));
+            }
+        }
+
+        // 目录先入栈，保证深度优先且相对稳定。
+        dirs.sort_by(|a, b| {
+            a.file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default()
+                .cmp(
+                    &b.file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_default(),
+                )
+        });
+        for path in dirs.into_iter().rev() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name.to_lowercase().contains(&query_lower) && matches.len() < max_results {
+                matches.push(WorkspaceSearchMatch {
+                    path: super::normalize_windows_verbatim_prefix(&path.to_string_lossy()),
+                    name: name.clone(),
+                    relative_path: relative_path_display(root, &path),
+                    kind: "name".to_string(),
+                    line: None,
+                    preview: None,
+                    is_dir: true,
+                });
+            }
+            stack.push(path);
+        }
+
+        files.sort_by(|a, b| {
+            a.0.file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default()
+                .cmp(
+                    &b.0.file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_default(),
+                )
+        });
+
+        for (path, size) in files {
+            if matches.len() >= max_results {
+                truncated = true;
+                break;
+            }
+            if searched_files as usize >= max_files {
+                truncated = true;
+                break;
+            }
+
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let abs_path = super::normalize_windows_verbatim_prefix(&path.to_string_lossy());
+            let relative = relative_path_display(root, &path);
+
+            if name.to_lowercase().contains(&query_lower) {
+                matches.push(WorkspaceSearchMatch {
+                    path: abs_path.clone(),
+                    name: name.clone(),
+                    relative_path: relative.clone(),
+                    kind: "name".to_string(),
+                    line: None,
+                    preview: None,
+                    is_dir: false,
+                });
+                if matches.len() >= max_results {
+                    truncated = true;
+                    break;
+                }
+            }
+
+            if size == 0 || size > max_file_bytes || !is_probably_text_file(&path) {
+                continue;
+            }
+
+            searched_files = searched_files.saturating_add(1);
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            if looks_binary(&bytes) {
+                continue;
+            }
+            let content = String::from_utf8_lossy(&bytes);
+            let mut file_match_count = 0usize;
+            for (idx, line) in content.lines().enumerate() {
+                if line.to_lowercase().contains(&query_lower) {
+                    matches.push(WorkspaceSearchMatch {
+                        path: abs_path.clone(),
+                        name: name.clone(),
+                        relative_path: relative.clone(),
+                        kind: "content".to_string(),
+                        line: Some((idx + 1) as u32),
+                        preview: Some(clip_preview(line, &query_lower)),
+                        is_dir: false,
+                    });
+                    file_match_count += 1;
+                    if matches.len() >= max_results {
+                        truncated = true;
+                        break;
+                    }
+                    if file_match_count >= max_matches_per_file {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    WorkspaceSearchResult {
+        query: query_trimmed.to_string(),
+        matches,
+        truncated,
+        searched_files,
+    }
+}
+
+/// 在工作区中按文件名和文件内容搜索，类似 Cursor 的内容检索。
+#[tauri::command]
+pub async fn search_workspace_files(
+    root: String,
+    query: String,
+    max_results: Option<u32>,
+) -> AppResult<WorkspaceSearchResult> {
+    let display_root = normalize_windows_verbatim_prefix(&root);
+    let root_path = PathBuf::from(&display_root);
+    if !root_path.is_dir() {
+        return Err(AppError::Custom(format!(
+            "Path is not a directory: {display_root}"
+        )));
+    }
+
+    let max_results = max_results
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_SEARCH_MAX_RESULTS)
+        .clamp(1, 500);
+
+    // 同步扫盘放到阻塞线程，避免卡住 async runtime。
+    let result = tokio::task::spawn_blocking(move || {
+        collect_workspace_search(
+            &root_path,
+            &query,
+            max_results,
+            DEFAULT_SEARCH_MAX_FILES,
+            DEFAULT_SEARCH_MAX_MATCHES_PER_FILE,
+            DEFAULT_SEARCH_MAX_FILE_BYTES,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Custom(format!("Search task failed: {e}")))?;
+
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn delete_path(
     path: String,
@@ -2679,6 +3020,55 @@ mod tests {
         assert!(resolve_workspace_web_source_path(&temp_dir, &parsed).is_none());
 
         fs::remove_file(outside_file).unwrap();
+        fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn collect_workspace_search_matches_name_and_content() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "cn_codex_search_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        fs::create_dir_all(temp_dir.join("src")).unwrap();
+        fs::write(
+            temp_dir.join("src").join("unique_search_target.rs"),
+            "fn unique_search_marker() {}\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp_dir.join("node_modules")).unwrap();
+        fs::write(
+            temp_dir.join("node_modules").join("ignored.rs"),
+            "fn unique_search_marker() {}\n",
+        )
+        .unwrap();
+
+        let result = collect_workspace_search(
+            &temp_dir,
+            "unique_search",
+            50,
+            1000,
+            5,
+            1024 * 1024,
+        );
+        assert!(result.matches.iter().any(|item| {
+            item.kind == "name" && item.name.contains("unique_search_target")
+        }));
+        assert!(result.matches.iter().any(|item| {
+            item.kind == "content"
+                && item.line == Some(1)
+                && item
+                    .preview
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("unique_search_marker")
+        }));
+        assert!(!result.matches.iter().any(|item| {
+            item.relative_path.contains("node_modules")
+        }));
+
         fs::remove_dir_all(&temp_dir).unwrap();
     }
 }
