@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { IntlProvider } from "react-intl";
 import { RunSummaryDiffWindow } from "./components/diff/RunSummaryDiffWindow";
@@ -14,6 +14,11 @@ const messages: Record<string, Record<string, string>> = {
 
 function DiffApp() {
   const locale = useSettingsStore((s) => s.locale);
+
+  useEffect(() => {
+    void initSettingsFromDb();
+  }, []);
+
   return (
     <IntlProvider
       locale={locale}
@@ -25,10 +30,8 @@ function DiffApp() {
   );
 }
 
-initSettingsFromDb().then(() => {
-  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-    <React.StrictMode>
-      <DiffApp />
-    </React.StrictMode>,
-  );
-});
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+  <React.StrictMode>
+    <DiffApp />
+  </React.StrictMode>,
+);

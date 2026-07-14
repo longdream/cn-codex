@@ -1,6 +1,7 @@
 pub mod bm25_index;
 pub mod commands;
 pub mod consolidator;
+pub mod db_query;
 pub mod extractor;
 pub mod index;
 pub mod knowledge;
@@ -8,6 +9,7 @@ pub mod okf;
 pub mod prompts;
 pub mod search;
 pub mod summarizer;
+pub mod mysql_native;
 
 use std::path::{Path, PathBuf};
 

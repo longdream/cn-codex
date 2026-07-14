@@ -252,6 +252,16 @@ fn render_smartbrain_database_prompt_for_config_dir(workspace_config_dir: &Path)
         "除非配置缺失关键字段，或实际连接/查询动作已经失败，否则不要再次向用户索要主机、端口、用户名、密码或完整连接串。"
             .to_string(),
     );
+    sections.push(
+        "数据库查询必须使用内置工具 `smartbrain_sql_query`（参数：database, sql, 可选 row_limit/timeout_sec）。\
+         不要用 Python/shell 手写连接脚本执行 SQL，也不要让用户再次提供密码；密码已保存在智脑数据库配置中。"
+            .to_string(),
+    );
+    sections.push(
+        "如果用户要求查库、看表、统计行数或验证数据，应直接调用 `smartbrain_sql_query` 并输出查询结果；\
+         不要改写为编写 Python 脚本、安装驱动或索要连接密码。"
+            .to_string(),
+    );
     sections.push(format!(
         "默认查询限制：单次最多 {} 行，超时 {} 秒。",
         settings.default_row_limit, settings.default_timeout_sec

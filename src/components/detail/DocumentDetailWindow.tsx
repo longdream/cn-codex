@@ -287,7 +287,9 @@ export function DocumentDetailWindow() {
   const [preview, setPreview] = useState<TextFilePreviewResult | null>(null);
   const [isImage, setIsImage] = useState(false);
   const [draftContent, setDraftContent] = useState("");
-  const [loading, setLoading] = useState(false);
+  // 初始即为加载中，避免窗口打开瞬间先渲染空白/等待态，再闪一下“加载中”。
+  const [loading, setLoading] = useState(true);
+  const [bootstrapped, setBootstrapped] = useState(false);
   const [saving, setSaving] = useState(false);
   const [exportingFormat, setExportingFormat] = useState<"docx" | "pdf" | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -538,6 +540,10 @@ export function DocumentDetailWindow() {
         if (cancelled) return;
         setActivePath(path ?? null);
         setPendingLine(typeof line === "number" && line > 0 ? Math.floor(line) : null);
+        setBootstrapped(true);
+        if (!path) {
+          setLoading(false);
+        }
       },
     );
     return () => {
@@ -551,10 +557,13 @@ export function DocumentDetailWindow() {
       setDraftContent("");
       setSelectionMeta(null);
       setFloatingPos(null);
+      if (bootstrapped) {
+        setLoading(false);
+      }
       return;
     }
     void loadPreview(activePath);
-  }, [activePath, loadPreview]);
+  }, [activePath, loadPreview, bootstrapped]);
 
   useEffect(() => {
     if (!pendingLine || loading || !preview || isImage || showMarkdownPreview) {
@@ -812,8 +821,8 @@ export function DocumentDetailWindow() {
       )}
 
       <div className="relative min-h-0 flex-1 p-3">
-        {loading ? (
-          <div className="flex h-full items-center justify-center text-sm text-[var(--text-faint)]">
+        {loading || !bootstrapped ? (
+          <div className="flex h-full items-center justify-center rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--surface-main)] text-sm text-[var(--text-muted)]">
             {intl.formatMessage({ id: "docDetail.loading" })}
           </div>
         ) : loadError ? (

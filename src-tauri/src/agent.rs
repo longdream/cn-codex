@@ -2460,6 +2460,7 @@ impl AgentEngine {
              - memory_write: Write durable memory only when the user explicitly asks you to remember, forget, or update durable information.\n\
              - memory_update: Replace exact text in an existing durable memory only when the user explicitly asks to update durable information.\n\
              - memory_forget: Delete memory paths or remove matching memory lines only when the user explicitly asks you to forget durable information.\n\
+             - smartbrain_search / smartbrain_sql_query: Search SmartBrain knowledge and run SQL against SmartBrain-configured databases via the built-in SQL tool (never invent Python/shell DB scripts; never re-ask saved passwords).\n\
              - mcp_list_servers: List configured MCP servers.\n\
              - mcp_status: Inspect MCP server configuration and probe tools/resources/prompts status without revealing secret env values.\n\
              - mcp_list_tools: List tools exposed by configured MCP servers.\n\

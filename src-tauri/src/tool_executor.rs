@@ -2440,6 +2440,39 @@ impl ToolExecutor {
                     }
                 }
             }));
+            tools.push(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "smartbrain_sql_query",
+                    "description": "Execute SQL against a SmartBrain-configured database using the built-in SQL runner. Uses saved connection settings (including password) and permission rules. Prefer this over Python/shell database scripts. Do not ask the user for password when the database is already configured.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "database": {
+                                "type": "string",
+                                "description": "Database display name, physical database name, or alias from SmartBrain settings. Optional when only one database is configured."
+                            },
+                            "sql": {
+                                "type": "string",
+                                "description": "A single SQL statement to execute. Prefer SELECT / SHOW / DESCRIBE for reads."
+                            },
+                            "row_limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 1000,
+                                "description": "Maximum rows to return. Defaults to SmartBrain DB settings (usually 200)."
+                            },
+                            "timeout_sec": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 120,
+                                "description": "Query timeout in seconds. Defaults to SmartBrain DB settings (usually 15)."
+                            }
+                        },
+                        "required": ["sql"]
+                    }
+                }
+            }));
         }
 
         // Recording tools
@@ -2702,6 +2735,10 @@ impl ToolExecutor {
             }
             "smartbrain_search" => {
                 self.exec_smartbrain_search(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "smartbrain_sql_query" => {
+                self.exec_smartbrain_sql_query(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "memory_write" => {
@@ -6283,6 +6320,110 @@ impl ToolExecutor {
             &output,
         );
         Ok(output)
+    }
+
+    async fn exec_smartbrain_sql_query(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            database: Option<String>,
+            sql: String,
+            #[serde(default)]
+            row_limit: Option<usize>,
+            #[serde(default)]
+            timeout_sec: Option<u64>,
+        }
+
+        let args: Args = serde_json::from_str(arguments).map_err(|e| {
+            crate::error::AppError::Custom(format!("Invalid smartbrain_sql_query args: {e}"))
+        })?;
+        let sql = args.sql.trim();
+        let database = args
+            .database
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let display = match database {
+            Some(name) => format!("{name} :: {}", truncate_output(sql, 120)),
+            None => truncate_output(sql, 160),
+        };
+        self.emit_tool_start(
+            app_handle,
+            thread_id,
+            call_id,
+            "smartbrain_sql_query",
+            &display,
+        );
+
+        if !self.smartbrain_is_active() {
+            let msg = "SmartBrain is disabled. Enable it in Settings to use smartbrain_sql_query."
+                .to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_sql_query",
+                -1,
+                &msg,
+            );
+            return Ok(msg);
+        }
+        if sql.is_empty() {
+            let msg = "Error: empty SQL".to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_sql_query",
+                -1,
+                &msg,
+            );
+            return Ok(msg);
+        }
+
+        match crate::smartbrain::db_query::execute_smartbrain_sql_query(
+            &self.workspace_config_dir,
+            database,
+            sql,
+            args.row_limit,
+            args.timeout_sec,
+        )
+        .await
+        {
+            Ok(result) => {
+                let output = truncate_output(
+                    &crate::smartbrain::db_query::format_sql_query_result(&result),
+                    24_000,
+                );
+                self.emit_tool_end(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "smartbrain_sql_query",
+                    0,
+                    &output,
+                );
+                Ok(output)
+            }
+            Err(error) => {
+                let msg = format!("smartbrain_sql_query failed: {error}");
+                self.emit_tool_end(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "smartbrain_sql_query",
+                    -1,
+                    &msg,
+                );
+                Ok(msg)
+            }
+        }
     }
 
     fn render_chunk_context_bridge(
@@ -12336,6 +12477,10 @@ mod tests {
             .filter_map(|tool| tool.get("function")?.get("name")?.as_str())
             .collect();
         assert!(enabled_names.contains(&"smartbrain_search"));
+        assert!(
+            enabled_names.contains(&"smartbrain_sql_query"),
+            "smartbrain_sql_query must be exposed when SmartBrain is enabled"
+        );
     }
 
     #[test]
