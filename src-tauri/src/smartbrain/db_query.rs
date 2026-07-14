@@ -1,6 +1,6 @@
-//! Built-in SmartBrain database SQL execution.
+//! Built-in Local Knowledge Base database SQL execution.
 //!
-//! Uses configured SmartBrain DB sources (host/user/password already stored)
+//! Uses configured Local Knowledge Base DB sources (host/user/password already stored)
 //! and executes SQL through an in-process MySQL protocol client when possible,
 //! falling back to local database CLIs / rusqlite. This keeps the agent from
 //! inventing Python connection scripts or asking for passwords.
@@ -246,7 +246,7 @@ pub fn resolve_db_source<'a>(
 
     if active.is_empty() {
         return Err(
-            "没有可用的智脑数据库配置。请先在设置 → 智脑 → 数据库中配置并启用至少一个数据源。"
+            "没有可用的本地知识库数据库配置。请先在设置 → 本地知识库 → 数据库中配置并启用至少一个数据源。"
                 .to_string(),
         );
     }
@@ -311,7 +311,7 @@ pub fn resolve_db_source<'a>(
         .collect::<Vec<_>>()
         .join(", ");
     Err(format!(
-        "未找到名为 `{raw_name}` 的智脑数据库配置。可用数据库：{names}"
+        "未找到名为 `{raw_name}` 的本地知识库数据库配置。可用数据库：{names}"
     ))
 }
 
@@ -884,7 +884,7 @@ async fn execute_mysql(
                 }
                 Err(cli_error) => Err(format!(
                     "通过内置 MySQL 协议客户端执行失败，且本机 mysql CLI 不可用。\
-                     请确认智脑数据库配置完整（host/port/database/username/password）且网络可达。\
+                     请确认本地知识库数据库配置完整（host/port/database/username/password）且网络可达。\
                      Native: {native_error}; CLI: {cli_error}"
                 )),
             }
@@ -1107,7 +1107,7 @@ pub async fn execute_smartbrain_sql_query(
 pub fn format_sql_query_result(result: &SmartbrainSqlQueryResult) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "SmartBrain SQL 查询成功\n数据库: {}\n类型: {}\n返回行数: {}{}\nSQL:\n{}\n\n",
+        "本地知识库 SQL 查询成功\n数据库: {}\n类型: {}\n返回行数: {}{}\nSQL:\n{}\n\n",
         result.database,
         result.db_type,
         result.row_count,

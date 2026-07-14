@@ -2389,7 +2389,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "smartbrain_search",
-                    "description": "Search the SmartBrain knowledge base using BM25 relevance ranking. Returns the most relevant documents (experiences and uploaded knowledge) matching the query. For chunk hits, results include bridged previous/current/next context with at least 30 lines of overlap to avoid cut-off sections.",
+                    "description": "Search the Local Knowledge Base (本地知识库) using BM25 relevance ranking. Returns the most relevant documents (experiences and uploaded knowledge) matching the query. For chunk hits, results include bridged previous/current/next context with at least 30 lines of overlap to avoid cut-off sections.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -2405,7 +2405,7 @@ impl ToolExecutor {
                             },
                             "domain": {
                                 "type": "string",
-                                "description": "Optional domain filter for SmartBrain knowledge (for example: database, backend, devops)."
+                                "description": "Optional domain filter for Local Knowledge Base knowledge (for example: database, backend, devops)."
                             },
                             "concept_type": {
                                 "type": "string",
@@ -2444,13 +2444,13 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "smartbrain_sql_query",
-                    "description": "Execute SQL against a SmartBrain-configured database using the built-in SQL runner. Uses saved connection settings (including password) and permission rules. Prefer this over Python/shell database scripts. Do not ask the user for password when the database is already configured.",
+                    "description": "Execute SQL against a Local Knowledge Base-configured database using the built-in SQL runner. Uses saved connection settings (including password) and permission rules. Prefer this over Python/shell database scripts. Do not ask the user for password when the database is already configured.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "database": {
                                 "type": "string",
-                                "description": "Database display name, physical database name, or alias from SmartBrain settings. Optional when only one database is configured."
+                                "description": "Database display name, physical database name, or alias from Local Knowledge Base settings. Optional when only one database is configured."
                             },
                             "sql": {
                                 "type": "string",
@@ -2460,13 +2460,13 @@ impl ToolExecutor {
                                 "type": "integer",
                                 "minimum": 1,
                                 "maximum": 1000,
-                                "description": "Maximum rows to return. Defaults to SmartBrain DB settings (usually 200)."
+                                "description": "Maximum rows to return. Defaults to Local Knowledge Base DB settings (usually 200)."
                             },
                             "timeout_sec": {
                                 "type": "integer",
                                 "minimum": 1,
                                 "maximum": 120,
-                                "description": "Query timeout in seconds. Defaults to SmartBrain DB settings (usually 15)."
+                                "description": "Query timeout in seconds. Defaults to Local Knowledge Base DB settings (usually 15)."
                             }
                         },
                         "required": ["sql"]
@@ -6136,7 +6136,7 @@ impl ToolExecutor {
         }
 
         if !self.smartbrain_is_active() {
-            let msg = "SmartBrain is disabled. Enable it in Settings to use smartbrain_search."
+            let msg = "Local Knowledge Base is disabled. Enable it in Settings to use smartbrain_search."
                 .to_string();
             self.emit_tool_end(
                 app_handle,
@@ -6155,7 +6155,7 @@ impl ToolExecutor {
             .map(|config| config.smartbrain_config())
             .unwrap_or_default();
         if !bm25_path.exists() {
-            let msg = "SmartBrain index is not ready yet. Upload knowledge files or run `smartbrain_rebuild_index`, then retry `smartbrain_search`.".to_string();
+            let msg = "Local Knowledge Base index is not ready yet. Upload knowledge files or run `smartbrain_rebuild_index`, then retry `smartbrain_search`.".to_string();
             self.emit_tool_end(
                 app_handle,
                 thread_id,
@@ -6168,7 +6168,7 @@ impl ToolExecutor {
         }
         let bm25 = crate::smartbrain::bm25_index::BM25Index::load(&bm25_path);
         if bm25.document_count() == 0 {
-            let msg = "SmartBrain index is empty. Upload knowledge content first, then run `smartbrain_rebuild_index` if needed.".to_string();
+            let msg = "Local Knowledge Base index is empty. Upload knowledge content first, then run `smartbrain_rebuild_index` if needed.".to_string();
             self.emit_tool_end(
                 app_handle,
                 thread_id,
@@ -6256,7 +6256,7 @@ impl ToolExecutor {
         };
 
         let output = if results.is_empty() {
-            "No matching documents found in SmartBrain knowledge base.".to_string()
+            "No matching documents found in Local Knowledge Base.".to_string()
         } else {
             let mut lines = Vec::new();
             let mut context_blocks_added = 0usize;
@@ -6362,7 +6362,7 @@ impl ToolExecutor {
         );
 
         if !self.smartbrain_is_active() {
-            let msg = "SmartBrain is disabled. Enable it in Settings to use smartbrain_sql_query."
+            let msg = "Local Knowledge Base is disabled. Enable it in Settings to use smartbrain_sql_query."
                 .to_string();
             self.emit_tool_end(
                 app_handle,
@@ -12479,7 +12479,7 @@ mod tests {
         assert!(enabled_names.contains(&"smartbrain_search"));
         assert!(
             enabled_names.contains(&"smartbrain_sql_query"),
-            "smartbrain_sql_query must be exposed when SmartBrain is enabled"
+            "smartbrain_sql_query must be exposed when Local Knowledge Base is enabled"
         );
     }
 

@@ -154,7 +154,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         setSmartbrainEnabled(true);
         setSmartbrainEnableModalOpen(false);
       } catch (err) {
-        console.error("SmartBrain toggle failed:", err);
+        console.error("Local Knowledge Base toggle failed:", err);
       } finally {
         setSmartbrainLoading(false);
       }
@@ -177,7 +177,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       });
       setSmartbrainEnabled(newValue);
     } catch (err) {
-      console.error("SmartBrain toggle failed:", err);
+      console.error("Local Knowledge Base toggle failed:", err);
     } finally {
       setSmartbrainLoading(false);
     }
@@ -521,7 +521,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 <section className="settings-card space-y-3">
                   <div className="flex items-center justify-between">
                     <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
-                      SmartBrain ({intl.formatMessage({ id: "settings.smartbrain" })})
+                      {intl.formatMessage({ id: "settings.smartbrain" })}
                     </h4>
                     <div className="flex items-center gap-3">
                       <button

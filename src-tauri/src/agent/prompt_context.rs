@@ -229,7 +229,7 @@ fn render_smartbrain_database_prompt_for_config_dir(workspace_config_dir: &Path)
 
     let mut sections = Vec::new();
     sections.push(
-        "你已经有一组通过智脑配置好的数据库连接。它们属于“智脑”上下文的一部分，不要把它们当作缺失信息。"
+        "你已经有一组通过本地知识库配置好的数据库连接。它们属于“本地知识库”上下文的一部分，不要把它们当作缺失信息。"
             .to_string(),
     );
     if !active_sources.is_empty() {
@@ -254,7 +254,7 @@ fn render_smartbrain_database_prompt_for_config_dir(workspace_config_dir: &Path)
     );
     sections.push(
         "数据库查询必须使用内置工具 `smartbrain_sql_query`（参数：database, sql, 可选 row_limit/timeout_sec）。\
-         不要用 Python/shell 手写连接脚本执行 SQL，也不要让用户再次提供密码；密码已保存在智脑数据库配置中。"
+         不要用 Python/shell 手写连接脚本执行 SQL，也不要让用户再次提供密码；密码已保存在本地知识库数据库配置中。"
             .to_string(),
     );
     sections.push(
@@ -329,8 +329,8 @@ pub(crate) fn render_smartbrain_runtime_prompt(
         String::new()
     } else {
         format!(
-            "\n\n## SmartBrain (智脑)\n\n{}\n\n\
-             When you apply knowledge from SmartBrain, note which experience, knowledge, or database configuration helped.",
+            "\n\n## Local Knowledge Base (本地知识库)\n\n{}\n\n\
+             When you apply knowledge from Local Knowledge Base, note which experience, knowledge, or database configuration helped.",
             parts.join("\n\n")
         )
     }

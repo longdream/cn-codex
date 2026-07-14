@@ -1192,7 +1192,7 @@ pub async fn smartbrain_search(
     if !sb_config.is_active() {
         return Ok(serde_json::json!({
             "results": [],
-            "error": "SmartBrain is disabled. Enable it in Settings.",
+            "error": "Local Knowledge Base is disabled. Enable it in Settings.",
         }));
     }
 

@@ -15,6 +15,7 @@ import { useIntl } from "react-intl";
 import {
   applyDatabaseNameToConnectionUri,
   createEmptySmartbrainDbSource,
+  inferDefaultPort,
   isSourceEffectivelyEnabled,
   listSmartbrainDatabases,
   loadSmartbrainDbSettings,
@@ -451,6 +452,7 @@ export function SmartbrainDatabasePanel() {
                     setDraft((prev) => ({
                       ...prev,
                       dbType: event.target.value as SmartbrainDbType,
+                      port: inferDefaultPort(event.target.value as SmartbrainDbType),
                     }))
                   }
                   className="app-select w-full"

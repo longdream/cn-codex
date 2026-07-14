@@ -890,7 +890,7 @@ export function ChatInput({
       await invoke("smartbrain_upload_knowledge", { filePath: file.sourcePath });
       setSmartBrainAdded((prev) => new Set(prev).add(index));
     } catch (err) {
-      console.error("Add to SmartBrain failed:", err);
+      console.error("Add to Local Knowledge Base failed:", err);
     }
   }, [smartBrainAdded]);
 

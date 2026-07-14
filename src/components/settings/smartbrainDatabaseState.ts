@@ -95,7 +95,7 @@ export function createEmptySmartbrainDbSource(): SmartbrainDbSource {
     password: "",
     enabled: true,
     host: "",
-    port: null,
+    port: inferDefaultPort("postgresql"),
     databaseName: "",
     username: "",
     filePath: "",
@@ -127,7 +127,7 @@ export function isSourceEffectivelyEnabled(
   return true;
 }
 
-function inferDefaultPort(dbType: SmartbrainDbType): number | null {
+export function inferDefaultPort(dbType: SmartbrainDbType): number | null {
   switch (dbType) {
     case "postgresql":
       return 5432;

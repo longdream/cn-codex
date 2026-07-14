@@ -6,6 +6,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import {
   applyDatabaseNameToConnectionUri,
+  createEmptySmartbrainDbSource,
+  inferDefaultPort,
   mergeSmartbrainDbParsedFields,
   parseSmartbrainConnectionUriLocally,
 } from "../components/settings/smartbrainDatabaseState";
@@ -85,5 +87,13 @@ describe("smartbrainDatabaseState", () => {
       "new_db",
     );
     expect(kv.toLowerCase()).toContain("database=new_db");
+  });
+
+  it("infers default ports by database type", () => {
+    expect(inferDefaultPort("postgresql")).toBe(5432);
+    expect(inferDefaultPort("mysql")).toBe(3306);
+    expect(inferDefaultPort("sqlserver")).toBe(1433);
+    expect(inferDefaultPort("sqlite")).toBeNull();
+    expect(createEmptySmartbrainDbSource().port).toBe(5432);
   });
 });

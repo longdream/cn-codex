@@ -5,7 +5,7 @@ use serde::Deserialize;
 const MAX_TRANSCRIPT_CHARS: usize = 60_000;
 
 pub const EXTRACTION_SYSTEM_PROMPT: &str = "\
-You are an experience extraction system. Analyze the following session transcript between a user and an AI coding assistant. Extract only long-term, stable experience that will remain useful in future sessions when SmartBrain is enabled.
+You are an experience extraction system. Analyze the following session transcript between a user and an AI coding assistant. Extract only long-term, stable experience that will remain useful in future sessions when Local Knowledge Base is enabled.
 
 Output a structured markdown document with these sections (omit empty sections):
 

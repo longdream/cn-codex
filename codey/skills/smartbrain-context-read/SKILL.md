@@ -1,9 +1,9 @@
 ---
 name: smartbrain-context-read
-description: SmartBrain 检索命中后的连续上下文读取规范，要求上下章节补齐并保持最少 30 行 overlap，避免断章。
+description: 本地知识库检索命中后的连续上下文读取规范，要求上下章节补齐并保持最少 30 行 overlap，避免断章。
 ---
 
-# SmartBrain 连续上下文读取
+# 本地知识库 连续上下文读取
 
 当任务涉及知识库召回、文档问答、基于 chunk 的精确引用时，必须使用本技能流程，避免只读取单个截断片段。
 
