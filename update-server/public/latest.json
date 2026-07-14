@@ -1,8 +1,8 @@
 {
-  "version": "1.0.0",
-  "url": "http://47.113.221.244:5005/files/CN-Codex-1.0.0.zip",
+  "version": "1.0.1",
+  "url": "http://47.113.221.244:5005/files/CN-Codex-1.0.1.zip",
   "sha256": "6c9f19ac07769d9ca63a932c8c02d7485fde9971c4d5898aa6a085cb3799c441",
-  "notes": "CN-Codex 1.0.0",
+  "notes": "CN-Codex 1.0.1",
   "force": false,
   "publishedAt": "2026-07-13T13:27:23Z",
   "packageType": "zip"

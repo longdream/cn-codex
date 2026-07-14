@@ -46,7 +46,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [rulesLoaded, setRulesLoaded] = useState(false);
   const [rulesSaving, setRulesSaving] = useState(false);
   const [rulesSaved, setRulesSaved] = useState(false);
-  const [appVersion, setAppVersion] = useState("1.0.0");
+  const [appVersion, setAppVersion] = useState("—");
 
   const fortuneEnabled = useSettingsStore((state) => state.fortuneEnabled);
   const setFortuneEnabled = useSettingsStore((state) => state.setFortuneEnabled);

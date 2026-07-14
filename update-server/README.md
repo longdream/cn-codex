@@ -78,7 +78,7 @@ systemctl status cn-codex-update.service
 
 ```powershell
 scp build\update-artifacts\update-upload\latest.json root@47.113.221.244:/opt/cn-codex-update/public/latest.json
-scp build\update-artifacts\update-upload\files\CN-Codex-1.0.0.zip root@47.113.221.244:/opt/cn-codex-update/public/files/
+scp build\update-artifacts\update-upload\files\CN-Codex-1.0.1.zip root@47.113.221.244:/opt/cn-codex-update/public/files/
 ```
 
 规则：

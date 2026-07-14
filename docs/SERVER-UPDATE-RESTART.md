@@ -93,18 +93,18 @@ build/update-artifacts/update-upload/
   files/CN-Codex-<version>.zip
 ```
 
-例如当前 1.0.0：
+例如当前 1.0.1：
 
 ```text
 build/update-artifacts/update-upload/latest.json
-build/update-artifacts/update-upload/files/CN-Codex-1.0.0.zip
+build/update-artifacts/update-upload/files/CN-Codex-1.0.1.zip
 ```
 
 对应服务器目录：
 
 ```text
 /opt/cn-codex-update/public/latest.json
-/opt/cn-codex-update/public/files/CN-Codex-1.0.0.zip
+/opt/cn-codex-update/public/files/CN-Codex-1.0.1.zip
 ```
 
 ---
@@ -121,7 +121,7 @@ cd D:\rustwork\cn-codex
 
 # 2) 上传 latest.json + 更新包
 scp build\update-artifacts\update-upload\latest.json root@47.113.221.244:/opt/cn-codex-update/public/latest.json
-scp build\update-artifacts\update-upload\files\CN-Codex-1.0.0.zip root@47.113.221.244:/opt/cn-codex-update/public/files/
+scp build\update-artifacts\update-upload\files\CN-Codex-1.0.1.zip root@47.113.221.244:/opt/cn-codex-update/public/files/
 ```
 
 如果本机没有 `scp`，可用 WinSCP / FinalShell / 宝塔面板，把这两个文件拖到对应目录。
@@ -153,10 +153,10 @@ vi /opt/cn-codex-update/public/latest.json
 
 ```json
 {
-  "version": "1.0.0",
-  "url": "http://47.113.221.244:5005/files/CN-Codex-1.0.0.zip",
+  "version": "1.0.1",
+  "url": "http://47.113.221.244:5005/files/CN-Codex-1.0.1.zip",
   "sha256": "6c9f19ac07769d9ca63a932c8c02d7485fde9971c4d5898aa6a085cb3799c441",
-  "notes": "CN-Codex 1.0.0",
+  "notes": "CN-Codex 1.0.1",
   "force": false,
   "publishedAt": "2026-07-13T13:27:23Z",
   "packageType": "zip"
@@ -176,7 +176,7 @@ vi /opt/cn-codex-update/public/latest.json
 
 ```bash
 curl http://47.113.221.244:5005/latest.json
-curl -I http://47.113.221.244:5005/files/CN-Codex-1.0.0.zip
+curl -I http://47.113.221.244:5005/files/CN-Codex-1.0.1.zip
 curl http://47.113.221.244:5005/healthz
 ```
 
@@ -380,32 +380,32 @@ scripts\release-portable.bat
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\prepare-update-artifacts.ps1 `
-  -Version 1.0.0 `
+  -Version 1.0.1 `
   -OutDir .\build\update-artifacts `
   -PortableDir .\build\你的便携目录 `
   -BaseUrl http://47.113.221.244:5005 `
-  -Notes "CN-Codex 1.0.0"
+  -Notes "CN-Codex 1.0.1"
 ```
 
 成功后应看到：
 
 ```text
 build/update-artifacts/update-upload/latest.json
-build/update-artifacts/update-upload/files/CN-Codex-1.0.0.zip
+build/update-artifacts/update-upload/files/CN-Codex-1.0.1.zip
 ```
 
 ### 步骤 2：上传到服务器
 
 ```powershell
 scp build\update-artifacts\update-upload\latest.json root@47.113.221.244:/opt/cn-codex-update/public/latest.json
-scp build\update-artifacts\update-upload\files\CN-Codex-1.0.0.zip root@47.113.221.244:/opt/cn-codex-update/public/files/
+scp build\update-artifacts\update-upload\files\CN-Codex-1.0.1.zip root@47.113.221.244:/opt/cn-codex-update/public/files/
 ```
 
 ### 步骤 3：线上验证
 
 ```bash
 curl http://47.113.221.244:5005/latest.json
-curl -I http://47.113.221.244:5005/files/CN-Codex-1.0.0.zip
+curl -I http://47.113.221.244:5005/files/CN-Codex-1.0.1.zip
 ```
 
 ### 步骤 4：客户端验证
@@ -509,11 +509,11 @@ iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
 ```powershell
 cd D:\rustwork\cn-codex
 scp build\update-artifacts\update-upload\latest.json root@47.113.221.244:/opt/cn-codex-update/public/latest.json
-scp build\update-artifacts\update-upload\files\CN-Codex-1.0.0.zip root@47.113.221.244:/opt/cn-codex-update/public/files/
+scp build\update-artifacts\update-upload\files\CN-Codex-1.0.1.zip root@47.113.221.244:/opt/cn-codex-update/public/files/
 curl http://47.113.221.244:5005/latest.json
 ```
 
-若 `curl` 已显示 `1.0.0`，说明更新成功，**不需要重启服务**。
+若 `curl` 已显示 `1.0.1`，说明更新成功，**不需要重启服务**。
 
 ### Q6. 我明明改了 `/www/wwwroot/cn-codex-update-server`，为什么还是旧的？
 

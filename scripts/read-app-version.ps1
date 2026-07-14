@@ -1,16 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$tauriConf = Join-Path $root "src-tauri\tauri.conf.json"
 $cargoToml = Join-Path $root "src-tauri\Cargo.toml"
-
-if (Test-Path -LiteralPath $tauriConf) {
-    $json = Get-Content -LiteralPath $tauriConf -Raw | ConvertFrom-Json
-    if ($json.version) {
-        Write-Output ([string]$json.version).Trim()
-        exit 0
-    }
-}
 
 if (Test-Path -LiteralPath $cargoToml) {
     $match = Select-String -Path $cargoToml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
@@ -20,4 +11,4 @@ if (Test-Path -LiteralPath $cargoToml) {
     }
 }
 
-throw "Unable to resolve app version from tauri.conf.json / Cargo.toml"
+throw "Unable to resolve app version from src-tauri/Cargo.toml (single source of truth)"

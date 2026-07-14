@@ -164,6 +164,20 @@ AI 自动创建专业角色，绑定技能和工作流节点，实现自动化�
 
 ---
 
+## 版本号维护
+
+应用版本只在一处维护：
+
+- **唯一来源**：`src-tauri/Cargo.toml` 的 `version`
+- 当前版本：`1.0.1`
+- 发布脚本通过 `scripts/read-app-version.ps1` 自动读取该字段
+- 前端设置页通过 Tauri `getVersion()` 读取运行时版本（来自 Cargo 包版本）
+- 自动更新检查使用 `env!("CARGO_PKG_VERSION")`
+
+以后升级版本时，只需修改 `src-tauri/Cargo.toml`，然后重新构建/发布即可。
+
+---
+
 ## 文档与链接
 
 - [下载最新版本](https://github.com/longdream/cn-codex/releases) — 免安装，解压即用
