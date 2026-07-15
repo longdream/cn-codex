@@ -198,6 +198,35 @@ export async function standaloneThreadGoalClear(
   return invoke("standalone_thread_goal_clear", { threadId });
 }
 
+export interface StandaloneChatOverrides {
+  provider?: StandaloneChatProviderOverride | null;
+  smartbrainEnabled?: boolean | null;
+}
+
+/** 仅本对话生效的供应商/模型覆盖快照（不写全局 config.toml） */
+export interface StandaloneChatProviderOverride {
+  providerKey: string;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+  wireApi?: string | null;
+  requiresOpenAIAuth?: boolean | null;
+  modelId?: string | null;
+  modelContextWindow?: number | null;
+  maxOutputTokens?: number | null;
+  modelSupportsVision?: boolean | null;
+  visionFallbackKind?: string | null;
+  visionFallbackProvider?: string | null;
+  visionFallbackModel?: string | null;
+  modelEndpoints?: Array<{
+    url: string;
+    label?: string;
+    model?: string;
+    apiKey?: string;
+    wireApi?: string;
+  }> | null;
+  activeEndpointIndex?: number | null;
+}
+
 export async function standaloneChat(
   threadId: string,
   message: string,
@@ -206,6 +235,7 @@ export async function standaloneChat(
   attachments?: BinaryAttachedFile[],
   goalBudgetTokens?: number,
   robotId?: string,
+  overrides?: StandaloneChatOverrides,
 ): Promise<{ status: string }> {
   return invoke("standalone_chat", {
     threadId,
@@ -215,6 +245,8 @@ export async function standaloneChat(
     attachments,
     goalBudgetTokens,
     robotId,
+    provider: overrides?.provider ?? null,
+    smartbrainEnabled: overrides?.smartbrainEnabled ?? null,
   });
 }
 

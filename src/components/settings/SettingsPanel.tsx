@@ -1,4 +1,4 @@
-import { IconBrain, IconExternalLink, IconLoader2, IconX } from "@tabler/icons-react";
+import { IconExternalLink, IconX } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { getVersion } from "@tauri-apps/api/app";
@@ -39,9 +39,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [webServerLoading, setWebServerLoading] = useState(false);
   const [relayServerUrl, setRelayServerUrl] = useState("");
   const [relaySaving, setRelaySaving] = useState(false);
-  const [smartbrainEnabled, setSmartbrainEnabled] = useState(false);
-  const [smartbrainLoading, setSmartbrainLoading] = useState(false);
-  const [smartbrainEnableModalOpen, setSmartbrainEnableModalOpen] = useState(false);
   const [rulesContent, setRulesContent] = useState("");
   const [rulesLoaded, setRulesLoaded] = useState(false);
   const [rulesSaving, setRulesSaving] = useState(false);
@@ -110,9 +107,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       if (result?.config?.relay_server_url) {
         setRelayServerUrl(normalizeRelayServerUrl(result.config.relay_server_url));
       }
-      if (result?.config?.smartbrain?.enabled !== undefined) {
-        setSmartbrainEnabled(result.config.smartbrain.enabled);
-      }
     }).catch(() => {});
   }, [normalizeRelayServerUrl]);
 
@@ -142,46 +136,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       setWebServerLoading(false);
     }
   }, [webServerEnabled, webServerLoading]);
-
-  const enableSmartbrain = useCallback(
-    async (extractAllHistory: boolean) => {
-      if (smartbrainLoading) return;
-      setSmartbrainLoading(true);
-      try {
-        await invoke("standalone_smartbrain_enable", {
-          extractAllHistory,
-        });
-        setSmartbrainEnabled(true);
-        setSmartbrainEnableModalOpen(false);
-      } catch (err) {
-        console.error("Local Knowledge Base toggle failed:", err);
-      } finally {
-        setSmartbrainLoading(false);
-      }
-    },
-    [smartbrainLoading],
-  );
-
-  const handleSmartbrainToggle = useCallback(async () => {
-    if (smartbrainLoading) return;
-    const newValue = !smartbrainEnabled;
-    if (newValue) {
-      setSmartbrainEnableModalOpen(true);
-      return;
-    }
-
-    setSmartbrainLoading(true);
-    try {
-      await invoke("standalone_config_write", {
-        edits: [{ keyPath: "smartbrain.enabled", value: newValue }],
-      });
-      setSmartbrainEnabled(newValue);
-    } catch (err) {
-      console.error("Local Knowledge Base toggle failed:", err);
-    } finally {
-      setSmartbrainLoading(false);
-    }
-  }, [smartbrainEnabled, smartbrainLoading]);
 
   useEffect(() => {
     if (tab === "rules" && !rulesLoaded) {
@@ -523,31 +477,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     <h4 className="text-[13px] font-semibold text-[var(--text-strong)]">
                       {intl.formatMessage({ id: "settings.smartbrain" })}
                     </h4>
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={handleSmartbrainToggle}
-                        disabled={smartbrainLoading}
-                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
-                          smartbrainEnabled ? "bg-[var(--accent)]" : "bg-[var(--border-subtle)]"
-                        } ${smartbrainLoading ? "opacity-50" : ""}`}
-                      >
-                        <span
-                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
-                            smartbrainEnabled ? "translate-x-[18px]" : "translate-x-[3px]"
-                          }`}
-                        />
-                      </button>
-                      <span className="text-xs text-[var(--text-muted)]">
-                        {smartbrainLoading
-                          ? "..."
-                          : smartbrainEnabled
-                            ? intl.formatMessage({ id: "settings.smartbrain.enabled" })
-                            : intl.formatMessage({ id: "settings.smartbrain.disabled" })}
-                      </span>
-                    </div>
+                    <span className="rounded-full bg-[var(--surface-soft)] px-2 py-1 text-[10px] text-[var(--text-faint)]">
+                      {intl.formatMessage({ id: "settings.smartbrain.dialogScoped" })}
+                    </span>
                   </div>
                   <p className="text-xs text-[var(--text-faint)]">
-                    {intl.formatMessage({ id: "settings.smartbrain.toggle.description" })}
+                    {intl.formatMessage({ id: "settings.smartbrain.toggle.dialogOnly" })}
                   </p>
                 </section>
 
@@ -789,7 +724,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             {tab === "skill-lab" && <SkillLabPanel />}
             {tab === "robots" && <RobotsPanel />}
             {tab === "workflows" && <WorkflowsPanel />}
-            {tab === "smartbrain" && <SmartbrainPanel enabled={smartbrainEnabled} />}
+            {tab === "smartbrain" && <SmartbrainPanel />}
             {tab === "rules" && (
               <div className="space-y-5">
                 <section className="settings-card space-y-3">
@@ -827,74 +762,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           </div>
         </section>
       </div>
-
-      {smartbrainEnableModalOpen && (
-        <div className="fixed bottom-0 left-0 right-0 top-8 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
-          <div className="app-shell-panel w-full max-w-[560px] overflow-hidden">
-            <div className="flex items-center gap-3 border-b border-[var(--border-subtle)] px-5 py-4">
-              <div className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent-soft)] text-[var(--accent)]">
-                <IconBrain size={16} stroke={1.9} />
-              </div>
-              <div>
-                <h4 className="text-sm font-semibold text-[var(--text-strong)]">
-                  {intl.formatMessage({ id: "settings.smartbrain.enableModal.title" })}
-                </h4>
-                <p className="text-[11px] text-[var(--text-faint)]">
-                  {intl.formatMessage({ id: "settings.smartbrain.enableModal.subtitle" })}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!smartbrainLoading) setSmartbrainEnableModalOpen(false);
-                }}
-                disabled={smartbrainLoading}
-                className="ml-auto icon-button"
-                aria-label={intl.formatMessage({ id: "common.close" })}
-              >
-                <IconX size={15} stroke={1.9} />
-              </button>
-            </div>
-
-            <div className="space-y-3 px-5 py-4">
-              <p className="text-xs leading-6 text-[var(--text-muted)]">
-                {intl.formatMessage({ id: "settings.smartbrain.enableModal.description" })}
-              </p>
-              <div className="rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--surface-contrast)] px-3 py-2 text-[11px] text-[var(--text-faint)]">
-                {intl.formatMessage({ id: "settings.smartbrain.enableModal.note" })}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 border-t border-[var(--border-subtle)] px-5 py-3">
-              <button
-                type="button"
-                onClick={() => setSmartbrainEnableModalOpen(false)}
-                disabled={smartbrainLoading}
-                className="app-button-secondary text-xs"
-              >
-                {intl.formatMessage({ id: "common.cancel" })}
-              </button>
-              <button
-                type="button"
-                onClick={() => void enableSmartbrain(false)}
-                disabled={smartbrainLoading}
-                className="app-button-secondary flex items-center gap-1.5 text-xs"
-              >
-                {smartbrainLoading && <IconLoader2 size={12} className="animate-spin" />}
-                {intl.formatMessage({ id: "settings.smartbrain.enableModal.futureOnly" })}
-              </button>
-              <button
-                type="button"
-                onClick={() => void enableSmartbrain(true)}
-                disabled={smartbrainLoading}
-                className="rounded-lg bg-[var(--accent-strong)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
-              >
-                {intl.formatMessage({ id: "settings.smartbrain.enableModal.extractAll" })}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

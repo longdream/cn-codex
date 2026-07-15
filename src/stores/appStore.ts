@@ -217,6 +217,12 @@ export interface ThreadRuntimeState {
   browserCanGoForward: boolean;
   browserActive: boolean;
   browserDetached: boolean;
+  /** 本对话覆盖的供应商 ID；null 表示继承全局 activeProviderId */
+  overrideProviderId: string | null;
+  /** 本对话覆盖的模型 ID；null 表示继承全局 */
+  overrideModelId: string | null;
+  /** 本对话是否启用本地知识库 */
+  smartbrainEnabled: boolean;
   updatedAt: number;
 }
 
@@ -248,6 +254,9 @@ function createDefaultThreadRuntimeState(): ThreadRuntimeState {
     browserCanGoForward: false,
     browserActive: false,
     browserDetached: false,
+    overrideProviderId: null,
+    overrideModelId: null,
+    smartbrainEnabled: false,
     updatedAt: Date.now(),
   };
 }
@@ -919,11 +928,19 @@ const AUTO_APPROVE_KEY = "auto-approve";
 const IMAGE_GENERATION_SETTINGS_KEY = "image-generation-settings";
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const RIGHT_PANEL_WIDTH_KEY = "right-panel-width";
+const THREAD_PREFERENCES_KEY = "thread-preferences";
 
 type PersistedProviderRecord = Omit<ProviderConfig, "models"> & {
   models?: Array<Partial<ProviderModel>>;
   maxOutputTokens?: unknown;
 };
+
+/** 跨会话持久化的对话级偏好（模型覆盖 + 本地知识库开关） */
+export interface ThreadPreference {
+  overrideProviderId?: string | null;
+  overrideModelId?: string | null;
+  smartbrainEnabled?: boolean;
+}
 
 function normalizePositiveInt(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -1057,6 +1074,84 @@ function buildLocalPoolModelEndpoints(
       wire_api: ep.wireApi?.trim() || undefined,
     }))
     .filter((ep) => ep.url.length > 0 && ep.model.length > 0);
+}
+
+function buildThreadChatProviderOverrideSnapshot(
+  providers: ProviderConfig[],
+  overrideProviderId: string | null | undefined,
+  overrideModelId: string | null | undefined,
+): {
+  providerKey: string;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+  wireApi?: string | null;
+  requiresOpenAIAuth?: boolean | null;
+  modelId?: string | null;
+  modelContextWindow?: number | null;
+  maxOutputTokens?: number | null;
+  modelSupportsVision?: boolean | null;
+  visionFallbackKind?: string | null;
+  visionFallbackProvider?: string | null;
+  visionFallbackModel?: string | null;
+  modelEndpoints?: Array<{
+    url: string;
+    label?: string;
+    model?: string;
+    apiKey?: string;
+    wireApi?: string;
+  }> | null;
+  activeEndpointIndex?: number | null;
+} | null {
+  const providerId = overrideProviderId?.trim() || null;
+  const modelId = overrideModelId?.trim() || null;
+  if (!providerId && !modelId) {
+    return null;
+  }
+
+  const provider = providerId
+    ? providers.find((item) => item.id === providerId || item.type === providerId) ?? null
+    : null;
+  if (!provider) {
+    // 没有找到供应商实例时，至少把模型名传下去，避免完全失效。
+    return modelId
+      ? {
+          providerKey: providerId || "custom",
+          modelId,
+        }
+      : null;
+  }
+
+  const selectedModel = modelId
+    ? provider.models.find((model) => model.id === modelId) ?? null
+    : provider.models[0] ?? null;
+  const modelEndpoints = buildLocalPoolModelEndpoints(provider, selectedModel);
+  const visionFallback = resolveVisionFallbackConfig(selectedModel, providers);
+  const providerKey = provider.type || provider.id || "custom";
+
+  return {
+    providerKey,
+    baseUrl: provider.baseUrl || null,
+    apiKey: provider.apiKey || null,
+    wireApi: provider.wireApi || "chat",
+    requiresOpenAIAuth: provider.requiresOpenAIAuth,
+    modelId: selectedModel?.id ?? modelId,
+    modelContextWindow: modelContextLengthOrDefault(selectedModel),
+    maxOutputTokens: modelMaxOutputTokensOrDefault(selectedModel),
+    modelSupportsVision: visionFallback.modelSupportsVision,
+    visionFallbackKind: visionFallback.fallbackKind,
+    visionFallbackProvider: visionFallback.fallbackProviderKey,
+    visionFallbackModel: visionFallback.fallbackModelId,
+    modelEndpoints: modelEndpoints.length > 0
+      ? modelEndpoints.map((endpoint) => ({
+          url: endpoint.url,
+          label: endpoint.label,
+          model: endpoint.model,
+          apiKey: endpoint.api_key,
+          wireApi: endpoint.wire_api,
+        }))
+      : [],
+    activeEndpointIndex: modelEndpoints.length > 0 ? 0 : null,
+  };
 }
 
 function resolveVisionFallbackConfig(
@@ -1344,6 +1439,44 @@ function saveActiveModelId(id: string | null) {
   }
 }
 
+function saveThreadPreferences(map: Record<string, ThreadPreference>) {
+  void appStateSet(THREAD_PREFERENCES_KEY, JSON.stringify(map));
+}
+
+function readThreadPreference(
+  map: Record<string, ThreadPreference>,
+  threadId: string | null | undefined,
+): ThreadPreference {
+  if (!threadId) {
+    return {};
+  }
+  return map[threadId] ?? {};
+}
+
+function buildThreadPreferencePatch(
+  existing: ThreadPreference | undefined,
+  patch: ThreadPreference,
+): ThreadPreference | null {
+  const next: ThreadPreference = {
+    overrideProviderId:
+      patch.overrideProviderId !== undefined
+        ? patch.overrideProviderId
+        : (existing?.overrideProviderId ?? null),
+    overrideModelId:
+      patch.overrideModelId !== undefined
+        ? patch.overrideModelId
+        : (existing?.overrideModelId ?? null),
+    smartbrainEnabled:
+      patch.smartbrainEnabled !== undefined
+        ? patch.smartbrainEnabled
+        : (existing?.smartbrainEnabled ?? false),
+  };
+  const isEmpty =
+    !next.overrideProviderId &&
+    !next.overrideModelId &&
+    !next.smartbrainEnabled;
+  return isEmpty ? null : next;
+}
 
 function saveProjects(projects: Project[]) {
   void appStateSet(PROJECTS_KEY, JSON.stringify(projects));
@@ -1455,6 +1588,14 @@ interface AppState {
   browserSyncTrigger: number;
   browserActive: boolean;
   browserDetached: boolean;
+  /** 本对话覆盖的供应商 ID；null 表示继承全局 */
+  overrideProviderId: string | null;
+  /** 本对话覆盖的模型 ID；null 表示继承全局 */
+  overrideModelId: string | null;
+  /** 本对话是否启用本地知识库 */
+  smartbrainEnabled: boolean;
+  /** 各对话持久化偏好，key 为 threadId */
+  threadPreferences: Record<string, ThreadPreference>;
   autoApprove: boolean;
   sidebarTab: SidebarTab;
 
@@ -1571,6 +1712,12 @@ interface AppState {
   setSelectedRobotId: (id: string | null) => void;
   setRobotCreateMode: (v: boolean) => void;
   setWorkflowExtractThreadId: (id: string | null) => void;
+  setThreadModelOverride: (providerId: string | null, modelId: string | null) => void;
+  setThreadSmartbrainEnabled: (enabled: boolean) => void;
+  buildThreadChatProviderOverride: (
+    providerId?: string | null,
+    modelId?: string | null,
+  ) => ReturnType<typeof buildThreadChatProviderOverrideSnapshot>;
   setSmartbrainExtractionStatus: (state: Partial<{
     running: boolean;
     label: string | null;
@@ -1670,6 +1817,9 @@ function assembleRuntimeStateFromStore(
     | "browserCanGoForward"
     | "browserActive"
     | "browserDetached"
+    | "overrideProviderId"
+    | "overrideModelId"
+    | "smartbrainEnabled"
   >,
 ): ThreadRuntimeState {
   return {
@@ -1696,6 +1846,9 @@ function assembleRuntimeStateFromStore(
     browserCanGoForward: state.browserCanGoForward,
     browserActive: state.browserActive,
     browserDetached: state.browserDetached,
+    overrideProviderId: state.overrideProviderId,
+    overrideModelId: state.overrideModelId,
+    smartbrainEnabled: state.smartbrainEnabled,
     updatedAt: Date.now(),
   };
 }
@@ -1788,6 +1941,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   browserSyncTrigger: 0,
   browserActive: false,
   browserDetached: false,
+  overrideProviderId: null,
+  overrideModelId: null,
+  smartbrainEnabled: false,
+  threadPreferences: {},
 
   setInitialized: (v) => set({ initialized: v }),
   setInitError: (err) => set({ initError: err }),
@@ -1802,6 +1959,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     // 未命中缓存：重置为干净的初始状态（新线程或首次打开）。
+    const pref = readThreadPreference(get().threadPreferences, id);
     set({
       currentThreadId: id,
       messages: [],
@@ -1825,9 +1983,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       browserCanGoForward: false,
       browserActive: false,
       browserDetached: false,
+      overrideProviderId: pref.overrideProviderId ?? null,
+      overrideModelId: pref.overrideModelId ?? null,
+      smartbrainEnabled: pref.smartbrainEnabled ?? false,
     });
   },
   startNewThreadWithMessage: (threadId, message) => {
+    // 新会话首条消息：若用户在“空白对话”里已选了供应商/模型/知识库，
+    // 需要把当前 UI 覆盖迁移到新 threadId，避免被空 pref 清掉。
+    const state = get();
+    const nextPrefs = { ...state.threadPreferences };
+    const existingPref = readThreadPreference(nextPrefs, threadId);
+    const draftPref = buildThreadPreferencePatch(existingPref, {
+      overrideProviderId: state.overrideProviderId,
+      overrideModelId: state.overrideModelId,
+      smartbrainEnabled: state.smartbrainEnabled,
+    });
+    if (draftPref) {
+      nextPrefs[threadId] = draftPref;
+      saveThreadPreferences(nextPrefs);
+    } else if (nextPrefs[threadId]) {
+      delete nextPrefs[threadId];
+      saveThreadPreferences(nextPrefs);
+    }
+    const pref = readThreadPreference(nextPrefs, threadId);
     set({
       currentThreadId: threadId,
       messages: [message],
@@ -1848,6 +2027,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       browserCanGoForward: false,
       browserActive: false,
       browserDetached: false,
+      overrideProviderId: pref.overrideProviderId ?? null,
+      overrideModelId: pref.overrideModelId ?? null,
+      smartbrainEnabled: pref.smartbrainEnabled ?? false,
+      threadPreferences: nextPrefs,
     });
   },
   setCurrentTurnId: (id) => set({ currentTurnId: id }),
@@ -1940,6 +2123,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       browserCanGoForward: false,
       browserActive: false,
       browserDetached: false,
+      overrideProviderId: null,
+      overrideModelId: null,
+      smartbrainEnabled: false,
     });
     return id;
   },
@@ -1974,6 +2160,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       browserCanGoForward: false,
       browserActive: false,
       browserDetached: false,
+      overrideProviderId: null,
+      overrideModelId: null,
+      smartbrainEnabled: false,
     });
   },
 
@@ -2006,6 +2195,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       browserCanGoForward: false,
       browserActive: false,
       browserDetached: false,
+      overrideProviderId: null,
+      overrideModelId: null,
+      smartbrainEnabled: false,
     });
   },
 
@@ -2050,6 +2242,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             activePlan: null,
             pendingMessageQueue: [],
             pendingFileReviews: {},
+            overrideProviderId: null,
+            overrideModelId: null,
+            smartbrainEnabled: false,
           }
         : {}),
     });
@@ -2640,6 +2835,67 @@ export const useAppStore = create<AppState>((set, get) => ({
   setWorkflowExtractThreadId: (id) => {
     set({ workflowExtractThreadId: id });
   },
+  setThreadModelOverride: (providerId, modelId) => {
+    const state = get();
+    const threadId = state.currentThreadId;
+    const nextPrefs = { ...state.threadPreferences };
+    if (threadId) {
+      const nextPref = buildThreadPreferencePatch(nextPrefs[threadId], {
+        overrideProviderId: providerId,
+        overrideModelId: modelId,
+      });
+      if (nextPref) {
+        nextPrefs[threadId] = nextPref;
+      } else {
+        delete nextPrefs[threadId];
+      }
+      saveThreadPreferences(nextPrefs);
+    }
+    set({
+      overrideProviderId: providerId,
+      overrideModelId: modelId,
+      threadPreferences: nextPrefs,
+    });
+    if (threadId) {
+      get().applyToThread(threadId, () => ({
+        overrideProviderId: providerId,
+        overrideModelId: modelId,
+      }));
+    }
+  },
+  setThreadSmartbrainEnabled: (enabled) => {
+    const state = get();
+    const threadId = state.currentThreadId;
+    const nextPrefs = { ...state.threadPreferences };
+    if (threadId) {
+      const nextPref = buildThreadPreferencePatch(nextPrefs[threadId], {
+        smartbrainEnabled: enabled,
+      });
+      if (nextPref) {
+        nextPrefs[threadId] = nextPref;
+      } else {
+        delete nextPrefs[threadId];
+      }
+      saveThreadPreferences(nextPrefs);
+    }
+    set({
+      smartbrainEnabled: enabled,
+      threadPreferences: nextPrefs,
+    });
+    if (threadId) {
+      get().applyToThread(threadId, () => ({
+        smartbrainEnabled: enabled,
+      }));
+    }
+  },
+  buildThreadChatProviderOverride: (providerId, modelId) => {
+    const state = get();
+    return buildThreadChatProviderOverrideSnapshot(
+      state.providers,
+      providerId ?? state.overrideProviderId,
+      modelId ?? state.overrideModelId,
+    );
+  },
   setSmartbrainExtractionStatus: (state) =>
     set({
       ...(state.running !== undefined
@@ -2701,6 +2957,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           robotCreateMode: false,
           pendingMessageQueue: [],
           pendingFileReviews: {},
+          // 新对话默认继承全局供应商/模型，本地知识库默认关闭。
+          overrideProviderId: null,
+          overrideModelId: null,
+          smartbrainEnabled: false,
         });
         const newThread: ThreadSummary = {
           id: threadId,
@@ -2790,6 +3050,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
       });
 
+      const pref = readThreadPreference(get().threadPreferences, threadId);
       set({
         currentThreadId: threadId,
         currentTurnId: null,
@@ -2812,6 +3073,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         browserCanGoForward: false,
         browserActive: false,
         browserDetached: false,
+        overrideProviderId: pref.overrideProviderId ?? null,
+        overrideModelId: pref.overrideModelId ?? null,
+        smartbrainEnabled: pref.smartbrainEnabled ?? false,
       });
       if (rawThread?.id) {
         set((state) => {
@@ -2872,6 +3136,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   restoreThreadRuntimeState: (threadId) => {
     const saved = get().threadRuntimeStates[threadId];
     if (!saved) return false;
+    const pref = readThreadPreference(get().threadPreferences, threadId);
     set({
       messages: saved.messages,
       streamingText: saved.streamingText,
@@ -2895,6 +3160,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       browserCanGoForward: saved.browserCanGoForward,
       browserActive: saved.browserActive,
       browserDetached: saved.browserDetached,
+      overrideProviderId: saved.overrideProviderId ?? pref.overrideProviderId ?? null,
+      overrideModelId: saved.overrideModelId ?? pref.overrideModelId ?? null,
+      smartbrainEnabled: saved.smartbrainEnabled ?? pref.smartbrainEnabled ?? false,
     });
     return true;
   },
@@ -3195,6 +3463,7 @@ export async function initStoreFromDb(): Promise<void> {
   let imageGenerationSettings = normalizeImageGenerationSettings();
   let currentProjectId: string | null = null;
   let workspaceCwd: string | null = null;
+  let threadPreferences: Record<string, ThreadPreference> = {};
 
   try {
     if (all[PROJECTS_KEY]) projects = JSON.parse(all[PROJECTS_KEY]) as Project[];
@@ -3270,6 +3539,12 @@ export async function initStoreFromDb(): Promise<void> {
     }
   } catch { /* ignore */ }
 
+  try {
+    if (all[THREAD_PREFERENCES_KEY]) {
+      threadPreferences = JSON.parse(all[THREAD_PREFERENCES_KEY]) as Record<string, ThreadPreference>;
+    }
+  } catch { /* ignore */ }
+
   useAppStore.setState({
     projects,
     threadProjectMap,
@@ -3284,6 +3559,7 @@ export async function initStoreFromDb(): Promise<void> {
     rightPanelWidth,
     currentProjectId,
     workspaceCwd,
+    threadPreferences,
   });
 
   writeLayoutSnapshotToStorage({ sidebarWidth, rightPanelWidth });

@@ -63,17 +63,18 @@ pub struct SmartBrainConfig {
     #[serde(default)]
     pub extraction_start_at: Option<i64>,
     // Experience sub-settings
-    #[serde(default = "default_true")]
+    // 经验相关开关默认关闭，避免无意义 token 消耗；用户可在设置中手动开启。
+    #[serde(default)]
     pub auto_extract: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub auto_consolidate: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub inject_summary: bool,
     #[serde(default = "default_max_raw_experiences")]
     pub max_raw_experiences: usize,
     #[serde(default = "default_max_consolidation_entries")]
     pub max_consolidation_entries: usize,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub auto_summarize_enabled: bool,
     #[serde(default = "default_auto_summarize_threshold")]
     pub auto_summarize_threshold: usize,
@@ -154,12 +155,12 @@ impl Default for SmartBrainConfig {
         Self {
             enabled: false,
             extraction_start_at: None,
-            auto_extract: default_true(),
-            auto_consolidate: default_true(),
-            inject_summary: default_true(),
+            auto_extract: false,
+            auto_consolidate: false,
+            inject_summary: false,
             max_raw_experiences: default_max_raw_experiences(),
             max_consolidation_entries: default_max_consolidation_entries(),
-            auto_summarize_enabled: default_true(),
+            auto_summarize_enabled: false,
             auto_summarize_threshold: default_auto_summarize_threshold(),
             max_unused_days: default_max_unused_days(),
             max_rollouts_per_startup: default_max_rollouts_per_startup(),
@@ -563,13 +564,13 @@ impl ConfigToml {
                 let sb = self
                     .smartbrain
                     .get_or_insert_with(SmartBrainConfig::default);
-                sb.auto_extract = value.as_bool().unwrap_or(true);
+                sb.auto_extract = value.as_bool().unwrap_or(false);
             }
             "smartbrain.auto_summarize_enabled" => {
                 let sb = self
                     .smartbrain
                     .get_or_insert_with(SmartBrainConfig::default);
-                sb.auto_summarize_enabled = value.as_bool().unwrap_or(true);
+                sb.auto_summarize_enabled = value.as_bool().unwrap_or(false);
             }
             "smartbrain.auto_summarize_threshold" => {
                 let sb = self

@@ -131,6 +131,20 @@ export function ChatPage() {
       dispatchSeqRef.current = dispatchSeq;
       setIsDispatching(true);
       try {
+        const latest = useAppStore.getState();
+        const threadPref = threadId ? latest.threadPreferences[threadId] : undefined;
+        const overrideProviderId =
+          latest.currentThreadId === threadId
+            ? latest.overrideProviderId
+            : (threadPref?.overrideProviderId ?? null);
+        const overrideModelId =
+          latest.currentThreadId === threadId
+            ? latest.overrideModelId
+            : (threadPref?.overrideModelId ?? null);
+        const smartbrainEnabled =
+          latest.currentThreadId === threadId
+            ? latest.smartbrainEnabled
+            : (threadPref?.smartbrainEnabled ?? false);
         await standaloneChat(
           threadId,
           text,
@@ -139,6 +153,13 @@ export function ChatPage() {
           attachments,
           options.goalBudgetTokens,
           options.robotId,
+          {
+            provider: latest.buildThreadChatProviderOverride(
+              overrideProviderId,
+              overrideModelId,
+            ),
+            smartbrainEnabled,
+          },
         );
       } catch (err) {
         if (dispatchSeqRef.current === dispatchSeq) {

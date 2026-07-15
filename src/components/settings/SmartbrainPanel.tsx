@@ -8,11 +8,7 @@ import { SmartbrainDatabaseSettingsPanel } from "./SmartbrainDatabaseSettingsPan
 
 type SmartbrainTab = "knowledge" | "experience" | "database" | "databaseSettings";
 
-interface SmartbrainPanelProps {
-  enabled: boolean;
-}
-
-export function SmartbrainPanel({ enabled }: SmartbrainPanelProps) {
+export function SmartbrainPanel() {
   const intl = useIntl();
   const [tab, setTab] = useState<SmartbrainTab>("knowledge");
 
@@ -56,16 +52,8 @@ export function SmartbrainPanel({ enabled }: SmartbrainPanelProps) {
               </p>
             </div>
           </div>
-          <span
-            className={`rounded-full px-2 py-1 text-[10px] ${
-              enabled
-                ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-                : "bg-[var(--surface-soft)] text-[var(--text-faint)]"
-            }`}
-          >
-            {enabled
-              ? intl.formatMessage({ id: "settings.smartbrain.enabled" })
-              : intl.formatMessage({ id: "settings.smartbrain.disabled" })}
+          <span className="rounded-full bg-[var(--surface-soft)] px-2 py-1 text-[10px] text-[var(--text-faint)]">
+            {intl.formatMessage({ id: "settings.smartbrain.dialogScoped" })}
           </span>
         </div>
 

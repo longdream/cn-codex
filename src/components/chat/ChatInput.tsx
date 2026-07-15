@@ -281,11 +281,11 @@ export function ChatInput({
   // 供应商相关
   const providers = useAppStore((s) => s.providers);
   const activeProviderId = useAppStore((s) => s.activeProviderId);
-  const activeProvider = useMemo(
-    () => providers.find((p) => p.id === activeProviderId) ?? null,
-    [providers, activeProviderId],
-  );
-  const providerModels = activeProvider?.models ?? [];
+  const overrideProviderId = useAppStore((s) => s.overrideProviderId);
+  const overrideModelId = useAppStore((s) => s.overrideModelId);
+  const smartbrainEnabled = useAppStore((s) => s.smartbrainEnabled);
+  const setThreadModelOverride = useAppStore((s) => s.setThreadModelOverride);
+  const setThreadSmartbrainEnabled = useAppStore((s) => s.setThreadSmartbrainEnabled);
 
   // 兼容旧的 configuredModels
   const configuredModels = useAppStore((s) => s.configuredModels);
@@ -293,22 +293,35 @@ export function ChatInput({
   const currentModel = useAppStore((s) => s.currentModel);
   const defaultProvider = intl.formatMessage({ id: "app.defaultProvider" });
 
-  // 显示的模型名称：优先取旧的 activeEntry，否则取供应商默认模型
+  const effectiveProviderId = overrideProviderId ?? activeProviderId;
+  const activeProvider = useMemo(
+    () => providers.find((p) => p.id === effectiveProviderId) ?? null,
+    [providers, effectiveProviderId],
+  );
+  const providerModels = activeProvider?.models ?? [];
+
+  // 显示的模型名称：优先本对话覆盖，其次全局配置
   const activeEntry = configuredModels.find((m) => m.id === activeModelId) ?? null;
+  const effectiveModelId =
+    overrideModelId
+    ?? activeEntry?.model
+    ?? currentModel
+    ?? providerModels[0]?.id
+    ?? null;
   const activeProviderModel = useMemo(() => {
-    if (activeEntry) {
-      return providerModels.find((model) => model.id === activeEntry.model) ?? null;
-    }
-    if (currentModel) {
-      return providerModels.find((model) => model.id === currentModel) ?? null;
+    if (effectiveModelId) {
+      return providerModels.find((model) => model.id === effectiveModelId) ?? null;
     }
     return providerModels[0] ?? null;
-  }, [activeEntry, currentModel, providerModels]);
-  const displayModel = activeEntry?.label
-    ?? currentModel
-    ?? providerModels[0]?.label
-    ?? activeProvider?.name
-    ?? defaultProvider;
+  }, [effectiveModelId, providerModels]);
+  const usingThreadOverride = Boolean(overrideProviderId || overrideModelId);
+  const displayModel = activeProvider && activeProviderModel
+    ? `${activeProvider.name} / ${activeProviderModel.label}`
+    : activeEntry?.label
+      ?? currentModel
+      ?? providerModels[0]?.label
+      ?? activeProvider?.name
+      ?? defaultProvider;
 
   const modelContextWindow = useMemo(() => {
     // 优先使用后端实时上报的窗口值，确保展示口径与运行时配置一致。
@@ -317,19 +330,13 @@ export function ChatInput({
       return runtimeWindow;
     }
 
-    if (activeEntry) {
-      const matchedProvider = providers.find(
-        (provider) => provider.id === activeEntry.provider || provider.type === activeEntry.provider,
-      );
-      const matchedModel = matchedProvider?.models.find((model) => model.id === activeEntry.model);
-      if (matchedModel?.contextLength) {
-        return matchedModel.contextLength;
-      }
+    if (activeProviderModel?.contextLength) {
+      return activeProviderModel.contextLength;
     }
 
-    if (currentModel) {
+    if (effectiveModelId) {
       for (const provider of providers) {
-        const matchedModel = provider.models.find((model) => model.id === currentModel);
+        const matchedModel = provider.models.find((model) => model.id === effectiveModelId);
         if (matchedModel?.contextLength) {
           return matchedModel.contextLength;
         }
@@ -337,7 +344,7 @@ export function ChatInput({
     }
 
     return providerModels[0]?.contextLength ?? DEFAULT_MODEL_CONTEXT_LENGTH;
-  }, [activeEntry, currentModel, liveTurnUsage?.contextWindowTokens, providerModels, providers]);
+  }, [activeProviderModel, effectiveModelId, liveTurnUsage?.contextWindowTokens, providerModels, providers]);
 
   const contextUsedTokens = useMemo(() => {
     if (liveTurnUsage) {
@@ -970,37 +977,16 @@ export function ChatInput({
     addBrowserFileAttachments(imageFiles);
   }, [addBrowserFileAttachments]);
 
-  const handleModelSelect = useCallback((modelId: string) => {
-    useAppStore.getState().setActiveModelId(modelId);
+  // 对话框内切换模型：仅写入本对话覆盖，不改全局供应商/模型。
+  const handleThreadProviderModelSelect = useCallback((providerId: string, modelId: string) => {
+    setThreadModelOverride(providerId, modelId);
     setShowModelMenu(false);
-  }, []);
+  }, [setThreadModelOverride]);
 
-  // 供应商模型选择（使用新供应商系统）
-  const handleProviderModelSelect = useCallback((modelId: string) => {
-    // 将供应商模型同步为 configuredModels 格式
-    if (!activeProvider) return;
-    const model = activeProvider.models.find((m) => m.id === modelId);
-    if (!model) return;
-
-    const entryId = `${activeProvider.id}:${modelId}`;
-    const store = useAppStore.getState();
-    const existing = store.configuredModels;
-    const newEntry = {
-      id: entryId,
-      provider: activeProvider.id,
-      model: modelId,
-      label: `${activeProvider.name} / ${model.label}`,
-      supportsVision: model.supportsVision,
-    };
-    const idx = existing.findIndex((m) => m.id === entryId);
-    const updated = idx >= 0
-      ? existing.map((m, i) => (i === idx ? newEntry : m))
-      : [...existing, newEntry];
-    store.setConfiguredModels(updated);
-    store.setActiveModelId(entryId);
-    store.setCurrentModel(modelId);
+  const handleUseGlobalModel = useCallback(() => {
+    setThreadModelOverride(null, null);
     setShowModelMenu(false);
-  }, [activeProvider]);
+  }, [setThreadModelOverride]);
 
   const cwdLeaf = workspaceCwd
     ? workspaceCwd.split(/[\\/]/).filter(Boolean).pop() ?? workspaceCwd
@@ -1051,71 +1037,108 @@ export function ChatInput({
         />
       )}
 
-      {/* 模型选择菜单 */}
+      {/* 模型选择菜单：列出全部供应商与模型，选择仅作用于当前对话 */}
       {showModelMenu && (
         <div className="absolute bottom-full left-0 right-0 z-20 mx-auto max-w-[1180px] px-4 pb-2 sm:px-8">
           <div className="rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] shadow-lg">
-            {/* 资源池模型列表 */}
-            {/* 供应商模型列表 */}
-            {providerModels.length > 0 && (
-              <>
-                <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
-                  {activeProvider?.name} {intl.formatMessage({ id: "settings.provider.models" })}
-                </div>
-                <div className="max-h-[200px] overflow-y-auto">
-                  {providerModels.map((m) => (
-                    <button
-                      key={m.id}
-                      onClick={() => handleProviderModelSelect(m.id)}
-                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-elevated)] ${
-                        activeEntry?.model === m.id ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]" : "text-[var(--text-base)]"
-                      }`}
-                    >
-                      <IconCpu size={13} stroke={1.8} className="flex-shrink-0 opacity-60" />
-                      <div className="min-w-0 flex-1">
-                        <span className="block truncate font-medium">{m.label}</span>
-                        <span className="block truncate text-[11px] text-[var(--text-faint)]">
-                          {m.id}{m.supportsVision && " · 📷 vision"}
-                        </span>
-                      </div>
-                      {activeEntry?.model === m.id && (
-                        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--accent)]" />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-            {/* 兼容旧的 configuredModels */}
-            {configuredModels.length > 0 && providerModels.length === 0 && (
-              <>
-                <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
+            <div className="flex items-center justify-between gap-2 border-b border-[var(--chat-line)] px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
                   {intl.formatMessage({ id: "chat.modelSelectorHint" })}
                 </div>
-                <div className="max-h-[200px] overflow-y-auto">
-                  {configuredModels.map((m) => (
-                    <button
-                      key={m.id}
-                      onClick={() => handleModelSelect(m.id)}
-                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-elevated)] ${
-                        m.id === activeModelId ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]" : "text-[var(--text-base)]"
-                      }`}
-                    >
-                      <IconCpu size={13} stroke={1.8} className="flex-shrink-0 opacity-60" />
-                      <div className="min-w-0 flex-1">
-                        <span className="block truncate font-medium">{m.label}</span>
-                        <span className="block truncate text-[11px] text-[var(--text-faint)]">
-                          {m.provider}{m.supportsVision && " · 📷 vision"}
-                        </span>
-                      </div>
-                      {m.id === activeModelId && (
-                        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--accent)]" />
-                      )}
-                    </button>
-                  ))}
+                <div className="truncate text-[11px] text-[var(--text-muted)]">
+                  {usingThreadOverride
+                    ? intl.formatMessage({ id: "chat.modelScope.thread" })
+                    : intl.formatMessage({ id: "chat.modelScope.global" })}
                 </div>
-              </>
-            )}
+              </div>
+              {usingThreadOverride && (
+                <button
+                  type="button"
+                  onClick={handleUseGlobalModel}
+                  className="rounded-full px-2 py-1 text-[11px] text-[var(--accent)] transition-colors hover:bg-[var(--accent-soft)]"
+                >
+                  {intl.formatMessage({ id: "chat.modelUseGlobal" })}
+                </button>
+              )}
+            </div>
+            <div className="max-h-[280px] overflow-y-auto py-1">
+              {providers.length > 0 ? (
+                providers.map((provider) => (
+                  <div key={provider.id} className="border-b border-[var(--chat-line)] last:border-b-0">
+                    <div className="flex items-center justify-between gap-2 px-3 py-2">
+                      <span className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
+                        {provider.name}
+                      </span>
+                      {provider.id === activeProviderId && (
+                        <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] text-[var(--accent-strong)]">
+                          {intl.formatMessage({ id: "chat.modelGlobalBadge" })}
+                        </span>
+                      )}
+                    </div>
+                    {provider.models.length > 0 ? (
+                      provider.models.map((model) => {
+                        const selected =
+                          (overrideProviderId ?? activeProviderId) === provider.id
+                          && (overrideModelId ?? effectiveModelId) === model.id;
+                        return (
+                          <button
+                            key={`${provider.id}:${model.id}`}
+                            type="button"
+                            onClick={() => handleThreadProviderModelSelect(provider.id, model.id)}
+                            className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-elevated)] ${
+                              selected
+                                ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                                : "text-[var(--text-base)]"
+                            }`}
+                          >
+                            <IconCpu size={13} stroke={1.8} className="flex-shrink-0 opacity-60" />
+                            <div className="min-w-0 flex-1">
+                              <span className="block truncate font-medium">{model.label}</span>
+                              <span className="block truncate text-[11px] text-[var(--text-faint)]">
+                                {model.id}{model.supportsVision && " · 📷 vision"}
+                              </span>
+                            </div>
+                            {selected && (
+                              <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--accent)]" />
+                            )}
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="px-3 pb-2 text-[11px] text-[var(--text-faint)]">
+                        {intl.formatMessage({ id: "chat.modelEmptyProvider" })}
+                      </div>
+                    )}
+                  </div>
+                ))
+              ) : configuredModels.length > 0 ? (
+                configuredModels.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => handleThreadProviderModelSelect(m.provider, m.model)}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-elevated)] ${
+                      m.model === effectiveModelId
+                        ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                        : "text-[var(--text-base)]"
+                    }`}
+                  >
+                    <IconCpu size={13} stroke={1.8} className="flex-shrink-0 opacity-60" />
+                    <div className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">{m.label}</span>
+                      <span className="block truncate text-[11px] text-[var(--text-faint)]">
+                        {m.provider}{m.supportsVision && " · 📷 vision"}
+                      </span>
+                    </div>
+                  </button>
+                ))
+              ) : (
+                <div className="px-3 py-4 text-center text-xs text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "chat.modelEmpty" })}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1445,7 +1468,7 @@ export function ChatInput({
             <button
               type="button"
               onClick={() => {
-                if (providerModels.length > 0 || configuredModels.length > 0) {
+                if (providers.length > 0 || configuredModels.length > 0) {
                   setShowModelMenu((v) => !v);
                 } else {
                   useAppStore.getState().setShowSettings(true);
@@ -1457,6 +1480,22 @@ export function ChatInput({
               <IconCpu size={12} stroke={1.8} className="flex-shrink-0" />
               <span className="max-w-[190px] truncate">{displayModel}</span>
               <IconChevronDown size={10} stroke={2} className="flex-shrink-0 opacity-60" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setThreadSmartbrainEnabled(!smartbrainEnabled)}
+              className={`flex items-center gap-1 rounded-full px-2 py-1 transition-colors ${
+                smartbrainEnabled
+                  ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                  : "hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+              }`}
+              title={intl.formatMessage({
+                id: smartbrainEnabled ? "chat.smartbrainOn" : "chat.smartbrainOff",
+              })}
+            >
+              <IconBrain size={12} stroke={1.8} className="flex-shrink-0" />
+              <span className="truncate">{intl.formatMessage({ id: "chat.smartbrain" })}</span>
             </button>
 
             <button

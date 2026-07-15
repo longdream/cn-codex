@@ -171,6 +171,53 @@ pub struct FetchProviderModelsResult {
     pub models: Vec<RemoteProviderModel>,
 }
 
+/// 仅本对话生效的供应商/模型覆盖（由前端传入完整快照，不写回全局 config.toml）。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadChatProviderOverride {
+    pub provider_key: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub wire_api: Option<String>,
+    #[serde(default)]
+    pub requires_openai_auth: Option<bool>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub model_context_window: Option<i64>,
+    #[serde(default)]
+    pub max_output_tokens: Option<i64>,
+    #[serde(default)]
+    pub model_supports_vision: Option<bool>,
+    #[serde(default)]
+    pub vision_fallback_kind: Option<String>,
+    #[serde(default)]
+    pub vision_fallback_provider: Option<String>,
+    #[serde(default)]
+    pub vision_fallback_model: Option<String>,
+    #[serde(default)]
+    pub model_endpoints: Option<Vec<ThreadChatModelEndpoint>>,
+    #[serde(default)]
+    pub active_endpoint_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadChatModelEndpoint {
+    pub url: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub wire_api: Option<String>,
+}
+
 fn build_models_url(base_url: &str, wire_api: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
     if base.ends_with("/models") {
@@ -1089,8 +1136,15 @@ pub async fn standalone_chat(
     mode: Option<String>,
     goal_budget_tokens: Option<u64>,
     robot_id: Option<String>,
+    provider: Option<ThreadChatProviderOverride>,
+    smartbrain_enabled: Option<bool>,
 ) -> AppResult<serde_json::Value> {
-    let config = state.config_manager.read()?;
+    let mut config = state.config_manager.read()?;
+    apply_thread_chat_overrides(
+        &mut config,
+        provider.as_ref(),
+        smartbrain_enabled,
+    );
     let override_cwd = cwd.map(std::path::PathBuf::from);
     let is_goal_mode = mode.as_deref() == Some("goal");
     let mode = mode.as_deref();
@@ -1140,6 +1194,162 @@ fn resolve_robot_id_for_run_turn<'a>(
         robot_id
     } else {
         None
+    }
+}
+
+/// 将“仅本对话”的供应商/模型/知识库开关合并到内存配置，不写回全局 config.toml。
+fn apply_thread_chat_overrides(
+    config: &mut crate::config_system::ConfigToml,
+    provider: Option<&ThreadChatProviderOverride>,
+    smartbrain_enabled: Option<bool>,
+) {
+    if let Some(provider) = provider {
+        let provider_key = provider
+            .provider_key
+            .as_str()
+            .trim()
+            .to_string();
+        if !provider_key.is_empty() {
+            config.model_provider = Some(provider_key.clone());
+
+            let mut info = config
+                .model_providers
+                .get(&provider_key)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(base_url) = provider
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                info.base_url = Some(base_url.to_string());
+            }
+            if let Some(api_key) = provider
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                info.experimental_bearer_token = Some(api_key.to_string());
+            }
+            if let Some(wire_api) = provider
+                .wire_api
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                info.wire_api = Some(wire_api.to_string());
+            }
+            if let Some(requires_openai_auth) = provider.requires_openai_auth {
+                info.requires_openai_auth = Some(requires_openai_auth);
+            }
+
+            config.model_providers.insert(provider_key, info);
+        }
+
+        if let Some(model_id) = provider
+            .model_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            config.model = Some(model_id.to_string());
+        }
+
+        info!(
+            "[thread_chat_override] provider={:?}, model={:?}, base_url={:?}, wire_api={:?}, endpoints={}",
+            config.model_provider,
+            config.model,
+            provider.base_url.as_deref(),
+            provider.wire_api.as_deref(),
+            provider
+                .model_endpoints
+                .as_ref()
+                .map(|items| items.len())
+                .unwrap_or(0)
+        );
+        if let Some(context_window) = provider.model_context_window.filter(|value| *value > 0) {
+            config.model_context_window = Some(context_window);
+        }
+        if let Some(max_output_tokens) = provider.max_output_tokens.filter(|value| *value > 0) {
+            config.max_output_tokens = Some(max_output_tokens);
+        }
+        if let Some(model_supports_vision) = provider.model_supports_vision {
+            config.model_supports_vision = Some(model_supports_vision);
+        }
+        if let Some(kind) = provider.vision_fallback_kind.as_ref() {
+            config.vision_fallback_kind = if kind.trim().is_empty() {
+                None
+            } else {
+                Some(kind.clone())
+            };
+        }
+        if let Some(fallback_provider) = provider.vision_fallback_provider.as_ref() {
+            config.vision_fallback_provider = if fallback_provider.trim().is_empty() {
+                None
+            } else {
+                Some(fallback_provider.clone())
+            };
+        }
+        if let Some(fallback_model) = provider.vision_fallback_model.as_ref() {
+            config.vision_fallback_model = if fallback_model.trim().is_empty() {
+                None
+            } else {
+                Some(fallback_model.clone())
+            };
+        }
+        if let Some(model_endpoints) = provider.model_endpoints.as_ref() {
+            config.model_endpoints = model_endpoints
+                .iter()
+                .filter(|endpoint| !endpoint.url.trim().is_empty())
+                .map(|endpoint| crate::config_system::ModelEndpointInfo {
+                    url: endpoint.url.trim().to_string(),
+                    label: endpoint
+                        .label
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    model: endpoint
+                        .model
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    api_key: endpoint
+                        .api_key
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    wire_api: endpoint
+                        .wire_api
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                })
+                .collect();
+            config.active_endpoint_index = if config.model_endpoints.is_empty() {
+                None
+            } else {
+                provider
+                    .active_endpoint_index
+                    .or(Some(0))
+                    .map(|index| index.min(config.model_endpoints.len().saturating_sub(1)))
+            };
+        } else if provider.provider_key.trim().is_empty() == false {
+            // 非资源池供应商：清空全局遗留的 model_endpoints，避免继续打到旧端点。
+            config.model_endpoints.clear();
+            config.active_endpoint_index = None;
+        }
+    }
+    if let Some(enabled) = smartbrain_enabled {
+        let mut smartbrain = config.smartbrain_config();
+        smartbrain.enabled = enabled;
+        config.smartbrain = Some(smartbrain);
     }
 }
 

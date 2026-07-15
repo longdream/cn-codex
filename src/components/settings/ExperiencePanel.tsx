@@ -46,7 +46,6 @@ const PAGE_SIZE = 20;
 export function ExperiencePanel() {
   const intl = useIntl();
 
-  const [enabled, setEnabled] = useState(true);
   const [experiences, setExperiences] = useState<ExperienceEntry[]>([]);
   const [totalExperiences, setTotalExperiences] = useState(0);
   const [page, setPage] = useState(0);
@@ -57,10 +56,10 @@ export function ExperiencePanel() {
   const [expContent, setExpContent] = useState<Record<string, string>>({});
   const [expFrontmatter, setExpFrontmatter] = useState<Record<string, OkfFrontmatter | null>>({});
 
-  const [autoExtractEnabled, setAutoExtractEnabled] = useState(true);
+  const [autoExtractEnabled, setAutoExtractEnabled] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const [summarizeResult, setSummarizeResult] = useState<string | null>(null);
-  const [autoSummarizeEnabled, setAutoSummarizeEnabled] = useState(true);
+  const [autoSummarizeEnabled, setAutoSummarizeEnabled] = useState(false);
   const [autoSummarizeThreshold, setAutoSummarizeThreshold] = useState(10);
   const [thresholdSaving, setThresholdSaving] = useState(false);
 
@@ -70,9 +69,8 @@ export function ExperiencePanel() {
     )
       .then((result) => {
         const sb = result?.config?.smartbrain;
-        setEnabled(sb?.enabled ?? false);
-        setAutoExtractEnabled(sb?.auto_extract ?? true);
-        setAutoSummarizeEnabled(sb?.auto_summarize_enabled ?? true);
+        setAutoExtractEnabled(sb?.auto_extract ?? false);
+        setAutoSummarizeEnabled(sb?.auto_summarize_enabled ?? false);
         setAutoSummarizeThreshold(sb?.auto_summarize_threshold ?? 10);
       })
       .catch(() => {});
@@ -338,25 +336,14 @@ export function ExperiencePanel() {
 
   return (
     <div className="space-y-5">
-      {!enabled && (
-        <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
-          <IconAlertCircle size={15} stroke={1.8} className="shrink-0 text-amber-500" />
-          <p className="text-xs text-[var(--text-muted)]">
-            {intl.formatMessage({ id: "settings.smartbrain.enableHint" })}
-          </p>
-        </div>
-      )}
-      {enabled && (
-        <div className="flex items-center gap-2 rounded-md border border-[var(--border-muted)] bg-[var(--bg-subtle)] px-3 py-2">
-          <IconAlertCircle size={14} stroke={1.5} className="shrink-0 text-[var(--text-faint)]" />
-          <p className="text-xs text-[var(--text-faint)]">
-            {intl.formatMessage({ id: "settings.smartbrain.enabledNote" })}
-          </p>
-        </div>
-      )}
+      <div className="flex items-center gap-2 rounded-md border border-[var(--border-muted)] bg-[var(--bg-subtle)] px-3 py-2">
+        <IconAlertCircle size={14} stroke={1.5} className="shrink-0 text-[var(--text-faint)]" />
+        <p className="text-xs text-[var(--text-faint)]">
+          {intl.formatMessage({ id: "settings.smartbrain.toggle.dialogOnly" })}
+        </p>
+      </div>
 
-      {enabled && (
-        <section className="settings-card space-y-3">
+      <section className="settings-card space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex flex-col gap-0.5">
               <span className="text-xs font-medium text-[var(--text-strong)]">
@@ -455,7 +442,6 @@ export function ExperiencePanel() {
             </div>
           )}
         </section>
-      )}
 
       <section className="settings-card space-y-3">
         <button
