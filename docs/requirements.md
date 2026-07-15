@@ -5,6 +5,13 @@
 CN-Codex 是基于 OpenAI Codex CLI/TUI 核心功能构建的 Tauri v2 桌面应用，
 提供中英文双语界面（默认中文），支持 LLM 多档位配置以节约 token 消耗。
 
+### 1.0 项目初衷
+- 目标：让普通开发者长期用上“廉价又好用”的 AI 编程 IDE
+- 成本路线：优先适配高性价比模型与 free plan（如商汤 free coding plan 的 DeepSeek v4 Flash）
+- 渠道自由：原生支持官方源、中转站、本地模型；可自定义 Base URL / API Key / 模型 ID / Wire API
+- 真实用法：日常用廉价/免费渠道做全流程开发，复杂任务用中转强模型（如 Grok 4.5）攻坚
+- 能力完整：不只聊天改代码，而是手机遥控 + 机器人流水线 + SmartBrain 经验沉淀
+
 ### 1.1 技术栈
 | 层级 | 技术 |
 |------|------|
@@ -67,6 +74,13 @@ CN-Codex 是基于 OpenAI Codex CLI/TUI 核心功能构建的 Tauri v2 桌面应
 - 场景绑定：根据任务类型自动选择档位
 - Token 预算管理：日限额、警告阈值、自动降级
 - 用量统计面板
+
+### FR-007b 多模型渠道与中转
+- 支持 12+ 供应商预设与自定义供应商实例
+- 支持自定义 Base URL / API Key / 模型 ID / Wire API（Chat / Responses / Anthropic / Gemini）
+- 同类型供应商可创建多个实例并行保存，运行时切换
+- 本地资源池：同一模型多 endpoint，故障探测与自动 failover
+- 适合 free plan、中转站、官方源与本地模型混用
 
 ### FR-008 国际化
 - 中文 (zh-CN) 为默认语言

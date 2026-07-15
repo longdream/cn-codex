@@ -77,6 +77,7 @@
           <ul>
             <li><a href="#config-file">配置文件</a></li>
             <li><a href="#providers">供应商配置</a></li>
+            <li><a href="#providers">中转 / free plan</a></li>
             <li><a href="#approval-policy">审批策略</a></li>
             <li><a href="#mcp-config">MCP 配置</a></li>
           </ul>
@@ -135,10 +136,11 @@
         <section id="overview" class="docs-section">
           <h2>概述</h2>
           <p>CN-Codex 是一款基于 Tauri 2 + React 构建的桌面 AI 编程助手。它内置 Agent 引擎，直接通过 HTTP SSE 与 LLM API 通信，无需依赖外部 CLI 进程。</p>
+          <p><strong>项目初衷：</strong>让普通开发者长期用上“廉价又好用”的 AI 编程 IDE。作者日常用商汤 free coding plan 的 DeepSeek v4 Flash 做全流程开发，并用中转渠道的 Grok 4.5 攻坚复杂任务、持续进化 IDE。因此产品原生支持多模型渠道与中转站。</p>
           <p>核心能力：</p>
           <ul>
-            <li>支持 12+ 种 LLM 供应商（OpenAI、Anthropic、Google、DeepSeek、火山引擎、通义千问、智谱、Moonshot、硅基流动、百川、Ollama、LM Studio 等）</li>
-            <li>40+ 内置工具（文件、Shell、浏览器、子代理、记忆、MCP、图像、网页搜索等）</li>
+            <li>支持 12+ 种 LLM 供应商与自定义中转站（OpenAI、Anthropic、Google、DeepSeek、Grok 中转、火山引擎、通义千问、智谱、Moonshot、硅基流动、百川、Ollama、LM Studio 等）</li>
+            <li>50+ 内置工具（文件、Shell、浏览器、子代理、记忆、MCP、图像、网页搜索等）</li>
             <li>项目级工作区管理，每个项目拥有独立的对话上下文</li>
             <li>Goal 目标模式，AI 自主多步执行任务</li>
             <li>可扩展的插件、技能、Hooks 和机器人系统</li>
@@ -148,8 +150,8 @@
             <li>子代理引擎：复杂任务自动拆分并行执行</li>
             <li>操作录制与回放：通过 CDP 协议录制浏览器操作，生成可回放工作流</li>
             <li>智能网页搜索：DuckDuckGo + Bing 双引擎，内置防循环策略</li>
-            <li>本地资源池：多端点管理、活跃端点检测、智能故障转移</li>
-            <li>44 个内置技能，7 大插件</li>
+            <li>本地资源池：多端点管理、活跃端点检测、智能故障转移（适合多中转容灾）</li>
+            <li>50+ 内置技能，8 大插件</li>
           </ul>
         </section>
 
@@ -962,6 +964,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
               <tr><td>硅基流动 / 百川</td><td>chat</td></tr>
               <tr><td rowspan="2">本地运行</td><td>Ollama</td><td>chat</td></tr>
               <tr><td>LM Studio</td><td>chat</td></tr>
+              <tr><td>中转 / 自定义</td><td>OpenAI 兼容网关 / 聚合站 / free plan</td><td>chat（常见）</td></tr>
             </tbody>
           </table>
 
@@ -986,6 +989,37 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
 
           <h3>模型列表</h3>
           <p>每个供应商可以配置多个模型。在供应商面板底部的「模型列表」区域添加模型 ID 和显示名称。如果模型支持图片分析，勾选 <strong>支持图片/视觉</strong>。添加后可在输入栏底部的模型选择器中快速切换。</p>
+
+          <h3>中转站 / free plan 配置（推荐）</h3>
+          <p>CN-Codex 特别适合接中转站和 free plan。官方源、商汤 free coding plan、中转 Grok 可同时存在，随时切换。</p>
+          <ol>
+            <li>设置 → 模型提供商 → 添加供应商</li>
+            <li>选择 <strong>OpenAI 兼容</strong> 或 <strong>自定义</strong>（也可复制 DeepSeek 预设后改 Base URL）</li>
+            <li>填写：
+              <ul>
+                <li><strong>名称</strong>：如 <code>商汤 DeepSeek</code> / <code>中转 Grok</code></li>
+                <li><strong>Base URL</strong>：中转站或 free plan 提供的 API 地址</li>
+                <li><strong>API Key</strong>：对应渠道 Key</li>
+                <li><strong>Wire API</strong>：通常选 <code>chat</code></li>
+              </ul>
+            </li>
+            <li>在模型列表添加模型 ID，例如 <code>deepseek-v4-flash</code>、<code>grok-4.5</code></li>
+            <li>保存后启用该供应商；输入栏底部可随时切换模型</li>
+          </ol>
+          <div class="code-block">
+            <pre><code class="language-toml"># 示例：商汤 free plan / 中转站（OpenAI 兼容）
+[model_providers.sensetime-deepseek]
+name = "商汤 DeepSeek"
+base_url = "https://your-free-plan-or-relay.example/v1"
+wire_api = "chat"
+# api_key 建议在设置面板填写，不必明文写入仓库
+
+[model_providers.relay-grok]
+name = "中转 Grok 4.5"
+base_url = "https://your-relay.example/v1"
+wire_api = "chat"</code></pre>
+          </div>
+          <p><strong>推荐组合：</strong>日常开发用 DeepSeek v4 Flash（官方或商汤 free plan）；复杂推理 / 架构设计切中转 Grok 4.5；需要高可用时，给同一模型配置本地资源池多端点做容灾。</p>
         </section>
 
         <!-- ============ 审批策略 ============ -->
@@ -1466,7 +1500,7 @@ relay_server_url = "http://你的服务器IP:8080"</code></pre>
         <!-- ============ 内置工具 ============ -->
         <section id="tools-list" class="docs-section">
           <h2>内置工具一览</h2>
-          <p>AI 在对话中会根据需要自动调用这些工具。</p>
+          <p>AI 在对话中会根据需要自动调用这些工具（50+）。以下按类别列出常用工具。</p>
 
           <h3>文件与目录</h3>
           <table class="docs-table">
@@ -1475,6 +1509,8 @@ relay_server_url = "http://你的服务器IP:8080"</code></pre>
               <tr><td><code>write_file</code></td><td>创建或覆盖文件</td></tr>
               <tr><td><code>list_directory</code></td><td>列出目录内容</td></tr>
               <tr><td><code>apply_patch</code></td><td>应用多文件补丁（增/改/删）</td></tr>
+              <tr><td><code>code_review</code></td><td>审查当前变更与风险点</td></tr>
+              <tr><td><code>update_plan</code></td><td>更新多步骤任务计划</td></tr>
             </tbody>
           </table>
 
@@ -1492,9 +1528,9 @@ relay_server_url = "http://你的服务器IP:8080"</code></pre>
           <table class="docs-table">
             <tbody>
               <tr><td><code>browser_run</code></td><td>运行浏览器自动化（goto / click / fill / screenshot / eval 等操作）</td></tr>
-              <tr><td><code>start_recording</code></td><td>启动外部浏览器并开始 CDP 操作录制</td></tr>
-              <tr><td><code>stop_recording</code></td><td>停止录制并生成工作流 JSON</td></tr>
-              <tr><td><code>launch_browser</code></td><td>启动外部 Chrome/Edge 浏览器（远程调试模式）</td></tr>
+              <tr><td><code>recording_control</code></td><td>外部浏览器录制控制（launch / show_toggle / read_trace / list_traces）</td></tr>
+              <tr><td><code>web_search</code></td><td>智能网页搜索（DuckDuckGo + Bing 双引擎，内置防循环）</td></tr>
+              <tr><td><code>web_fetch</code></td><td>抓取指定 URL 的网页内容，转为可读文本</td></tr>
             </tbody>
           </table>
 
@@ -1515,7 +1551,9 @@ relay_server_url = "http://你的服务器IP:8080"</code></pre>
             <tbody>
               <tr><td><code>memory_list / read / search / write / update / forget</code></td><td>跨对话持久化存储键值对</td></tr>
               <tr><td><code>smartbrain_search</code></td><td>跨经验和知识库的统一 BM25 全文搜索</td></tr>
+              <tr><td><code>smartbrain_sql_query</code></td><td>查询已配置的业务数据库</td></tr>
               <tr><td><code>edit_project_rules</code></td><td>读取或写入项目规则文件（.rule.md）</td></tr>
+              <tr><td><code>robot_save</code></td><td>创建或更新机器人（角色 + 技能 + 工作流节点）</td></tr>
             </tbody>
           </table>
 
@@ -1523,24 +1561,24 @@ relay_server_url = "http://你的服务器IP:8080"</code></pre>
           <table class="docs-table">
             <tbody>
               <tr><td><code>mcp_list_servers</code></td><td>列出 MCP 服务器</td></tr>
+              <tr><td><code>mcp_list_tools</code> / <code>mcp_list_resources</code> / <code>mcp_list_prompts</code></td><td>列出工具、资源、提示词</td></tr>
               <tr><td><code>mcp_call_tool</code></td><td>调用 MCP 工具</td></tr>
               <tr><td><code>mcp_read_resource</code></td><td>读取 MCP 资源</td></tr>
+              <tr><td><code>mcp_get_prompt</code></td><td>获取 MCP 提示词</td></tr>
             </tbody>
           </table>
 
           <h3>其他</h3>
           <table class="docs-table">
             <tbody>
-              <tr><td><code>code_review</code></td><td>审查代码变更</td></tr>
-              <tr><td><code>update_plan</code></td><td>更新执行计划</td></tr>
               <tr><td><code>tool_search</code></td><td>搜索可用工具</td></tr>
+              <tr><td><code>apps_list</code> / <code>plugin_manage</code></td><td>App 连接器与插件管理</td></tr>
               <tr><td><code>view_image</code></td><td>查看图像文件</td></tr>
+              <tr><td><code>ocr_image</code></td><td>本地 OCR 识别图片文字</td></tr>
               <tr><td><code>image_generate</code></td><td>AI 生成图像</td></tr>
-              <tr><td><code>web_search</code></td><td>智能网页搜索（DuckDuckGo API + Bing 双引擎，内置防循环）</td></tr>
-              <tr><td><code>web_fetch</code></td><td>抓取指定 URL 的网页内容，转为可读文本</td></tr>
+              <tr><td><code>echarts_report</code></td><td>生成可渲染 ECharts 图表配置</td></tr>
               <tr><td><code>request_user_input</code></td><td>向用户提问</td></tr>
               <tr><td><code>request_permissions</code></td><td>请求额外权限</td></tr>
-              <tr><td><code>robot_save</code></td><td>保存/创建机器人</td></tr>
             </tbody>
           </table>
         </section>
@@ -1597,6 +1635,16 @@ relay_server_url = "http://你的服务器IP:8080"</code></pre>
           <div class="faq-item">
             <h3>Q: 支持哪些操作系统？</h3>
             <p>目前主要支持 Windows 10 及以上版本。</p>
+          </div>
+
+          <div class="faq-item">
+            <h3>Q: 可以接中转站吗？比如 Grok 4.5 / 聚合站？</h3>
+            <p>可以。设置 → 模型提供商 → 添加 OpenAI 兼容或自定义供应商，填写中转 Base URL、API Key，再添加对应模型 ID（如 <code>grok-4.5</code>）。官方源、free plan、中转站可同时保存，随时切换。</p>
+          </div>
+
+          <div class="faq-item">
+            <h3>Q: 推荐怎么配才省钱又好用？</h3>
+            <p>日常开发优先用 DeepSeek v4 Flash（官方或商汤 free coding plan）；复杂推理 / 架构设计可切到中转 Grok 4.5；需要高可用时，给同一模型配置本地资源池多端点做容灾。</p>
           </div>
         </section>
 
