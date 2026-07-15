@@ -27,6 +27,7 @@ import {
   type TextFilePreviewResult,
 } from "../../api/window";
 import { formatCodeSnippet } from "../../utils/formatCodeSnippet";
+import { highlightCodeHtml } from "../../utils/highlightCode";
 import { exportMarkdownAsDocxBytes, exportMarkdownAsPdfBytes } from "../../utils/markdownExport";
 import { encodePathRefRangeSnippet, supportsPathRefRangeByName } from "../../utils/pathRefSnippet";
 
@@ -44,6 +45,27 @@ interface FloatingPosition {
 
 type NoticeKind = "success" | "error" | "info";
 type MarkdownViewMode = "preview" | "source";
+type LineEnding = "\n" | "\r\n";
+
+function normalizeEditorText(text: string): string {
+  // textarea 的 selectionStart/End 按逻辑字符计数；Windows 的 CRLF 会让光标/删除整体偏一位。
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function detectLineEnding(text: string): LineEnding {
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function serializeEditorText(text: string, lineEnding: LineEnding): string {
+  if (lineEnding === "\n") {
+    return text;
+  }
+  return text.replace(/\n/g, "\r\n");
+}
+
+function isPrimaryModifier(event: KeyboardEvent): boolean {
+  return event.ctrlKey || event.metaKey;
+}
 
 const markdownPreviewComponents: Components = {
   h1: ({ children }) => (
@@ -287,6 +309,7 @@ export function DocumentDetailWindow() {
   const [preview, setPreview] = useState<TextFilePreviewResult | null>(null);
   const [isImage, setIsImage] = useState(false);
   const [draftContent, setDraftContent] = useState("");
+  const [lineEnding, setLineEnding] = useState<LineEnding>("\n");
   // 初始即为加载中，避免窗口打开瞬间先渲染空白/等待态，再闪一下“加载中”。
   const [loading, setLoading] = useState(true);
   const [bootstrapped, setBootstrapped] = useState(false);
@@ -299,9 +322,9 @@ export function DocumentDetailWindow() {
   const [markdownViewMode, setMarkdownViewMode] = useState<MarkdownViewMode>("preview");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const highlightContentRef = useRef<HTMLDivElement>(null);
+  const editorScrollRef = useRef<HTMLDivElement>(null);
   const isDirty = useMemo(
-    () => Boolean(preview && draftContent !== preview.content),
+    () => Boolean(preview && draftContent !== normalizeEditorText(preview.content)),
     [preview, draftContent],
   );
   const languageLabel = useMemo(
@@ -310,23 +333,10 @@ export function DocumentDetailWindow() {
   );
   const isMarkdownFile = languageLabel === "markdown";
   const showMarkdownPreview = isMarkdownFile && markdownViewMode === "preview";
-  const highlightedCodeMarkdown = useMemo(() => {
-    if (!preview) {
-      return "";
-    }
-    return `\`\`\`${languageLabel}\n${draftContent}\n\`\`\``;
-  }, [preview, draftContent, languageLabel]);
-
-  const syncHighlightScroll = useCallback(() => {
-    const textarea = textareaRef.current;
-    const highlightContent = highlightContentRef.current;
-    if (!textarea || !highlightContent) {
-      return;
-    }
-    // 将高亮层按 textarea 当前滚动量做反向位移，
-    // 这样只保留一个可编辑区，同时维持“语法样式跟随编辑”。
-    highlightContent.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
-  }, []);
+  const highlightedCodeHtml = useMemo(
+    () => highlightCodeHtml(draftContent, languageLabel),
+    [draftContent, languageLabel],
+  );
 
   const syncSelection = useCallback(() => {
     const textarea = textareaRef.current;
@@ -369,6 +379,7 @@ export function DocumentDetailWindow() {
       setIsImage(true);
       setPreview(null);
       setDraftContent("");
+      setLineEnding("\n");
       setLoading(false);
       return;
     }
@@ -376,11 +387,14 @@ export function DocumentDetailWindow() {
     setIsImage(false);
     try {
       const result = await readTextFilePreview(path);
+      const normalizedContent = normalizeEditorText(result.content);
       setPreview(result);
-      setDraftContent(result.content);
+      setDraftContent(normalizedContent);
+      setLineEnding(detectLineEnding(result.content));
     } catch (err) {
       setPreview(null);
       setDraftContent("");
+      setLineEnding("\n");
       setLoadError(String(err));
     } finally {
       setLoading(false);
@@ -400,12 +414,13 @@ export function DocumentDetailWindow() {
     setSaving(true);
     setNotice(null);
     try {
-      const saved = await writeTextFilePreview(preview.path, draftContent);
+      const contentToWrite = serializeEditorText(draftContent, lineEnding);
+      const saved = await writeTextFilePreview(preview.path, contentToWrite);
       setPreview((prev) =>
         prev
           ? {
               ...prev,
-              content: draftContent,
+              content: contentToWrite,
               size: saved.size,
               truncated: false,
             }
@@ -423,7 +438,7 @@ export function DocumentDetailWindow() {
     } finally {
       setSaving(false);
     }
-  }, [preview, draftContent, intl]);
+  }, [preview, draftContent, lineEnding, intl]);
 
   const handleExportMarkdown = useCallback(
     async (format: "docx" | "pdf") => {
@@ -555,6 +570,7 @@ export function DocumentDetailWindow() {
     if (!activePath) {
       setPreview(null);
       setDraftContent("");
+      setLineEnding("\n");
       setSelectionMeta(null);
       setFloatingPos(null);
       if (bootstrapped) {
@@ -592,8 +608,11 @@ export function DocumentDetailWindow() {
         const style = window.getComputedStyle(textarea);
         const lineHeight = Number.parseFloat(style.lineHeight) || 20;
         const targetTop = Math.max(0, (safeLine - 1) * lineHeight - textarea.clientHeight / 3);
-        textarea.scrollTop = targetTop;
-        syncHighlightScroll();
+        const scroller = editorScrollRef.current;
+        if (scroller) {
+          scroller.scrollTop = targetTop;
+          scroller.scrollLeft = 0;
+        }
       } finally {
         setPendingLine(null);
       }
@@ -609,7 +628,6 @@ export function DocumentDetailWindow() {
     isImage,
     showMarkdownPreview,
     draftContent,
-    syncHighlightScroll,
   ]);
 
   useEffect(() => {
@@ -657,28 +675,26 @@ export function DocumentDetailWindow() {
       syncSelection();
     };
     window.addEventListener("resize", handleWindowResize);
-    const textarea = textareaRef.current;
-    const handleTextareaScroll = () => {
+    const scroller = editorScrollRef.current;
+    const handleEditorScroll = () => {
       syncSelection();
-      syncHighlightScroll();
     };
-    textarea?.addEventListener("scroll", handleTextareaScroll);
+    scroller?.addEventListener("scroll", handleEditorScroll);
     return () => {
       window.removeEventListener("resize", handleWindowResize);
-      textarea?.removeEventListener("scroll", handleTextareaScroll);
+      scroller?.removeEventListener("scroll", handleEditorScroll);
     };
-  }, [selectionMeta, syncHighlightScroll, syncSelection]);
+  }, [selectionMeta, syncSelection]);
 
   useEffect(() => {
-    // 切换文件后重置滚动位移，避免新文件沿用旧文件滚动位置导致“样式错位”。
-    const textarea = textareaRef.current;
-    if (!textarea) {
+    // 切换文件后重置滚动位置，避免沿用旧文件滚动状态。
+    const scroller = editorScrollRef.current;
+    if (!scroller) {
       return;
     }
-    textarea.scrollTop = 0;
-    textarea.scrollLeft = 0;
-    syncHighlightScroll();
-  }, [preview?.path, syncHighlightScroll]);
+    scroller.scrollTop = 0;
+    scroller.scrollLeft = 0;
+  }, [preview?.path]);
 
   const imageFileName = useMemo(
     () => (activePath ? activePath.replace(/\\/g, "/").split("/").pop() ?? "" : ""),
@@ -691,6 +707,52 @@ export function DocumentDetailWindow() {
 
   const canSave = Boolean(preview) && !saving && !loading && isDirty && !preview?.truncated;
   const canExportMarkdown = Boolean(preview) && isMarkdownFile && !loading && !preview?.truncated;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const primary = isPrimaryModifier(event);
+
+      // Ctrl/Cmd + S：保存
+      if (primary && !event.altKey && key === "s") {
+        event.preventDefault();
+        if (canSave) {
+          void handleSave();
+        }
+        return;
+      }
+
+      // Esc：关闭详情窗口
+      if (!primary && !event.altKey && !event.shiftKey && key === "escape") {
+        event.preventDefault();
+        runWindowAction(windowCloseDocumentDetail, "close document detail");
+        return;
+      }
+
+      // Markdown 文件：Ctrl/Cmd + Shift + P/E 切换预览/源码
+      if (primary && event.shiftKey && !event.altKey && isMarkdownFile && !isImage) {
+        if (key === "p") {
+          event.preventDefault();
+          setMarkdownViewMode("preview");
+          return;
+        }
+        if (key === "e") {
+          event.preventDefault();
+          setMarkdownViewMode("source");
+          return;
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [canSave, handleSave, isMarkdownFile, isImage]);
 
   return (
     <div className="flex h-dvh w-screen flex-col bg-[var(--surface-panel)] text-[var(--text-base)]">
@@ -753,7 +815,7 @@ export function DocumentDetailWindow() {
               title={
                 preview?.truncated
                   ? intl.formatMessage({ id: "docDetail.saveTitleDisabled" })
-                  : intl.formatMessage({ id: "docDetail.saveTitleEnabled" })
+                  : intl.formatMessage({ id: "docDetail.saveTitleEnabledShortcut" })
               }
             >
               <IconDeviceFloppy size={13} stroke={1.8} />
@@ -776,7 +838,7 @@ export function DocumentDetailWindow() {
               runWindowAction(windowCloseDocumentDetail, "close document detail")
             }
             className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[#e81123] hover:text-white"
-            title={intl.formatMessage({ id: "docDetail.close" })}
+            title={intl.formatMessage({ id: "docDetail.closeShortcut" })}
           >
             <svg
               width="10"
@@ -867,6 +929,7 @@ export function DocumentDetailWindow() {
                         type="button"
                         onClick={() => setMarkdownViewMode("preview")}
                         className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-prose)] bg-[var(--accent-soft)]"
+                        title={intl.formatMessage({ id: "docDetail.previewShortcut" })}
                       >
                         {intl.formatMessage({ id: "docDetail.preview" })}
                       </button>
@@ -874,6 +937,7 @@ export function DocumentDetailWindow() {
                         type="button"
                         onClick={() => setMarkdownViewMode("source")}
                         className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-faint)] transition-colors hover:text-[var(--chat-prose)]"
+                        title={intl.formatMessage({ id: "docDetail.sourceShortcut" })}
                       >
                         {intl.formatMessage({ id: "docDetail.source" })}
                       </button>
@@ -910,6 +974,7 @@ export function DocumentDetailWindow() {
                           type="button"
                           onClick={() => setMarkdownViewMode("preview")}
                           className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-faint)] transition-colors hover:text-[var(--chat-prose)]"
+                          title={intl.formatMessage({ id: "docDetail.previewShortcut" })}
                         >
                           {intl.formatMessage({ id: "docDetail.preview" })}
                         </button>
@@ -917,6 +982,7 @@ export function DocumentDetailWindow() {
                           type="button"
                           onClick={() => setMarkdownViewMode("source")}
                           className="rounded-[var(--radius-sm)] px-2 py-0.5 text-[10px] text-[var(--chat-prose)] bg-[var(--accent-soft)]"
+                          title={intl.formatMessage({ id: "docDetail.sourceShortcut" })}
                         >
                           {intl.formatMessage({ id: "docDetail.source" })}
                         </button>
@@ -927,48 +993,33 @@ export function DocumentDetailWindow() {
                     </span>
                   </div>
                 </div>
-                <div className="detail-code-editor-layer">
-                  <div className="detail-code-highlight-layer">
-                    <div ref={highlightContentRef} className="detail-code-highlight-content">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[rehypeHighlight]}
-                        components={{
-                          pre(props) {
-                            return (
-                              <pre className="m-0 overflow-visible bg-transparent p-0">
-                                {props.children}
-                              </pre>
-                            );
-                          },
-                          code(props) {
-                            const { className, children } = props;
-                            return (
-                              <code className={`hljs ${className ?? ""}`.trim()}>
-                                {children}
-                              </code>
-                            );
-                          },
-                        }}
-                      >
-                        {highlightedCodeMarkdown}
-                      </ReactMarkdown>
+                <div ref={editorScrollRef} className="detail-code-editor-layer thin-scrollbar">
+                  <div className="detail-code-editor-surface">
+                    <div className="detail-code-highlight-layer" aria-hidden="true">
+                      <pre className="detail-code-highlight-pre">
+                        <code
+                          className={`hljs language-${languageLabel}`}
+                          // highlight.js 输出与原文字符一一对应，仅插入颜色 span。
+                          dangerouslySetInnerHTML={{
+                            __html: highlightedCodeHtml || "\n",
+                          }}
+                        />
+                      </pre>
                     </div>
+                    <textarea
+                      ref={textareaRef}
+                      value={draftContent}
+                      onChange={(event) => {
+                        setDraftContent(normalizeEditorText(event.target.value));
+                      }}
+                      onMouseUp={syncSelection}
+                      onKeyUp={syncSelection}
+                      onSelect={syncSelection}
+                      spellCheck={false}
+                      wrap="off"
+                      className="detail-code-textarea"
+                    />
                   </div>
-                  <textarea
-                    ref={textareaRef}
-                    value={draftContent}
-                    onChange={(event) => {
-                      setDraftContent(event.target.value);
-                    }}
-                    onMouseUp={syncSelection}
-                    onKeyUp={syncSelection}
-                    onSelect={syncSelection}
-                    onScroll={syncHighlightScroll}
-                    spellCheck={false}
-                    wrap="off"
-                    className="detail-code-textarea thin-scrollbar"
-                  />
                 </div>
               </div>
             )}

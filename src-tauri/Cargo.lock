@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "cn-codex"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "async-trait",
  "axum",

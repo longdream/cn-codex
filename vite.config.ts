@@ -16,6 +16,12 @@ export default defineConfig(async () => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // rehype-highlight 已依赖 highlight.js，但未提升到根 node_modules；
+      // 详情页编辑器需要直接复用同一份实现做“字符保真”高亮。
+      "highlight.js": path.resolve(
+        __dirname,
+        "node_modules/.pnpm/highlight.js@11.11.1/node_modules/highlight.js",
+      ),
     },
   },
   test: {

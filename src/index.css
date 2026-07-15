@@ -932,21 +932,29 @@ textarea:focus {
   position: relative;
   min-height: 0;
   height: calc(100% - 31px);
+  overflow: auto;
+}
+
+.detail-code-editor-surface {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+  width: max-content;
 }
 
 .detail-code-highlight-layer {
   position: absolute;
   inset: 0;
-  overflow: hidden;
-  pointer-events: none;
   z-index: 1;
+  pointer-events: none;
 }
 
-.detail-code-highlight-content {
-  min-height: 100%;
-  width: max-content;
-  min-width: 100%;
+.detail-code-highlight-pre,
+.detail-code-textarea {
+  margin: 0;
+  border: 0;
   padding: 12px;
+  box-sizing: border-box;
   font-family:
     "JetBrains Mono",
     "Cascadia Code",
@@ -955,12 +963,45 @@ textarea:focus {
     monospace;
   font-size: 13px;
   line-height: 1.55;
-  transform: translate(0, 0);
+  letter-spacing: 0;
+  tab-size: 4;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
 }
 
-.detail-code-highlight-content pre {
-  margin: 0;
+.detail-code-highlight-pre {
+  display: block;
+  min-width: 100%;
+  min-height: 100%;
+  width: max-content;
   background: transparent;
+  color: var(--chat-prose);
+}
+
+.detail-code-highlight-pre code {
+  display: block;
+  min-width: 100%;
+  width: max-content;
+  font: inherit;
+  letter-spacing: inherit;
+  tab-size: inherit;
+  white-space: inherit;
+  word-break: inherit;
+  overflow-wrap: inherit;
+  font-variant-ligatures: inherit;
+  font-feature-settings: inherit;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  overflow: visible;
+}
+
+.detail-code-highlight-pre code.hljs {
+  overflow: visible;
+  padding: 0;
 }
 
 .detail-code-textarea {
@@ -969,23 +1010,14 @@ textarea:focus {
   z-index: 2;
   width: 100%;
   height: 100%;
-  border: none;
-  outline: none;
   resize: none;
+  outline: none;
+  overflow: hidden;
   background: transparent;
+  /* 文字透明，仅保留光标；可见内容由底层高亮层绘制。 */
   color: transparent;
+  -webkit-text-fill-color: transparent;
   caret-color: var(--text-strong);
-  padding: 12px;
-  font-family:
-    "JetBrains Mono",
-    "Cascadia Code",
-    "SFMono-Regular",
-    Consolas,
-    monospace;
-  font-size: 13px;
-  line-height: 1.55;
-  white-space: pre;
-  overflow: auto;
 }
 
 .detail-code-textarea::selection {
