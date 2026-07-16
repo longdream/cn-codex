@@ -48,6 +48,11 @@ import { skillList } from "../../api/skill";
 import type { SkillSummary } from "../../types/skill";
 import { formatWebSnippet } from "../../utils/formatWebSnippet";
 import {
+  filterProviderModels,
+  resolveModelPickerProviderId,
+  resolveProviderModelId,
+} from "../../utils/chatModelSelection";
+import {
   buildPathRefPromptValue,
   formatPathRefLineRange,
   PATH_REF_MIME,
@@ -249,6 +254,8 @@ export function ChatInput({
   const [text, setText] = useState("");
   const [showSlash, setShowSlash] = useState(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [modelPickerProviderId, setModelPickerProviderId] = useState<string | null>(null);
+  const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [showRobotMenu, setShowRobotMenu] = useState(false);
   const [robots, setRobots] = useState<RobotSummary[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
@@ -256,6 +263,7 @@ export function ChatInput({
   const [visionWarning, setVisionWarning] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
 
   const initialized = useAppStore((s) => s.initialized);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
@@ -300,14 +308,13 @@ export function ChatInput({
   );
   const providerModels = activeProvider?.models ?? [];
 
-  // 显示的模型名称：优先本对话覆盖，其次全局配置
+  // 模型只能在当前有效供应商内解析，避免旧 activeModelId 把 Z-API 拉回 Grok。
   const activeEntry = configuredModels.find((m) => m.id === activeModelId) ?? null;
-  const effectiveModelId =
-    overrideModelId
-    ?? activeEntry?.model
-    ?? currentModel
-    ?? providerModels[0]?.id
-    ?? null;
+  const effectiveModelId = resolveProviderModelId(activeProvider, {
+    overrideModelId,
+    currentModel,
+    legacyModelId: activeEntry?.model,
+  });
   const activeProviderModel = useMemo(() => {
     if (effectiveModelId) {
       return providerModels.find((model) => model.id === effectiveModelId) ?? null;
@@ -315,6 +322,15 @@ export function ChatInput({
     return providerModels[0] ?? null;
   }, [effectiveModelId, providerModels]);
   const usingThreadOverride = Boolean(overrideProviderId || overrideModelId);
+  const pickerProviderId = modelPickerProviderId ?? effectiveProviderId ?? providers[0]?.id ?? null;
+  const pickerProvider = useMemo(
+    () => providers.find((provider) => provider.id === pickerProviderId) ?? null,
+    [pickerProviderId, providers],
+  );
+  const filteredPickerModels = useMemo(
+    () => filterProviderModels(pickerProvider?.models ?? [], modelSearchQuery),
+    [modelSearchQuery, pickerProvider],
+  );
   const displayModel = activeProvider && activeProviderModel
     ? `${activeProvider.name} / ${activeProviderModel.label}`
     : activeEntry?.label
@@ -981,12 +997,60 @@ export function ChatInput({
   const handleThreadProviderModelSelect = useCallback((providerId: string, modelId: string) => {
     setThreadModelOverride(providerId, modelId);
     setShowModelMenu(false);
+    setModelSearchQuery("");
   }, [setThreadModelOverride]);
+
+  const handleModelPickerProviderChange = useCallback((providerId: string) => {
+    setModelPickerProviderId(providerId);
+    setModelSearchQuery("");
+    const provider = providers.find((item) => item.id === providerId) ?? null;
+    const modelId = resolveProviderModelId(provider, {
+      overrideModelId: providerId === overrideProviderId ? overrideModelId : null,
+      currentModel: providerId === activeProviderId ? currentModel : null,
+      legacyModelId: null,
+    });
+    setThreadModelOverride(providerId, modelId);
+  }, [activeProviderId, currentModel, overrideModelId, overrideProviderId, providers, setThreadModelOverride]);
 
   const handleUseGlobalModel = useCallback(() => {
     setThreadModelOverride(null, null);
     setShowModelMenu(false);
-  }, [setThreadModelOverride]);
+    setModelPickerProviderId(activeProviderId);
+    setModelSearchQuery("");
+  }, [activeProviderId, setThreadModelOverride]);
+
+  const handleModelMenuToggle = useCallback(() => {
+    if (showModelMenu) {
+      setShowModelMenu(false);
+      return;
+    }
+    setModelPickerProviderId(resolveModelPickerProviderId(
+      providers.map((provider) => provider.id),
+      effectiveProviderId,
+      activeProviderId,
+    ));
+    setModelSearchQuery("");
+    setShowModelMenu(true);
+  }, [activeProviderId, effectiveProviderId, providers, showModelMenu]);
+
+  // 点击菜单外任意区域关闭模型选择弹层，避免必须先选中模型才能退出。
+  useEffect(() => {
+    if (!showModelMenu) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target || modelMenuRef.current?.contains(target)) {
+        return;
+      }
+      setShowModelMenu(false);
+      setModelSearchQuery("");
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [showModelMenu]);
 
   const cwdLeaf = workspaceCwd
     ? workspaceCwd.split(/[\\/]/).filter(Boolean).pop() ?? workspaceCwd
@@ -1035,112 +1099,6 @@ export function ChatInput({
           }}
           onClose={() => setShowSlash(false)}
         />
-      )}
-
-      {/* 模型选择菜单：列出全部供应商与模型，选择仅作用于当前对话 */}
-      {showModelMenu && (
-        <div className="absolute bottom-full left-0 right-0 z-20 mx-auto max-w-[1180px] px-4 pb-2 sm:px-8">
-          <div className="rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] shadow-lg">
-            <div className="flex items-center justify-between gap-2 border-b border-[var(--chat-line)] px-3 py-2">
-              <div className="min-w-0">
-                <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
-                  {intl.formatMessage({ id: "chat.modelSelectorHint" })}
-                </div>
-                <div className="truncate text-[11px] text-[var(--text-muted)]">
-                  {usingThreadOverride
-                    ? intl.formatMessage({ id: "chat.modelScope.thread" })
-                    : intl.formatMessage({ id: "chat.modelScope.global" })}
-                </div>
-              </div>
-              {usingThreadOverride && (
-                <button
-                  type="button"
-                  onClick={handleUseGlobalModel}
-                  className="rounded-full px-2 py-1 text-[11px] text-[var(--accent)] transition-colors hover:bg-[var(--accent-soft)]"
-                >
-                  {intl.formatMessage({ id: "chat.modelUseGlobal" })}
-                </button>
-              )}
-            </div>
-            <div className="max-h-[280px] overflow-y-auto py-1">
-              {providers.length > 0 ? (
-                providers.map((provider) => (
-                  <div key={provider.id} className="border-b border-[var(--chat-line)] last:border-b-0">
-                    <div className="flex items-center justify-between gap-2 px-3 py-2">
-                      <span className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
-                        {provider.name}
-                      </span>
-                      {provider.id === activeProviderId && (
-                        <span className="rounded-full bg-[var(--accent-soft)] px-1.5 py-0.5 text-[10px] text-[var(--accent-strong)]">
-                          {intl.formatMessage({ id: "chat.modelGlobalBadge" })}
-                        </span>
-                      )}
-                    </div>
-                    {provider.models.length > 0 ? (
-                      provider.models.map((model) => {
-                        const selected =
-                          (overrideProviderId ?? activeProviderId) === provider.id
-                          && (overrideModelId ?? effectiveModelId) === model.id;
-                        return (
-                          <button
-                            key={`${provider.id}:${model.id}`}
-                            type="button"
-                            onClick={() => handleThreadProviderModelSelect(provider.id, model.id)}
-                            className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-elevated)] ${
-                              selected
-                                ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-                                : "text-[var(--text-base)]"
-                            }`}
-                          >
-                            <IconCpu size={13} stroke={1.8} className="flex-shrink-0 opacity-60" />
-                            <div className="min-w-0 flex-1">
-                              <span className="block truncate font-medium">{model.label}</span>
-                              <span className="block truncate text-[11px] text-[var(--text-faint)]">
-                                {model.id}{model.supportsVision && " · 📷 vision"}
-                              </span>
-                            </div>
-                            {selected && (
-                              <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--accent)]" />
-                            )}
-                          </button>
-                        );
-                      })
-                    ) : (
-                      <div className="px-3 pb-2 text-[11px] text-[var(--text-faint)]">
-                        {intl.formatMessage({ id: "chat.modelEmptyProvider" })}
-                      </div>
-                    )}
-                  </div>
-                ))
-              ) : configuredModels.length > 0 ? (
-                configuredModels.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => handleThreadProviderModelSelect(m.provider, m.model)}
-                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-elevated)] ${
-                      m.model === effectiveModelId
-                        ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-                        : "text-[var(--text-base)]"
-                    }`}
-                  >
-                    <IconCpu size={13} stroke={1.8} className="flex-shrink-0 opacity-60" />
-                    <div className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">{m.label}</span>
-                      <span className="block truncate text-[11px] text-[var(--text-faint)]">
-                        {m.provider}{m.supportsVision && " · 📷 vision"}
-                      </span>
-                    </div>
-                  </button>
-                ))
-              ) : (
-                <div className="px-3 py-4 text-center text-xs text-[var(--text-faint)]">
-                  {intl.formatMessage({ id: "chat.modelEmpty" })}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
       )}
 
       {visionWarning && (
@@ -1465,22 +1423,133 @@ export function ChatInput({
             </span>
 
             {/* 模型选择器 */}
-            <button
-              type="button"
-              onClick={() => {
-                if (providers.length > 0 || configuredModels.length > 0) {
-                  setShowModelMenu((v) => !v);
-                } else {
-                  useAppStore.getState().setShowSettings(true);
-                }
-              }}
-              className="flex min-w-0 items-center gap-1 rounded-full px-2 py-1 transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
-              title={intl.formatMessage({ id: "chat.modelSelector" })}
-            >
-              <IconCpu size={12} stroke={1.8} className="flex-shrink-0" />
-              <span className="max-w-[190px] truncate">{displayModel}</span>
-              <IconChevronDown size={10} stroke={2} className="flex-shrink-0 opacity-60" />
-            </button>
+            <div ref={modelMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  // 两段联动选择器只基于 providers；旧 configuredModels 仅作显示兼容，
+                  // 没有供应商时直接进入设置，避免打开空菜单。
+                  if (providers.length > 0) {
+                    handleModelMenuToggle();
+                  } else {
+                    useAppStore.getState().setShowSettings(true);
+                  }
+                }}
+                className="flex min-w-0 items-center gap-1 rounded-full px-2 py-1 transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+                title={intl.formatMessage({ id: "chat.modelSelector" })}
+              >
+                <IconCpu size={12} stroke={1.8} className="flex-shrink-0" />
+                <span className="max-w-[190px] truncate">{displayModel}</span>
+                <IconChevronDown size={10} stroke={2} className="flex-shrink-0 opacity-60" />
+              </button>
+
+              {/* 模型选择菜单：紧贴触发按钮上方，供应商 + 可搜索模型两段联动 */}
+              {showModelMenu && (
+                <div className="absolute bottom-full left-0 z-30 mb-1 w-[min(360px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] shadow-lg">
+                  <div className="flex items-center justify-between gap-2 border-b border-[var(--chat-line)] px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
+                        {intl.formatMessage({ id: "chat.modelSelectorHint" })}
+                      </div>
+                      <div className="truncate text-[11px] text-[var(--text-muted)]">
+                        {usingThreadOverride
+                          ? intl.formatMessage({ id: "chat.modelScope.thread" })
+                          : intl.formatMessage({ id: "chat.modelScope.global" })}
+                      </div>
+                    </div>
+                    {usingThreadOverride && (
+                      <button
+                        type="button"
+                        onClick={handleUseGlobalModel}
+                        className="rounded-full px-2 py-1 text-[11px] text-[var(--accent)] transition-colors hover:bg-[var(--accent-soft)]"
+                      >
+                        {intl.formatMessage({ id: "chat.modelUseGlobal" })}
+                      </button>
+                    )}
+                  </div>
+
+                  {providers.length > 0 ? (
+                    <div className="space-y-3 p-3">
+                      <label className="block min-w-0 space-y-1.5">
+                        <span className="block text-[11px] font-medium text-[var(--text-muted)]">
+                          {intl.formatMessage({ id: "chat.modelProviderLabel" })}
+                        </span>
+                        <select
+                          value={pickerProviderId ?? ""}
+                          onChange={(event) => handleModelPickerProviderChange(event.target.value)}
+                          className="h-9 w-full min-w-0 rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--surface-elevated)] px-2.5 text-[13px] text-[var(--text-base)] outline-none focus:border-[var(--accent)]"
+                        >
+                          {providers.map((provider) => (
+                            <option key={provider.id} value={provider.id}>
+                              {provider.name}{provider.id === activeProviderId
+                                ? ` · ${intl.formatMessage({ id: "chat.modelGlobalBadge" })}`
+                                : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <div className="min-w-0 space-y-1.5">
+                        <label htmlFor="chat-model-search" className="block text-[11px] font-medium text-[var(--text-muted)]">
+                          {intl.formatMessage({ id: "chat.modelLabel" })}
+                        </label>
+                        <input
+                          id="chat-model-search"
+                          type="text"
+                          value={modelSearchQuery}
+                          onChange={(event) => setModelSearchQuery(event.target.value)}
+                          placeholder={intl.formatMessage({ id: "chat.modelSearchPlaceholder" })}
+                          autoComplete="off"
+                          className="h-9 w-full min-w-0 rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--surface-elevated)] px-2.5 text-[13px] text-[var(--text-base)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--accent)]"
+                        />
+                        <div className="max-h-[min(220px,32vh)] overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] py-1">
+                          {filteredPickerModels.length > 0 ? (
+                            filteredPickerModels.map((model) => {
+                              const selected = pickerProvider?.id === effectiveProviderId
+                                && model.id === effectiveModelId;
+                              return (
+                                <button
+                                  key={`${pickerProvider?.id ?? "provider"}:${model.id}`}
+                                  type="button"
+                                  onClick={() => pickerProvider
+                                    && handleThreadProviderModelSelect(pickerProvider.id, model.id)}
+                                  className={`flex w-full items-center gap-2.5 px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-[var(--surface-elevated)] ${
+                                    selected
+                                      ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                                      : "text-[var(--text-base)]"
+                                  }`}
+                                >
+                                  <IconCpu size={13} stroke={1.8} className="flex-shrink-0 opacity-60" />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate font-medium">{model.label}</span>
+                                    <span className="block truncate text-[11px] text-[var(--text-faint)]">
+                                      {model.id}{model.supportsVision && " · 📷 vision"}
+                                    </span>
+                                  </span>
+                                  {selected && (
+                                    <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--accent)]" />
+                                  )}
+                                </button>
+                              );
+                            })
+                          ) : (
+                            <div className="px-3 py-4 text-center text-xs text-[var(--text-faint)]">
+                              {pickerProvider?.models.length
+                                ? intl.formatMessage({ id: "chat.modelSearchEmpty" })
+                                : intl.formatMessage({ id: "chat.modelEmptyProvider" })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="px-3 py-4 text-center text-xs text-[var(--text-faint)]">
+                      {intl.formatMessage({ id: "chat.modelEmpty" })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             <button
               type="button"

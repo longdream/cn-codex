@@ -39,6 +39,7 @@ logs/
 # Embedded Node.js (bundled at publish time, not checked into git)
 codey/node/
 tools/node-cache/
+tools/rg-cache/
 
 # Runtime config with API tokens
 codey/skills/**/.skill.env

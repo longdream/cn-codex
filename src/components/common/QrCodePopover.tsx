@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -11,7 +11,8 @@ export function QrCodePopover({ onClose }: QrCodePopoverProps) {
   const [svg, setSvg] = useState<string>("");
   const [url, setUrl] = useState<string>("");
   const [error, setError] = useState<string>("");
-  const ref = useRef<HTMLDivElement>(null);
+  // 外部点击关闭由 TitleBar 统一处理（按钮 + 弹层同一容器），
+  // 这里只保留 Esc 关闭，避免与触发按钮的 toggle 互相打架。
 
   useEffect(() => {
     const load = async () => {
@@ -28,18 +29,17 @@ export function QrCodePopover({ onClose }: QrCodePopoverProps) {
   }, []);
 
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
         onClose();
       }
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
   return (
     <div
-      ref={ref}
       className="absolute right-0 top-full z-[100] mt-1 w-64 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-4 shadow-xl"
     >
       <p className="mb-3 text-center text-xs font-medium text-[var(--text-strong)]">

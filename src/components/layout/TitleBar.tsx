@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import {
   windowClose,
@@ -29,12 +29,31 @@ export function TitleBar() {
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
   const setRightPanelVisible = useAppStore((s) => s.setRightPanelVisible);
   const [showQr, setShowQr] = useState(false);
+  const qrMenuRef = useRef<HTMLDivElement>(null);
   const updateInfo = useUpdateStore((s) => s.info);
   const setShowUpdateModal = useUpdateStore((s) => s.setShowModal);
 
   const handleDoubleClick = () => {
     runWindowAction(windowToggleMaximize, "toggle maximize");
   };
+
+  // 点击二维码弹层外的任意区域关闭，行为与对话模型菜单一致。
+  useEffect(() => {
+    if (!showQr) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target || qrMenuRef.current?.contains(target)) {
+        return;
+      }
+      setShowQr(false);
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [showQr]);
 
   return (
     <div className="relative z-[60] flex h-8 w-full flex-shrink-0 select-none items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--surface-sidebar)]">
@@ -74,11 +93,11 @@ export function TitleBar() {
             </span>
           </button>
         ) : null}
-        <div className="relative">
+        <div ref={qrMenuRef} className="relative">
           <button
             type="button"
             aria-label={intl.formatMessage({ id: "titleBar.qrCode" })}
-            onClick={() => setShowQr(!showQr)}
+            onClick={() => setShowQr((open) => !open)}
             className={`flex h-full w-11 items-center justify-center transition-colors ${
               showQr
                 ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"

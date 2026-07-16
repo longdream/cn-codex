@@ -1415,6 +1415,40 @@ export function createProviderFromPreset(
   };
 }
 
+
+/**
+ * 解析全局默认供应商下应使用的模型：
+ * 1) 若旧版 activeModel 属于该供应商，优先沿用；
+ * 2) 若 currentModel 仍在该供应商模型列表中，沿用；
+ * 3) 否则回退到供应商模型列表第一项。
+ */
+function resolveGlobalDefaultModel(
+  provider: ProviderConfig | null | undefined,
+  options?: {
+    preferredModelId?: string | null;
+    currentModel?: string | null;
+  },
+): ProviderModel | null {
+  if (!provider || provider.models.length === 0) {
+    return null;
+  }
+  const preferred = options?.preferredModelId?.trim();
+  if (preferred) {
+    const matchedPreferred = provider.models.find((model) => model.id === preferred);
+    if (matchedPreferred) {
+      return matchedPreferred;
+    }
+  }
+  const current = options?.currentModel?.trim();
+  if (current) {
+    const matchedCurrent = provider.models.find((model) => model.id === current);
+    if (matchedCurrent) {
+      return matchedCurrent;
+    }
+  }
+  return provider.models[0] ?? null;
+}
+
 function saveProviders(providers: ProviderConfig[]) {
   void appStateSet(PROVIDERS_KEY, JSON.stringify(providers));
 }
@@ -2267,50 +2301,60 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   activateProvider: (providerId: string) => {
     saveActiveProviderId(providerId);
-    set({ activeProviderId: providerId });
     const state = get();
     const provider = state.providers.find((p) => p.id === providerId);
-    if (provider) {
-      const providerKey = provider.type || "custom";
-      const providerOverride: Record<string, unknown> = {};
-      if (provider.baseUrl) providerOverride.base_url = provider.baseUrl;
-      if (provider.wireApi) providerOverride.wire_api = provider.wireApi;
-      if (provider.apiKey) providerOverride.experimental_bearer_token = provider.apiKey;
-      providerOverride.requires_openai_auth = provider.requiresOpenAIAuth;
-      const activeEntry = state.activeModelId
-        ? state.configuredModels.find((m) => m.id === state.activeModelId)
-        : null;
-      const preferredModelId = activeEntry
-        && (activeEntry.provider === provider.id || activeEntry.provider === provider.type)
-        ? activeEntry.model
-        : undefined;
-      const selectedModel = provider.models.find((model) => model.id === preferredModelId)
-        ?? provider.models[0];
-      const modelEndpoints = buildLocalPoolModelEndpoints(provider, selectedModel);
-      const visionFallback = resolveVisionFallbackConfig(selectedModel, state.providers);
-
-      set({ activeEndpointIndex: modelEndpoints.length > 0 ? 0 : null });
-
-      const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
-        { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
-        { keyPath: "model", value: selectedModel?.id ?? "", mergeStrategy: "replace" },
-        { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
-        {
-          keyPath: "model_context_window",
-          value: modelContextLengthOrDefault(selectedModel),
-          mergeStrategy: "replace",
-        },
-        {
-          keyPath: "max_output_tokens",
-          value: modelMaxOutputTokensOrDefault(selectedModel),
-          mergeStrategy: "replace",
-        },
-        ...buildVisionFallbackConfigEdits(visionFallback),
-        { keyPath: "model_endpoints", value: modelEndpoints, mergeStrategy: "replace" },
-        { keyPath: "active_endpoint_index", value: modelEndpoints.length > 0 ? 0 : null, mergeStrategy: "replace" },
-      ];
-      standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync provider config:", err));
+    if (!provider) {
+      set({ activeProviderId: providerId });
+      return;
     }
+
+    const providerKey = provider.type || "custom";
+    const providerOverride: Record<string, unknown> = {};
+    if (provider.baseUrl) providerOverride.base_url = provider.baseUrl;
+    if (provider.wireApi) providerOverride.wire_api = provider.wireApi;
+    if (provider.apiKey) providerOverride.experimental_bearer_token = provider.apiKey;
+    providerOverride.requires_openai_auth = provider.requiresOpenAIAuth;
+    const activeEntry = state.activeModelId
+      ? state.configuredModels.find((m) => m.id === state.activeModelId)
+      : null;
+    const preferredModelId = activeEntry
+      && (activeEntry.provider === provider.id || activeEntry.provider === provider.type)
+      ? activeEntry.model
+      : undefined;
+    // 启用供应商时同步全局默认模型，避免新对话继续落在旧模型/列表第一项。
+    const selectedModel = resolveGlobalDefaultModel(provider, {
+      preferredModelId,
+      currentModel: state.currentModel,
+    });
+    const selectedModelId = selectedModel?.id ?? "";
+    const modelEndpoints = buildLocalPoolModelEndpoints(provider, selectedModel);
+    const visionFallback = resolveVisionFallbackConfig(selectedModel, state.providers);
+
+    set({
+      activeProviderId: providerId,
+      currentModel: selectedModelId || null,
+      activeEndpointIndex: modelEndpoints.length > 0 ? 0 : null,
+    });
+
+    const edits: { keyPath: string; value: unknown; mergeStrategy: string }[] = [
+      { keyPath: "model_provider", value: providerKey, mergeStrategy: "replace" },
+      { keyPath: "model", value: selectedModelId, mergeStrategy: "replace" },
+      { keyPath: `model_providers.${providerKey}`, value: providerOverride, mergeStrategy: "replace" },
+      {
+        keyPath: "model_context_window",
+        value: modelContextLengthOrDefault(selectedModel),
+        mergeStrategy: "replace",
+      },
+      {
+        keyPath: "max_output_tokens",
+        value: modelMaxOutputTokensOrDefault(selectedModel),
+        mergeStrategy: "replace",
+      },
+      ...buildVisionFallbackConfigEdits(visionFallback),
+      { keyPath: "model_endpoints", value: modelEndpoints, mergeStrategy: "replace" },
+      { keyPath: "active_endpoint_index", value: modelEndpoints.length > 0 ? 0 : null, mergeStrategy: "replace" },
+    ];
+    standaloneConfigWrite(edits).catch((err) => console.error("Failed to sync provider config:", err));
   },
 
   updateProvider: (providerId: string, updates: Partial<ProviderConfig>) => {
@@ -2892,8 +2936,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     return buildThreadChatProviderOverrideSnapshot(
       state.providers,
-      providerId ?? state.overrideProviderId,
-      modelId ?? state.overrideModelId,
+      // 仅在参数省略时回退到当前 override；显式 null 表示“不使用 override”。
+      providerId === undefined ? state.overrideProviderId : providerId,
+      modelId === undefined ? state.overrideModelId : modelId,
     );
   },
   setSmartbrainExtractionStatus: (state) =>
@@ -3545,6 +3590,21 @@ export async function initStoreFromDb(): Promise<void> {
     }
   } catch { /* ignore */ }
 
+  // 启动时把全局模型对齐到“启用供应商”的默认模型。
+  // 若 config.toml 中的 model 仍属于该供应商，则优先沿用；否则回退到供应商模型列表第一项。
+  const activeProvider = providers.find((provider) => provider.id === activeProviderId) ?? null;
+  const activeModelEntry = activeModelId
+    ? configuredModels.find((entry) => entry.id === activeModelId) ?? null
+    : null;
+  const preferredModelId = activeModelEntry
+    && activeProvider
+    && (activeModelEntry.provider === activeProvider.id || activeModelEntry.provider === activeProvider.type)
+    ? activeModelEntry.model
+    : null;
+  const hydratedDefaultModel = resolveGlobalDefaultModel(activeProvider, {
+    preferredModelId,
+  });
+
   useAppStore.setState({
     projects,
     threadProjectMap,
@@ -3552,6 +3612,7 @@ export async function initStoreFromDb(): Promise<void> {
     activeProviderId,
     configuredModels,
     activeModelId,
+    currentModel: hydratedDefaultModel?.id ?? null,
     autoApprove,
     imageGenerationSettings,
     sidebarTab,

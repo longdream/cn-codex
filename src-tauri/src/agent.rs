@@ -2507,9 +2507,9 @@ impl AgentEngine {
              \n\
              {file_creation_policy}\n\
              \n\
-             POWERSHELL COMMAND SAFETY: Send a complete literal command in every shell tool call. \
-             Never emit empty shell calls or substitute an omitted command or variable with placeholder text such as `[ ]`, `[ ] # try shell`, or `] # try shell`; never start a pipeline with `|`. \
-             Inside `Where-Object` and `ForEach-Object`, the current pipeline item is `$_` (never `$*`).\n\
+             POWERSHELL COMMAND CONTRACT: The `command` or `cmd` argument must be one non-empty string containing a complete executable PowerShell script. \
+             Every pipeline must begin with a command or expression that produces input. Inside `Where-Object` and `ForEach-Object`, use `$_` as the current pipeline object. \
+             Do not send planning notes, checklist syntax, omitted variables, or partial command fragments as tool arguments.\n\
              \n\
              WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
              use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \

@@ -37,12 +37,16 @@ use crate::protocol::RequestId;
 use crate::state::{AppState, ApprovalAction};
 
 mod code_review_support;
+mod code_search_support;
 mod memory_support;
 mod patch_support;
 use code_review_support::{
     CodeReviewArgs, analyze_code_review_diff, code_review_git_args, code_review_scope_label,
     code_review_untracked_paths, format_code_review_output, validate_code_review_base_ref,
     validate_code_review_paths,
+};
+use code_search_support::{
+    CodeSearchArgs, build_code_search_command, format_code_search_output,
 };
 #[cfg(test)]
 use code_review_support::{CodeReviewSummary, ReviewFinding};
@@ -906,19 +910,14 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "shell",
-                    "description": "Runs a shell command and returns its output. Accepts CN-Codex's legacy argv array or Codex-style script strings. Supports workdir, timeout_ms (or block_until_ms), login, and sandbox permission approval fields.",
+                    "description": "Runs one complete shell script and returns its output. On Windows the script must be valid PowerShell with every pipeline starting from an input-producing command. Supports workdir, timeout_ms (or block_until_ms), login, and sandbox permission approval fields.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "command": {
-                                "oneOf": [
-                                    { "type": "string" },
-                                    {
-                                        "type": "array",
-                                        "items": { "type": "string" }
-                                    }
-                                ],
-                                "description": "Shell script to run, or a legacy command argv array."
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "One complete shell script. On Windows use valid PowerShell syntax, provide an input command before every pipeline, and use $_ as the current pipeline object."
                             },
                             "workdir": {
                                 "type": "string",
@@ -967,19 +966,14 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "shell_command",
-                    "description": "Codex-compatible shell tool. Runs a PowerShell command on Windows or a shell script on Unix and returns output. On Windows, pass a complete literal PowerShell command: never use Markdown checkbox placeholders such as '[ ]', never begin a pipeline with '|', and use $_ (not $*) inside Where-Object/ForEach-Object blocks. Supports workdir, timeout_ms (or block_until_ms), login, sandbox_permissions, justification, prefix_rule, and additional_permissions.",
+                    "description": "Codex-compatible shell tool. Runs one complete PowerShell script on Windows or one shell script on Unix and returns output. Every PowerShell pipeline must start from an input-producing command, and Where-Object/ForEach-Object use $_ as the current object. Supports workdir, timeout_ms (or block_until_ms), login, sandbox_permissions, justification, prefix_rule, and additional_permissions.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "command": {
-                                "oneOf": [
-                                    { "type": "string" },
-                                    {
-                                        "type": "array",
-                                        "items": { "type": "string" }
-                                    }
-                                ],
-                                "description": "Shell script to run, or a legacy command argv array."
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "One complete shell script. On Windows use valid PowerShell syntax, provide an input command before every pipeline, and use $_ as the current pipeline object."
                             },
                             "workdir": {
                                 "type": "string",
@@ -1034,6 +1028,7 @@ impl ToolExecutor {
                         "properties": {
                             "cmd": {
                                 "type": "string",
+                                "minLength": 1,
                                 "description": "Shell command to execute."
                             },
                             "workdir": {
@@ -1408,6 +1403,59 @@ impl ToolExecutor {
                             }
                         },
                         "required": ["id", "config"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "code_search",
+                    "description": "Search source code in the current workspace using CN-Codex's built-in search engine. The implementation is embedded in CN-Codex and does not require an external rg installation.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Text or regular expression to search for."
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "Optional file or directory inside the current workspace. Defaults to the workspace root."
+                            },
+                            "glob": {
+                                "type": "array",
+                                "items": { "type": "string", "minLength": 1 },
+                                "description": "Optional glob filters such as '*.rs' or 'src/**'."
+                            },
+                            "case_sensitive": {
+                                "type": "boolean",
+                                "description": "Use case-sensitive matching. Defaults to false."
+                            },
+                            "fixed_strings": {
+                                "type": "boolean",
+                                "description": "Treat pattern as literal text instead of a regular expression. Defaults to false."
+                            },
+                            "context": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 5,
+                                "description": "Context lines before and after each match."
+                            },
+                            "head_limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 200,
+                                "description": "Maximum match lines to return. Defaults to 50."
+                            },
+                            "timeout_ms": {
+                                "type": "integer",
+                                "minimum": 1000,
+                                "maximum": 120000,
+                                "description": "Search timeout in milliseconds. Defaults to 30000."
+                            }
+                        },
+                        "required": ["pattern"]
                     }
                 }
             }),
@@ -2651,6 +2699,10 @@ impl ToolExecutor {
             }
             "code_review" => {
                 self.exec_code_review(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "code_search" => {
+                self.exec_code_search(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "apply_patch" => {
@@ -5690,6 +5742,139 @@ impl ToolExecutor {
                 Ok(msg)
             }
         }
+    }
+
+    async fn exec_code_search(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        let args: CodeSearchArgs = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid code_search args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "code_search", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_search", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let display = format!(
+            "pattern={} path={}",
+            args.pattern,
+            args.path.as_deref().unwrap_or(".")
+        );
+        self.emit_tool_start(app_handle, thread_id, call_id, "code_search", &display);
+
+        let command = match build_code_search_command(&self.cwd, &args) {
+            Ok(command) => command,
+            Err(msg) => {
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_search", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let mut process = Command::new(&command.rg_path);
+        process
+            .args(&command.args)
+            .current_dir(&self.cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        process.no_console();
+
+        let mut child = match process.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                let msg = format!("Failed to start embedded code search engine: {e}");
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_search", -1, &msg);
+                return Ok(msg);
+            }
+        };
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stdout_collector = stdout_buffer.clone();
+        let stderr_collector = stderr_buffer.clone();
+        let mut stdout_handle = tokio::spawn(async move {
+            if let Some(stdout) = stdout {
+                collect_shell_stream_bytes(stdout, stdout_collector).await;
+            }
+        });
+        let mut stderr_handle = tokio::spawn(async move {
+            if let Some(stderr) = stderr {
+                collect_shell_stream_bytes(stderr, stderr_collector).await;
+            }
+        });
+
+        let child = Arc::new(Mutex::new(child));
+        self.register_active_tool_process(
+            thread_id,
+            call_id,
+            "code_search",
+            child.clone(),
+        )
+        .await;
+
+        let (exit_code, timed_out) =
+            match wait_for_child_with_timeout(&child, command.timeout_ms).await {
+                WaitChildResult::Exited(status) => (status.code().unwrap_or(-1), false),
+                WaitChildResult::TimedOut => {
+                    terminate_shell_child(&child).await;
+                    (124, true)
+                }
+                WaitChildResult::Failed(error) => {
+                    terminate_shell_child(&child).await;
+                    wait_for_shell_stream_task(&mut stdout_handle, 300).await;
+                    wait_for_shell_stream_task(&mut stderr_handle, 300).await;
+                    self.unregister_active_tool_process(thread_id, call_id)
+                        .await;
+                    let msg = format!("Failed to wait for code_search: {error}");
+                    self.emit_tool_end(
+                        app_handle,
+                        thread_id,
+                        call_id,
+                        "code_search",
+                        -1,
+                        &msg,
+                    );
+                    return Ok(msg);
+                }
+            };
+
+        wait_for_shell_stream_task(&mut stdout_handle, 1_500).await;
+        wait_for_shell_stream_task(&mut stderr_handle, 1_500).await;
+        self.unregister_active_tool_process(thread_id, call_id).await;
+        let stdout = decode_command_output_bytes(&stdout_buffer.lock().await);
+        let stderr = decode_command_output_bytes(&stderr_buffer.lock().await);
+        let output = if timed_out {
+            format!(
+                "code_search timed out after {} ms for pattern `{}`.",
+                command.timeout_ms, args.pattern
+            )
+        } else {
+            format_code_search_output(
+                &args.pattern,
+                &command.search_root,
+                &self.cwd,
+                &stdout,
+                &stderr,
+                exit_code,
+                command.head_limit,
+            )
+        };
+        self.emit_tool_end(
+            app_handle,
+            thread_id,
+            call_id,
+            "code_search",
+            exit_code,
+            &output,
+        );
+        Ok(output)
     }
 
     async fn exec_code_review(
@@ -11236,14 +11421,14 @@ fn powershell_command_validation_error(command: &str) -> Option<String> {
 
         if checkbox_placeholder || broken_closing_placeholder || trimmed.starts_with('|') {
             return Some(format!(
-                "Error: invalid PowerShell command on line {}: found an empty/Markdown placeholder or a pipeline with no input. Do not use placeholder text such as '[ ] # try shell'. Rebuild and retry the tool call with one complete literal command, for example '$items | Select-Object Name'.",
+                "Error: invalid PowerShell command on line {}. The command argument must be one non-empty string containing a complete executable script, and every pipeline must begin with an input-producing command.",
                 index + 1
             ));
         }
 
         if trimmed.contains("$*.") {
             return Some(format!(
-                "Error: invalid PowerShell pipeline variable '$*' on line {}. Use '$_' inside Where-Object or ForEach-Object blocks, for example 'Where-Object {{ $_.FullName -match \"pattern\" }}', then retry the tool call.",
+                "Error: invalid PowerShell current-object reference on line {}. Inside Where-Object or ForEach-Object, use '$_' as the current pipeline object.",
                 index + 1
             ));
         }
@@ -12554,7 +12739,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_specs_include_codex_style_shell_command_schema() {
+    fn tool_specs_require_non_empty_shell_script_strings() {
         let executor = ToolExecutor::new(PathBuf::from("."));
         let tools = executor.tool_specs(false);
         for name in ["shell", "shell_command"] {
@@ -12566,10 +12751,15 @@ mod tests {
                         == Some(name)
                 })
                 .unwrap_or_else(|| panic!("missing {name} tool spec"));
-            assert!(
-                spec.pointer("/function/parameters/properties/command/oneOf")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|items| items.len() == 2)
+            assert_eq!(
+                spec.pointer("/function/parameters/properties/command/type")
+                    .and_then(serde_json::Value::as_str),
+                Some("string")
+            );
+            assert_eq!(
+                spec.pointer("/function/parameters/properties/command/minLength")
+                    .and_then(serde_json::Value::as_u64),
+                Some(1)
             );
             assert!(
                 spec.pointer("/function/parameters/properties/workdir")
@@ -14886,8 +15076,8 @@ index 1111111..2222222 100644
             "  | Where-Object { $_.Name -match 'skill' }",
         ] {
             let error = powershell_command_validation_error(command).expect(command);
-            assert!(error.contains("placeholder"));
-            assert!(error.contains("retry"));
+            assert!(error.contains("complete executable script"));
+            assert!(error.contains("input-producing command"));
         }
 
         let error = powershell_command_validation_error(
