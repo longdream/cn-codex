@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildSkillScopedPrompt,
+  buildPluginScopedPrompt,
+  buildMcpScopedPrompt,
   parseModifyRobotCommand,
   parseSkillCommand,
   parseSkillSelectionQuery,
@@ -57,6 +59,19 @@ describe("ChatInput slash helpers", () => {
   it("wraps a skill-scoped prompt", () => {
     expect(buildSkillScopedPrompt("code-review", "fix tests")).toContain(
       'skill "code-review"',
+    );
+  });
+
+  it("wraps a plugin-scoped prompt", () => {
+    expect(buildPluginScopedPrompt("browser", "Browser")).toContain(
+      'plugin "Browser"',
+    );
+    expect(buildPluginScopedPrompt("browser", "Browser")).toContain("id: browser");
+  });
+
+  it("wraps an mcp-scoped prompt", () => {
+    expect(buildMcpScopedPrompt("computer-use")).toContain(
+      'MCP server "computer-use"',
     );
   });
 });

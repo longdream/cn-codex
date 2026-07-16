@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./styles/computer-use-overlay.css";
 
 :root {
   color-scheme: dark;
@@ -1400,3 +1401,4 @@ code,
   color: #ef4444;
   word-break: break-word;
 }
+

@@ -37,7 +37,8 @@ export function PluginsPanel() {
   const load = useCallback(async () => {
     try {
       const list = await pluginList();
-      setPlugins(list);
+      // Computer Use 已迁移为 MCP 入口，插件列表中隐藏以避免重复。
+      setPlugins(list.filter((plugin) => plugin.id !== "computer-use"));
     } catch {
       setPlugins([]);
     }

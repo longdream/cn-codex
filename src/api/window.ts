@@ -80,6 +80,12 @@ export interface RunSummaryDiffWindowInfo {
   created: boolean;
 }
 
+export interface ComputerUseOverlayWindowInfo {
+  label: string;
+  active: boolean;
+  created: boolean;
+}
+
 export async function windowStartDragging(): Promise<void> {
   await invoke("window_start_dragging");
 }
@@ -254,6 +260,12 @@ export async function windowCloseRunSummaryDiff(): Promise<void> {
 
 export async function windowGetRunSummaryDiffPayload(): Promise<RunSummaryDiffPayload | null> {
   return invoke<RunSummaryDiffPayload | null>("window_get_runsummary_diff_payload");
+}
+
+export async function windowSetComputerUseOverlay(
+  active: boolean,
+): Promise<ComputerUseOverlayWindowInfo> {
+  return invoke<ComputerUseOverlayWindowInfo>("window_set_computer_use_overlay", { active });
 }
 
 export async function documentDetailInsertSnippet(snippet: string): Promise<void> {

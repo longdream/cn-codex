@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::time::sleep;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-use crate::commands::window::open_browser_embedded;
+use crate::commands::window::{browser_cdp_endpoint_candidates, open_browser_embedded};
 
 const DEFAULT_ACTION_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_RUN_TIMEOUT_MS: u64 = 60_000;
@@ -134,9 +134,13 @@ pub async fn run_webview_js_injection(
         600.0,
     )
     .map_err(|e| format!("Failed to open browser: {e}"))?;
-    let cdp_endpoint = browser_info.cdp_endpoint.clone();
-
-    ensure_cdp_ready(&http, &cdp_endpoint, Duration::from_secs(8), &cancel_flag).await?;
+    let cdp_endpoint = ensure_cdp_ready(
+        &http,
+        &browser_info.cdp_endpoint,
+        Duration::from_secs(12),
+        &cancel_flag,
+    )
+    .await?;
     app_handle.emit("browser-webview-ready", ()).ok();
     let mut session =
         BrowserSession::connect(http.clone(), cdp_endpoint.clone(), cancel_flag.clone()).await?;
@@ -242,10 +246,15 @@ pub async fn run_external_browser(
 ) -> Result<BrowserRunOutput, String> {
     let started_at = Instant::now();
 
-    ensure_cdp_ready(&http, cdp_endpoint, Duration::from_secs(8), &cancel_flag).await?;
+    let cdp_endpoint = ensure_cdp_ready(
+        &http,
+        cdp_endpoint,
+        Duration::from_secs(12),
+        &cancel_flag,
+    )
+    .await?;
     let mut session =
-        BrowserSession::connect(http.clone(), cdp_endpoint.to_string(), cancel_flag.clone())
-            .await?;
+        BrowserSession::connect(http.clone(), cdp_endpoint.clone(), cancel_flag.clone()).await?;
 
     let browser_dir = workspace_config_dir.join("browser");
     let screenshot_dir = path_from_payload_or_default(
@@ -319,7 +328,7 @@ pub async fn run_external_browser(
     Ok(BrowserRunOutput {
         ok: true,
         browser_mode: "external-chrome".to_string(),
-        cdp_endpoint: cdp_endpoint.to_string(),
+        cdp_endpoint,
         final_url,
         title,
         tabs,
@@ -1518,28 +1527,69 @@ fn parse_ws_message_json(message: Message) -> Result<serde_json::Value, String> 
     }
 }
 
+fn local_cdp_http_client() -> reqwest::Client {
+    // CDP is always local loopback; proxies can black-hole or 502 these requests.
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn cdp_http_client(_preferred: &reqwest::Client) -> reqwest::Client {
+    // Prefer a dedicated local client so env/system proxies cannot intercept loopback CDP.
+    local_cdp_http_client()
+}
+
+fn cdp_endpoint_candidates(preferred: &str) -> Vec<String> {
+    let preferred = preferred.trim().trim_end_matches('/').to_string();
+    let mut candidates = Vec::new();
+    if !preferred.is_empty() {
+        candidates.push(preferred.clone());
+    }
+    for candidate in browser_cdp_endpoint_candidates() {
+        if !candidates.iter().any(|existing| existing == &candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
 async fn ensure_cdp_ready(
     http: &reqwest::Client,
     cdp_endpoint: &str,
     timeout: Duration,
     cancel_flag: &Arc<AtomicBool>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let deadline = Instant::now() + timeout;
+    let client = cdp_http_client(http);
+    let candidates = cdp_endpoint_candidates(cdp_endpoint);
+    let mut last_error = format!("cannot connect to {cdp_endpoint}");
+
     loop {
         ensure_not_cancelled(cancel_flag)?;
-        let version_ok = http
-            .get(format!("{cdp_endpoint}/json/version"))
-            .send()
-            .await
-            .map(|resp| resp.status().is_success())
-            .unwrap_or(false);
-        let tabs_ok = list_page_tabs_http(http, cdp_endpoint).await.is_ok();
-        if version_ok && tabs_ok {
-            return Ok(());
+        for endpoint in &candidates {
+            let version_ok = client
+                .get(format!("{endpoint}/json/version"))
+                .send()
+                .await
+                .map(|resp| resp.status().is_success())
+                .unwrap_or(false);
+            if !version_ok {
+                last_error = format!("version probe failed for {endpoint}");
+                continue;
+            }
+            match list_page_tabs_http(&client, endpoint).await {
+                Ok(_) => return Ok(endpoint.clone()),
+                Err(error) => {
+                    last_error = error;
+                }
+            }
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "WEBVIEW_CDP_UNAVAILABLE: cannot connect to {cdp_endpoint}"
+                "WEBVIEW_CDP_UNAVAILABLE: cannot connect to {} (last error: {last_error})",
+                candidates.join(" | ")
             ));
         }
         sleep(Duration::from_millis(150)).await;
@@ -1550,7 +1600,8 @@ async fn list_page_tabs_http(
     http: &reqwest::Client,
     cdp_endpoint: &str,
 ) -> Result<Vec<RemoteTabInfo>, String> {
-    let response = http
+    let client = cdp_http_client(http);
+    let response = client
         .get(format!("{cdp_endpoint}/json/list"))
         .send()
         .await
@@ -1576,12 +1627,13 @@ async fn create_tab_http(
     cdp_endpoint: &str,
     url: Option<&str>,
 ) -> Result<RemoteTabInfo, String> {
+    let client = cdp_http_client(http);
     let target = url
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("about:blank");
     let endpoint = format!("{cdp_endpoint}/json/new?{}", encode_query_component(target));
-    let response = http
+    let response = client
         .put(endpoint)
         .send()
         .await
@@ -1603,7 +1655,8 @@ async fn activate_tab_http(
     cdp_endpoint: &str,
     tab_id: &str,
 ) -> Result<(), String> {
-    let response = http
+    let client = cdp_http_client(http);
+    let response = client
         .get(format!("{cdp_endpoint}/json/activate/{tab_id}"))
         .send()
         .await
@@ -1622,7 +1675,8 @@ async fn close_tab_http(
     cdp_endpoint: &str,
     tab_id: &str,
 ) -> Result<(), String> {
-    let response = http
+    let client = cdp_http_client(http);
+    let response = client
         .get(format!("{cdp_endpoint}/json/close/{tab_id}"))
         .send()
         .await

@@ -1,0 +1,369 @@
+/* ===== Computer Use Overlay ===== */
+
+.computer-use-overlay-root,
+.computer-use-overlay-root body,
+html.computer-use-overlay-root,
+body.computer-use-overlay-root {
+  background: transparent !important;
+}
+
+.computer-use-overlay {
+  /* Computer Use 独立使用蓝色提示色，不跟随应用绿色主题强调色。 */
+  --cu-accent: #3b82f6;
+  --cu-accent-strong: #60a5fa;
+  --cu-accent-soft: rgba(59, 130, 246, 0.14);
+  --cu-accent-border: rgba(59, 130, 246, 0.34);
+  --cu-glow: color-mix(in srgb, #3b82f6 55%, transparent);
+  --cu-glow-strong: color-mix(in srgb, #60a5fa 70%, transparent);
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.computer-use-overlay.is-active {
+  opacity: 1;
+}
+
+.computer-use-overlay--screen,
+.computer-use-overlay--app {
+  /* 略微内缩，避免贴死屏幕最外缘 */
+  inset: 10px;
+}
+
+.computer-use-overlay-frame {
+  position: absolute;
+  inset: 0;
+  border-radius: 24px;
+  overflow: visible;
+}
+
+.computer-use-overlay-frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* 四周泛色光晕，而不是直线描边 */
+  box-shadow:
+    inset 0 0 42px color-mix(in srgb, var(--cu-accent) 18%, transparent),
+    inset 0 0 88px color-mix(in srgb, var(--cu-accent-strong) 10%, transparent);
+  background:
+    radial-gradient(120% 70% at 50% 0%, color-mix(in srgb, var(--cu-accent) 28%, transparent), transparent 58%),
+    radial-gradient(120% 70% at 50% 100%, color-mix(in srgb, var(--cu-accent) 24%, transparent), transparent 58%),
+    radial-gradient(70% 120% at 0% 50%, color-mix(in srgb, var(--cu-accent) 24%, transparent), transparent 58%),
+    radial-gradient(70% 120% at 100% 50%, color-mix(in srgb, var(--cu-accent) 24%, transparent), transparent 58%);
+  opacity: 0.9;
+  animation: computer-use-haze-breathe 2.8s ease-in-out infinite;
+}
+
+.computer-use-overlay-frame::after {
+  content: "";
+  position: absolute;
+  inset: 18px;
+  border-radius: 20px;
+  box-shadow: inset 0 0 36px color-mix(in srgb, var(--cu-accent) 8%, transparent);
+  opacity: 0.55;
+}
+
+.computer-use-overlay-haze {
+  position: absolute;
+  display: block;
+  filter: blur(18px);
+  opacity: 0.72;
+  animation: computer-use-haze-flow 3.4s ease-in-out infinite;
+}
+
+.computer-use-overlay-haze-top,
+.computer-use-overlay-haze-bottom {
+  left: 8%;
+  width: 84%;
+  height: 78px;
+}
+
+.computer-use-overlay-haze-top {
+  top: -8px;
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--cu-accent-strong) 58%, transparent) 0%,
+    color-mix(in srgb, var(--cu-accent) 28%, transparent) 42%,
+    transparent 74%
+  );
+}
+
+.computer-use-overlay-haze-bottom {
+  bottom: -8px;
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--cu-accent-strong) 52%, transparent) 0%,
+    color-mix(in srgb, var(--cu-accent) 24%, transparent) 42%,
+    transparent 74%
+  );
+  animation-delay: -1.1s;
+}
+
+.computer-use-overlay-haze-left,
+.computer-use-overlay-haze-right {
+  top: 8%;
+  width: 78px;
+  height: 84%;
+}
+
+.computer-use-overlay-haze-left {
+  left: -8px;
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--cu-accent-strong) 52%, transparent) 0%,
+    color-mix(in srgb, var(--cu-accent) 24%, transparent) 42%,
+    transparent 74%
+  );
+  animation-delay: -0.55s;
+}
+
+.computer-use-overlay-haze-right {
+  right: -8px;
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--cu-accent-strong) 52%, transparent) 0%,
+    color-mix(in srgb, var(--cu-accent) 24%, transparent) 42%,
+    transparent 74%
+  );
+  animation-delay: -1.65s;
+}
+
+.computer-use-overlay-bloom {
+  position: absolute;
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--cu-accent-strong) 34%, transparent) 0%,
+    color-mix(in srgb, var(--cu-accent) 16%, transparent) 38%,
+    transparent 72%
+  );
+  filter: blur(8px);
+  opacity: 0.55;
+  animation: computer-use-bloom-soft 3.2s ease-in-out infinite;
+}
+
+.computer-use-overlay-bloom-tl {
+  top: -48px;
+  left: -48px;
+}
+
+.computer-use-overlay-bloom-tr {
+  top: -48px;
+  right: -48px;
+  animation-delay: -0.8s;
+}
+
+.computer-use-overlay-bloom-bl {
+  bottom: -48px;
+  left: -48px;
+  animation-delay: -1.6s;
+}
+
+.computer-use-overlay-bloom-br {
+  bottom: -48px;
+  right: -48px;
+  animation-delay: -2.4s;
+}
+
+.computer-use-overlay-wave {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    conic-gradient(
+      from 0deg,
+      transparent 0deg,
+      color-mix(in srgb, var(--cu-accent) 18%, transparent) 55deg,
+      transparent 110deg,
+      color-mix(in srgb, var(--cu-accent-strong) 14%, transparent) 180deg,
+      transparent 250deg,
+      color-mix(in srgb, var(--cu-accent) 16%, transparent) 310deg,
+      transparent 360deg
+    );
+  mask: radial-gradient(circle, transparent 62%, #000 78%, transparent 100%);
+  -webkit-mask: radial-gradient(circle, transparent 62%, #000 78%, transparent 100%);
+  opacity: 0.35;
+  animation: computer-use-wave-spin 8s linear infinite;
+}
+
+.computer-use-overlay-wave-b {
+  animation-direction: reverse;
+  animation-duration: 12s;
+  opacity: 0.22;
+}
+
+.computer-use-overlay-badge {
+  position: absolute;
+  top: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+  max-width: min(420px, calc(100% - 48px));
+  padding: 11px 16px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--cu-accent) 42%, transparent);
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--surface-raised) 88%, var(--cu-accent) 12%),
+      color-mix(in srgb, var(--surface-panel) 92%, transparent)
+    );
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.28),
+    0 0 0 1px color-mix(in srgb, var(--cu-accent) 14%, transparent),
+    0 0 28px var(--cu-glow);
+  backdrop-filter: blur(16px);
+  animation: computer-use-badge-pulse 2.2s ease-in-out infinite;
+}
+
+.computer-use-overlay-badge-dot {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--cu-accent-strong);
+  box-shadow:
+    0 0 0 4px var(--cu-accent-soft),
+    0 0 14px var(--cu-glow-strong);
+  animation: computer-use-dot-blink 1.2s ease-in-out infinite;
+}
+
+.computer-use-overlay-badge-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.computer-use-overlay-badge-copy strong {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--text-strong) 88%, var(--cu-accent-strong) 12%);
+}
+
+.computer-use-overlay-badge-copy span {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.computer-use-controlling,
+body.computer-use-controlling * {
+  cursor: var(--computer-use-cursor, crosshair) !important;
+}
+
+body.computer-use-controlling .app-resizer,
+body.computer-use-controlling .app-resizer * {
+  cursor: var(--computer-use-cursor, crosshair) !important;
+}
+
+/* 兼容旧类名，避免残留直线边框/四角扩散圆 */
+.computer-use-overlay-edge,
+.computer-use-overlay-corner,
+.computer-use-overlay-splash,
+.computer-use-overlay-particle {
+  display: none !important;
+}
+
+@keyframes computer-use-haze-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+    filter: saturate(0.95);
+  }
+  50% {
+    opacity: 1;
+    filter: saturate(1.15);
+  }
+}
+
+@keyframes computer-use-haze-flow {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: scale(0.98);
+  }
+  50% {
+    opacity: 0.88;
+    transform: scale(1.03);
+  }
+}
+
+@keyframes computer-use-bloom-soft {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.68;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes computer-use-wave-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes computer-use-badge-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 10px 30px rgba(0, 0, 0, 0.28),
+      0 0 0 1px color-mix(in srgb, var(--cu-accent) 14%, transparent),
+      0 0 18px var(--cu-glow);
+  }
+  50% {
+    box-shadow:
+      0 12px 34px rgba(0, 0, 0, 0.32),
+      0 0 0 1px color-mix(in srgb, var(--cu-accent) 28%, transparent),
+      0 0 30px var(--cu-glow-strong);
+  }
+}
+
+@keyframes computer-use-dot-blink {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.86);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .computer-use-overlay,
+  .computer-use-overlay-frame::before,
+  .computer-use-overlay-haze,
+  .computer-use-overlay-bloom,
+  .computer-use-overlay-wave,
+  .computer-use-overlay-badge,
+  .computer-use-overlay-badge-dot {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .computer-use-overlay {
+    opacity: 1;
+    transform: none;
+  }
+}

@@ -222,6 +222,57 @@ pub fn list_plugin_skill_prompt_entries(
     entries
 }
 
+const COMPUTER_USE_MCP_SERVER_NAME: &str = "computer-use";
+
+/// 判断配置是否把 library client 误写成了 MCP Server 入口。
+///
+/// CN-Codex 的 Computer Use 必须使用 `computer-use-mcp-server.mjs`，
+/// 不能直接把 `computer-use-client.mjs` 当作 stdio MCP 启动。
+pub fn is_invalid_computer_use_mcp_server(server: &McpServerConfig) -> bool {
+    let command = server.command.to_ascii_lowercase();
+    if command.contains("computer-use-client") {
+        return true;
+    }
+    server.args.iter().any(|arg| {
+        let normalized = arg.replace('\\', "/").to_ascii_lowercase();
+        normalized.contains("computer-use-client.mjs")
+            || normalized.ends_with("/computer-use-client.js")
+            || normalized.ends_with("computer-use-client")
+    })
+}
+
+/// Computer Use 统一走 MCP 入口：即使插件被禁用，也注入其 MCP 配置。
+fn computer_use_mcp_server(workspace_config_dir: &Path) -> Option<(String, McpServerConfig)> {
+    let plugin_root = workspace_config_dir.join("plugins").join(COMPUTER_USE_MCP_SERVER_NAME);
+    if !plugin_root.is_dir() || find_plugin_manifest_path(&plugin_root).is_none() {
+        return None;
+    }
+
+    // 优先读取插件内 .mcp.json；若缺失则回退到默认脚本入口。
+    if let Some((name, server)) = plugin_mcp_servers_from_root(&plugin_root)
+        .into_iter()
+        .find(|(name, _)| name == COMPUTER_USE_MCP_SERVER_NAME)
+    {
+        return Some((name, server));
+    }
+
+    Some((
+        COMPUTER_USE_MCP_SERVER_NAME.to_string(),
+        McpServerConfig {
+            name: COMPUTER_USE_MCP_SERVER_NAME.to_string(),
+            transport: "stdio".to_string(),
+            command: "node".to_string(),
+            // CN-Codex 没有 node_repl，因此使用可直接调用的 MCP Server 封装。
+            args: vec!["scripts/computer-use-mcp-server.mjs".to_string()],
+            env: HashMap::new(),
+            cwd: Some(plugin_root.to_string_lossy().to_string()),
+            url: None,
+            headers: HashMap::new(),
+            disabled: false,
+        },
+    ))
+}
+
 pub fn list_plugin_mcp_servers(workspace_config_dir: &Path) -> HashMap<String, McpServerConfig> {
     let plugins_dir = workspace_config_dir.join("plugins");
     let Ok(entries) = std::fs::read_dir(&plugins_dir) else {
@@ -240,6 +291,19 @@ pub fn list_plugin_mcp_servers(workspace_config_dir: &Path) -> HashMap<String, M
     let mut servers = HashMap::new();
     for plugin_root in plugin_roots {
         for (name, server) in plugin_mcp_servers_from_root(&plugin_root) {
+            servers.entry(name).or_insert(server);
+        }
+    }
+
+    // Computer Use 从插件能力迁移为 MCP，即使插件被禁用也保持可用。
+    if let Some((name, server)) = computer_use_mcp_server(workspace_config_dir) {
+        // 若已有配置但入口错误（client 库），用正确的 MCP Server 覆盖。
+        if servers
+            .get(&name)
+            .is_some_and(is_invalid_computer_use_mcp_server)
+        {
+            servers.insert(name, server);
+        } else {
             servers.entry(name).or_insert(server);
         }
     }
@@ -1084,6 +1148,59 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn computer_use_mcp_is_available_even_when_plugin_disabled() {
+        let root = unique_temp_dir("computer-use-mcp");
+        let plugin_root = root.join("plugins/computer-use");
+        write_file(
+            &plugin_root.join(".codex-plugin/plugin.json"),
+            r#"{ "name": "computer-use", "interface": { "displayName": "Computer Use" } }"#,
+        );
+        write_file(
+            &plugin_root.join(".mcp.json"),
+            r#"{"mcpServers":{"computer-use":{"command":"node","args":["scripts/computer-use-mcp-server.mjs"]}}}"#,
+        );
+
+        set_plugin_enabled(&root, "computer-use", false).expect("disable computer-use plugin");
+        let servers = list_plugin_mcp_servers(&root);
+        assert!(servers.contains_key("computer-use"));
+        assert_eq!(
+            servers.get("computer-use").map(|server| server.command.as_str()),
+            Some("node")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_computer_use_client_mcp_entry_is_detected() {
+        let invalid = McpServerConfig {
+            name: "computer-use".to_string(),
+            transport: "stdio".to_string(),
+            command: "node".to_string(),
+            args: vec!["plugins/computer-use/scripts/computer-use-client.mjs".to_string()],
+            env: HashMap::new(),
+            cwd: Some("codey".to_string()),
+            url: None,
+            headers: HashMap::new(),
+            disabled: false,
+        };
+        let valid = McpServerConfig {
+            name: "computer-use".to_string(),
+            transport: "stdio".to_string(),
+            command: "node".to_string(),
+            args: vec!["scripts/computer-use-mcp-server.mjs".to_string()],
+            env: HashMap::new(),
+            cwd: Some("codey/plugins/computer-use".to_string()),
+            url: None,
+            headers: HashMap::new(),
+            disabled: false,
+        };
+
+        assert!(is_invalid_computer_use_mcp_server(&invalid));
+        assert!(!is_invalid_computer_use_mcp_server(&valid));
     }
 
     #[test]

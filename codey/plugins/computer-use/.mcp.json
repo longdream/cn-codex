@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "computer-use": {
+      "command": "node",
+      "args": [
+        "scripts/computer-use-mcp-server.mjs"
+      ],
+      "cwd": ".",
+      "disabled": false
+    }
+  }
+}

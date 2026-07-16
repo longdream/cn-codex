@@ -12206,7 +12206,7 @@ fn classify_browser_run_error(error: &str) -> (&'static str, &'static str) {
     {
         return (
             "WEBVIEW_CDP_UNAVAILABLE",
-            "未建立到内置浏览器的 CDP 通道。请确认浏览器窗口已启动，然后重试。",
+            "未建立到内置浏览器的 CDP 通道。请先打开内置浏览器面板；若仍失败，关闭浏览器面板后重开，或重启应用后再试。",
         );
     }
     if lower.contains("timeout waiting for selector:") {

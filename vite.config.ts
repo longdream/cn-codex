@@ -39,6 +39,7 @@ export default defineConfig(async () => ({
         detail: path.resolve(__dirname, "detail.html"),
         diff: path.resolve(__dirname, "diff.html"),
         browser: path.resolve(__dirname, "browser.html"),
+        computerUseOverlay: path.resolve(__dirname, "computer-use-overlay.html"),
       },
     },
   },

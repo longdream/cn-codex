@@ -534,6 +534,7 @@ pub fn run() {
             commands::window_open_runsummary_diff,
             commands::window_close_runsummary_diff,
             commands::window_get_runsummary_diff_payload,
+            commands::window_set_computer_use_overlay,
             commands::document_detail_insert_snippet,
             commands::reveal_in_explorer,
             commands::window_toggle_devtools,

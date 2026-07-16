@@ -16,6 +16,8 @@ import {
   IconShieldCheck,
   IconSquare,
   IconTargetArrow,
+  IconPuzzle,
+  IconServer,
   IconX,
 } from "@tabler/icons-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
@@ -42,10 +44,13 @@ import {
   isWebSnippetAttachedFile,
 } from "../../types/provider";
 import { invoke } from "@tauri-apps/api/core";
+import { pluginList } from "../../api/plugin";
 import { robotList } from "../../api/robot";
 import type { RobotSummary } from "../../types/robot";
 import { skillList } from "../../api/skill";
 import type { SkillSummary } from "../../types/skill";
+import type { PluginSummary } from "../../types/plugin";
+import { standaloneConfigRead } from "../../api/standalone";
 import { formatWebSnippet } from "../../utils/formatWebSnippet";
 import {
   filterProviderModels,
@@ -62,6 +67,17 @@ import {
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
 const IMAGE_ACCEPT = "image/*";
 const ALL_ACCEPT = `${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`;
+const COMPUTER_USE_PLUGIN_ID = "computer-use";
+
+type AttachMenuView = "root" | "skill" | "plugin" | "mcp";
+
+interface McpServerOption {
+  name: string;
+  command?: string;
+  args?: string[];
+  disabled?: boolean;
+  source?: "config" | "plugin";
+}
 
 interface ClipboardImageItemLike {
   type: string;
@@ -259,11 +275,17 @@ export function ChatInput({
   const [showRobotMenu, setShowRobotMenu] = useState(false);
   const [robots, setRobots] = useState<RobotSummary[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const [plugins, setPlugins] = useState<PluginSummary[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServerOption[]>([]);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [attachMenuView, setAttachMenuView] = useState<AttachMenuView>("root");
+  const [attachSearchQuery, setAttachSearchQuery] = useState("");
   const [robotModifyMode, setRobotModifyMode] = useState(false);
   const [visionWarning, setVisionWarning] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
 
   const initialized = useAppStore((s) => s.initialized);
   const workspaceCwd = useAppStore((s) => s.workspaceCwd);
@@ -396,6 +418,69 @@ export function ChatInput({
 
   useEffect(() => {
     skillList().then(setSkills).catch(() => setSkills([]));
+  }, []);
+
+  useEffect(() => {
+    pluginList()
+      .then((list) => {
+        // Computer Use 改为 MCP 入口，避免插件列表与 MCP 列表重复展示。
+        setPlugins(list.filter((plugin) => plugin.id !== COMPUTER_USE_PLUGIN_ID));
+      })
+      .catch(() => setPlugins([]));
+  }, []);
+
+  useEffect(() => {
+    const loadMcpServers = async () => {
+      try {
+        const resp = await standaloneConfigRead();
+        const cfg = (resp?.config ?? {}) as Record<string, unknown>;
+        const mcpServersCfg = (cfg.mcp_servers ?? cfg.mcpServers ?? {}) as Record<
+          string,
+          Record<string, unknown>
+        >;
+        const parsed: McpServerOption[] = Object.entries(mcpServersCfg)
+          .map(([name, val]) => ({
+            name,
+            command: typeof val.command === "string" ? val.command : "",
+            args: Array.isArray(val.args) ? val.args.map(String) : [],
+            disabled: Boolean(val.disabled),
+            source: "config" as const,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        // 即便配置尚未写入，也保证 Computer Use MCP 可被直接添加到对话框。
+        if (!parsed.some((server) => server.name === COMPUTER_USE_PLUGIN_ID)) {
+          parsed.unshift({
+            name: COMPUTER_USE_PLUGIN_ID,
+            command: "node",
+            args: ["scripts/computer-use-mcp-server.mjs"],
+            disabled: false,
+            source: "plugin",
+          });
+        } else {
+          // 历史错误配置可能把 client 库写成了 MCP 入口，这里在 UI 层做纠正。
+          for (const server of parsed) {
+            if (server.name !== COMPUTER_USE_PLUGIN_ID) continue;
+            const joined = `${server.command ?? ""} ${(server.args ?? []).join(" ")}`.toLowerCase();
+            if (joined.includes("computer-use-client")) {
+              server.command = "node";
+              server.args = ["scripts/computer-use-mcp-server.mjs"];
+              server.source = "plugin";
+            }
+          }
+        }
+        setMcpServers(parsed);
+      } catch {
+        setMcpServers([{
+          name: COMPUTER_USE_PLUGIN_ID,
+          command: "node",
+          args: ["scripts/computer-use-mcp-server.mjs"],
+          disabled: false,
+          source: "plugin",
+        }]);
+      }
+    };
+    void loadMcpServers();
   }, []);
 
   const selectedRobotName = useMemo(
@@ -822,6 +907,7 @@ export function ChatInput({
         setShowSlash(false);
         setShowModelMenu(false);
         setShowRobotMenu(false);
+        setShowAttachMenu(false);
       }
     },
     [goalRunning, handleSubmit],
@@ -842,8 +928,106 @@ export function ChatInput({
   }, []);
 
   // 附件处理：支持图片和文档
+  const closeAttachMenu = useCallback(() => {
+    setShowAttachMenu(false);
+    setAttachMenuView("root");
+    setAttachSearchQuery("");
+  }, []);
+
+  const insertComposerText = useCallback((snippet: string, options?: { replaceEmpty?: boolean }) => {
+    const nextSnippet = snippet.trim();
+    if (!nextSnippet) {
+      return;
+    }
+    setText((prev) => {
+      const trimmedPrev = prev.trim();
+      if (!trimmedPrev) {
+        return nextSnippet;
+      }
+      if (options?.replaceEmpty) {
+        return `${trimmedPrev}\n${nextSnippet}`;
+      }
+      return `${prev.replace(/\s+$/, "")}\n${nextSnippet}`;
+    });
+    setShowSlash(false);
+    closeAttachMenu();
+    requestAnimationFrame(() => {
+      const element = textareaRef.current;
+      if (!element) return;
+      element.focus();
+      element.style.height = "auto";
+      element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+      const caret = element.value.length;
+      element.setSelectionRange(caret, caret);
+    });
+  }, [closeAttachMenu]);
+
+  const handleSelectSkill = useCallback((skill: SkillSummary) => {
+    insertComposerText(`/skill ${skill.id} `);
+  }, [insertComposerText]);
+
+  const handleSelectPlugin = useCallback((plugin: PluginSummary) => {
+    const label = plugin.displayName || plugin.name || plugin.id;
+    insertComposerText(
+      intl.formatMessage(
+        { id: "chat.pluginPrompt" },
+        { pluginId: plugin.id, pluginName: label },
+      ),
+    );
+  }, [insertComposerText, intl]);
+
+  const handleSelectMcp = useCallback((server: McpServerOption) => {
+    insertComposerText(
+      intl.formatMessage(
+        { id: "chat.mcpPrompt" },
+        { mcpName: server.name },
+      ),
+    );
+  }, [insertComposerText, intl]);
+
+  const filteredAttachSkills = useMemo(() => {
+    const query = attachSearchQuery.trim().toLowerCase();
+    if (!query) return skills;
+    return skills.filter((skill) => {
+      const tags = Array.isArray(skill.tags) ? skill.tags.join(" ") : "";
+      return `${skill.id} ${skill.name} ${skill.description} ${tags}`.toLowerCase().includes(query);
+    });
+  }, [attachSearchQuery, skills]);
+
+  const filteredAttachPlugins = useMemo(() => {
+    const query = attachSearchQuery.trim().toLowerCase();
+    const enabledPlugins = plugins.filter((plugin) => plugin.enabled && !plugin.error);
+    if (!query) return enabledPlugins;
+    return enabledPlugins.filter((plugin) => {
+      const keywords = Array.isArray(plugin.keywords) ? plugin.keywords.join(" ") : "";
+      return `${plugin.id} ${plugin.name} ${plugin.displayName} ${plugin.description ?? ""} ${keywords}`
+        .toLowerCase()
+        .includes(query);
+    });
+  }, [attachSearchQuery, plugins]);
+
+  const filteredAttachMcps = useMemo(() => {
+    const query = attachSearchQuery.trim().toLowerCase();
+    const enabledServers = mcpServers.filter((server) => !server.disabled);
+    if (!query) return enabledServers;
+    return enabledServers.filter((server) => {
+      const commandText = `${server.command ?? ""} ${(server.args ?? []).join(" ")}`.toLowerCase();
+      return `${server.name} ${commandText}`.includes(query);
+    });
+  }, [attachSearchQuery, mcpServers]);
+
   const handleAttachClick = useCallback(() => {
-    fileInputRef.current?.click();
+    setShowAttachMenu((prev) => {
+      const next = !prev;
+      if (next) {
+        setAttachMenuView("root");
+        setAttachSearchQuery("");
+        setShowModelMenu(false);
+        setShowRobotMenu(false);
+        setShowSlash(false);
+      }
+      return next;
+    });
   }, []);
 
   const warnVisionUnsupportedIfNeeded = useCallback((mimeType: string) => {
@@ -1051,6 +1235,24 @@ export function ChatInput({
       window.removeEventListener("mousedown", handlePointerDown);
     };
   }, [showModelMenu]);
+
+  // 点击菜单外任意区域关闭附件菜单。
+  useEffect(() => {
+    if (!showAttachMenu) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target || attachMenuRef.current?.contains(target)) {
+        return;
+      }
+      closeAttachMenu();
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [closeAttachMenu, showAttachMenu]);
 
   const cwdLeaf = workspaceCwd
     ? workspaceCwd.split(/[\\/]/).filter(Boolean).pop() ?? workspaceCwd
@@ -1353,14 +1555,184 @@ export function ChatInput({
         {/* 输入框主体 */}
         <div className="flex min-h-[82px] items-end gap-3 rounded-[var(--radius-lg)] px-1 py-1 transition-colors">
           {/* 附件按钮 */}
-          <button
-            type="button"
-            onClick={handleAttachClick}
-            className="mb-1 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border border-[var(--chat-line)] text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
-            title={intl.formatMessage({ id: "chat.attachFile" })}
-          >
-            <IconPaperclip size={15} stroke={1.8} />
-          </button>
+          <div ref={attachMenuRef} className="relative mb-1">
+            <button
+              type="button"
+              onClick={handleAttachClick}
+              className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border transition-colors ${
+                showAttachMenu
+                  ? "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                  : "border-[var(--chat-line)] text-[var(--chat-muted)] hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+              }`}
+              title={intl.formatMessage({ id: "chat.attachMenu" })}
+              aria-expanded={showAttachMenu}
+            >
+              <IconPaperclip size={15} stroke={1.8} />
+            </button>
+
+            {showAttachMenu && (
+              <div className="absolute bottom-full left-0 z-40 mb-2 w-[280px] overflow-hidden rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] shadow-lg">
+                {attachMenuView === "root" ? (
+                  <div className="py-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        closeAttachMenu();
+                        fileInputRef.current?.click();
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-[var(--chat-prose)] transition-colors hover:bg-[var(--surface-elevated)]"
+                    >
+                      <IconFile size={14} stroke={1.8} className="shrink-0 text-[var(--chat-muted)]" />
+                      <span>{intl.formatMessage({ id: "chat.attachFile" })}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttachMenuView("skill");
+                        setAttachSearchQuery("");
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-[var(--chat-prose)] transition-colors hover:bg-[var(--surface-elevated)]"
+                    >
+                      <IconCpu size={14} stroke={1.8} className="shrink-0 text-[var(--chat-muted)]" />
+                      <span>{intl.formatMessage({ id: "chat.attachSkill" })}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttachMenuView("plugin");
+                        setAttachSearchQuery("");
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-[var(--chat-prose)] transition-colors hover:bg-[var(--surface-elevated)]"
+                    >
+                      <IconPuzzle size={14} stroke={1.8} className="shrink-0 text-[var(--chat-muted)]" />
+                      <span>{intl.formatMessage({ id: "chat.attachPlugin" })}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttachMenuView("mcp");
+                        setAttachSearchQuery("");
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-[var(--chat-prose)] transition-colors hover:bg-[var(--surface-elevated)]"
+                    >
+                      <IconServer size={14} stroke={1.8} className="shrink-0 text-[var(--chat-muted)]" />
+                      <span>{intl.formatMessage({ id: "chat.attachMcp" })}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex max-h-[280px] flex-col">
+                    <div className="flex items-center justify-between gap-2 border-b border-[var(--chat-line)] px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAttachMenuView("root");
+                          setAttachSearchQuery("");
+                        }}
+                        className="text-[11px] text-[var(--chat-muted)] transition-colors hover:text-[var(--chat-prose)]"
+                      >
+                        {intl.formatMessage({ id: "chat.attachBack" })}
+                      </button>
+                      <span className="text-[11px] font-medium text-[var(--chat-prose)]">
+                        {intl.formatMessage({
+                          id:
+                            attachMenuView === "skill"
+                              ? "chat.attachSkill"
+                              : attachMenuView === "plugin"
+                                ? "chat.attachPlugin"
+                                : "chat.attachMcp",
+                        })}
+                      </span>
+                    </div>
+                    <div className="border-b border-[var(--chat-line)] px-3 py-2">
+                      <input
+                        type="text"
+                        value={attachSearchQuery}
+                        onChange={(event) => setAttachSearchQuery(event.target.value)}
+                        placeholder={intl.formatMessage({ id: "chat.attachSearchPlaceholder" })}
+                        className="w-full rounded-[var(--radius-sm)] border border-[var(--chat-line)] bg-transparent px-2 py-1.5 text-[12px] text-[var(--chat-prose)] outline-none placeholder:text-[var(--chat-faint)]"
+                        autoFocus
+                      />
+                    </div>
+                    <div className="thin-scrollbar flex-1 overflow-y-auto py-1">
+                      {attachMenuView === "skill" && (
+                        filteredAttachSkills.length === 0 ? (
+                          <p className="px-3 py-3 text-[12px] text-[var(--chat-faint)]">
+                            {intl.formatMessage({ id: "chat.skill.noneAvailable" })}
+                          </p>
+                        ) : (
+                          filteredAttachSkills.map((skill) => (
+                            <button
+                              key={skill.id}
+                              type="button"
+                              onClick={() => handleSelectSkill(skill)}
+                              className="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+                            >
+                              <span className="truncate text-[12px] font-medium text-[var(--chat-prose)]">
+                                {skill.name || skill.id}
+                              </span>
+                              <span className="truncate text-[11px] text-[var(--chat-faint)]">
+                                {skill.description || skill.id}
+                              </span>
+                            </button>
+                          ))
+                        )
+                      )}
+
+                      {attachMenuView === "plugin" && (
+                        filteredAttachPlugins.length === 0 ? (
+                          <p className="px-3 py-3 text-[12px] text-[var(--chat-faint)]">
+                            {intl.formatMessage({ id: "chat.plugin.noneAvailable" })}
+                          </p>
+                        ) : (
+                          filteredAttachPlugins.map((plugin) => (
+                            <button
+                              key={plugin.id}
+                              type="button"
+                              onClick={() => handleSelectPlugin(plugin)}
+                              className="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+                            >
+                              <span className="truncate text-[12px] font-medium text-[var(--chat-prose)]">
+                                {plugin.displayName || plugin.name || plugin.id}
+                              </span>
+                              <span className="truncate text-[11px] text-[var(--chat-faint)]">
+                                {plugin.description || plugin.id}
+                              </span>
+                            </button>
+                          ))
+                        )
+                      )}
+
+                      {attachMenuView === "mcp" && (
+                        filteredAttachMcps.length === 0 ? (
+                          <p className="px-3 py-3 text-[12px] text-[var(--chat-faint)]">
+                            {intl.formatMessage({ id: "chat.mcp.noneAvailable" })}
+                          </p>
+                        ) : (
+                          filteredAttachMcps.map((server) => (
+                            <button
+                              key={server.name}
+                              type="button"
+                              onClick={() => handleSelectMcp(server)}
+                              className="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+                            >
+                              <span className="truncate text-[12px] font-medium text-[var(--chat-prose)]">
+                                {server.name}
+                              </span>
+                              <span className="truncate text-[11px] text-[var(--chat-faint)]">
+                                {server.name === COMPUTER_USE_PLUGIN_ID
+                                  ? intl.formatMessage({ id: "chat.mcp.computerUseHint" })
+                                  : `${server.command ?? ""} ${(server.args ?? []).join(" ")}`.trim() || "MCP"}
+                              </span>
+                            </button>
+                          ))
+                        )
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           <input
             ref={fileInputRef}
             type="file"
@@ -1790,6 +2162,17 @@ export function buildSkillScopedPrompt(skillId: string, objective: string): stri
     return normalizedObjective;
   }
   return `Please prioritize skill "${normalizedSkillId}", then complete the following:\n${normalizedObjective}`;
+}
+
+export function buildPluginScopedPrompt(pluginId: string, pluginName?: string): string {
+  const normalizedPluginId = pluginId.trim();
+  const displayName = (pluginName ?? normalizedPluginId).trim() || normalizedPluginId;
+  return `Please prioritize plugin "${displayName}" (id: ${normalizedPluginId}), then complete the following:`;
+}
+
+export function buildMcpScopedPrompt(mcpName: string): string {
+  const normalizedMcpName = mcpName.trim();
+  return `Please prioritize MCP server "${normalizedMcpName}", then complete the following:`;
 }
 
 export interface ParsedModifyRobotCommand {

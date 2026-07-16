@@ -549,6 +549,13 @@ impl AgentEngine {
         }
         let mut mcp_servers = plugin_loader::list_plugin_mcp_servers(&self.cwd.join("codey"));
         for (name, server) in config.resolved_mcp_servers() {
+            // 避免 config.toml 中错误的 computer-use-client 入口覆盖真实 MCP Server。
+            if name == "computer-use" && plugin_loader::is_invalid_computer_use_mcp_server(&server) {
+                warn!(
+                    "ignoring invalid computer-use MCP config pointing at computer-use-client; keeping plugin MCP server"
+                );
+                continue;
+            }
             mcp_servers.insert(name, server);
         }
         self.tool_executor

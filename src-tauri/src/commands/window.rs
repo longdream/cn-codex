@@ -8,8 +8,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl,
-    WebviewWindowBuilder, Window, webview::WebviewBuilder,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
+    State, Url, WebviewUrl, WebviewWindowBuilder, Window, webview::WebviewBuilder,
 };
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -30,6 +30,8 @@ const DOCUMENT_DETAIL_OPEN_EVENT: &str = "document-detail-open";
 const DOCUMENT_DETAIL_INSERT_EVENT: &str = "document-detail-insert-snippet";
 const RUNSUMMARY_DIFF_WINDOW_LABEL: &str = "runsummary-diff";
 const RUNSUMMARY_DIFF_OPEN_EVENT: &str = "runsummary-diff-open";
+const COMPUTER_USE_OVERLAY_WINDOW_LABEL: &str = "computer-use-overlay";
+const COMPUTER_USE_OVERLAY_STATE_EVENT: &str = "computer-use-overlay-state";
 const MAX_PICKED_ELEMENT_QUEUE: usize = 24;
 const WEB_EDITABLE_EXTENSIONS: &[&str] = &[
     "html", "htm", "css", "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte",
@@ -60,6 +62,14 @@ pub struct DocumentDetailWindowInfo {
 pub struct RunSummaryDiffWindowInfo {
     pub label: String,
     pub path: String,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerUseOverlayWindowInfo {
+    pub label: String,
+    pub active: bool,
     pub created: bool,
 }
 
@@ -191,6 +201,100 @@ pub fn window_show_main(app: AppHandle) -> AppResult<()> {
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn window_set_computer_use_overlay(
+    app: AppHandle,
+    active: bool,
+) -> AppResult<ComputerUseOverlayWindowInfo> {
+    if !active {
+        if let Some(window) = app.get_webview_window(COMPUTER_USE_OVERLAY_WINDOW_LABEL) {
+            // 直接关闭窗口，避免 hide 后仍残留 always-on-top 透明层。
+            let _ = window.set_always_on_top(false);
+            let _ = window.hide();
+            let _ = window.close();
+        }
+        let _ = app.emit(
+            COMPUTER_USE_OVERLAY_STATE_EVENT,
+            serde_json::json!({ "active": false }),
+        );
+        return Ok(ComputerUseOverlayWindowInfo {
+            label: COMPUTER_USE_OVERLAY_WINDOW_LABEL.to_string(),
+            active: false,
+            created: false,
+        });
+    }
+
+    if let Some(window) = app.get_webview_window(COMPUTER_USE_OVERLAY_WINDOW_LABEL) {
+        apply_computer_use_overlay_geometry(&app, &window)?;
+        if !window.is_visible().unwrap_or(false) {
+            window.show()?;
+        }
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_ignore_cursor_events(true);
+        let _ = app.emit(
+            COMPUTER_USE_OVERLAY_STATE_EVENT,
+            serde_json::json!({ "active": true }),
+        );
+        return Ok(ComputerUseOverlayWindowInfo {
+            label: COMPUTER_USE_OVERLAY_WINDOW_LABEL.to_string(),
+            active: true,
+            created: false,
+        });
+    }
+
+    let overlay = WebviewWindowBuilder::new(
+        &app,
+        COMPUTER_USE_OVERLAY_WINDOW_LABEL,
+        computer_use_overlay_window_url()?,
+    )
+    .title("Computer Use Overlay")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .focused(false)
+    .visible(false)
+    .shadow(false)
+    .build()
+    .map_err(|error| {
+        AppError::Custom(format!(
+            "Failed to create computer use overlay window: {error}"
+        ))
+    })?;
+
+    apply_computer_use_overlay_geometry(&app, &overlay)?;
+    let _ = overlay.set_ignore_cursor_events(true);
+    overlay.show()?;
+    let _ = overlay.set_always_on_top(true);
+    let _ = app.emit(
+        COMPUTER_USE_OVERLAY_STATE_EVENT,
+        serde_json::json!({ "active": true }),
+    );
+
+    // 新建 webview 时前端监听可能尚未就绪，短延迟后再广播一次，避免首帧丢状态。
+    let app_for_retry = app.clone();
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_millis(120)).await;
+        // 仅当覆盖窗仍存在时才补发 active=true，避免关闭后被延迟事件重新点亮。
+        if app_for_retry
+            .get_webview_window(COMPUTER_USE_OVERLAY_WINDOW_LABEL)
+            .is_some()
+        {
+            let _ = app_for_retry.emit(
+                COMPUTER_USE_OVERLAY_STATE_EVENT,
+                serde_json::json!({ "active": true }),
+            );
+        }
+    });
+
+    Ok(ComputerUseOverlayWindowInfo {
+        label: COMPUTER_USE_OVERLAY_WINDOW_LABEL.to_string(),
+        active: true,
+        created: true,
+    })
 }
 
 #[tauri::command]
@@ -999,8 +1103,21 @@ pub fn browser_cdp_endpoint() -> String {
     format!("http://127.0.0.1:{BROWSER_DEBUG_PORT}")
 }
 
+/// Prefer IPv4 loopback; keep IPv6 as fallback for WebView2 builds that only
+/// bind CDP to `::1` when `--remote-debugging-address` is not honored.
+pub fn browser_cdp_endpoint_candidates() -> Vec<String> {
+    vec![
+        format!("http://127.0.0.1:{BROWSER_DEBUG_PORT}"),
+        format!("http://[::1]:{BROWSER_DEBUG_PORT}"),
+    ]
+}
+
 fn browser_additional_args() -> String {
-    format!("--remote-debugging-port={BROWSER_DEBUG_PORT} --remote-allow-origins=*")
+    // Force IPv4 binding. Without this, some WebView2/Edge builds only listen on ::1,
+    // while CN-Codex clients connect to 127.0.0.1 and fail with WEBVIEW_CDP_UNAVAILABLE.
+    format!(
+        "--remote-debugging-port={BROWSER_DEBUG_PORT} --remote-debugging-address=127.0.0.1 --remote-allow-origins=*"
+    )
 }
 
 fn open_browser_popup(
@@ -1741,7 +1858,50 @@ fn is_non_blank_browser_tab(tab: &RemoteTabInfo) -> bool {
 }
 
 async fn list_browser_tabs(cdp_endpoint: &str) -> AppResult<Vec<RemoteTabInfo>> {
-    let response = reqwest::Client::new()
+    let http = local_cdp_http_client();
+    let mut last_error = AppError::Custom(
+        "Failed to query browser tabs: no CDP endpoint candidates".to_string(),
+    );
+
+    for endpoint in cdp_endpoint_candidates_for(cdp_endpoint) {
+        match list_browser_tabs_at(&http, &endpoint).await {
+            Ok(tabs) => return Ok(tabs),
+            Err(error) => last_error = error,
+        }
+    }
+
+    Err(last_error)
+}
+
+fn local_cdp_http_client() -> reqwest::Client {
+    // Local CDP must never go through system/env proxies; proxies often return 502
+    // for loopback debugging ports and surface as "Failed to query browser tabs: HTTP 502".
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn cdp_endpoint_candidates_for(preferred: &str) -> Vec<String> {
+    let preferred = preferred.trim().trim_end_matches('/').to_string();
+    let mut candidates = Vec::new();
+    if !preferred.is_empty() {
+        candidates.push(preferred);
+    }
+    for candidate in browser_cdp_endpoint_candidates() {
+        if !candidates.iter().any(|existing| existing == &candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
+async fn list_browser_tabs_at(
+    http: &reqwest::Client,
+    cdp_endpoint: &str,
+) -> AppResult<Vec<RemoteTabInfo>> {
+    let response = http
         .get(format!("{cdp_endpoint}/json/list"))
         .send()
         .await
@@ -2070,6 +2230,52 @@ fn browser_popup_window_url() -> AppResult<WebviewUrl> {
     {
         Ok(WebviewUrl::App("browser.html".into()))
     }
+}
+
+fn computer_use_overlay_window_url() -> AppResult<WebviewUrl> {
+    #[cfg(debug_assertions)]
+    {
+        let dev_url =
+            std::env::var("TAURI_DEV_URL").unwrap_or_else(|_| "http://localhost:1420".to_string());
+        let base = dev_url.trim().trim_end_matches('/');
+        let final_url = format!("{base}/computer-use-overlay.html");
+        let parsed = Url::parse(&final_url).map_err(|e| {
+            AppError::Custom(format!(
+                "Invalid computer use overlay dev url '{final_url}': {e}"
+            ))
+        })?;
+        return Ok(WebviewUrl::External(parsed));
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        Ok(WebviewUrl::App("computer-use-overlay.html".into()))
+    }
+}
+
+fn apply_computer_use_overlay_geometry(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+) -> AppResult<()> {
+    // 优先贴合主窗口所在显示器，保证 Computer Use 外框覆盖“整块屏幕”而不是应用客户区。
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|main| main.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+
+    if let Some(monitor) = monitor {
+        let position = monitor.position();
+        let size = monitor.size();
+        window.set_position(PhysicalPosition::new(position.x, position.y))?;
+        window.set_size(PhysicalSize::new(size.width, size.height))?;
+    } else {
+        // 无法读取显示器信息时退回最大化，仍尽量覆盖整个工作区。
+        let _ = window.maximize();
+    }
+
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_ignore_cursor_events(true);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2927,7 +3133,17 @@ mod tests {
     #[test]
     fn browser_cdp_endpoint_uses_loopback_debug_port() {
         assert_eq!(browser_cdp_endpoint(), "http://127.0.0.1:9242");
-        assert!(browser_additional_args().contains("--remote-debugging-port=9242"));
+        assert_eq!(
+            browser_cdp_endpoint_candidates(),
+            vec![
+                "http://127.0.0.1:9242".to_string(),
+                "http://[::1]:9242".to_string(),
+            ]
+        );
+        let args = browser_additional_args();
+        assert!(args.contains("--remote-debugging-port=9242"));
+        assert!(args.contains("--remote-debugging-address=127.0.0.1"));
+        assert!(args.contains("--remote-allow-origins=*"));
     }
 
     #[test]
