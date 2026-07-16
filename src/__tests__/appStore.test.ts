@@ -1292,6 +1292,136 @@ describe("appStore", () => {
       expect(values.vision_fallback_model).toBe("qwen-vl-max");
     });
 
+    it("sets currentModel from activated provider default model", async () => {
+      useAppStore.setState({
+        activeProviderId: "provider-old",
+        currentModel: "old-model",
+        activeModelId: null,
+        providers: [
+          {
+            id: "provider-old",
+            type: "old",
+            name: "Old",
+            category: "other",
+            baseUrl: "http://localhost:1/v1",
+            apiKey: "sk-old",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "old-model",
+                label: "Old Model",
+                supportsVision: false,
+                contextLength: 128000,
+                maxOutputTokens: 65535,
+              },
+            ],
+            isCustom: true,
+            createdAt: Date.now(),
+          },
+          {
+            id: "provider-qwen",
+            type: "qwen",
+            name: "Qwen",
+            category: "china",
+            baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            apiKey: "sk-qwen",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "qwen3.6-27b",
+                label: "Qwen3.6-27B",
+                supportsVision: false,
+                contextLength: 128000,
+                maxOutputTokens: 65535,
+              },
+              {
+                id: "qwen-max",
+                label: "Qwen Max",
+                supportsVision: true,
+                contextLength: 32768,
+                maxOutputTokens: 65535,
+              },
+            ],
+            isCustom: false,
+            createdAt: Date.now(),
+          },
+        ],
+      });
+      mockInvoke.mockResolvedValue({ status: "ok" });
+
+      useAppStore.getState().activateProvider("provider-qwen");
+      await Promise.resolve();
+
+      const state = useAppStore.getState();
+      expect(state.activeProviderId).toBe("provider-qwen");
+      expect(state.currentModel).toBe("qwen3.6-27b");
+
+      const standaloneCalls = mockInvoke.mock.calls.filter(([command]) => command === "standalone_config_write");
+      expect(standaloneCalls.length).toBeGreaterThan(0);
+      const latestCall = standaloneCalls[standaloneCalls.length - 1];
+      const edits = (latestCall?.[1] as { edits: Array<{ keyPath: string; value: unknown }> }).edits;
+      const values = Object.fromEntries(edits.map((edit) => [edit.keyPath, edit.value]));
+      expect(values.model_provider).toBe("qwen");
+      expect(values.model).toBe("qwen3.6-27b");
+    });
+
+    it("createThread clears thread override so new chat inherits global model", async () => {
+      useAppStore.setState({
+        activeProviderId: "provider-qwen",
+        currentModel: "qwen3.6-27b",
+        overrideProviderId: "provider-old",
+        overrideModelId: "old-model",
+        smartbrainEnabled: true,
+        threads: [],
+        messages: [{ id: "m1", role: "user", content: "hi", timestamp: 1 }],
+      });
+      mockInvoke.mockResolvedValueOnce({ thread: { id: "t-new-global" } });
+
+      const id = await useAppStore.getState().createThread();
+      expect(id).toBe("t-new-global");
+      const state = useAppStore.getState();
+      expect(state.overrideProviderId).toBeNull();
+      expect(state.overrideModelId).toBeNull();
+      expect(state.smartbrainEnabled).toBe(false);
+      expect(state.currentModel).toBe("qwen3.6-27b");
+      expect(state.activeProviderId).toBe("provider-qwen");
+    });
+
+    it("treats explicit null override as clear instead of reusing stored override", () => {
+      useAppStore.setState({
+        providers: [
+          {
+            id: "provider-qwen",
+            type: "qwen",
+            name: "Qwen",
+            category: "china",
+            baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            apiKey: "sk-qwen",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "qwen3.6-27b",
+                label: "Qwen3.6-27B",
+                supportsVision: false,
+                contextLength: 128000,
+                maxOutputTokens: 65535,
+              },
+            ],
+            isCustom: false,
+            createdAt: Date.now(),
+          },
+        ],
+        overrideProviderId: "provider-qwen",
+        overrideModelId: "qwen3.6-27b",
+      });
+
+      expect(useAppStore.getState().buildThreadChatProviderOverride()).not.toBeNull();
+      expect(useAppStore.getState().buildThreadChatProviderOverride(null, null)).toBeNull();
+    });
+
     it("writes local OCR fallback kind when provider is activated", async () => {
       useAppStore.setState({
         activeProviderId: null,

@@ -176,15 +176,24 @@ function App() {
       })();
 
       // 3.3 恢复当前模型配置，属于体验增强项，不应挡首屏。
+      // 仅当 config.toml 中的 model 仍属于当前启用供应商时才覆盖，
+      // 避免启动后把全局模型拉回列表第一项/旧供应商模型。
       void (async () => {
         try {
           const cfg = await standaloneConfigRead();
-          const model = (cfg?.config?.model as string) ?? null;
-          if (model) {
-            if (!isLatestRun()) {
-              return;
+          const model = typeof cfg?.config?.model === "string" ? cfg.config.model.trim() : "";
+          if (model && isLatestRun()) {
+            const store = useAppStore.getState();
+            const activeProvider = store.providers.find((provider) => provider.id === store.activeProviderId) ?? null;
+            const modelBelongsToActiveProvider = Boolean(
+              activeProvider?.models.some((item) => item.id === model),
+            );
+            if (modelBelongsToActiveProvider) {
+              store.setCurrentModel(model);
+            } else if (!store.currentModel && activeProvider?.models[0]?.id) {
+              // 没有可用全局模型时，回退到启用供应商的默认模型。
+              store.setCurrentModel(activeProvider.models[0].id);
             }
-            useAppStore.getState().setCurrentModel(model);
           }
           const activeEpIdx = cfg?.config?.active_endpoint_index;
           if (typeof activeEpIdx === "number" && isLatestRun()) {

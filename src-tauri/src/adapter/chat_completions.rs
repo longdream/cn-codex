@@ -107,10 +107,11 @@ impl ProviderAdapter for ChatCompletionsAdapter {
         tools: Option<&[serde_json::Value]>,
         max_tokens: Option<i64>,
     ) -> serde_json::Value {
-        let formatted_messages: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|msg| chat_completions_message(msg))
-            .collect();
+        // Qwen / 部分国产 chat 网关要求：
+        // 1) system 只能出现在 messages 开头
+        // 2) 通常只接受一条 system（多条 system 会被判定为“不在开头”）
+        // 因此在序列化前合并所有 system，并保证其位于最前。
+        let formatted_messages = build_chat_completions_messages(messages);
 
         let mut body = serde_json::json!({
             "model": model,
@@ -311,5 +312,106 @@ fn content_is_empty_value(val: &serde_json::Value) -> bool {
         serde_json::Value::String(s) => s.is_empty(),
         serde_json::Value::Array(arr) => arr.is_empty(),
         _ => false,
+    }
+}
+
+/// 构造符合严格 chat 网关约束的 messages 数组。
+///
+/// - 合并全部 system 内容为一条，并放在数组最前面
+/// - 其余非 system 消息保持原有相对顺序
+/// - 过滤空 system 片段，避免发出无意义的 system 消息
+fn build_chat_completions_messages(messages: &[InternalMessage]) -> Vec<serde_json::Value> {
+    let mut system_parts: Vec<String> = Vec::new();
+    let mut non_system: Vec<serde_json::Value> = Vec::new();
+
+    for msg in messages {
+        if msg.role == "system" {
+            let text = content_to_string(&msg.content);
+            if !text.trim().is_empty() {
+                system_parts.push(text);
+            }
+            continue;
+        }
+        non_system.push(chat_completions_message(msg));
+    }
+
+    let mut formatted = Vec::with_capacity(non_system.len() + 1);
+    if !system_parts.is_empty() {
+        formatted.push(serde_json::json!({
+            "role": "system",
+            "content": system_parts.join("\n\n"),
+        }));
+    }
+    formatted.extend(non_system);
+    formatted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::types::text_content;
+
+    fn msg(role: &str, content: &str) -> InternalMessage {
+        InternalMessage {
+            role: role.to_string(),
+            content: text_content(content.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    #[test]
+    fn build_body_merges_system_messages_to_front() {
+        let adapter = ChatCompletionsAdapter;
+        let messages = vec![
+            msg("system", "main rules"),
+            msg("user", "hello"),
+            msg("system", "runtime note"),
+            msg("assistant", "hi"),
+            msg("system", "continue"),
+        ];
+
+        let body = adapter.build_body("qwen3.6-27b", &messages, None, Some(1024));
+        let formatted = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(formatted.len(), 3);
+        assert_eq!(formatted[0]["role"], "system");
+        assert_eq!(
+            formatted[0]["content"],
+            "main rules\n\nruntime note\n\ncontinue"
+        );
+        assert_eq!(formatted[1]["role"], "user");
+        assert_eq!(formatted[1]["content"], "hello");
+        assert_eq!(formatted[2]["role"], "assistant");
+        assert_eq!(formatted[2]["content"], "hi");
+    }
+
+    #[test]
+    fn build_body_skips_empty_system_and_keeps_non_system_order() {
+        let adapter = ChatCompletionsAdapter;
+        let messages = vec![
+            msg("system", "   "),
+            msg("user", "q1"),
+            msg("assistant", "a1"),
+            msg("tool", "tool-result"),
+        ];
+        let mut tool_msg = messages[3].clone();
+        tool_msg.tool_call_id = Some("call-1".to_string());
+        let messages = vec![
+            messages[0].clone(),
+            messages[1].clone(),
+            messages[2].clone(),
+            tool_msg,
+        ];
+
+        let body = adapter.build_body("qwen3.6-27b", &messages, None, Some(1024));
+        let formatted = body["messages"].as_array().expect("messages array");
+
+        // 没有有效 system 时，不应插入空 system
+        assert_eq!(formatted[0]["role"], "user");
+        assert_eq!(formatted[1]["role"], "assistant");
+        assert_eq!(formatted[2]["role"], "tool");
+        assert_eq!(formatted[2]["tool_call_id"], "call-1");
     }
 }
