@@ -1,0 +1,9 @@
+{
+   "description": "Provides Named Function Ranges from typescript's compiler to augment sourcemap scopes information",
+   "devtools_page": "DevToolsPlugin.html",
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAiMfSIPlj0PRSUeFx85BNsj/QeZ3AhvP4ScF9UxY8S+OWRyP7RcqU0e5E2okxSBD4r+L0MerEVIaUPyuMCfY4gn+Cc0CPCw/EtG/17Z0Sx9PgiM71CgWa07TYXZQXQW+K32FWf5v35prF2m75SNOUG2b4J3HMf1YkCWhEi2URHmNKIIJjrABdm5mBUzLAMM5ZKAAK9voekfq4YETl58ClarnTjM7pKBw2NvrSSuZCj5llCQoZcdfUAkOBtHyXqhmjEiVVeO2du1jDlPuVPs3YqCM99Q+kTASfUfLSV3vosx1lonpghMj9CPcOxpQrI8ybqPY24b5sv4ULigpaZL6RLwIDAQAB",
+   "manifest_version": 3,
+   "name": "Microsoft Edge Unminification Extension",
+   "update_url": "https://edge.microsoft.com/extensionwebstorebase/v1/crx",
+   "version": "135.0.3176.0"
+}

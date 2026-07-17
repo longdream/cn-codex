@@ -1,0 +1,11 @@
+[
+  {
+    "nodeId": "node_ff1aacd424a047309046293e3752b74c",
+    "displayName": "ISS460002003235",
+    "address": "127.0.0.1",
+    "port": 47800,
+    "lastSeenAt": 1784270078,
+    "trusted": true,
+    "connected": false
+  }
+]

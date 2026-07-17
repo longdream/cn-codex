@@ -1,0 +1,10 @@
+﻿{
+    "version":  1,
+    "documents":  [
+                      {
+                          "docId":  "doc_lan_alpha",
+                          "path":  "docs/doc_lan_alpha.md",
+                          "title":  "Alpha Doc"
+                      }
+                  ]
+}

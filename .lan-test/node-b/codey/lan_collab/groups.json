@@ -1,0 +1,26 @@
+[
+  {
+    "groupId": "grp_8f7ec853a96d4824b8977d2afd550187",
+    "name": "AAA",
+    "ownerNodeId": "node_ff1aacd424a047309046293e3752b74c",
+    "createdAt": 1784269405,
+    "snapshotVersion": 2,
+    "inviteCode": "AAA-E7F2",
+    "members": [
+      {
+        "nodeId": "node_ff1aacd424a047309046293e3752b74c",
+        "displayName": "ISS460002003235",
+        "role": "owner",
+        "joinedAt": 1784269405
+      },
+      {
+        "nodeId": "node_e0d9227ce71c4c8a8a13f243cead721c",
+        "displayName": "ISS460002003234",
+        "role": "member",
+        "joinedAt": 1784269624
+      }
+    ],
+    "isOwner": false,
+    "ownerOnline": false
+  }
+]
