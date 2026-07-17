@@ -163,7 +163,7 @@ async fn run_update(
     wait_secs: u64,
 ) -> i32 {
     let progress = ProgressUi::create("CN-Codex 更新");
-    progress.set_status("正在等待主程序退出...");
+    progress.set_status("正在等待主程序安全退出...");
     progress.set_progress(0);
 
     if let Err(err) = wait_for_process_exit(pid, wait_secs) {
@@ -775,6 +775,10 @@ struct ProgressUi {
     #[cfg(windows)]
     status_hwnd: Option<isize>,
     #[cfg(windows)]
+    detail_hwnd: Option<isize>,
+    #[cfg(windows)]
+    percent_hwnd: Option<isize>,
+    #[cfg(windows)]
     bar_hwnd: Option<isize>,
 }
 
@@ -818,6 +822,7 @@ impl ProgressUi {
     fn set_progress(&self, percent: i32) {
         #[cfg(windows)]
         {
+            let clamped = percent.clamp(0, 100);
             if let Some(bar) = self.bar_hwnd {
                 unsafe {
                     use windows::Win32::UI::Controls::PBM_SETPOS;
@@ -825,8 +830,19 @@ impl ProgressUi {
                     let _ = SendMessageW(
                         windows::Win32::Foundation::HWND(bar as *mut _),
                         PBM_SETPOS,
-                        Some(windows::Win32::Foundation::WPARAM(percent.clamp(0, 100) as usize)),
+                        Some(windows::Win32::Foundation::WPARAM(clamped as usize)),
                         None,
+                    );
+                }
+            }
+            if let Some(percent_hwnd) = self.percent_hwnd {
+                unsafe {
+                    use windows::core::PCWSTR;
+                    use windows::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+                    let wide = to_wide(&format!("{clamped}%"));
+                    let _ = SetWindowTextW(
+                        windows::Win32::Foundation::HWND(percent_hwnd as *mut _),
+                        PCWSTR(wide.as_ptr()),
                     );
                 }
             }
@@ -843,6 +859,17 @@ impl ProgressUi {
         self.set_status(message);
         #[cfg(windows)]
         {
+            if let Some(detail) = self.detail_hwnd {
+                unsafe {
+                    use windows::core::PCWSTR;
+                    use windows::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+                    let wide = to_wide("更新失败，请查看提示后重试");
+                    let _ = SetWindowTextW(
+                        windows::Win32::Foundation::HWND(detail as *mut _),
+                        PCWSTR(wide.as_ptr()),
+                    );
+                }
+            }
             unsafe {
                 use windows::core::PCWSTR;
                 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
@@ -885,11 +912,13 @@ impl ProgressUi {
             CreateSolidBrush, GetStockObject, UpdateWindow, DEFAULT_GUI_FONT, HBRUSH, WHITE_BRUSH,
         };
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-        use windows::Win32::UI::Controls::{InitCommonControlsEx, INITCOMMONCONTROLSEX, ICC_PROGRESS_CLASS, PBM_SETRANGE, PBM_SETPOS};
+        use windows::Win32::UI::Controls::{
+            InitCommonControlsEx, ICC_PROGRESS_CLASS, INITCOMMONCONTROLSEX, PBM_SETRANGE, PBM_SETPOS,
+        };
         use windows::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, LoadCursorW, RegisterClassW, SendMessageW,
-            ShowWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, SW_SHOW,
-            WINDOW_EX_STYLE, WNDCLASSW, WS_CAPTION, WS_CHILD,
+            CreateWindowExW, GetSystemMetrics, LoadCursorW, RegisterClassW, SendMessageW,
+            SetWindowLongPtrW, ShowWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_ARROW,
+            SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, WINDOW_EX_STYLE, WNDCLASSW, WS_CAPTION, WS_CHILD,
             WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
         };
 
@@ -901,7 +930,9 @@ impl ProgressUi {
 
             let hinstance = GetModuleHandleW(None).unwrap_or_default();
             let class_name = to_wide("CNCodexUpdaterWindow");
-            let brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(0x00201A12));
+            // COLORREF is 0x00BBGGRR. Match DESIGN.md dark canvas (#1a1a1a).
+            let bg_color = windows::Win32::Foundation::COLORREF(0x001A1A1A);
+            let brush = CreateSolidBrush(bg_color);
             let wnd_class = WNDCLASSW {
                 style: CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc: Some(wnd_proc),
@@ -917,6 +948,13 @@ impl ProgressUi {
             };
             let _ = RegisterClassW(&wnd_class);
 
+            let window_width = 500i32;
+            let window_height = 236i32;
+            let screen_w = GetSystemMetrics(SM_CXSCREEN);
+            let screen_h = GetSystemMetrics(SM_CYSCREEN);
+            let pos_x = ((screen_w - window_width) / 2).max(0);
+            let pos_y = ((screen_h - window_height) / 2).max(0);
+
             let title_wide = to_wide(title);
             let static_class = to_wide("STATIC");
             let progress_class = to_wide("msctls_progress32");
@@ -926,11 +964,35 @@ impl ProgressUi {
                 PCWSTR(class_name.as_ptr()),
                 PCWSTR(title_wide.as_ptr()),
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                460,
-                180,
+                pos_x,
+                pos_y,
+                window_width,
+                window_height,
                 None,
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .unwrap_or_default();
+
+            let colors = Box::new(UpdaterUiColors {
+                bg: bg_color,
+                muted: windows::Win32::Foundation::COLORREF(0x00C8C8C8),
+                bg_brush: brush,
+            });
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(colors) as isize);
+
+            let heading_text = to_wide("正在安装更新");
+            let heading_hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(static_class.as_ptr()),
+                PCWSTR(heading_text.as_ptr()),
+                WS_CHILD | WS_VISIBLE,
+                28,
+                20,
+                360,
+                24,
+                Some(hwnd),
                 None,
                 Some(hinstance.into()),
                 None,
@@ -943,10 +1005,44 @@ impl ProgressUi {
                 PCWSTR(static_class.as_ptr()),
                 PCWSTR(status_text.as_ptr()),
                 WS_CHILD | WS_VISIBLE,
-                24,
                 28,
+                52,
+                444,
+                22,
+                Some(hwnd),
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .unwrap_or_default();
+
+            let detail_text = to_wide("请保持网络连接，更新期间请勿关闭此窗口");
+            let detail_hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(static_class.as_ptr()),
+                PCWSTR(detail_text.as_ptr()),
+                WS_CHILD | WS_VISIBLE,
+                28,
+                80,
+                360,
+                20,
+                Some(hwnd),
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .unwrap_or_default();
+
+            let percent_text = to_wide("0%");
+            let percent_hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(static_class.as_ptr()),
+                PCWSTR(percent_text.as_ptr()),
+                WS_CHILD | WS_VISIBLE,
                 400,
-                24,
+                80,
+                56,
+                20,
                 Some(hwnd),
                 None,
                 Some(hinstance.into()),
@@ -959,10 +1055,27 @@ impl ProgressUi {
                 PCWSTR(progress_class.as_ptr()),
                 PCWSTR(empty_text.as_ptr()),
                 WS_CHILD | WS_VISIBLE,
-                24,
-                70,
-                400,
-                24,
+                28,
+                116,
+                428,
+                18,
+                Some(hwnd),
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .unwrap_or_default();
+
+            let footer_text = to_wide("CN-Codex Portable Updater");
+            let footer_hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(static_class.as_ptr()),
+                PCWSTR(footer_text.as_ptr()),
+                WS_CHILD | WS_VISIBLE,
+                28,
+                152,
+                428,
+                18,
                 Some(hwnd),
                 None,
                 Some(hinstance.into()),
@@ -977,14 +1090,36 @@ impl ProgressUi {
                 Some(LPARAM(((100i32) << 16) as isize)),
             );
             let _ = SendMessageW(bar_hwnd, PBM_SETPOS, Some(WPARAM(0)), None);
+            // PBM_SETBARCOLOR / PBM_SETBKCOLOR raw messages keep dependency surface small.
+            let _ = SendMessageW(
+                bar_hwnd,
+                0x0409, // PBM_SETBARCOLOR
+                None,
+                Some(LPARAM(0x005EC522)),
+            );
+            let _ = SendMessageW(
+                bar_hwnd,
+                0x2001, // PBM_SETBKCOLOR
+                None,
+                Some(LPARAM(0x002E2E2E)),
+            );
+
             let font = GetStockObject(DEFAULT_GUI_FONT);
             if !font.0.is_null() {
-                let _ = SendMessageW(
+                for target in [
+                    heading_hwnd,
                     status_hwnd,
-                    0x0030, // WM_SETFONT
-                    Some(WPARAM(font.0 as usize)),
-                    Some(LPARAM(1)),
-                );
+                    detail_hwnd,
+                    percent_hwnd,
+                    footer_hwnd,
+                ] {
+                    let _ = SendMessageW(
+                        target,
+                        0x0030, // WM_SETFONT
+                        Some(WPARAM(font.0 as usize)),
+                        Some(LPARAM(1)),
+                    );
+                }
             }
 
             let _ = ShowWindow(hwnd, SW_SHOW);
@@ -994,10 +1129,19 @@ impl ProgressUi {
             Self {
                 hwnd: Some(hwnd.0 as isize),
                 status_hwnd: Some(status_hwnd.0 as isize),
+                detail_hwnd: Some(detail_hwnd.0 as isize),
+                percent_hwnd: Some(percent_hwnd.0 as isize),
                 bar_hwnd: Some(bar_hwnd.0 as isize),
             }
         }
     }
+}
+
+#[cfg(windows)]
+struct UpdaterUiColors {
+    bg: windows::Win32::Foundation::COLORREF,
+    muted: windows::Win32::Foundation::COLORREF,
+    bg_brush: windows::Win32::Graphics::Gdi::HBRUSH,
 }
 
 #[cfg(windows)]
@@ -1007,9 +1151,35 @@ unsafe extern "system" fn wnd_proc(
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, PostQuitMessage, WM_DESTROY};
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::Graphics::Gdi::{SetBkColor, SetTextColor};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DefWindowProcW, GetWindowLongPtrW, PostQuitMessage, SetWindowLongPtrW, GWLP_USERDATA,
+        WM_CTLCOLORSTATIC, WM_DESTROY,
+    };
+
+    if msg == WM_CTLCOLORSTATIC {
+        unsafe {
+            let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut _);
+            let colors_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const UpdaterUiColors;
+            if !colors_ptr.is_null() {
+                let colors = &*colors_ptr;
+                let _ = lparam;
+                // Keep static labels readable on dark canvas.
+                let _ = SetTextColor(hdc, colors.muted);
+                let _ = SetBkColor(hdc, colors.bg);
+                return LRESULT(colors.bg_brush.0 as isize);
+            }
+        }
+    }
+
     if msg == WM_DESTROY {
         unsafe {
+            let colors_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut UpdaterUiColors;
+            if !colors_ptr.is_null() {
+                drop(Box::from_raw(colors_ptr));
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            }
             PostQuitMessage(0);
         }
         return windows::Win32::Foundation::LRESULT(0);

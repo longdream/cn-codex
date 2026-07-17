@@ -72,6 +72,7 @@ axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 qrcode = "0.14"
 local-ip-address = "0.6"
+socket2 = "0.5"
 
 # Auto update
 clap = { version = "4", features = ["derive"] }
@@ -101,9 +102,13 @@ debug = 0
 
 [profile.release]
 opt-level = "s"
-lto = true
+lto = false
 strip = true
-codegen-units = 1
+# Keep release builds disk-friendly on Windows.
+# Full LTO + incremental bitcode can inflate target/ to tens of GB and
+# still fail with "os error 112" (disk full) on constrained drives.
+codegen-units = 8
+incremental = false
 
 [dev-dependencies]
 tempfile = "3.27.0"

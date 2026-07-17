@@ -1105,6 +1105,28 @@ impl ThreadStore {
         self.rewrite_thread_file(thread_id, thread)?;
         Ok(())
     }
+
+    /// 截断线程消息：保留 `keep_message_id` 之前的消息（不含该消息本身）。
+    /// 用于「编辑并重发」：删除被编辑用户消息及其后的所有 AI 回复。
+    pub async fn truncate_after_message(
+        &self,
+        thread_id: &str,
+        keep_before_message_id: &str,
+    ) -> AppResult<Vec<ThreadMessage>> {
+        self.ensure_loaded().await;
+        let existing = self.get_thread_messages(thread_id).await;
+        let Some(idx) = existing
+            .iter()
+            .position(|m| m.id == keep_before_message_id)
+        else {
+            return Err(AppError::Custom(format!(
+                "Message not found: {keep_before_message_id}"
+            )));
+        };
+        let kept: Vec<ThreadMessage> = existing.into_iter().take(idx).collect();
+        self.replace_messages(thread_id, kept.clone()).await?;
+        Ok(kept)
+    }
 }
 
 fn now_secs() -> i64 {

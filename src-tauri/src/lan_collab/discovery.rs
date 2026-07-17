@@ -89,17 +89,7 @@ pub async fn start_discovery(
     get_beacon: Arc<dyn Fn() -> PresenceBeacon + Send + Sync>,
     on_discovered: DiscoveryCallback,
 ) -> Result<DiscoveryHandle, String> {
-    let socket = match UdpSocket::bind(("0.0.0.0", BEACON_PORT)).await {
-        Ok(s) => s,
-        Err(err) => {
-            tracing::warn!(
-                "[lan_collab] bind discovery port {BEACON_PORT} failed: {err}; fallback random port"
-            );
-            UdpSocket::bind("0.0.0.0:0")
-                .await
-                .map_err(|e| format!("绑定发现端口失败: {e}"))?
-        }
-    };
+    let socket = bind_beacon_socket().await?;
     socket
         .set_broadcast(true)
         .map_err(|e| format!("设置 UDP 广播失败: {e}"))?;
@@ -155,10 +145,7 @@ pub async fn start_discovery(
                 // 广播本机信标
                 let beacon = get_beacon();
                 if let Ok(bytes) = serde_json::to_vec(&beacon) {
-                    let _ = socket
-                        .send_to(&bytes, SocketAddr::from((Ipv4Addr::BROADCAST, BEACON_PORT)))
-                        .await;
-                    for target in subnet_broadcast_targets() {
+                    for target in beacon_targets() {
                         let _ = socket.send_to(&bytes, target).await;
                     }
                 }
@@ -191,10 +178,47 @@ pub async fn start_discovery(
         }));
     }
 
-    // 防止未使用警告
-    let _ = mpsc::channel::<()>(1);
-
     Ok(DiscoveryHandle { stop_tx, tasks })
+}
+
+async fn bind_beacon_socket() -> Result<UdpSocket, String> {
+    // Windows 上多进程同端口收 UDP，需要 SO_REUSEADDR；
+    // 否则第二个实例只能落到随机端口，收不到广播。
+    match bind_reuse_udp(BEACON_PORT) {
+        Ok(socket) => Ok(socket),
+        Err(err) => {
+            tracing::warn!(
+                "[lan_collab] bind discovery port {BEACON_PORT} with reuse failed: {err}; fallback random port"
+            );
+            UdpSocket::bind("0.0.0.0:0")
+                .await
+                .map_err(|e| format!("绑定发现端口失败: {e}"))
+        }
+    }
+}
+
+fn bind_reuse_udp(port: u16) -> Result<UdpSocket, String> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+        .map_err(|e| format!("创建 UDP socket 失败: {e}"))?;
+    socket
+        .set_reuse_address(true)
+        .map_err(|e| format!("设置 SO_REUSEADDR 失败: {e}"))?;
+    #[cfg(unix)]
+    {
+        // Unix 上额外允许同端口多绑定，便于同机双开。
+        socket
+            .set_reuse_port(true)
+            .map_err(|e| format!("设置 SO_REUSEPORT 失败: {e}"))?;
+    }
+    socket
+        .set_nonblocking(true)
+        .map_err(|e| format!("设置 UDP nonblocking 失败: {e}"))?;
+    let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
+    socket
+        .bind(&addr.into())
+        .map_err(|e| format!("绑定 UDP {port} 失败: {e}"))?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    UdpSocket::from_std(std_socket).map_err(|e| format!("转换 tokio UdpSocket 失败: {e}"))
 }
 
 fn parse_beacon(bytes: &[u8], addr: SocketAddr) -> Option<DiscoveredEndpoint> {
@@ -202,6 +226,7 @@ fn parse_beacon(bytes: &[u8], addr: SocketAddr) -> Option<DiscoveredEndpoint> {
     if beacon.kind != DISCOVERY_KIND || beacon.node_id.is_empty() || beacon.listen_port == 0 {
         return None;
     }
+    // 同机双开时，对端常从 127.0.0.1 发来；优先用源地址，但保留可连接端口。
     Some(DiscoveredEndpoint {
         node_id: beacon.node_id,
         display_name: beacon.display_name,
@@ -210,6 +235,14 @@ fn parse_beacon(bytes: &[u8], addr: SocketAddr) -> Option<DiscoveredEndpoint> {
         groups: beacon.groups,
         from_beacon: true,
     })
+}
+
+fn beacon_targets() -> Vec<SocketAddr> {
+    let mut out = Vec::new();
+    out.push(SocketAddr::from((Ipv4Addr::BROADCAST, BEACON_PORT)));
+    out.push(SocketAddr::from((Ipv4Addr::LOCALHOST, BEACON_PORT)));
+    out.extend(subnet_broadcast_targets());
+    out
 }
 
 fn subnet_broadcast_targets() -> Vec<SocketAddr> {
@@ -224,41 +257,62 @@ fn subnet_broadcast_targets() -> Vec<SocketAddr> {
     out
 }
 
-/// 轻量扫描本机 /24 网段常见协作端口。
+fn collab_ports() -> Vec<u16> {
+    (COLLAB_PORT_START..=COLLAB_PORT_END).collect()
+}
+
+/// 轻量扫描：优先本机 loopback / 本机局域网 IP，再扫 /24 网段常见协作端口。
 pub async fn soft_scan_local_subnet(self_port: u16) -> Vec<(String, u16)> {
-    let Some(local) = local_ip_address::local_ip().ok() else {
-        return Vec::new();
-    };
-    let std::net::IpAddr::V4(v4) = local else {
-        return Vec::new();
-    };
-    let octets = v4.octets();
-    let base = [octets[0], octets[1], octets[2]];
-    let self_ip = v4.to_string();
-
-    // 只扫 47800..=47805，控制噪声
-    let ports: Vec<u16> = (47800u16..=47805).collect();
+    let ports = collab_ports();
     let mut targets = Vec::new();
-    for host in 1u8..=254u8 {
-        let ip = Ipv4Addr::new(base[0], base[1], base[2], host).to_string();
-        for port in &ports {
-            if ip == self_ip && *port == self_port {
-                continue;
-            }
-            targets.push((ip.clone(), *port));
-        }
-    }
+    let mut seen = HashSet::new();
 
-    // 单机双实例：额外探测 loopback
+    let push_target = |ip: String, port: u16, targets: &mut Vec<(String, u16)>, seen: &mut HashSet<(String, u16)>| {
+        if seen.insert((ip.clone(), port)) {
+            targets.push((ip, port));
+        }
+    };
+
+    // 1) 单机双开：先扫 loopback，几秒内就能发现另一实例
     for port in &ports {
         if *port != self_port {
-            targets.push(("127.0.0.1".into(), *port));
+            push_target("127.0.0.1".into(), *port, &mut targets, &mut seen);
         }
     }
 
+    // 2) 本机局域网 IP（对端可能广播/连接该地址）
+    if let Ok(local) = local_ip_address::local_ip() {
+        if let std::net::IpAddr::V4(v4) = local {
+            let self_ip = v4.to_string();
+            for port in &ports {
+                if *port != self_port {
+                    push_target(self_ip.clone(), *port, &mut targets, &mut seen);
+                }
+            }
+
+            // 3) 再扫同网段 /24，但只扫协作端口范围
+            let octets = v4.octets();
+            let base = [octets[0], octets[1], octets[2]];
+            for host in 1u8..=254u8 {
+                let ip = Ipv4Addr::new(base[0], base[1], base[2], host).to_string();
+                for port in &ports {
+                    if ip == self_ip && *port == self_port {
+                        continue;
+                    }
+                    push_target(ip.clone(), *port, &mut targets, &mut seen);
+                }
+            }
+        }
+    }
+
+    probe_targets(targets).await
+}
+
+async fn probe_targets(targets: Vec<(String, u16)>) -> Vec<(String, u16)> {
     let mut found = Vec::new();
     let mut set = HashSet::new();
-    for chunk in targets.chunks(160) {
+    // 优先把 loopback / 本机 IP 扫完；发现候选后可提前结束整网扫描
+    for chunk in targets.chunks(96) {
         let mut handles = Vec::with_capacity(chunk.len());
         for (ip, port) in chunk {
             let ip = ip.clone();
@@ -266,7 +320,7 @@ pub async fn soft_scan_local_subnet(self_port: u16) -> Vec<(String, u16)> {
             handles.push(tokio::spawn(async move {
                 let addr = format!("{ip}:{port}");
                 let ok = tokio::time::timeout(
-                    Duration::from_millis(160),
+                    Duration::from_millis(120),
                     tokio::net::TcpStream::connect(&addr),
                 )
                 .await
@@ -287,7 +341,11 @@ pub async fn soft_scan_local_subnet(self_port: u16) -> Vec<(String, u16)> {
                 }
             }
         }
-        tokio::time::sleep(Duration::from_millis(15)).await;
+        // 已经扫到候选时，不必硬等整网扫完；后台周期扫描会继续补
+        if !found.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(8)).await;
     }
     found
 }

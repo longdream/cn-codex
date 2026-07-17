@@ -2084,6 +2084,28 @@ impl LanCollabRuntime {
                 }
             }
 
+            // 扫描候选也先展示到附近设备，避免“扫到了但列表空白”
+            if !endpoint.from_beacon {
+                let already_listed = guard.peers.iter().any(|p| {
+                    (p.address == endpoint.address && p.port == endpoint.port)
+                        || (p.node_id == endpoint.node_id)
+                });
+                if !already_listed {
+                    let peer = NearbyPeer {
+                        node_id: endpoint.node_id.clone(),
+                        display_name: endpoint.display_name.clone(),
+                        address: endpoint.address.clone(),
+                        port: endpoint.port,
+                        last_seen_at: now,
+                        trusted: false,
+                        connected: false,
+                    };
+                    upsert_peer(&mut guard.peers, peer.clone());
+                    let _ = self.store.save_peers(&guard.peers);
+                    self.emit_event(&guard, EVENT_PEER, &peer);
+                }
+            }
+
             let groups = guard.discovered_groups.clone();
             self.emit_event(&guard, EVENT_DISCOVERY, &groups);
         }
@@ -2223,7 +2245,12 @@ impl LanCollabRuntime {
 }
 
 fn upsert_peer(peers: &mut Vec<NearbyPeer>, peer: NearbyPeer) {
-    if let Some(existing) = peers.iter_mut().find(|p| p.node_id == peer.node_id) {
+    if let Some(existing) = peers.iter_mut().find(|p| {
+        p.node_id == peer.node_id
+            || (p.address == peer.address
+                && p.port == peer.port
+                && (p.node_id.starts_with("scan:") || peer.node_id.starts_with("scan:")))
+    }) {
         *existing = peer;
     } else {
         peers.push(peer);

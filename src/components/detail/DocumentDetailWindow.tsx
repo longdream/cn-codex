@@ -11,7 +11,15 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  isValidElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useIntl } from "react-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
@@ -67,6 +75,23 @@ function isPrimaryModifier(event: KeyboardEvent): boolean {
   return event.ctrlKey || event.metaKey;
 }
 
+/** rehype-highlight 会把代码块 children 变成 React 节点；不能再 String()，否则会变成 object。 */
+function markdownChildrenToText(children: ReactNode): string {
+  if (children == null || typeof children === "boolean") {
+    return "";
+  }
+  if (typeof children === "string" || typeof children === "number" || typeof children === "bigint") {
+    return String(children);
+  }
+  if (Array.isArray(children)) {
+    return children.map((child) => markdownChildrenToText(child)).join("");
+  }
+  if (isValidElement<{ children?: ReactNode }>(children)) {
+    return markdownChildrenToText(children.props.children);
+  }
+  return "";
+}
+
 const markdownPreviewComponents: Components = {
   h1: ({ children }) => (
     <h1 className="mt-5 mb-2 text-lg font-semibold text-[var(--chat-prose)]">{children}</h1>
@@ -106,10 +131,15 @@ const markdownPreviewComponents: Components = {
     </pre>
   ),
   code: ({ className, children }) => {
-    const code = String(children ?? "").replace(/\n$/, "");
-    const isBlockCode = Boolean(className) || code.includes("\n");
+    // 有 language class 时，children 可能已是 highlight 后的 React 节点树，必须原样透传。
+    const isBlockCode = Boolean(className);
     if (isBlockCode) {
-      return <code className={`hljs ${className ?? ""}`.trim()}>{code}</code>;
+      return <code className={`hljs ${className ?? ""}`.trim()}>{children}</code>;
+    }
+
+    const code = markdownChildrenToText(children).replace(/\n$/, "");
+    if (code.includes("\n")) {
+      return <code className="hljs">{code}</code>;
     }
     return <code className="chat-inline-code">{code}</code>;
   },

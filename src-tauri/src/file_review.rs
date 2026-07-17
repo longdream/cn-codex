@@ -743,12 +743,12 @@ fn format_hunk_match_error(path: &str, old_lines: &[String]) -> String {
         .take(MAX_PREVIEW_LINES)
         .map(String::as_str)
         .collect::<Vec<_>>()
-        .join("\\n");
+        .join("\n");
     if preview.chars().count() > MAX_PREVIEW_CHARS {
         preview = preview.chars().take(MAX_PREVIEW_CHARS).collect();
         preview.push_str("...");
     } else if old_lines.len() > MAX_PREVIEW_LINES {
-        preview.push_str("\\n...");
+        preview.push_str("\n...");
     }
 
     format!(

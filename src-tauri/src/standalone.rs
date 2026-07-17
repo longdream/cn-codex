@@ -1125,6 +1125,24 @@ pub async fn standalone_thread_goal_clear(
     Ok(serde_json::json!({ "goal": serde_json::Value::Null }))
 }
 
+/// 编辑重发前截断：删除指定用户消息及其后的所有内容。
+#[tauri::command]
+pub async fn standalone_thread_truncate_before(
+    state: State<'_, AppState>,
+    thread_id: String,
+    message_id: String,
+) -> AppResult<serde_json::Value> {
+    let kept = state
+        .thread_store
+        .truncate_after_message(&thread_id, &message_id)
+        .await?;
+    Ok(serde_json::json!({
+        "status": "ok",
+        "keptCount": kept.len(),
+        "messages": kept,
+    }))
+}
+
 #[tauri::command]
 pub async fn standalone_chat(
     app_handle: AppHandle,

@@ -17,6 +17,7 @@ import {
   IconPencil,
   IconPlayerPlay,
   IconLoader2,
+  IconSearch,
 } from "@tabler/icons-react";
 import {
   fetchProviderModels,
@@ -35,6 +36,8 @@ import type { ProviderConfig, ProviderPreset, ProviderModel, PoolModelEndpoint }
 import type { ConfigEdit } from "../../types";
 import type { RemoteProviderModel } from "../../api";
 import { SettingsPagination, usePagedItems } from "./SettingsPagination";
+import { filterProviderModels } from "../../utils/chatModelSelection";
+import { LanModelShareSection } from "./LanModelShareSection";
 
 const LOCAL_OCR_FALLBACK_VALUE = "__local_ocr__";
 
@@ -125,6 +128,7 @@ export function ProviderPanel() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [showPresetDialog, setShowPresetDialog] = useState(false);
+  const [modelSearchQuery, setModelSearchQuery] = useState("");
 
   // 编辑表单
   const [editForm, setEditForm] = useState<{
@@ -166,6 +170,10 @@ export function ProviderPanel() {
     totalPages: totalProviderPages,
     pagedItems: pagedProviders,
   } = usePagedItems(providers);
+  const filteredModels = useMemo(
+    () => filterProviderModels(selectedProvider?.models ?? [], modelSearchQuery),
+    [modelSearchQuery, selectedProvider?.models],
+  );
   const {
     page: modelsPage,
     setPage: setModelsPage,
@@ -173,7 +181,7 @@ export function ProviderPanel() {
     totalItems: totalModels,
     totalPages: totalModelPages,
     pagedItems: pagedModels,
-  } = usePagedItems(selectedProvider?.models ?? []);
+  } = usePagedItems(filteredModels);
 
   useEffect(() => {
     const fallbackId = activeProviderId ?? providers[0]?.id ?? null;
@@ -184,6 +192,10 @@ export function ProviderPanel() {
       return fallbackId;
     });
   }, [activeProviderId, providers]);
+
+  useEffect(() => {
+    setModelSearchQuery("");
+  }, [selectedProvider?.id]);
 
   useEffect(() => {
     if (!selectedProvider) return;
@@ -205,6 +217,7 @@ export function ProviderPanel() {
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id);
     setFeedback(null);
+    setModelSearchQuery("");
     const provider = useAppStore.getState().providers.find((p) => p.id === id);
     if (provider) {
       setEditForm({
@@ -486,7 +499,11 @@ export function ProviderPanel() {
   } = usePagedItems(presetsByCategory);
 
   return (
-    <div className="flex h-full gap-4">
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className="shrink-0">
+        <LanModelShareSection />
+      </div>
+      <div className="flex min-h-0 flex-1 gap-4">
       {/* 左侧：实例列表 */}
       <div className="flex w-60 flex-shrink-0 flex-col rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-3">
         <div className="mb-3 flex items-center justify-between">
@@ -723,16 +740,41 @@ export function ProviderPanel() {
                   </button>
                 )}
               </div>
-              <div className="space-y-1">
-                {pagedModels.map((model) => (
-                  <ModelRow
-                    key={model.id}
-                    model={model}
-                    providerId={selectedProvider.id}
-                    isPoolProvider={selectedProvider.type === "local-pool"}
-                    onRemove={() => handleRemoveModel(model.id)}
+              {(selectedProvider.models.length > 0 || modelSearchQuery.trim()) && (
+                <div className="relative">
+                  <IconSearch
+                    size={12}
+                    stroke={1.8}
+                    className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-faint)]"
                   />
-                ))}
+                  <input
+                    type="text"
+                    value={modelSearchQuery}
+                    onChange={(event) => setModelSearchQuery(event.target.value)}
+                    placeholder={intl.formatMessage({ id: "settings.provider.modelSearchPlaceholder" })}
+                    autoComplete="off"
+                    className="app-input w-full pl-8 text-xs"
+                  />
+                </div>
+              )}
+              <div className="space-y-1">
+                {pagedModels.length > 0 ? (
+                  pagedModels.map((model) => (
+                    <ModelRow
+                      key={model.id}
+                      model={model}
+                      providerId={selectedProvider.id}
+                      isPoolProvider={selectedProvider.type === "local-pool"}
+                      onRemove={() => handleRemoveModel(model.id)}
+                    />
+                  ))
+                ) : (
+                  <div className="rounded-[var(--radius-sm)] border border-dashed border-[var(--border-subtle)] px-3 py-4 text-center text-[11px] text-[var(--text-faint)]">
+                    {selectedProvider.models.length > 0
+                      ? intl.formatMessage({ id: "settings.provider.modelSearchEmpty" })
+                      : intl.formatMessage({ id: "settings.provider.modelsEmpty" })}
+                  </div>
+                )}
               </div>
               <SettingsPagination
                 page={modelsPage}
@@ -835,6 +877,7 @@ export function ProviderPanel() {
               : intl.formatMessage({ id: "settings.provider.emptySelect" })}
           </div>
         )}
+      </div>
       </div>
 
       {/* 从预设添加供应商的对话框 */}

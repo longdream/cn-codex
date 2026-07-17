@@ -6,6 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   standaloneChat,
   standaloneTurnInterrupt,
+  standaloneThreadTruncateBefore,
   standaloneThreadGoalClear,
   standaloneThreadGoalEdit,
   standaloneThreadGoalStatus,
@@ -224,6 +225,38 @@ export function ChatPage() {
 
     await interruptPromise;
   }, [intl]);
+
+  const handleResendUserMessage = useCallback(
+    async (messageId: string, newText: string) => {
+      const state = useAppStore.getState();
+      if (state.isStreaming || isDispatching) return;
+      const threadId = state.currentThreadId;
+      if (!threadId) return;
+      const target = state.messages.find((m) => m.id === messageId && m.role === "user");
+      if (!target) return;
+
+      // 若当前仍在流式，先中断
+      if (state.isStreaming) {
+        await handleInterrupt();
+      }
+
+      try {
+        await standaloneThreadTruncateBefore(threadId, messageId);
+      } catch (err) {
+        console.error("Failed to truncate thread before resend:", err);
+        return;
+      }
+
+      // 前端同步截断并清空后续 AI 回复
+      useAppStore.getState().truncateMessagesFrom(messageId);
+      useAppStore.getState().clearStreamingText();
+      useAppStore.getState().setStreaming(false);
+
+      // 以编辑后的内容重新发送（作为新的 user turn）
+      await handleSend(newText, state.chatMode, target.attachments ?? []);
+    },
+    [handleInterrupt, handleSend, isDispatching],
+  );
 
   const addSystemMessage = useCallback((content: string) => {
     useAppStore.getState().addMessage({
@@ -513,6 +546,7 @@ export function ChatPage() {
             streamingLabel={streamingLabel}
             isStreaming={isStreaming}
             onExecutePlan={handleExecutePlan}
+            onResendUserMessage={handleResendUserMessage}
           />
         </>
       )}

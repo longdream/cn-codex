@@ -2439,7 +2439,7 @@ impl AgentEngine {
              You have access to the following tools:\n\
              - shell / shell_command: Execute short shell commands to run code, install packages, build projects, etc.; shell_command supports Codex-style workdir, timeout_ms, login, and sandbox permission request fields.\n\
              - exec_command / write_stdin / close_exec_session: Start a persistent command session for long-running or interactive commands, write stdin or poll output by session id, and close sessions that are no longer needed.\n\
-             - read_file: Read the contents of a file at a given path.\n\
+             - read_file: Read the contents of a file at the given path. Supports line_offset/max_lines/end_line for numbered ranged reads; prefer this over shell when inspecting large files or specific line windows.\n\
              - write_file: Create or overwrite a file with the given content.\n\
              - tool_search: Search available CN-Codex tools, skills, plugin skills, and discovered MCP tools when you are unsure which capability to use.\n\
              - code_review: Review current git changes or a diff against a base ref, reporting changed files, diff-check issues, and obvious risk patterns.\n\
@@ -2507,7 +2507,7 @@ impl AgentEngine {
              3. `apply_patch` supports single-file and multi-file add/update/delete/move operations. Read the relevant file content before constructing an update hunk. Keep hunks small: include only changed lines plus a few exact current context lines. If a hunk fails to match, immediately re-read that file and retry `apply_patch` with refreshed, smaller context; do not stop at the first patch error.\n\
              4. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
                 Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
-             5. Do not use python scripts to read or write files. Use `read_file`, `apply_patch`, or (for new files) `write_file` instead.\n\
+             5. Do not use python/PowerShell scripts to read or write files, and do not use shell loops such as Get-Content + ForEach-Object to dump line ranges. Use `read_file` (with line_offset/max_lines/end_line when needed), `apply_patch`, or (for new files) `write_file` instead.\n\
              6. Preserve the existing text encoding and line endings when editing. New source and web files must be UTF-8. Never use a shell fallback after an edit-tool error because PowerShell or shell defaults can corrupt non-ASCII text such as Chinese; fix the tool arguments and retry `apply_patch`.\n\
              \n\
              Prefer paths relative to the working directory. Absolute paths are accepted only when they resolve inside the current workspace.\n\

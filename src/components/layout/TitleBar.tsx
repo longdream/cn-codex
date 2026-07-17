@@ -84,11 +84,17 @@ export function TitleBar() {
               { version: updateInfo.latestVersion },
             )}
             onClick={() => setShowUpdateModal(true)}
-            className="flex h-full items-center gap-1.5 px-3 text-[11px] font-medium text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent-soft)]"
+            className="group relative flex h-full items-center gap-1.5 border-l border-[var(--border-subtle)] px-3 text-[11px] font-medium text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent-soft)]"
           >
-            <IconDownload size={14} stroke={1.9} />
-            <span>{intl.formatMessage({ id: "titleBar.update" })}</span>
-            <span className="rounded-full bg-[var(--accent)] px-1.5 py-0.5 text-[10px] leading-none text-white">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--accent)] opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--accent)]" />
+            </span>
+            <IconDownload size={14} stroke={1.9} className="transition-transform group-hover:-translate-y-0.5" />
+            <span className="hidden sm:inline">
+              {intl.formatMessage({ id: "titleBar.update" })}
+            </span>
+            <span className="rounded-full border border-[var(--accent-border)] bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white shadow-[0_0_12px_rgba(34,197,94,0.35)]">
               {updateInfo.latestVersion}
             </span>
           </button>

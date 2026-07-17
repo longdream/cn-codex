@@ -1,5 +1,8 @@
 [build]
-incremental = true
+# Do not force incremental globally.
+# Dev profile still enables it in Cargo.toml; release builds stay leaner
+# and avoid multi-GB pre-LTO / incremental bitcode accumulation.
+incremental = false
 
 [registries.crates-io]
 protocol = "sparse"

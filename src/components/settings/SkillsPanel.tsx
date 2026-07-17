@@ -4,6 +4,7 @@ import { useIntl } from "react-intl";
 import { skillCategoriesRead, skillList, skillRead } from "../../api";
 import type { SkillCategoryConfig, SkillSummary } from "../../types/skill";
 import { SettingsPagination, usePagedItems } from "./SettingsPagination";
+import { LanSkillShareSection } from "./LanSkillShareSection";
 
 const SKILLS_PER_GROUP_PAGE = 8;
 
@@ -256,6 +257,7 @@ export function SkillsPanel() {
           </div>
         )}
       </section>
+      <LanSkillShareSection skills={skills} onInstalled={() => void load()} />
     </div>
   );
 }

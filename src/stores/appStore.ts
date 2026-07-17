@@ -261,7 +261,7 @@ function createDefaultThreadRuntimeState(): ThreadRuntimeState {
   };
 }
 
-export type RightPanelTab = "browser" | "project" | "terminal" | "git";
+export type RightPanelTab = "browser" | "project" | "terminal" | "git" | "lan";
 export type SidebarTab = "chats" | "projects";
 export interface SmartbrainExtractionProgress {
   current: number;
@@ -1711,6 +1711,8 @@ interface AppState {
   deleteThread: (threadId: string) => void;
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (message: ChatMessage) => void;
+  /** 截断消息列表：保留 index 之前的消息（不含 index） */
+  truncateMessagesFrom: (messageId: string) => void;
   setLiveTurnUsage: (usage: TokenUsage | null) => void;
   updateToolCallStatus: (toolId: string, status: "success" | "failed", output?: string) => void;
   updateToolCallPatchProgress: (toolId: string, changes: PatchProgressChange[]) => void;
@@ -2615,6 +2617,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   setMessages: (messages) => set({ messages }),
   addMessage: (message) => {
     set((s) => ({ messages: [...s.messages, message] }));
+  },
+  truncateMessagesFrom: (messageId) => {
+    set((s) => {
+      const idx = s.messages.findIndex((m) => m.id === messageId);
+      if (idx < 0) return {};
+      return {
+        messages: s.messages.slice(0, idx),
+        streamingText: "",
+        streamingLabel: "",
+      };
+    });
   },
   setLiveTurnUsage: (usage) => set({ liveTurnUsage: usage }),
   updateToolCallStatus: (toolId, status, output?) =>

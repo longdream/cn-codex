@@ -250,6 +250,17 @@ export async function standaloneChat(
   });
 }
 
+/** 编辑重发：删除指定用户消息及其后的所有回复。 */
+export async function standaloneThreadTruncateBefore(
+  threadId: string,
+  messageId: string,
+): Promise<{ status: string; keptCount: number }> {
+  return invoke("standalone_thread_truncate_before", {
+    threadId,
+    messageId,
+  });
+}
+
 export async function standaloneTurnInterrupt(): Promise<{ status: string }> {
   return invoke("standalone_turn_interrupt");
 }

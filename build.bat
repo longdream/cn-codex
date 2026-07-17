@@ -52,13 +52,43 @@ if defined TAURI_BUNDLES (
     echo [%date% %time%] Bundle targets=%TAURI_BUNDLES% >> "%LOGFILE%"
 ) else (
     set "TAURI_BUILD_ARGS=--no-bundle"
-    if not defined CARGO_PROFILE_RELEASE_LTO set "CARGO_PROFILE_RELEASE_LTO=thin"
+    if not defined CARGO_PROFILE_RELEASE_LTO set "CARGO_PROFILE_RELEASE_LTO=false"
     if not defined CARGO_PROFILE_RELEASE_CODEGEN_UNITS set "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8"
+    if not defined CARGO_INCREMENTAL set "CARGO_INCREMENTAL=0"
     echo [INFO] Bundle targets: none ^(fast mode^).
     echo [INFO] Set TAURI_BUNDLES=nsis or msi if installer packages are needed.
-    echo [INFO] Fast release profile defaults: lto=thin, codegen-units=8 ^(override via env^).
+    echo [INFO] Fast release profile defaults: lto=false, codegen-units=8, incremental=off ^(override via env^).
     echo [%date% %time%] Bundle targets=none ^(fast mode^) >> "%LOGFILE%"
-    echo [%date% %time%] Fast release profile defaults: lto=thin, codegen-units=8 >> "%LOGFILE%"
+    echo [%date% %time%] Fast release profile defaults: lto=false, codegen-units=8, incremental=off >> "%LOGFILE%"
+)
+
+REM Always disable incremental for this scripted release path.
+if not defined CARGO_INCREMENTAL set "CARGO_INCREMENTAL=0"
+if not defined CARGO_PROFILE_RELEASE_LTO set "CARGO_PROFILE_RELEASE_LTO=false"
+if not defined CARGO_PROFILE_RELEASE_CODEGEN_UNITS set "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8"
+
+echo.
+echo [0/5] Checking disk space and cleaning bulky Rust cache...
+echo [%date% %time%] [0/5] Disk check + rust cache cleanup >> "%LOGFILE%"
+for /f "usebackq tokens=1,2 delims=|" %%A in (`powershell -NoProfile -Command "$p='%PROJECT_DIR%'; $root=[System.IO.Path]::GetPathRoot((Resolve-Path $p)); $d=Get-CimInstance Win32_LogicalDisk -Filter (\"DeviceID='\" + $root.TrimEnd('\\') + \"'\"); if ($d) { '{0}|{1:N2}' -f $d.DeviceID, ($d.FreeSpace/1GB) } else { '?:|0' }"`) do (
+    set "PROJECT_DRIVE=%%A"
+    set "PROJECT_FREE_GB=%%B"
+)
+if not defined PROJECT_DRIVE set "PROJECT_DRIVE=?"
+if not defined PROJECT_FREE_GB set "PROJECT_FREE_GB=0"
+echo [INFO] Project drive %PROJECT_DRIVE% free=%PROJECT_FREE_GB% GB
+echo [%date% %time%] Project drive %PROJECT_DRIVE% free=%PROJECT_FREE_GB% GB >> "%LOGFILE%"
+
+REM Prefer soft clean by default; escalate when disk is tight.
+set "CLEAN_MODE=auto"
+if /I "%~1"=="fullclean" set "CLEAN_MODE=full"
+if /I "%~1"=="clean" set "CLEAN_MODE=debug"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\scripts\clean-rust-cache.ps1" -Mode %CLEAN_MODE% >> "%LOGFILE%" 2>&1
+if errorlevel 1 (
+    echo [WARN] Rust cache cleanup reported errors; continuing build.
+    echo [%date% %time%] WARN: rust cache cleanup failed >> "%LOGFILE%"
+) else (
+    echo       OK: rust cache cleaned ^(mode=%CLEAN_MODE%^)
 )
 
 echo.
@@ -68,6 +98,7 @@ call pnpm tauri build %TAURI_BUILD_ARGS% >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo [ERROR] Tauri build failed! See %LOGFILE%
     echo [HINT] Fast mode uses --no-bundle. Use TAURI_BUNDLES only when you need installers.
+    echo [HINT] If error is disk full ^(os error 112^), run: build.bat fullclean
     echo [%date% %time%] ERROR: Tauri build failed ^(args=%TAURI_BUILD_ARGS%^) >> "%LOGFILE%"
     pause
     exit /b 1

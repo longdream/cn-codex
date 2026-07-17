@@ -22,6 +22,8 @@ import {
   IconSettings,
   IconTargetArrow,
   IconTerminal2,
+  IconSend,
+  IconX,
 } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { fileReviewApply, fileReviewCancel, fileReviewUpdate } from "../../api/fileReview";
@@ -54,9 +56,10 @@ interface MessageListProps {
   streamingLabel: string;
   isStreaming: boolean;
   onExecutePlan?: (planContent: string) => void;
+  onResendUserMessage?: (messageId: string, newText: string) => void | Promise<void>;
 }
 
-export function MessageList({ messages, streamingText, streamingLabel, isStreaming, onExecutePlan }: MessageListProps) {
+export function MessageList({ messages, streamingText, streamingLabel, isStreaming, onExecutePlan, onResendUserMessage }: MessageListProps) {
   const intl = useIntl();
   const initialized = useAppStore((state) => state.initialized);
   const initError = useAppStore((state) => state.initError);
@@ -117,6 +120,8 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
             messageIndex={index}
             sourceMessages={messages}
             onExecutePlan={onExecutePlan}
+            onResendUserMessage={onResendUserMessage}
+            canEdit={!isStreaming}
           />
         ))}
 
@@ -163,11 +168,15 @@ function MessageRow({
   messageIndex,
   sourceMessages,
   onExecutePlan,
+  onResendUserMessage,
+  canEdit,
 }: {
   message: ChatMessage;
   messageIndex: number;
   sourceMessages: ChatMessage[];
   onExecutePlan?: (planContent: string) => void;
+  onResendUserMessage?: (messageId: string, newText: string) => void | Promise<void>;
+  canEdit?: boolean;
 }) {
   if (message.planFile) {
     return (
@@ -208,15 +217,13 @@ function MessageRow({
     const hasContent = message.content.trim().length > 0;
     const attachments = message.attachments ?? [];
     return (
-      <div className="flex justify-end py-1">
-        <div className="chat-user-message group relative max-w-[min(88%,760px)] px-4 py-3 text-[13px] leading-relaxed">
-          {hasContent && <MessageContent content={message.content} />}
-          {attachments.length > 0 && (
-            <UserMessageAttachments attachments={attachments} />
-          )}
-          {hasContent && <CopyButton text={message.content} />}
-        </div>
-      </div>
+      <EditableUserMessage
+        message={message}
+        hasContent={hasContent}
+        attachments={attachments}
+        canEdit={!!canEdit && !!onResendUserMessage}
+        onResend={onResendUserMessage}
+      />
     );
   }
 
@@ -227,6 +234,123 @@ function MessageRow({
       </div>
       <CopyButton text={message.content} />
     </article>
+  );
+}
+
+function EditableUserMessage({
+  message,
+  hasContent,
+  attachments,
+  canEdit,
+  onResend,
+}: {
+  message: ChatMessage;
+  hasContent: boolean;
+  attachments: BinaryAttachedFile[];
+  canEdit: boolean;
+  onResend?: (messageId: string, newText: string) => void | Promise<void>;
+}) {
+  const intl = useIntl();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!editing) {
+      setDraft(message.content);
+    }
+  }, [message.content, editing]);
+
+  const handleCancel = () => {
+    setDraft(message.content);
+    setEditing(false);
+  };
+
+  const handleSend = async () => {
+    if (!onResend || busy) return;
+    const next = draft.trim();
+    if (!next) return;
+    setBusy(true);
+    try {
+      await onResend(message.id, next);
+      setEditing(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="flex justify-end py-1">
+        <div className="chat-user-message relative max-w-[min(88%,760px)] w-full px-4 py-3 text-[13px] leading-relaxed">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={Math.min(12, Math.max(3, draft.split("\n").length + 1))}
+            className="w-full resize-y rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--surface-panel)] px-2.5 py-2 text-[13px] leading-relaxed text-[var(--text-strong)] outline-none focus:border-[var(--accent)]"
+            autoFocus
+            disabled={busy}
+          />
+          <div className="mt-2 flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={busy}
+              className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)] disabled:opacity-50"
+              title={intl.formatMessage({ id: "chat.cancelEdit" })}
+            >
+              <IconX size={15} stroke={1.8} />
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSend()}
+              disabled={busy || !draft.trim()}
+              className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--accent)] text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              title={intl.formatMessage({ id: "chat.resend" })}
+            >
+              <IconSend size={14} stroke={1.8} />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex justify-end py-1">
+      <div
+        className={`chat-user-message group relative max-w-[min(88%,760px)] px-4 py-3 text-[13px] leading-relaxed ${
+          canEdit ? "cursor-pointer" : ""
+        }`}
+        onClick={() => {
+          if (canEdit && hasContent) {
+            setDraft(message.content);
+            setEditing(true);
+          }
+        }}
+        title={canEdit && hasContent ? intl.formatMessage({ id: "chat.editMessage" }) : undefined}
+      >
+        {hasContent && <MessageContent content={message.content} />}
+        {attachments.length > 0 && (
+          <UserMessageAttachments attachments={attachments} />
+        )}
+        {hasContent && <CopyButton text={message.content} />}
+        {canEdit && hasContent && (
+          <button
+            type="button"
+            className="absolute left-0 top-0 flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--chat-faint)] opacity-0 transition-[opacity,color,background] hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)] group-hover:opacity-100"
+            title={intl.formatMessage({ id: "chat.editMessage" })}
+            onClick={(e) => {
+              e.stopPropagation();
+              setDraft(message.content);
+              setEditing(true);
+            }}
+          >
+            <IconPencil size={13} stroke={1.8} />
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -865,7 +989,23 @@ function toolGroupSummary(group: ToolGroup): string {
     case "code_review":
       return n === 1 ? `Reviewed code ${group.items[0].displayLabel}` : `Reviewed code ${n} times`;
     case "apply_patch":
-      return n === 1 ? `Applied patch ${group.items[0].displayLabel}` : `Applied ${n} patches`;
+      {
+        const hasRunning = group.items.some((c) => c.status === "running");
+        const hasFailed = group.items.some((c) => c.status === "failed");
+        if (hasRunning) {
+          return n === 1
+            ? `Applying patch ${group.items[0].displayLabel}`
+            : `Applying ${n} patches`;
+        }
+        if (hasFailed) {
+          return n === 1
+            ? `Failed to apply patch ${group.items[0].displayLabel}`
+            : `Failed to apply ${n} patches`;
+        }
+        return n === 1
+          ? `Applied patch ${group.items[0].displayLabel}`
+          : `Applied ${n} patches`;
+      }
     case "list_directory":
       return n === 1 ? `Listed ${group.items[0].displayLabel}` : `Listed ${n} directories`;
     case "update_plan":

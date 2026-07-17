@@ -57,11 +57,13 @@ use memory_support::{
 #[cfg(test)]
 use memory_support::{MemorySearchMatch, MemorySearchResult};
 use patch_support::{
-    ApplyPatchProgressChange, apply_patch_progress_changes, apply_patch_to_workspace,
-    extract_patch_argument, format_apply_patch_report, parse_patch_actions, patch_display_label,
+    ApplyPatchProgressChange, apply_patch_to_workspace, extract_patch_argument,
+    format_apply_patch_report, patch_display_label,
 };
 #[cfg(test)]
-use patch_support::{ApplyPatchReport, ApplyPatchReportChange};
+use patch_support::{
+    ApplyPatchReport, ApplyPatchReportChange, apply_patch_progress_changes, parse_patch_actions,
+};
 
 /// Provider configuration for internal subagents (set by parent agent before each turn).
 #[derive(Debug, Clone, Default)]
@@ -1138,13 +1140,33 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "read_file",
-                    "description": "Read the contents of a file at the given path.",
+                    "description": "Read the contents of a file at the given path. For large files or targeted inspection, pass line_offset/max_lines/end_line to return only a numbered line window and reduce tokens. Prefer this over shell/python for reading source slices.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "path": {
                                 "type": "string",
                                 "description": "The file path to read."
+                            },
+                            "line_offset": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "1-indexed starting line. Defaults to 1. Use with max_lines/end_line for ranged reads."
+                            },
+                            "max_lines": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 1000,
+                                "description": "Maximum lines to return. Defaults to 200 when a range is requested; omit with no range params to read the full file."
+                            },
+                            "end_line": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Optional inclusive end line. When set, overrides max_lines as (end_line - line_offset + 1)."
+                            },
+                            "show_line_numbers": {
+                                "type": "boolean",
+                                "description": "Prefix each returned line with its 1-indexed line number. Defaults to true for ranged reads and false for full-file reads."
                             }
                         },
                         "required": ["path"]
@@ -3479,6 +3501,14 @@ impl ToolExecutor {
         #[derive(Deserialize)]
         struct ReadArgs {
             path: String,
+            #[serde(default)]
+            line_offset: Option<usize>,
+            #[serde(default)]
+            max_lines: Option<usize>,
+            #[serde(default)]
+            end_line: Option<usize>,
+            #[serde(default)]
+            show_line_numbers: Option<bool>,
         }
 
         let args: ReadArgs = serde_json::from_str(arguments)
@@ -3491,7 +3521,15 @@ impl ToolExecutor {
 
         let result = match tokio::fs::read_to_string(&full_path).await {
             Ok(content) => {
-                let truncated = truncate_output(&content, 16000);
+                let formatted = format_read_file_output(
+                    &args.path,
+                    &content,
+                    args.line_offset,
+                    args.max_lines,
+                    args.end_line,
+                    args.show_line_numbers,
+                );
+                let truncated = truncate_output(&formatted, 16000);
                 self.emit_tool_end(app_handle, thread_id, call_id, "read_file", 0, &truncated);
                 truncated
             }
@@ -3580,16 +3618,22 @@ impl ToolExecutor {
             &display_label,
         );
 
-        if let Ok(actions) = parse_patch_actions(&patch) {
-            let changes = apply_patch_progress_changes(&actions);
-            if !changes.is_empty() {
-                self.emit_apply_patch_progress(app_handle, thread_id, call_id, &changes);
-            }
-        }
-
         let result = match apply_patch_to_workspace(&self.cwd, &patch) {
             Ok(report) => {
                 let msg = format_apply_patch_report(&report);
+                // 仅在真正写盘成功后再广播 progress，避免失败时 UI 误显示“已修改”。
+                let changes = report
+                    .changes
+                    .iter()
+                    .map(|change| ApplyPatchProgressChange {
+                        path: change.path.clone(),
+                        action: change.action,
+                        move_to: change.move_to.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                if !changes.is_empty() {
+                    self.emit_apply_patch_progress(app_handle, thread_id, call_id, &changes);
+                }
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", 0, &msg);
                 msg
             }
@@ -12538,6 +12582,103 @@ fn truncate_output(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Format a workspace file read, optionally as a numbered line window.
+///
+/// Design goals:
+/// - replace shell snippets that dump `start..=end` line ranges
+/// - keep full-file reads compatible when no range is requested
+/// - return pagination metadata so the model can continue with `line_offset`
+fn format_read_file_output(
+    path: &str,
+    content: &str,
+    line_offset: Option<usize>,
+    max_lines: Option<usize>,
+    end_line: Option<usize>,
+    show_line_numbers: Option<bool>,
+) -> String {
+    let ranged = line_offset.is_some() || max_lines.is_some() || end_line.is_some();
+    if !ranged {
+        if show_line_numbers.unwrap_or(false) {
+            let lines = content.lines().collect::<Vec<_>>();
+            return render_numbered_file_slice(path, &lines, 1, lines.len(), false);
+        }
+        return content.to_string();
+    }
+
+    let lines = content.lines().collect::<Vec<_>>();
+    let total_lines = lines.len();
+    if total_lines == 0 {
+        return format!("File: {path}\nLines: 0-0 / 0\n\n");
+    }
+
+    let start = line_offset.unwrap_or(1).max(1);
+    if start > total_lines {
+        return format!(
+            "File: {path}\nError: line_offset {start} is beyond end of file ({total_lines} lines)."
+        );
+    }
+
+    let requested_count = if let Some(end) = end_line {
+        if end < start {
+            return format!(
+                "File: {path}\nError: end_line {end} must be >= line_offset {start}."
+            );
+        }
+        end.saturating_sub(start).saturating_add(1)
+    } else {
+        max_lines.unwrap_or(200)
+    };
+    let count = requested_count.clamp(1, 1000);
+    let selected = lines
+        .iter()
+        .skip(start.saturating_sub(1))
+        .take(count)
+        .copied()
+        .collect::<Vec<_>>();
+    let end = start.saturating_add(selected.len().saturating_sub(1));
+    let has_more = end < total_lines;
+    let with_numbers = show_line_numbers.unwrap_or(true);
+
+    if with_numbers {
+        render_numbered_file_slice(path, &selected, start, total_lines, has_more)
+    } else {
+        let mut text = format!("File: {path}\nLines: {start}-{end} / {total_lines}\n");
+        if has_more {
+            text.push_str(&format!("Next line_offset: {}\n", end + 1));
+        }
+        text.push('\n');
+        text.push_str(&selected.join("\n"));
+        text
+    }
+}
+
+fn render_numbered_file_slice(
+    path: &str,
+    selected_lines: &[&str],
+    start_line: usize,
+    total_lines: usize,
+    has_more: bool,
+) -> String {
+    if selected_lines.is_empty() {
+        return format!("File: {path}\nLines: 0-0 / {total_lines}\n\n");
+    }
+
+    let end_line = start_line.saturating_add(selected_lines.len().saturating_sub(1));
+    let width = ((start_line.max(end_line)).max(1).ilog10() as usize) + 1;
+    let mut text = format!("File: {path}\nLines: {start_line}-{end_line} / {total_lines}\n");
+    if has_more {
+        text.push_str(&format!("Next line_offset: {}\n", end_line + 1));
+    }
+    text.push('\n');
+    for (idx, line) in selected_lines.iter().enumerate() {
+        let number = start_line + idx;
+        text.push_str(&format!("{number:>width$}|{line}\n"));
+    }
+    // Keep a trailing newline only when there is content; trim the final extra newline.
+    text.pop();
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15563,5 +15704,85 @@ index 1111111..2222222 100644
     fn encode_query_component_handles_spaces_and_unicode() {
         assert_eq!(encode_query_component("cn codex"), "cn%20codex");
         assert_eq!(encode_query_component("网页"), "%E7%BD%91%E9%A1%B5");
+    }
+
+    #[test]
+    fn format_read_file_output_returns_full_file_without_range() {
+        let content = "alpha\nbeta\ngamma\n";
+        let output = format_read_file_output("src/demo.rs", content, None, None, None, None);
+        assert_eq!(output, content);
+    }
+
+    #[test]
+    fn format_read_file_output_supports_numbered_window_and_end_line() {
+        let content = (1..=12)
+            .map(|idx| format!("line-{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let output = format_read_file_output(
+            "src/demo.rs",
+            &content,
+            Some(4),
+            None,
+            Some(6),
+            Some(true),
+        );
+
+        assert!(output.contains("File: src/demo.rs"));
+        assert!(output.contains("Lines: 4-6 / 12"));
+        assert!(output.contains("Next line_offset: 7"));
+        assert!(output.contains("4|line-4"));
+        assert!(output.contains("5|line-5"));
+        assert!(output.contains("6|line-6"));
+        assert!(!output.contains("3|line-3"));
+        assert!(!output.contains("7|line-7"));
+    }
+
+    #[test]
+    fn format_read_file_output_rejects_invalid_end_line() {
+        let output = format_read_file_output(
+            "src/demo.rs",
+            "a\nb\nc\n",
+            Some(3),
+            None,
+            Some(1),
+            None,
+        );
+        assert!(output.contains("end_line 1 must be >= line_offset 3"));
+    }
+
+    #[test]
+    fn read_file_tool_spec_exposes_range_parameters() {
+        let temp_dir = tempfile::tempdir().expect("should create temp dir");
+        let root = temp_dir.path().join("workspace");
+        let config_dir = root.join("codey");
+        std::fs::create_dir_all(&config_dir).expect("should create config dir");
+        let executor = ToolExecutor::with_workspace_config_dir(root, config_dir);
+        let tools = executor.tool_specs(false);
+        let read_file = tools
+            .iter()
+            .find(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("read_file")
+            })
+            .expect("read_file tool spec");
+
+        let properties = read_file
+            .pointer("/function/parameters/properties")
+            .expect("read_file properties");
+        assert!(properties.get("line_offset").is_some());
+        assert!(properties.get("max_lines").is_some());
+        assert!(properties.get("end_line").is_some());
+        assert!(properties.get("show_line_numbers").is_some());
+
+        let description = read_file
+            .pointer("/function/description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(description.contains("line_offset"));
+        assert!(description.contains("Prefer this over shell"));
     }
 }

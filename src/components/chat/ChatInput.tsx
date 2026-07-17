@@ -62,6 +62,7 @@ import {
   formatPathRefLineRange,
   PATH_REF_MIME,
 } from "../../utils/pathRefSnippet";
+import { LanGroupChatLauncher } from "../lan/LanGroupChatLauncher";
 
 /** 支持的文档 MIME 类型和扩展名 */
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
@@ -1364,6 +1365,7 @@ export function ChatInput({
 
         <div className="chat-composer-shell px-4 pb-3 pt-3">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="inline-flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <div className="inline-flex rounded-full border border-[var(--chat-line)] bg-[var(--chat-chip)] p-1">
             <button
               type="button"
@@ -1478,7 +1480,10 @@ export function ChatInput({
               {goalStatusLabel}
             </span>
           )}
-        </div>
+          </div>
+
+          <LanGroupChatLauncher />
+          </div>
 
         {/* 附件预览区 */}
         {attachedFiles.length > 0 && (
