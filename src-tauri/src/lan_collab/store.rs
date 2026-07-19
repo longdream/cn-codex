@@ -71,12 +71,15 @@ impl LanCollabStore {
             .data_dir
             .join(MESSAGES_DIR)
             .join(format!("{}.json", message.group_id));
-        let raw = serde_json::to_string_pretty(&messages)
-            .map_err(|e| format!("序列化消息失败: {e}"))?;
+        let raw =
+            serde_json::to_string_pretty(&messages).map_err(|e| format!("序列化消息失败: {e}"))?;
         fs::write(path, raw).map_err(|e| format!("写入消息失败: {e}"))
     }
 
-    fn read_json_vec<T: serde::de::DeserializeOwned>(&self, file_name: &str) -> Result<Vec<T>, String> {
+    fn read_json_vec<T: serde::de::DeserializeOwned>(
+        &self,
+        file_name: &str,
+    ) -> Result<Vec<T>, String> {
         let path = self.data_dir.join(file_name);
         if !path.is_file() {
             return Ok(Vec::new());
@@ -88,8 +91,8 @@ impl LanCollabStore {
     fn write_json<T: serde::Serialize>(&self, file_name: &str, value: &T) -> Result<(), String> {
         self.ensure_dirs()?;
         let path = self.data_dir.join(file_name);
-        let raw =
-            serde_json::to_string_pretty(value).map_err(|e| format!("序列化 {file_name} 失败: {e}"))?;
+        let raw = serde_json::to_string_pretty(value)
+            .map_err(|e| format!("序列化 {file_name} 失败: {e}"))?;
         fs::write(path, raw).map_err(|e| format!("写入 {file_name} 失败: {e}"))
     }
 }

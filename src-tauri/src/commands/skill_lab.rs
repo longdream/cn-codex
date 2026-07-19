@@ -660,6 +660,7 @@ pub async fn skill_lab_generate_from_goal(
             None,
             None,
             None,
+            None,
         )
         .await?;
 

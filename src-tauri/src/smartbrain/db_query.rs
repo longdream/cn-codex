@@ -159,9 +159,7 @@ pub fn load_db_settings(workspace_config_dir: &Path) -> SmartbrainDbSettings {
 }
 
 fn source_has_any_permission(source: &SmartbrainDbSource) -> bool {
-    source.permissions.read_schema
-        || source.permissions.read_data
-        || source.permissions.write_data
+    source.permissions.read_schema || source.permissions.read_data || source.permissions.write_data
 }
 
 fn source_is_effectively_enabled(
@@ -617,14 +615,7 @@ fn parse_connection_uri_fields(
     let port = port.or_else(|| default_port_for_db_type(&db_type));
     let database_name = percent_decode_loose(path.trim_matches('/'));
 
-    Some((
-        host,
-        port,
-        database_name,
-        username,
-        password,
-        String::new(),
-    ))
+    Some((host, port, database_name, username, password, String::new()))
 }
 
 fn enrich_source_from_connection_uri(mut source: SmartbrainDbSource) -> SmartbrainDbSource {
@@ -771,10 +762,13 @@ async fn run_process_capture(
         .spawn()
         .map_err(|error| format!("Failed to execute {program}: {error}"))?;
 
-    let output = tokio::time::timeout(Duration::from_secs(timeout_sec.max(1)), child.wait_with_output())
-        .await
-        .map_err(|_| format!("{program} timed out after {timeout_sec}s"))?
-        .map_err(|error| format!("Failed to wait for {program}: {error}"))?;
+    let output = tokio::time::timeout(
+        Duration::from_secs(timeout_sec.max(1)),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| format!("{program} timed out after {timeout_sec}s"))?
+    .map_err(|error| format!("Failed to wait for {program}: {error}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -848,14 +842,12 @@ async fn execute_mysql(
     };
 
     match native_result {
-        Ok(result) => {
-            Ok((
-                result.columns,
-                result.rows,
-                result.truncated,
-                "Executed via built-in MySQL protocol client".to_string(),
-            ))
-        }
+        Ok(result) => Ok((
+            result.columns,
+            result.rows,
+            result.truncated,
+            "Executed via built-in MySQL protocol client".to_string(),
+        )),
         Err(native_error) => {
             // Optional CLI fallback when protocol auth is unsupported or blocked.
             let args = vec![
@@ -877,9 +869,7 @@ async fn execute_mysql(
                         columns,
                         rows,
                         truncated,
-                        format!(
-                            "Executed via mysql CLI fallback (native client: {native_error})"
-                        ),
+                        format!("Executed via mysql CLI fallback (native client: {native_error})"),
                     ))
                 }
                 Err(cli_error) => Err(format!(
@@ -900,8 +890,7 @@ async fn execute_postgres(
 ) -> Result<(Vec<String>, Vec<Vec<String>>, bool, String), String> {
     let host = first_non_empty(&[&source.host]).unwrap_or_else(|| "127.0.0.1".to_string());
     let port = source.port.unwrap_or(5432);
-    let username =
-        first_non_empty(&[&source.username]).unwrap_or_else(|| "postgres".to_string());
+    let username = first_non_empty(&[&source.username]).unwrap_or_else(|| "postgres".to_string());
     let database = first_non_empty(&[&source.database_name])
         .ok_or_else(|| "PostgreSQL databaseName 未配置。".to_string())?;
     let password = source.password.clone();
@@ -945,10 +934,11 @@ async fn execute_sqlserver(
     row_limit: usize,
     timeout_sec: u64,
 ) -> Result<(Vec<String>, Vec<Vec<String>>, bool, String), String> {
-    let host = first_non_empty(&[&source.host]).ok_or_else(|| "SQL Server host 未配置。".to_string())?;
+    let host =
+        first_non_empty(&[&source.host]).ok_or_else(|| "SQL Server host 未配置。".to_string())?;
     let port = source.port.unwrap_or(1433);
-    let username =
-        first_non_empty(&[&source.username]).ok_or_else(|| "SQL Server username 未配置。".to_string())?;
+    let username = first_non_empty(&[&source.username])
+        .ok_or_else(|| "SQL Server username 未配置。".to_string())?;
     let password = source.password.clone();
     let database = first_non_empty(&[&source.database_name]).unwrap_or_default();
     let server = format!("{host},{port}");
@@ -992,8 +982,12 @@ fn execute_sqlite(
     sql: &str,
     row_limit: usize,
 ) -> Result<(Vec<String>, Vec<Vec<String>>, bool, String), String> {
-    let path = first_non_empty(&[&source.file_path, &source.database_name, &source.connection_uri])
-        .ok_or_else(|| "SQLite filePath 未配置。".to_string())?;
+    let path = first_non_empty(&[
+        &source.file_path,
+        &source.database_name,
+        &source.connection_uri,
+    ])
+    .ok_or_else(|| "SQLite filePath 未配置。".to_string())?;
     let conn = Connection::open(&path).map_err(|error| format!("打开 SQLite 失败: {error}"))?;
     let mut stmt = conn
         .prepare(sql)
@@ -1151,7 +1145,10 @@ mod tests {
 
     #[test]
     fn classify_select_as_read_data() {
-        assert_eq!(classify_sql("SELECT * FROM pact_main LIMIT 10"), SqlKind::ReadData);
+        assert_eq!(
+            classify_sql("SELECT * FROM pact_main LIMIT 10"),
+            SqlKind::ReadData
+        );
     }
 
     #[test]

@@ -12,7 +12,9 @@ import {
   type RemoteKnowledgeHit,
   type SharedKnowledgeDocMeta,
   type SharedKnowledgeOffer,
+  type CollabGroup,
 } from "../../api/lanCollab";
+import { LanShareGroupPicker, groupLabel } from "./LanShareGroupPicker";
 
 export function LanKnowledgeShareSection() {
   const intl = useIntl();
@@ -21,6 +23,8 @@ export function LanKnowledgeShareSection() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState("");
+  const [shareGroupId, setShareGroupId] = useState("");
+  const [groups, setGroups] = useState<CollabGroup[]>([]);
   const [shareableDocs, setShareableDocs] = useState<SharedKnowledgeDocMeta[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [localShared, setLocalShared] = useState<SharedKnowledgeOffer[]>([]);
@@ -34,6 +38,7 @@ export function LanKnowledgeShareSection() {
     try {
       const status = await lanCollabStatus();
       setEnabled(status.enabled);
+      setGroups(status.groups ?? []);
       setLocalShared(status.localSharedKnowledge ?? []);
       setRemoteShared(status.remoteSharedKnowledge ?? []);
       setError(null);
@@ -109,10 +114,17 @@ export function LanKnowledgeShareSection() {
   const handleShare = () =>
     void runBusy(async () => {
       setNotice(null);
+      if (!shareGroupId) {
+        throw new Error(intl.formatMessage({ id: "settings.lanShare.groupPickRequired" }));
+      }
+      if (selectedDocIds.length === 0) {
+        throw new Error(intl.formatMessage({ id: "lanCollab.kbDocsRequired" }));
+      }
       const title =
         titleDraft.trim() || intl.formatMessage({ id: "lanCollab.kbDefaultTitle" });
       await lanCollabShareKnowledge({
         title,
+        groupId: shareGroupId,
         docIds: selectedDocIds,
       });
       setTitleDraft("");
@@ -183,6 +195,18 @@ export function LanKnowledgeShareSection() {
         )}
       </div>
 
+      <LanShareGroupPicker
+        groups={groups}
+        value={shareGroupId}
+        onChange={setShareGroupId}
+        disabled={!enabled || busy}
+        emptyLabel={intl.formatMessage({ id: "settings.lanShare.groupEmpty" })}
+        placeholder={intl.formatMessage({ id: "settings.lanShare.groupPickPlaceholder" })}
+      />
+      <p className="text-[11px] text-[var(--text-faint)]">
+        {intl.formatMessage({ id: "settings.lanShare.groupHint" })}
+      </p>
+
       <div className="flex flex-wrap gap-2">
         <input
           type="text"
@@ -195,7 +219,9 @@ export function LanKnowledgeShareSection() {
         <button
           type="button"
           onClick={handleShare}
-          disabled={!enabled || busy || shareableDocs.length === 0}
+          disabled={
+            !enabled || busy || shareableDocs.length === 0 || !shareGroupId || groups.length === 0 || selectedDocIds.length === 0
+          }
           className="rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 text-[11px] text-[var(--accent-strong)] disabled:opacity-50"
         >
           {intl.formatMessage({ id: "lanCollab.shareKnowledge" })}
@@ -209,7 +235,7 @@ export function LanKnowledgeShareSection() {
       ) : (
         <div className="space-y-1">
           <p className="text-[11px] text-[var(--text-faint)]">
-            {intl.formatMessage({ id: "lanCollab.kbShareAllHint" })}
+            {intl.formatMessage({ id: "lanCollab.kbShareSelectHint" })}
           </p>
           <div className="thin-scrollbar max-h-36 space-y-1 overflow-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
             {shareableDocs.slice(0, 40).map((doc) => (
@@ -247,6 +273,10 @@ export function LanKnowledgeShareSection() {
                   </div>
                   <div className="text-[10px] text-[var(--text-faint)]">
                     {intl.formatMessage({ id: "lanCollab.kbDocCount" }, { count: offer.docCount })}
+                    {` · ${intl.formatMessage(
+                      { id: "settings.lanShare.sharedToGroup" },
+                      { group: groupLabel(groups, offer.groupId) },
+                    )}`}
                   </div>
                 </div>
                 <button

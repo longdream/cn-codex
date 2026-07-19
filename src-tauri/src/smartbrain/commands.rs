@@ -359,7 +359,6 @@ struct SmartbrainDatabaseListRequest {
     file_path: String,
 }
 
-
 fn first_non_empty(values: &[&str]) -> Option<String> {
     values
         .iter()
@@ -505,8 +504,7 @@ fn parse_connection_uri_fields(
         return Some((
             String::new(),
             None,
-            path
-                .rsplit(['/', '\\'])
+            path.rsplit(['/', '\\'])
                 .next()
                 .unwrap_or(path.as_str())
                 .to_string(),
@@ -539,8 +537,8 @@ fn parse_connection_uri_fields(
             .or_else(|| default_port_for_db_type(&db_type));
         let database_name =
             pick_connection_value(&values, &["database", "initial catalog"]).unwrap_or_default();
-        let username =
-            pick_connection_value(&values, &["uid", "user id", "user", "username"]).unwrap_or_default();
+        let username = pick_connection_value(&values, &["uid", "user id", "user", "username"])
+            .unwrap_or_default();
         let password =
             pick_connection_value(&values, &["pwd", "password", "pass"]).unwrap_or_default();
         return Some((
@@ -590,14 +588,7 @@ fn parse_connection_uri_fields(
     let port = port.or_else(|| default_port_for_db_type(&db_type));
     let database_name = percent_decode_loose(path.trim_matches('/'));
 
-    Some((
-        host,
-        port,
-        database_name,
-        username,
-        password,
-        String::new(),
-    ))
+    Some((host, port, database_name, username, password, String::new()))
 }
 
 fn enrich_list_request_from_connection_uri(
@@ -638,7 +629,9 @@ fn enrich_list_request_from_connection_uri(
 fn parse_cli_database_names(stdout: &str) -> Vec<String> {
     let mut names = Vec::new();
     for line in stdout.lines() {
-        let trimmed = line.trim().trim_matches(|c| c == '|' || c == '+' || c == '-' || c == '"');
+        let trimmed = line
+            .trim()
+            .trim_matches(|c| c == '|' || c == '+' || c == '-' || c == '"');
         if trimmed.is_empty() {
             continue;
         }
@@ -659,7 +652,10 @@ fn parse_cli_database_names(stdout: &str) -> Vec<String> {
         {
             continue;
         }
-        if !names.iter().any(|existing: &String| existing.eq_ignore_ascii_case(trimmed)) {
+        if !names
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(trimmed))
+        {
             names.push(trimmed.to_string());
         }
     }
@@ -701,7 +697,9 @@ async fn run_process_capture(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn parse_mysql_list_args(request: &SmartbrainDatabaseListRequest) -> Result<(Vec<String>, Vec<(&'static str, String)>), String> {
+fn parse_mysql_list_args(
+    request: &SmartbrainDatabaseListRequest,
+) -> Result<(Vec<String>, Vec<(&'static str, String)>), String> {
     let host = first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
     let port = request.port.unwrap_or(3306);
     let username = first_non_empty(&[&request.username]).unwrap_or_else(|| "root".to_string());
@@ -720,11 +718,14 @@ fn parse_mysql_list_args(request: &SmartbrainDatabaseListRequest) -> Result<(Vec
     Ok((args, env_vars))
 }
 
-fn parse_postgres_list_args(request: &SmartbrainDatabaseListRequest) -> Result<(Vec<String>, Vec<(&'static str, String)>), String> {
+fn parse_postgres_list_args(
+    request: &SmartbrainDatabaseListRequest,
+) -> Result<(Vec<String>, Vec<(&'static str, String)>), String> {
     let host = first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
     let port = request.port.unwrap_or(5432);
     let username = first_non_empty(&[&request.username]).unwrap_or_else(|| "postgres".to_string());
-    let database = first_non_empty(&[&request.database_name]).unwrap_or_else(|| "postgres".to_string());
+    let database =
+        first_non_empty(&[&request.database_name]).unwrap_or_else(|| "postgres".to_string());
     let password = request.password.clone();
 
     let args = vec![
@@ -744,10 +745,14 @@ fn parse_postgres_list_args(request: &SmartbrainDatabaseListRequest) -> Result<(
     Ok((args, env_vars))
 }
 
-fn parse_sqlserver_list_command(request: &SmartbrainDatabaseListRequest) -> Result<(String, Vec<String>), String> {
-    let host = first_non_empty(&[&request.host]).ok_or_else(|| "SQL Server host is required".to_string())?;
+fn parse_sqlserver_list_command(
+    request: &SmartbrainDatabaseListRequest,
+) -> Result<(String, Vec<String>), String> {
+    let host = first_non_empty(&[&request.host])
+        .ok_or_else(|| "SQL Server host is required".to_string())?;
     let port = request.port.unwrap_or(1433);
-    let username = first_non_empty(&[&request.username]).ok_or_else(|| "SQL Server username is required".to_string())?;
+    let username = first_non_empty(&[&request.username])
+        .ok_or_else(|| "SQL Server username is required".to_string())?;
     let password = request.password.clone();
     let server = format!("{host},{port}");
 
@@ -768,9 +773,15 @@ fn parse_sqlserver_list_command(request: &SmartbrainDatabaseListRequest) -> Resu
     Ok(("sqlcmd".to_string(), args))
 }
 
-async fn list_sqlite_databases(request: &SmartbrainDatabaseListRequest) -> Result<Vec<String>, String> {
-    let path = first_non_empty(&[&request.file_path, &request.database_name, &request.connection_uri])
-        .ok_or_else(|| "SQLite file path is required".to_string())?;
+async fn list_sqlite_databases(
+    request: &SmartbrainDatabaseListRequest,
+) -> Result<Vec<String>, String> {
+    let path = first_non_empty(&[
+        &request.file_path,
+        &request.database_name,
+        &request.connection_uri,
+    ])
+    .ok_or_else(|| "SQLite file path is required".to_string())?;
     let file_name = std::path::Path::new(&path)
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
@@ -779,7 +790,9 @@ async fn list_sqlite_databases(request: &SmartbrainDatabaseListRequest) -> Resul
     Ok(vec![file_name])
 }
 
-async fn list_databases_for_request(request: SmartbrainDatabaseListRequest) -> Result<Vec<String>, String> {
+async fn list_databases_for_request(
+    request: SmartbrainDatabaseListRequest,
+) -> Result<Vec<String>, String> {
     let request = enrich_list_request_from_connection_uri(request);
     let db_type = request.db_type.trim().to_ascii_lowercase();
     match db_type.as_str() {
@@ -841,13 +854,15 @@ pub async fn smartbrain_list_databases(
         .await
         .map_err(AppError::Custom)?;
 
-    info!("smartbrain list databases completed: count={}", databases.len());
+    info!(
+        "smartbrain list databases completed: count={}",
+        databases.len()
+    );
 
     Ok(serde_json::json!({
         "databases": databases,
     }))
 }
-
 
 #[tauri::command]
 pub async fn smartbrain_list_experiences(

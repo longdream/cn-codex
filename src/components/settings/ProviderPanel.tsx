@@ -21,6 +21,7 @@ import {
 } from "@tabler/icons-react";
 import {
   fetchProviderModels,
+  probeModelCapabilities,
   standaloneConfigWrite,
 } from "../../api";
 import {
@@ -1211,6 +1212,7 @@ function ModelRow({
       error?: string;
     };
   }>({ status: "idle" });
+  const [probeState, setProbeState] = useState<"idle" | "probing">("idle");
 
   const handleTestModel = useCallback(async () => {
     const provider = providers.find((p) => p.id === providerId);
@@ -1249,6 +1251,41 @@ function ModelRow({
           error: err instanceof Error ? err.message : String(err),
         },
       });
+    }
+  }, [providers, providerId, model, isPoolProvider]);
+
+  const handleProbeCapabilities = useCallback(async () => {
+    const provider = providers.find((p) => p.id === providerId);
+    if (!provider) return;
+    const ep = isPoolProvider ? model.endpoints?.find((e) => e.enabled) : null;
+    const baseUrl = ep?.url || provider.baseUrl;
+    const apiKey = ep?.apiKey || provider.apiKey;
+    const wireApi = ep?.wireApi || provider.wireApi || "chat";
+    const modelName = ep?.model || model.id;
+    setProbeState("probing");
+    try {
+      const result = await probeModelCapabilities({
+        baseUrl,
+        apiKey,
+        model: modelName,
+        wireApi,
+        providerKey: provider.id,
+        forceRefresh: true,
+      });
+      if (result.success) {
+        useAppStore.getState().updateProviderModel(providerId, model.id, {
+          capabilities: {
+            ...result.capabilities,
+            probedAt: result.probedAt,
+            fingerprint: result.fingerprint,
+            wireApi,
+          },
+        });
+      }
+    } catch (error) {
+      console.error("Failed to probe model capabilities:", error);
+    } finally {
+      setProbeState("idle");
     }
   }, [providers, providerId, model, isPoolProvider]);
 
@@ -1393,6 +1430,19 @@ function ModelRow({
         </button>
         <button
           type="button"
+          onClick={handleProbeCapabilities}
+          disabled={probeState === "probing"}
+          className="shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-faint)] transition-colors hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-40"
+          title={intl.formatMessage({ id: "settings.provider.probeCapabilities", defaultMessage: "Probe model capabilities" })}
+        >
+          {probeState === "probing" ? (
+            <IconLoader2 size={12} stroke={2} className="animate-spin" />
+          ) : (
+            <IconRefresh size={12} stroke={2} />
+          )}
+        </button>
+        <button
+          type="button"
           onClick={onRemove}
           className="shrink-0 rounded-[var(--radius-sm)] p-1 text-[var(--text-faint)] transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
         >
@@ -1401,6 +1451,35 @@ function ModelRow({
       </div>
 
       {/* 测试结果 */}
+      {model.capabilities && (
+        <div className="mx-3 mb-2 flex flex-wrap items-center gap-1 text-[10px] text-[var(--text-faint)]">
+          {([
+            ["tools", model.capabilities.structuredTools],
+            ["stream", model.capabilities.streaming],
+            ["reasoning", model.capabilities.reasoning],
+            ["usage", model.capabilities.usage],
+            ["parallel", model.capabilities.parallelToolCalls],
+          ] as const).map(([label, supported]) => (
+            <span
+              key={label}
+              className={`rounded px-1.5 py-0.5 ${supported === true
+                ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                : supported === false
+                  ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                  : "bg-[var(--surface-muted)] text-[var(--text-faint)]"}`}
+            >
+              {label} {supported === true ? "ok" : supported === false ? "no" : "?"}
+            </span>
+          ))}
+          {model.capabilities.recommendedWireApi && model.capabilities.recommendedWireApi !== model.capabilities.wireApi && (
+            <span className="ml-1 text-[var(--accent-strong)]">
+              {intl.formatMessage({ id: "settings.provider.recommendedWireApi", defaultMessage: "recommended" })}: {model.capabilities.recommendedWireApi}
+            </span>
+          )}
+          <span className="ml-1">{new Date(model.capabilities.probedAt).toLocaleString()}</span>
+        </div>
+      )}
+
       {testState.status === "done" && testState.result && (
         <div className={`mx-3 mb-2 flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1 text-[11px] ${
           testState.result.success

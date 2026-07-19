@@ -5,9 +5,10 @@ import {
   IconPlugConnected,
   IconRefresh,
   IconUsersGroup,
+  IconX,
 } from "@tabler/icons-react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import {
   lanCollabConnectPeer,
@@ -44,12 +45,43 @@ export function LanCollabPanel() {
   const [inviteDraft, setInviteDraft] = useState("");
   const [connectDraft, setConnectDraft] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const errorClearTimerRef = useRef<number | null>(null);
 
   const discoveredGroups = status?.discoveredGroups ?? [];
   const discovery = status?.discovery;
 
-  const refresh = useCallback(async () => {
+  const clearErrorSoon = useCallback((delayMs = 12000) => {
+    if (errorClearTimerRef.current != null) {
+      window.clearTimeout(errorClearTimerRef.current);
+    }
+    errorClearTimerRef.current = window.setTimeout(() => {
+      setError(null);
+      errorClearTimerRef.current = null;
+    }, delayMs);
+  }, []);
+
+  const showError = useCallback(
+    (message: string) => {
+      setError(message);
+      // 错误提示放顶部后仍需足够阅读时间；用户主动操作会立即覆盖/清除。
+      clearErrorSoon(12000);
+    },
+    [clearErrorSoon],
+  );
+
+  const dismissError = useCallback(() => {
+    if (errorClearTimerRef.current != null) {
+      window.clearTimeout(errorClearTimerRef.current);
+      errorClearTimerRef.current = null;
+    }
     setError(null);
+  }, []);
+
+  const refresh = useCallback(async (options?: { clearError?: boolean }) => {
+    // 后台轮询 / 事件刷新不要清错误，否则提示会“闪一下就没了”。
+    if (options?.clearError) {
+      dismissError();
+    }
     try {
       const next = await lanCollabStatus();
       setStatus(next);
@@ -60,15 +92,23 @@ export function LanCollabPanel() {
         setSelectedGroupId(next.groups[0].groupId);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      showError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [selectedGroupId]);
+  }, [dismissError, selectedGroupId, showError]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    return () => {
+      if (errorClearTimerRef.current != null) {
+        window.clearTimeout(errorClearTimerRef.current);
+      }
+    };
+  }, []);
 
   // 后端推送：对端 / 组 / 发现变更
   useEffect(() => {
@@ -94,7 +134,7 @@ export function LanCollabPanel() {
         );
       } catch (err) {
         if (!disposed) {
-          setError(err instanceof Error ? err.message : String(err));
+          showError(err instanceof Error ? err.message : String(err));
         }
       }
     };
@@ -110,7 +150,7 @@ export function LanCollabPanel() {
         }
       }
     };
-  }, [refresh]);
+  }, [refresh, showError]);
 
   // 轮询兜底（事件丢失时仍能看到连接/组状态）
   useEffect(() => {
@@ -123,11 +163,11 @@ export function LanCollabPanel() {
 
   const runBusy = async (fn: () => Promise<void>) => {
     setBusy(true);
-    setError(null);
+    dismissError();
     try {
       await fn();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      showError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -203,7 +243,7 @@ export function LanCollabPanel() {
         )}
         <button
           type="button"
-          onClick={() => void refresh()}
+          onClick={() => void refresh({ clearError: true })}
           disabled={busy}
           className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-50"
           title={intl.formatMessage({ id: "lanCollab.refresh" })}
@@ -211,6 +251,24 @@ export function LanCollabPanel() {
           <IconRefresh size={14} stroke={1.8} />
         </button>
       </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="z-20 flex shrink-0 items-start gap-2 border-b border-[var(--danger)]/30 bg-[var(--danger-soft)] px-3 py-2 text-[11px] text-[var(--danger)] shadow-[0_4px_12px_rgba(0,0,0,0.08)]"
+        >
+          <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">{error}</div>
+          <button
+            type="button"
+            onClick={dismissError}
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--danger)]/80 transition-colors hover:bg-[var(--danger)]/10 hover:text-[var(--danger)]"
+            title={intl.formatMessage({ id: "lanCollab.dismissError" })}
+            aria-label={intl.formatMessage({ id: "lanCollab.dismissError" })}
+          >
+            <IconX size={12} stroke={2} />
+          </button>
+        </div>
+      )}
 
       <div className="thin-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3">
         <section className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3">
@@ -486,11 +544,13 @@ export function LanCollabPanel() {
             <ul className="space-y-1">
               {status.peers.map((peer) => (
                 <li
-                  key={peer.nodeId}
+                  key={`${peer.nodeId}:${peer.port}`}
                   className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1.5 text-[11px]"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="font-medium text-[var(--text-strong)]">{peer.displayName}</div>
+                    <div className="min-w-0 truncate font-medium text-[var(--text-strong)]">
+                      {peer.displayName}
+                    </div>
                     <span
                       className={`text-[10px] ${
                         peer.connected ? "text-[var(--accent-strong)]" : "text-[var(--text-faint)]"
@@ -513,12 +573,6 @@ export function LanCollabPanel() {
             </p>
           )}
         </section>
-
-        {error && (
-          <div className="rounded-[var(--radius-sm)] border border-[var(--danger)]/30 bg-[var(--danger-soft)] px-3 py-2 text-[11px] text-[var(--danger)]">
-            {error}
-          </div>
-        )}
       </div>
     </div>
   );

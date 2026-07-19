@@ -694,6 +694,18 @@ impl ThreadStore {
         Ok(now)
     }
 
+    pub async fn get_active_turn(&self, thread_id: &str) -> Option<StoredTurn> {
+        self.ensure_loaded().await;
+        self.threads.read().await.get(thread_id).and_then(|thread| {
+            thread
+                .turns
+                .iter()
+                .rev()
+                .find(|turn| turn.completed_at.is_none())
+                .cloned()
+        })
+    }
+
     pub async fn set_thread_name(&self, thread_id: &str, name: String) -> AppResult<()> {
         self.ensure_loaded().await;
         let now = now_secs();
@@ -1106,19 +1118,65 @@ impl ThreadStore {
         Ok(())
     }
 
+    pub async fn backup_thread_before_compaction(&self, thread_id: &str) -> AppResult<PathBuf> {
+        self.ensure_loaded().await;
+        let source = self.thread_file(thread_id);
+        if !source.is_file() {
+            return Err(AppError::Custom(format!(
+                "Cannot back up thread before compaction; rollout file is missing: {}",
+                source.display()
+            )));
+        }
+
+        let archive_dir = self.sessions_dir.join("archive");
+        std::fs::create_dir_all(&archive_dir).map_err(|error| {
+            AppError::Custom(format!(
+                "Failed to create compaction archive directory {}: {error}",
+                archive_dir.display()
+            ))
+        })?;
+        let target = archive_dir.join(format!(
+            "{thread_id}-pre-compaction-{}-{}.jsonl",
+            now_secs(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::copy(&source, &target).map_err(|error| {
+            AppError::Custom(format!(
+                "Failed to back up thread before compaction ({} -> {}): {error}",
+                source.display(),
+                target.display()
+            ))
+        })?;
+        Ok(target)
+    }
+
     /// 截断线程消息：保留 `keep_message_id` 之前的消息（不含该消息本身）。
     /// 用于「编辑并重发」：删除被编辑用户消息及其后的所有 AI 回复。
     pub async fn truncate_after_message(
         &self,
         thread_id: &str,
         keep_before_message_id: &str,
+        fallback_content: Option<&str>,
     ) -> AppResult<Vec<ThreadMessage>> {
         self.ensure_loaded().await;
         let existing = self.get_thread_messages(thread_id).await;
-        let Some(idx) = existing
+        let idx = existing
             .iter()
             .position(|m| m.id == keep_before_message_id)
-        else {
+            .or_else(|| {
+                // Compatibility for older turns where the frontend generated a
+                // different UUID than the one persisted by the backend.
+                let content = fallback_content?.trim();
+                if content.is_empty() {
+                    return None;
+                }
+                let normalized = normalize_user_message_content(content);
+                existing.iter().rposition(|m| {
+                    m.role == "user"
+                        && normalize_user_message_content(m.content.as_str()) == normalized
+                })
+            });
+        let Some(idx) = idx else {
             return Err(AppError::Custom(format!(
                 "Message not found: {keep_before_message_id}"
             )));
@@ -1127,6 +1185,24 @@ impl ThreadStore {
         self.replace_messages(thread_id, kept.clone()).await?;
         Ok(kept)
     }
+}
+
+fn normalize_user_message_content(content: &str) -> String {
+    // Frontend display text may only contain the original prompt, while the
+    // backend persists additional attachment/vision fallback annotations.
+    // Matching on the leading user text keeps edit-and-resend compatible.
+    content
+        .lines()
+        .take_while(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("[Attachment:")
+                || trimmed.starts_with("[Vision Fallback Context]")
+                || trimmed == "Attachments:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 fn now_secs() -> i64 {
@@ -1465,6 +1541,33 @@ mod tests {
         assert_eq!(active.path, "codey/plans/first.pmd");
         assert_eq!(active.revision, 2);
 
+        let _ = std::fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn compaction_backup_preserves_original_rollout_file() {
+        let workspace_dir = std::env::temp_dir().join(format!(
+            "cn-codex-compaction-backup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (thread_id, backup_path) = runtime.block_on(async {
+            let thread = store.create_thread(None).await.unwrap();
+            let backup = store
+                .backup_thread_before_compaction(&thread.id)
+                .await
+                .unwrap();
+            (thread.id, backup)
+        });
+
+        assert!(backup_path.is_file());
+        assert_eq!(
+            std::fs::read(store.thread_file(&thread_id)).unwrap(),
+            std::fs::read(&backup_path).unwrap()
+        );
+
+        drop(runtime);
         let _ = std::fs::remove_dir_all(workspace_dir);
     }
 }

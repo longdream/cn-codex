@@ -4,6 +4,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Hard guardrails for a single model response. These protect every consumer
+/// from malformed provider indexes and unbounded streams.
+pub const MAX_TOOL_CALLS_PER_RESPONSE: usize = 64;
+pub const MAX_STREAMED_RESPONSE_BYTES: usize = 8_000_000;
+
 /// 单次请求中 LLM 返回的 token 用量信息
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UsageInfo {
@@ -35,6 +40,10 @@ pub enum StreamEvent {
     /// 文本内容增量
     TextDelta(String),
 
+    /// Provider-native reasoning/thinking content. This must not be mixed into
+    /// the visible assistant answer or persisted as normal message text.
+    ReasoningDelta(String),
+
     /// tool call 增量（index, id 可选, name 可选, arguments 片段）
     ToolCallDelta {
         index: usize,
@@ -42,6 +51,18 @@ pub enum StreamEvent {
         name: Option<String>,
         arguments: Option<String>,
     },
+
+    /// Canonical completed tool item. Consumers must replace accumulated
+    /// arguments with this value instead of appending it again.
+    ToolCallDone {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: Option<String>,
+    },
+
+    /// Provider-declared terminal failure or incomplete response.
+    Error(String),
 
     /// 流结束，附带 finish reason
     Done { finish_reason: Option<String> },

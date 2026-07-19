@@ -52,6 +52,7 @@ import type { SkillSummary } from "../../types/skill";
 import type { PluginSummary } from "../../types/plugin";
 import { standaloneConfigRead } from "../../api/standalone";
 import { formatWebSnippet } from "../../utils/formatWebSnippet";
+import { derivePlanExecutionProgress } from "../../utils/planExecutionProgress";
 import {
   filterProviderModels,
   resolveModelPickerProviderId,
@@ -63,6 +64,7 @@ import {
   PATH_REF_MIME,
 } from "../../utils/pathRefSnippet";
 import { LanGroupChatLauncher } from "../lan/LanGroupChatLauncher";
+import { PlanExecutionProgress } from "./PlanExecutionProgress";
 
 /** 支持的文档 MIME 类型和扩展名 */
 const DOCUMENT_ACCEPT = ".pdf,.md,.txt,.docx,.doc,.csv,.json,.yaml,.yml,.toml,.xml,.html";
@@ -308,6 +310,10 @@ export function ChatInput({
   // 聊天模式不受该状态影响。
   const goalRunning = mode === "goal" && currentGoal?.status === "active";
   const composerBusy = isStreaming || goalRunning || isDispatching;
+  const planExecutionProgress = useMemo(
+    () => derivePlanExecutionProgress(messages, composerBusy),
+    [composerBusy, messages],
+  );
 
   // 供应商相关
   const providers = useAppStore((s) => s.providers);
@@ -1361,6 +1367,10 @@ export function ChatInput({
               </div>
             ))}
           </div>
+        )}
+
+        {planExecutionProgress && (
+          <PlanExecutionProgress progress={planExecutionProgress} />
         )}
 
         <div className="chat-composer-shell px-4 pb-3 pt-3">

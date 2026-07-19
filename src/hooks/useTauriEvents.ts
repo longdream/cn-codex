@@ -18,9 +18,14 @@ import {
 } from "../stores/appStore";
 import { resolveApproval } from "../api/approval";
 import { decodePathRefRangeSnippet, PATH_REF_MIME } from "../utils/pathRefSnippet";
+import { shouldAcceptEventSequence } from "../utils/turnEventSequence";
 
 interface TurnEventPayload {
   threadId: string;
+  eventSeq?: number;
+  eventId?: string;
+  status?: "completed" | "failed" | "cancelled";
+  error?: string;
   goal?: ThreadGoal | null;
   turn: {
     id: string;
@@ -40,6 +45,13 @@ interface TurnEventPayload {
 interface ReasoningDeltaPayload {
   threadId?: string;
   delta?: string;
+  eventSeq?: number;
+}
+
+interface SequencedEventPayload {
+  threadId?: string;
+  eventSeq?: number;
+  eventId?: string;
 }
 
 interface ServerErrorEventPayload {
@@ -442,7 +454,17 @@ function normalizePatchProgressChanges(payload: {
           : typeof change.move_to === "string"
             ? change.move_to
             : undefined;
-        return path ? { path, action, ...(moveTo ? { moveTo } : {}) } : null;
+        const additions = Number(change.additions);
+        const deletions = Number(change.deletions);
+        return path
+          ? {
+            path,
+            action,
+            ...(moveTo ? { moveTo } : {}),
+            ...(Number.isFinite(additions) ? { additions: Math.max(0, additions) } : {}),
+            ...(Number.isFinite(deletions) ? { deletions: Math.max(0, deletions) } : {}),
+          }
+          : null;
       })
       .filter((change): change is PatchProgressChange => change !== null);
   }
@@ -543,6 +565,20 @@ export function useTauriEvents() {
     let cancelled = false;
     const unlisten: UnlistenFn[] = [];
     const reasoningByThread = new Map<string, string>();
+    const lastEventSeqByThread = new Map<string, number>();
+    const turnPhaseByThread = new Map<string, "created" | "sampling" | "toolRunning" | "completed">();
+
+    const acceptSequencedEvent = (payload: SequencedEventPayload, threadId: string): boolean => {
+      const sequence = Number(payload.eventSeq ?? 0);
+      const previous = lastEventSeqByThread.get(threadId) ?? 0;
+      if (!shouldAcceptEventSequence(previous, payload.eventSeq)) {
+        console.warn(`[event] ignore duplicate or stale event for thread ${threadId}: ${sequence} <= ${previous}`);
+        return false;
+      }
+      if (!Number.isFinite(sequence) || sequence <= 0) return true;
+      lastEventSeqByThread.set(threadId, sequence);
+      return true;
+    };
 
     const appendReasoningDelta = (payload: ReasoningDeltaPayload) => {
       const delta = payload.delta ?? "";
@@ -552,6 +588,9 @@ export function useTauriEvents() {
       const store = useAppStore.getState();
       const threadId = payload.threadId ?? store.currentThreadId ?? null;
       if (!threadId) {
+        return;
+      }
+      if (!acceptSequencedEvent(payload, threadId)) {
         return;
       }
       const nextValue = `${reasoningByThread.get(threadId) ?? ""}${delta}`;
@@ -612,10 +651,11 @@ export function useTauriEvents() {
 
     const setup = async () => {
       const listeners: Array<Promise<UnlistenFn>> = [
-        listen<{ delta: string; threadId?: string }>("agent-message-delta", (e) => {
+        listen<{ delta: string; threadId?: string; eventSeq?: number }>("agent-message-delta", (e) => {
           const store = useAppStore.getState();
           const threadId = e.payload.threadId ?? store.currentThreadId;
           if (!threadId) return;
+          if (!acceptSequencedEvent(e.payload, threadId)) return;
           if (!store.isThreadStreaming(threadId)) {
             return;
           }
@@ -648,6 +688,8 @@ export function useTauriEvents() {
             const store = useAppStore.getState();
             const threadId = e.payload.threadId ?? store.currentThreadId;
             if (!threadId) return;
+            if (!acceptSequencedEvent(e.payload, threadId)) return;
+            turnPhaseByThread.set(threadId, "sampling");
             store.setCurrentTurnIdForThread(threadId, e.payload.turn?.id ?? null);
             store.setStreamingForThread(threadId, true);
             store.clearStreamingTextForThread(threadId);
@@ -659,6 +701,31 @@ export function useTauriEvents() {
             }
           },
         ),
+
+        listen<{
+          threadId: string;
+          turnId?: string;
+          eventSeq?: number;
+          kind?: "skill" | "mcp";
+          phase?: string;
+          status?: "started" | "completed" | "failed";
+          error?: string | null;
+        }>("turn-loading", (e) => {
+          const store = useAppStore.getState();
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId || !acceptSequencedEvent(e.payload, threadId)) return;
+          if (threadId !== store.currentThreadId || !store.isThreadStreaming(threadId)) return;
+          if (e.payload.status === "started") {
+            const label = intl.formatMessage({
+              id: e.payload.kind === "mcp"
+                ? "streaming.loadingMcpTools"
+                : "streaming.loadingSkills",
+            });
+            store.setStreamingLabelForThread(threadId, label);
+          } else {
+            store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.processing" }));
+          }
+        }),
 
         listen<ThreadTokenUsageUpdatedPayload>("thread-token-usage-updated", (e) => {
           const store = useAppStore.getState();
@@ -674,6 +741,9 @@ export function useTauriEvents() {
             const store = useAppStore.getState();
             const threadId = e.payload.threadId ?? store.currentThreadId;
             if (!threadId) return;
+            if (!acceptSequencedEvent(e.payload, threadId)) return;
+            if (turnPhaseByThread.get(threadId) === "completed") return;
+            turnPhaseByThread.set(threadId, "completed");
             const isActive = threadId === store.currentThreadId;
             const completedTurnId = e.payload.turn?.id ?? null;
             const runtimeBeforeComplete = store.getThreadRuntimeState(threadId);
@@ -693,41 +763,29 @@ export function useTauriEvents() {
             // 推理过程消息
             const reasoningText = (reasoningByThread.get(threadId) ?? "").trim();
             if (reasoningText) {
-              store.addMessageToThread(threadId, {
-                id: `reasoning-${crypto.randomUUID()}`,
-                role: "system",
-                content: "",
-                timestamp: Date.now(),
-                toolCalls: [
-                  {
-                    id: `reasoning-call-${crypto.randomUUID()}`,
-                    name: "reasoning",
-                    arguments: "{}",
-                    status: "success",
-                    displayLabel: intl.formatMessage({
-                      id: "tool.reasoning",
-                      defaultMessage: "思考过程",
-                    }),
-                    output: reasoningText,
-                  },
-                ],
-              });
+              // 与本轮工具调用合并到同一张卡，避免再多出一张“工具调用”。
+              store.appendToolCallsToThread(threadId, [
+                {
+                  id: `reasoning-call-${crypto.randomUUID()}`,
+                  name: "reasoning",
+                  arguments: "{}",
+                  status: "success",
+                  displayLabel: intl.formatMessage({
+                    id: "tool.reasoning",
+                    defaultMessage: "思考过程",
+                  }),
+                  output: reasoningText,
+                },
+              ]);
             }
             reasoningByThread.delete(threadId);
 
-            // 提交流式文本为助手消息
-            const runtime = store.getThreadRuntimeState(threadId);
-            if (runtime?.isStreaming) {
-              const text = runtime.streamingText;
-              if (text) {
-                store.addMessageToThread(threadId, {
-                  id: crypto.randomUUID(),
-                  role: "assistant",
-                  content: text,
-                  timestamp: Date.now(),
-                });
-              }
-            }
+            // 先原子提交流式文本，再追加运行摘要，保持“回答在前、摘要在后”的顺序。
+            store.markRunningToolCallsInterruptedForThread(
+              threadId,
+              "Turn completed before tool status settled.",
+            );
+            store.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
 
             // 运行摘要
             const summary = runSummaryFromTurn(e.payload.turn);
@@ -764,19 +822,42 @@ export function useTauriEvents() {
               }
             }
 
-            // turn 已结束但仍有 running 工具时，做一次兜底收敛。
-            store.markRunningToolCallsInterruptedForThread(
-              threadId,
-              "Turn completed before tool status settled.",
-            );
-            store.flushAndStopStreamingForThread(threadId);
-
             // 后台队列自动发送：turn 结束后检查该线程是否有排队消息。
             if (!isActive) {
               void autoSendNextQueuedForBackgroundThread(threadId);
             }
           },
         ),
+
+        listen<TurnEventPayload>("turn-cancelled", (e) => {
+          const store = useAppStore.getState();
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId || !acceptSequencedEvent(e.payload, threadId)) return;
+          if (turnPhaseByThread.get(threadId) === "completed") return;
+          turnPhaseByThread.set(threadId, "completed");
+          store.markRunningToolCallsInterruptedForThread(threadId, "Turn cancelled by user.");
+          store.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
+          store.setLiveTurnUsageForThread(threadId, null);
+          reasoningByThread.delete(threadId);
+        }),
+
+        listen<TurnEventPayload>("turn-failed", (e) => {
+          const store = useAppStore.getState();
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId || !acceptSequencedEvent(e.payload, threadId)) return;
+          if (turnPhaseByThread.get(threadId) === "completed") return;
+          turnPhaseByThread.set(threadId, "completed");
+          store.markRunningToolCallsInterruptedForThread(threadId, "Turn failed before completion.");
+          store.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
+          store.setLiveTurnUsageForThread(threadId, null);
+          reasoningByThread.delete(threadId);
+          store.addMessageToThread(threadId, {
+            id: crypto.randomUUID(),
+            role: "system",
+            content: e.payload.error?.trim() || intl.formatMessage({ id: "chat.sendFailed" }),
+            timestamp: Date.now(),
+          });
+        }),
 
         listen<ThreadGoalUpdatedPayload>("thread-goal-updated", (e) => {
           const store = useAppStore.getState();
@@ -813,11 +894,14 @@ export function useTauriEvents() {
 
         listen<{
           threadId: string;
+          eventSeq?: number;
           calls: Array<{ id: string; name: string; arguments: string }>;
         }>("tool-calls-start", (e) => {
           const store = useAppStore.getState();
           const threadId = e.payload.threadId ?? store.currentThreadId;
           if (!threadId) return;
+          if (!acceptSequencedEvent(e.payload, threadId)) return;
+          turnPhaseByThread.set(threadId, "toolRunning");
           const isActive = threadId === store.currentThreadId;
 
           // 提交待处理的流式文本
@@ -871,13 +955,8 @@ export function useTauriEvents() {
             latestStore.triggerBrowserSync();
           }
 
-          store.addMessageToThread(threadId, {
-            id: `tcg-${Date.now()}`,
-            role: "system",
-            content: "",
-            timestamp: Date.now(),
-            toolCalls: items,
-          });
+          // 同一用户轮次内多批 tool-calls-start 合并到一张工具调用卡。
+          store.appendToolCallsToThread(threadId, items);
           store.setStreamingLabelForThread(threadId, toolActivityLabel(e.payload.calls, intl));
 
           // 超时兜底：5 分钟后如果工具仍为 running，自动收敛为 failed。
@@ -1045,18 +1124,28 @@ export function useTauriEvents() {
           useAppStore.getState().queueComposerInsert(snippet);
         }),
 
-        listen<{ threadId: string; results: Array<{ id: string; tool: string; success: boolean; interrupted?: boolean }> }>(
+        listen<{ threadId: string; eventSeq?: number; results: Array<{ id: string; tool: string; success: boolean; interrupted?: boolean }> }>(
           "tool-calls-end",
           (e) => {
             const store = useAppStore.getState();
             const threadId = e.payload.threadId ?? store.currentThreadId;
             if (!threadId) return;
+            if (!acceptSequencedEvent(e.payload, threadId)) return;
+            turnPhaseByThread.set(threadId, "sampling");
             for (const result of e.payload.results ?? []) {
               store.updateToolCallStatusForThread(
                 threadId,
                 result.id,
                 result.success ? "success" : "failed",
                 result.interrupted ? "Tool interrupted by user." : undefined,
+              );
+            }
+            // 工具组已收敛后，旧的工具活动标签不能继续伪装成“正在读取”。
+            // 模型可能还在等待下一轮响应，此时保留 streaming，但切回通用处理状态。
+            if ((e.payload.results ?? []).length > 0 && store.isThreadStreaming(threadId)) {
+              store.setStreamingLabelForThread(
+                threadId,
+                intl.formatMessage({ id: "streaming.processing" }),
               );
             }
           },
@@ -1167,7 +1256,7 @@ export function useTauriEvents() {
               const retrySuffix =
                 attempt > 0 && maxAttempts > 0 ? ` (${attempt}/${maxAttempts})` : "";
               store.setStreamingForThread(threadId, true);
-              store.setStreamingLabelForThread(threadId, `429 限流，${waitSeconds}s 后重试${retrySuffix}`);
+              store.setStreamingLabelForThread(threadId, `服务暂时不可用，${waitSeconds}s 后重试${retrySuffix}`);
               return;
             }
             const msg =

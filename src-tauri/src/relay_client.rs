@@ -290,6 +290,7 @@ async fn handle_local_request(
                         None,
                         None,
                         None,
+                        None,
                     )
                     .await
                 {

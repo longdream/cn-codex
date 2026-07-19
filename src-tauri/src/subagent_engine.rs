@@ -11,6 +11,10 @@ use tracing::{info, warn};
 use crate::adapter::{self, types::*};
 use crate::agent::ToolCallRequest;
 use crate::error::{AppError, AppResult};
+use crate::request_control::{
+    RESPONSE_HEADER_TIMEOUT, STREAM_IDLE_TIMEOUT, WaitOutcome, should_bypass_proxy,
+    wait_with_cancel_and_timeout,
+};
 use crate::tool_executor::ToolExecutor;
 
 use tauri::AppHandle;
@@ -72,6 +76,7 @@ struct ToolCallInfo {
 }
 
 enum CompletionResult {
+    Cancelled,
     Message {
         text: String,
     },
@@ -111,9 +116,13 @@ pub fn spawn_subagent(
         input_tx,
     };
 
-    let http = reqwest::Client::builder()
+    let mut http_builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
-        .read_timeout(std::time::Duration::from_secs(600))
+        .read_timeout(std::time::Duration::from_secs(600));
+    if should_bypass_proxy(&config.base_url) {
+        http_builder = http_builder.no_proxy();
+    }
+    let http = http_builder
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -227,6 +236,12 @@ async fn run_subagent_loop(
         .await;
 
         match result {
+            Ok(CompletionResult::Cancelled) => {
+                return SubagentResult {
+                    status: SubagentStatus::Cancelled,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                };
+            }
             Ok(CompletionResult::Message { text }) => {
                 info!(
                     "[subagent:{subagent_id}] iteration {iteration}: message ({} chars)",
@@ -289,7 +304,14 @@ async fn run_subagent_loop(
                     let tool_result = tool_executor
                         .read()
                         .await
-                        .execute(&call.name, &call.arguments, &call.id, app_handle, thread_id)
+                        .execute(
+                            &call.name,
+                            &call.arguments,
+                            &call.id,
+                            app_handle,
+                            thread_id,
+                            None,
+                        )
                         .await;
 
                     let result_content = match tool_result {
@@ -386,17 +408,33 @@ async fn stream_completion_internal(
         config.max_output_tokens,
     );
 
-    let response = http
-        .post(&url)
-        .headers(headers)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| AppError::Custom(format!("HTTP request failed: {e}")))?;
+    let request = http.post(&url).headers(headers).json(&body).send();
+    let response =
+        match wait_with_cancel_and_timeout(request, cancel_flag, RESPONSE_HEADER_TIMEOUT).await {
+            WaitOutcome::Ready(Ok(response)) => response,
+            WaitOutcome::Ready(Err(error)) => {
+                return Err(AppError::Custom(format!("HTTP request failed: {error}")));
+            }
+            WaitOutcome::Cancelled => return Ok(CompletionResult::Cancelled),
+            WaitOutcome::TimedOut => {
+                return Err(AppError::Custom(format!(
+                    "Subagent request timed out waiting for response headers after {} seconds.",
+                    RESPONSE_HEADER_TIMEOUT.as_secs()
+                )));
+            }
+        };
 
     if !response.status().is_success() {
         let status = response.status();
-        let body_text = response.text().await.unwrap_or_default();
+        let body_text =
+            match wait_with_cancel_and_timeout(response.text(), cancel_flag, STREAM_IDLE_TIMEOUT)
+                .await
+            {
+                WaitOutcome::Ready(Ok(text)) => text,
+                WaitOutcome::Ready(Err(error)) => format!("failed to read error body: {error}"),
+                WaitOutcome::Cancelled => return Ok(CompletionResult::Cancelled),
+                WaitOutcome::TimedOut => "timed out while reading error body".to_string(),
+            };
         return Err(AppError::Custom(format!(
             "LLM API error ({status}): {body_text}"
         )));
@@ -410,7 +448,31 @@ async fn stream_completion_internal(
         .to_string();
 
     if content_type.contains("application/json") && !content_type.contains("stream") {
-        return parse_non_streaming_response(&response.text().await.unwrap_or_default());
+        let body_text =
+            match wait_with_cancel_and_timeout(response.text(), cancel_flag, STREAM_IDLE_TIMEOUT)
+                .await
+            {
+                WaitOutcome::Ready(Ok(text)) => text,
+                WaitOutcome::Ready(Err(error)) => {
+                    return Err(AppError::Custom(format!(
+                        "Failed to read non-streaming subagent response: {error}"
+                    )));
+                }
+                WaitOutcome::Cancelled => return Ok(CompletionResult::Cancelled),
+                WaitOutcome::TimedOut => {
+                    return Err(AppError::Custom(format!(
+                        "Subagent response body was idle for {} seconds.",
+                        STREAM_IDLE_TIMEOUT.as_secs()
+                    )));
+                }
+            };
+        if config.wire_api.eq_ignore_ascii_case("responses") {
+            let output = adapter
+                .parse_non_streaming(&body_text)
+                .map_err(AppError::Custom)?;
+            return completion_output_to_result(output);
+        }
+        return parse_non_streaming_response(&body_text);
     }
 
     let mut full_text = String::new();
@@ -419,21 +481,38 @@ async fn stream_completion_internal(
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut utf8_decoder = crate::utf8_stream::Utf8StreamDecoder::new();
+    let mut bytes_read = 0_usize;
 
-    while let Some(chunk) = stream.next().await {
-        if cancel_flag.load(Ordering::SeqCst) {
-            finish_reason = Some("interrupted".to_string());
-            break;
-        }
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(e) => {
+    'response_stream: loop {
+        let chunk = match wait_with_cancel_and_timeout(
+            stream.next(),
+            cancel_flag,
+            STREAM_IDLE_TIMEOUT,
+        )
+        .await
+        {
+            WaitOutcome::Ready(Some(Ok(chunk))) => chunk,
+            WaitOutcome::Ready(Some(Err(e))) => {
                 if !full_text.is_empty() || !tool_calls.is_empty() {
                     break;
                 }
                 return Err(AppError::Custom(format!("Stream read error: {e}")));
             }
+            WaitOutcome::Ready(None) => break,
+            WaitOutcome::Cancelled => return Ok(CompletionResult::Cancelled),
+            WaitOutcome::TimedOut => {
+                return Err(AppError::Custom(format!(
+                    "Subagent stream idle timeout after {} seconds ({bytes_read} bytes received).",
+                    STREAM_IDLE_TIMEOUT.as_secs()
+                )));
+            }
         };
+        bytes_read = bytes_read.saturating_add(chunk.len());
+        if bytes_read > MAX_STREAMED_RESPONSE_BYTES {
+            return Err(AppError::Custom(format!(
+                "Subagent response exceeded the {MAX_STREAMED_RESPONSE_BYTES}-byte safety limit."
+            )));
+        }
         utf8_decoder.push(&mut buffer, &chunk);
 
         while let Some(line_end) = buffer.find('\n') {
@@ -448,14 +527,18 @@ async fn stream_completion_internal(
                 if finish_reason.is_none() {
                     finish_reason = Some("stop".to_string());
                 }
-                continue;
+                break 'response_stream;
             }
 
             let events = adapter.parse_stream_line(&line);
+            let mut response_completed = false;
             for event in events {
                 match event {
                     StreamEvent::TextDelta(text) => {
                         full_text.push_str(&text);
+                    }
+                    StreamEvent::ReasoningDelta(_) => {
+                        // Subagent reasoning is intentionally not promoted to final text.
                     }
                     StreamEvent::ToolCallDelta {
                         index,
@@ -463,6 +546,11 @@ async fn stream_completion_internal(
                         name,
                         arguments,
                     } => {
+                        if index >= MAX_TOOL_CALLS_PER_RESPONSE {
+                            return Err(AppError::Custom(format!(
+                                "Subagent tool call index {index} exceeds the per-response limit of {MAX_TOOL_CALLS_PER_RESPONSE}."
+                            )));
+                        }
                         while tool_calls.len() <= index {
                             tool_calls.push(ToolCallAccumulator::default());
                         }
@@ -479,13 +567,45 @@ async fn stream_completion_internal(
                             acc.arguments.push_str(&args);
                         }
                     }
+                    StreamEvent::ToolCallDone {
+                        index,
+                        id,
+                        name,
+                        arguments,
+                    } => {
+                        if index >= MAX_TOOL_CALLS_PER_RESPONSE {
+                            return Err(AppError::Custom(format!(
+                                "Subagent tool call index {index} exceeds the per-response limit of {MAX_TOOL_CALLS_PER_RESPONSE}."
+                            )));
+                        }
+                        while tool_calls.len() <= index {
+                            tool_calls.push(ToolCallAccumulator::default());
+                        }
+                        let acc = &mut tool_calls[index];
+                        if let Some(id) = id {
+                            acc.id = id;
+                        }
+                        if let Some(name) = name.filter(|value| !value.is_empty()) {
+                            acc.name = name;
+                        }
+                        if let Some(arguments) = arguments {
+                            acc.arguments = arguments;
+                        }
+                    }
+                    StreamEvent::Error(message) => {
+                        return Err(AppError::Custom(message));
+                    }
                     StreamEvent::Done {
                         finish_reason: reason,
                     } => {
                         finish_reason = reason.or(finish_reason);
+                        response_completed = !config.wire_api.eq_ignore_ascii_case("chat");
                     }
                     StreamEvent::Usage(_) => {}
                 }
+            }
+            if response_completed {
+                break 'response_stream;
             }
         }
     }
@@ -503,6 +623,12 @@ async fn stream_completion_internal(
             arguments: tc.arguments,
         })
         .collect();
+    if valid_tool_calls.len() > MAX_TOOL_CALLS_PER_RESPONSE {
+        return Err(AppError::Custom(format!(
+            "Subagent returned {} tool calls in one response; the safety limit is {MAX_TOOL_CALLS_PER_RESPONSE}.",
+            valid_tool_calls.len()
+        )));
+    }
 
     if full_text.is_empty() && valid_tool_calls.is_empty() && finish_reason.is_none() {
         return Err(AppError::Custom(
@@ -520,7 +646,50 @@ async fn stream_completion_internal(
     }
 }
 
+fn completion_output_to_result(output: CompletionOutput) -> AppResult<CompletionResult> {
+    let tool_calls: Vec<ToolCallRequest> = output
+        .tool_calls
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, call)| {
+            let name = call.name.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(ToolCallRequest {
+                id: if call.id.trim().is_empty() {
+                    format!("call_{index}")
+                } else {
+                    call.id
+                },
+                name,
+                arguments: call.arguments,
+            })
+        })
+        .collect();
+    if tool_calls.len() > MAX_TOOL_CALLS_PER_RESPONSE {
+        return Err(AppError::Custom(format!(
+            "Subagent returned {} tool calls in one response; the safety limit is {MAX_TOOL_CALLS_PER_RESPONSE}.",
+            tool_calls.len()
+        )));
+    }
+
+    if tool_calls.is_empty() {
+        Ok(CompletionResult::Message { text: output.text })
+    } else {
+        Ok(CompletionResult::ToolCalls {
+            calls: tool_calls,
+            preceding_text: output.text,
+        })
+    }
+}
+
 fn parse_non_streaming_response(body: &str) -> AppResult<CompletionResult> {
+    if body.len() > MAX_STREAMED_RESPONSE_BYTES {
+        return Err(AppError::Custom(format!(
+            "Subagent response exceeded the {MAX_STREAMED_RESPONSE_BYTES}-byte safety limit."
+        )));
+    }
     let json: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| AppError::Custom(format!("Failed to parse non-streaming response: {e}")))?;
 
@@ -563,6 +732,12 @@ fn parse_non_streaming_response(body: &str) -> AppResult<CompletionResult> {
                 .collect()
         })
         .unwrap_or_default();
+    if tool_calls.len() > MAX_TOOL_CALLS_PER_RESPONSE {
+        return Err(AppError::Custom(format!(
+            "Subagent returned {} tool calls in one response; the safety limit is {MAX_TOOL_CALLS_PER_RESPONSE}.",
+            tool_calls.len()
+        )));
+    }
 
     if !tool_calls.is_empty() {
         Ok(CompletionResult::ToolCalls {

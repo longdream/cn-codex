@@ -4,11 +4,14 @@ import { IconRoute, IconTrash, IconLoader2 } from "@tabler/icons-react";
 import { workflowList, workflowDelete } from "../../api/workflow";
 import type { WorkflowSummary } from "../../api/workflow";
 import { SettingsPagination, usePagedItems } from "./SettingsPagination";
+import { LanWorkflowShareSection } from "./LanWorkflowShareSection";
+import { lanCollabListWorkflowShareOrigins, type WorkflowOriginSummary } from "../../api/lanCollab";
 
 export function WorkflowsPanel() {
   const intl = useIntl();
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [origins, setOrigins] = useState<WorkflowOriginSummary[]>([]);
   const {
     page,
     setPage,
@@ -21,8 +24,12 @@ export function WorkflowsPanel() {
   const loadWorkflows = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await workflowList();
+      const [list, originList] = await Promise.all([
+        workflowList(),
+        lanCollabListWorkflowShareOrigins().catch(() => [] as WorkflowOriginSummary[]),
+      ]);
       setWorkflows(list);
+      setOrigins(originList);
     } catch (err) {
       console.error("Failed to load workflows:", err);
     } finally {
@@ -47,6 +54,12 @@ export function WorkflowsPanel() {
     }
   };
 
+  const originMap = new Map(origins.map((o) => [o.workflowName, o]));
+
+  const shareSection = (
+    <LanWorkflowShareSection workflows={workflows} onInstalled={() => void loadWorkflows()} />
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -57,16 +70,23 @@ export function WorkflowsPanel() {
 
   if (workflows.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-3 py-12 text-[var(--chat-muted)]">
-        <IconRoute size={32} stroke={1.2} />
-        <p className="text-sm">{intl.formatMessage({ id: "settings.workflows.empty" })}</p>
+      <div className="space-y-4">
+        {shareSection}
+        <div className="flex flex-col items-center gap-3 py-12 text-[var(--chat-muted)]">
+          <IconRoute size={32} stroke={1.2} />
+          <p className="text-sm">{intl.formatMessage({ id: "settings.workflows.empty" })}</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-3">
+      {shareSection}
       {pagedWorkflows.map((wf) => (
+        (() => {
+          const origin = originMap.get(wf.name);
+          return (
         <div
           key={wf.name}
           className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--bg-secondary)] px-4 py-3"
@@ -87,6 +107,20 @@ export function WorkflowsPanel() {
               </span>
               <span className="opacity-50">·</span>
               <span>{wf.description}</span>
+              {origin && (
+                <>
+                  <span className="opacity-50">·</span>
+                  <span className="text-[var(--accent-strong)]">
+                    {intl.formatMessage(
+                      { id: "settings.lanShare.fromHost" },
+                      { host: origin.sourceHostDisplayName },
+                    )}
+                    {origin.localModified
+                      ? ` · ${intl.formatMessage({ id: "settings.lanShare.updateLocalModified" })}`
+                      : ""}
+                  </span>
+                </>
+              )}
             </div>
           </div>
           <button
@@ -98,6 +132,8 @@ export function WorkflowsPanel() {
             <IconTrash size={14} stroke={1.8} />
           </button>
         </div>
+          );
+        })()
       ))}
       <SettingsPagination
         page={page}

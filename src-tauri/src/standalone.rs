@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -150,6 +151,313 @@ fn looks_like_json_mode_unsupported(body: &str) -> bool {
         || (lower.contains("unknown parameter") && lower.contains("response_format"))
         || lower.contains("invalid parameter: response_format")
         || lower.contains("response_format.type")
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderCapabilityProbeResult {
+    success: bool,
+    cached: bool,
+    fingerprint: String,
+    probed_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latency_ms: Option<u64>,
+    capabilities: ProviderCapabilityValues,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderCapabilityValues {
+    structured_tools: Option<bool>,
+    streaming: Option<bool>,
+    reasoning: Option<bool>,
+    usage: Option<bool>,
+    parallel_tool_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recommended_wire_api: Option<String>,
+}
+
+static CAPABILITY_PROBE_CACHE: OnceLock<Mutex<HashMap<String, ProviderCapabilityProbeResult>>> =
+    OnceLock::new();
+
+fn capability_probe_cache() -> &'static Mutex<HashMap<String, ProviderCapabilityProbeResult>> {
+    CAPABILITY_PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn capability_fingerprint(
+    provider_key: &str,
+    base_url: &str,
+    model: &str,
+    wire_api: &str,
+) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        provider_key.trim(),
+        base_url.trim().trim_end_matches('/').to_ascii_lowercase(),
+        model.trim(),
+        wire_api.trim().to_ascii_lowercase()
+    )
+}
+
+fn capability_probe_tool(name: &str) -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": "Internal capability probe. Do not execute.",
+            "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+        }
+    })
+}
+
+fn probe_tool_count(value: &Value, wire_api: &str) -> usize {
+    if wire_api.eq_ignore_ascii_case("responses") {
+        return value
+            .pointer("/output")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("function_call")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+    }
+    value
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+async fn probe_json_request(
+    http: &reqwest::Client,
+    url: &str,
+    headers: &reqwest::header::HeaderMap,
+    body: &Value,
+) -> Result<(u16, Value), String> {
+    let response = http
+        .post(url)
+        .headers(headers.clone())
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| format!("Request failed: {error}"))?;
+    let status = response.status().as_u16();
+    let raw = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read response: {error}"))?;
+    let value = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| serde_json::json!({}));
+    if !(200..300).contains(&status) {
+        let detail = value
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| raw.trim());
+        return Err(format!(
+            "HTTP {status}: {}",
+            detail.chars().take(500).collect::<String>()
+        ));
+    }
+    Ok((status, value))
+}
+
+async fn probe_streaming(
+    http: &reqwest::Client,
+    adapter: &dyn adapter::ProviderAdapter,
+    url: &str,
+    headers: &reqwest::header::HeaderMap,
+    body: &Value,
+) -> Result<bool, String> {
+    let response = http
+        .post(url)
+        .headers(headers.clone())
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| format!("Streaming request failed: {error}"))?;
+    if !response.status().is_success() {
+        return Ok(false);
+    }
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut bytes = 0usize;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("Streaming read failed: {error}"))?;
+        bytes = bytes.saturating_add(chunk.len());
+        if bytes > 256 * 1024 {
+            return Ok(false);
+        }
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(pos) = buffer.find('\n') {
+            let line = buffer[..pos].trim_end_matches('\r').to_string();
+            buffer.drain(..=pos);
+            if adapter.is_stream_done(&line)
+                || adapter
+                    .parse_stream_line(&line)
+                    .iter()
+                    .any(|event| matches!(event, adapter::types::StreamEvent::Done { .. }))
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+#[tauri::command]
+pub async fn probe_model_capabilities(
+    base_url: String,
+    api_key: String,
+    model: String,
+    wire_api: String,
+    provider_key: Option<String>,
+    force_refresh: Option<bool>,
+) -> AppResult<serde_json::Value> {
+    let provider_key = provider_key.unwrap_or_default();
+    let fingerprint = capability_fingerprint(&provider_key, &base_url, &model, &wire_api);
+    if !force_refresh.unwrap_or(false) {
+        if let Some(cached) = capability_probe_cache()
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&fingerprint).cloned())
+        {
+            let mut result = cached;
+            result.cached = true;
+            return serde_json::to_value(result)
+                .map_err(|error| AppError::Custom(format!("Probe serialization failed: {error}")));
+        }
+    }
+
+    let start = std::time::Instant::now();
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(35))
+        .build()
+        .map_err(|error| AppError::Custom(format!("HTTP client error: {error}")))?;
+    let adapter = adapter::get_adapter(&wire_api);
+    let url = adapter.build_url(&base_url, &model);
+    let headers = adapter.build_headers(&api_key);
+    let messages = vec![InternalMessage {
+        role: "user".to_string(),
+        content: text_content(
+            "Capability probe: call both supplied probe functions exactly once, in parallel if supported.",
+        ),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    }];
+    let tools = [
+        capability_probe_tool("__cn_codex_capability_probe_a"),
+        capability_probe_tool("__cn_codex_capability_probe_b"),
+    ];
+    let mut tool_body =
+        adapter::build_non_stream_body(&*adapter, &model, &messages, Some(&tools), Some(32));
+    if let Some(object) = tool_body.as_object_mut() {
+        object.insert("parallel_tool_calls".to_string(), Value::Bool(true));
+    }
+
+    let mut capabilities = ProviderCapabilityValues {
+        structured_tools: None,
+        streaming: None,
+        reasoning: None,
+        usage: None,
+        parallel_tool_calls: None,
+        recommended_wire_api: None,
+    };
+    let mut error = None;
+    match probe_json_request(&http, &url, &headers, &tool_body).await {
+        Ok((_, value)) => {
+            let count = probe_tool_count(&value, &wire_api);
+            capabilities.structured_tools = Some(count > 0);
+            capabilities.parallel_tool_calls = Some(count > 1);
+            capabilities.usage = Some(
+                value.pointer("/usage").is_some() || value.pointer("/response/usage").is_some(),
+            );
+        }
+        Err(message) => error = Some(message),
+    }
+
+    let mut stream_body = adapter.build_body(&model, &messages, None, Some(16));
+    if let Some(object) = stream_body.as_object_mut() {
+        object.insert("stream".to_string(), Value::Bool(true));
+    }
+    capabilities.streaming = Some(
+        probe_streaming(&http, &*adapter, &url, &headers, &stream_body)
+            .await
+            .unwrap_or(false),
+    );
+
+    if wire_api.eq_ignore_ascii_case("responses") || wire_api.eq_ignore_ascii_case("chat") {
+        let mut reasoning_body =
+            adapter::build_non_stream_body(&*adapter, &model, &messages, None, Some(32));
+        if let Some(object) = reasoning_body.as_object_mut() {
+            if wire_api.eq_ignore_ascii_case("responses") {
+                object.insert(
+                    "reasoning".to_string(),
+                    serde_json::json!({ "effort": "low" }),
+                );
+            } else {
+                object.insert(
+                    "reasoning_effort".to_string(),
+                    Value::String("low".to_string()),
+                );
+            }
+        }
+        if let Ok((_, value)) = probe_json_request(&http, &url, &headers, &reasoning_body).await {
+            capabilities.reasoning = Some(
+                value
+                    .pointer("/output")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items.iter().any(|item| {
+                            item.get("type").and_then(Value::as_str) == Some("reasoning")
+                        })
+                    })
+                    .unwrap_or(false)
+                    || value
+                        .pointer("/usage/output_tokens_details/reasoning_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        > 0
+                    || value
+                        .pointer("/usage/completion_tokens_details/reasoning_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        > 0,
+            );
+        }
+    }
+
+    capabilities.recommended_wire_api =
+        if capabilities.structured_tools == Some(false) && wire_api.eq_ignore_ascii_case("chat") {
+            Some("responses".to_string())
+        } else if capabilities.structured_tools == Some(true) {
+            Some(wire_api.clone())
+        } else {
+            None
+        };
+
+    let result = ProviderCapabilityProbeResult {
+        success: error.is_none(),
+        cached: false,
+        fingerprint,
+        probed_at: chrono::Utc::now().timestamp_millis().max(0) as u64,
+        latency_ms: Some(start.elapsed().as_millis() as u64),
+        capabilities,
+        error,
+    };
+    if result.success {
+        if let Ok(mut cache) = capability_probe_cache().lock() {
+            cache.insert(result.fingerprint.clone(), result.clone());
+        }
+    }
+    serde_json::to_value(result)
+        .map_err(|error| AppError::Custom(format!("Probe serialization failed: {error}")))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -594,7 +902,13 @@ fn process_fortune_stream_line(
             } => {
                 *finish_reason = reason.or(finish_reason.take());
             }
-            StreamEvent::ToolCallDelta { .. } | StreamEvent::Usage(_) => {
+            StreamEvent::Error(message) => {
+                *finish_reason = Some(format!("error: {message}"));
+            }
+            StreamEvent::ToolCallDelta { .. }
+            | StreamEvent::ToolCallDone { .. }
+            | StreamEvent::ReasoningDelta(_)
+            | StreamEvent::Usage(_) => {
                 // Fortune detail stream only consumes text deltas.
             }
         }
@@ -1131,10 +1445,11 @@ pub async fn standalone_thread_truncate_before(
     state: State<'_, AppState>,
     thread_id: String,
     message_id: String,
+    message_content: Option<String>,
 ) -> AppResult<serde_json::Value> {
     let kept = state
         .thread_store
-        .truncate_after_message(&thread_id, &message_id)
+        .truncate_after_message(&thread_id, &message_id, message_content.as_deref())
         .await?;
     Ok(serde_json::json!({
         "status": "ok",
@@ -1156,13 +1471,10 @@ pub async fn standalone_chat(
     robot_id: Option<String>,
     provider: Option<ThreadChatProviderOverride>,
     smartbrain_enabled: Option<bool>,
+    client_message_id: Option<String>,
 ) -> AppResult<serde_json::Value> {
     let mut config = state.config_manager.read()?;
-    apply_thread_chat_overrides(
-        &mut config,
-        provider.as_ref(),
-        smartbrain_enabled,
-    );
+    apply_thread_chat_overrides(&mut config, provider.as_ref(), smartbrain_enabled);
     let override_cwd = cwd.map(std::path::PathBuf::from);
     let is_goal_mode = mode.as_deref() == Some("goal");
     let mode = mode.as_deref();
@@ -1183,10 +1495,43 @@ pub async fn standalone_chat(
             mode,
             goal_budget_tokens,
             robot_id_for_turn,
+            client_message_id,
         )
         .await;
 
     if let Err(ref err) = result {
+        if let Some(active_turn) = state.thread_store.get_active_turn(&thread_id).await {
+            let completed_at = chrono::Utc::now().timestamp();
+            let duration_ms =
+                completed_at.saturating_sub(active_turn.started_at).max(0) as u64 * 1000;
+            let _ = state
+                .thread_store
+                .end_turn(
+                    &thread_id,
+                    &active_turn.turn_id,
+                    Some(duration_ms),
+                    Vec::new(),
+                    None,
+                    false,
+                )
+                .await;
+            crate::agent::emit_and_broadcast(
+                &app_handle,
+                "turn-failed",
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "status": "failed",
+                    "error": err.to_string().chars().take(2000).collect::<String>(),
+                    "turn": {
+                        "id": active_turn.turn_id,
+                        "mode": active_turn.mode,
+                        "startedAt": active_turn.started_at * 1000,
+                        "completedAt": completed_at * 1000,
+                        "durationMs": duration_ms,
+                    }
+                }),
+            );
+        }
         // Goal 模式下出错时将 goal 回退为 paused，避免前端状态卡死
         if is_goal_mode {
             info!("standalone_chat error in goal mode, reverting goal to paused: {err}");
@@ -1198,6 +1543,28 @@ pub async fn standalone_chat(
                 emit_goal_updated_event(&app_handle, &thread_id, &goal);
             }
         }
+    }
+
+    if result.is_ok()
+        && state.agent_engine.is_cancelled()
+        && state
+            .thread_store
+            .get_active_turn(&thread_id)
+            .await
+            .is_none()
+    {
+        crate::agent::emit_and_broadcast(
+            &app_handle,
+            "turn-cancelled",
+            serde_json::json!({
+                "threadId": thread_id,
+                "status": "cancelled",
+                "turn": {
+                    "id": "pre-turn-cancelled",
+                    "mode": mode,
+                }
+            }),
+        );
     }
 
     result?;
@@ -1222,11 +1589,7 @@ fn apply_thread_chat_overrides(
     smartbrain_enabled: Option<bool>,
 ) {
     if let Some(provider) = provider {
-        let provider_key = provider
-            .provider_key
-            .as_str()
-            .trim()
-            .to_string();
+        let provider_key = provider.provider_key.as_str().trim().to_string();
         if !provider_key.is_empty() {
             config.model_provider = Some(provider_key.clone());
 
@@ -1750,8 +2113,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_models_url, looks_like_models_unsupported, parse_remote_models_response,
-        playwright_mcp_config_value, resolve_robot_id_for_run_turn,
+        build_models_url, capability_fingerprint, looks_like_models_unsupported,
+        parse_remote_models_response, playwright_mcp_config_value, probe_tool_count,
+        resolve_robot_id_for_run_turn,
     };
 
     #[test]
@@ -1883,5 +2247,42 @@ mod tests {
             reqwest::StatusCode::UNAUTHORIZED,
             "invalid api key"
         ));
+    }
+
+    #[test]
+    fn capability_probe_fingerprint_is_stable_and_protocol_specific() {
+        assert_eq!(
+            capability_fingerprint("provider-a", "https://example.test/v1/", "gpt-5", "chat"),
+            capability_fingerprint("provider-a", "https://example.test/v1", "gpt-5", "chat")
+        );
+        assert_ne!(
+            capability_fingerprint("provider-a", "https://example.test/v1", "gpt-5", "chat"),
+            capability_fingerprint(
+                "provider-a",
+                "https://example.test/v1",
+                "gpt-5",
+                "responses"
+            )
+        );
+        assert_ne!(
+            capability_fingerprint("provider-a", "https://example.test/v1", "gpt-5", "chat"),
+            capability_fingerprint("provider-b", "https://example.test/v1", "gpt-5", "chat")
+        );
+    }
+
+    #[test]
+    fn capability_probe_counts_structured_response_tools() {
+        let chat = json!({
+            "choices": [{ "message": { "tool_calls": [{ "id": "a" }, { "id": "b" }] } }]
+        });
+        assert_eq!(probe_tool_count(&chat, "chat"), 2);
+
+        let responses = json!({
+            "output": [
+                { "type": "function_call", "call_id": "a" },
+                { "type": "message", "content": [] }
+            ]
+        });
+        assert_eq!(probe_tool_count(&responses, "responses"), 1);
     }
 }

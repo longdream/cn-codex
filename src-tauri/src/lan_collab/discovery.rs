@@ -267,7 +267,10 @@ pub async fn soft_scan_local_subnet(self_port: u16) -> Vec<(String, u16)> {
     let mut targets = Vec::new();
     let mut seen = HashSet::new();
 
-    let push_target = |ip: String, port: u16, targets: &mut Vec<(String, u16)>, seen: &mut HashSet<(String, u16)>| {
+    let push_target = |ip: String,
+                       port: u16,
+                       targets: &mut Vec<(String, u16)>,
+                       seen: &mut HashSet<(String, u16)>| {
         if seen.insert((ip.clone(), port)) {
             targets.push((ip, port));
         }
@@ -327,11 +330,7 @@ async fn probe_targets(targets: Vec<(String, u16)>) -> Vec<(String, u16)> {
                 .ok()
                 .and_then(|r| r.ok())
                 .is_some();
-                if ok {
-                    Some((ip, port))
-                } else {
-                    None
-                }
+                if ok { Some((ip, port)) } else { None }
             }));
         }
         for h in handles {

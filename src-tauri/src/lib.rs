@@ -12,14 +12,15 @@ pub mod external_browser;
 pub mod file_review;
 pub mod git_service;
 pub mod hook_runtime;
-pub mod local_pool;
 pub mod lan_collab;
+pub mod local_pool;
 pub mod mobile_server;
 pub mod ocr;
 pub mod plugin_loader;
 pub mod protocol;
 pub mod recording;
 pub mod relay_client;
+mod request_control;
 pub mod robot_loader;
 pub mod robot_orchestrator;
 pub mod smartbrain;
@@ -487,6 +488,7 @@ pub fn run() {
             standalone::standalone_thread_read,
             standalone::fortune_llm_call,
             standalone::test_model_connection,
+            standalone::probe_model_capabilities,
             standalone::fetch_provider_models,
             standalone::fortune_detail_stream_start,
             standalone::standalone_thread_goal_set,
@@ -605,6 +607,12 @@ pub fn run() {
             lan_collab::lan_collab_list_local_shared_skills,
             lan_collab::lan_collab_list_remote_shared_skills,
             lan_collab::lan_collab_install_remote_skill,
+            lan_collab::lan_collab_share_workflow,
+            lan_collab::lan_collab_unshare_workflow,
+            lan_collab::lan_collab_list_local_shared_workflows,
+            lan_collab::lan_collab_list_remote_shared_workflows,
+            lan_collab::lan_collab_install_remote_workflow,
+            lan_collab::lan_collab_list_workflow_share_origins,
             // Recording & External Browser
             commands::launch_browser,
             commands::close_external_browser,

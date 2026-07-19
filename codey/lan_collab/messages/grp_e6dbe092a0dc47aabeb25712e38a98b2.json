@@ -1,0 +1,18 @@
+[
+  {
+    "messageId": "msg_c927cf149e574daea893b75cff390d45",
+    "groupId": "grp_e6dbe092a0dc47aabeb25712e38a98b2",
+    "fromNodeId": "node_d0910a000ba54f1681e43f5f2738097e",
+    "fromDisplayName": "LONGDREAM",
+    "text": "你好",
+    "createdAt": 1784293367
+  },
+  {
+    "messageId": "msg_64317f8132a14f44b59d6023b931d6e3",
+    "groupId": "grp_e6dbe092a0dc47aabeb25712e38a98b2",
+    "fromNodeId": "node_e853f540c5894a43816acc8d90026e91",
+    "fromDisplayName": "LONGDREAM1",
+    "text": "还行",
+    "createdAt": 1784293377
+  }
+]

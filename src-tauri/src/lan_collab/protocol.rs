@@ -3,8 +3,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 use super::types::{
-    ChatMessage, CollabGroup, DiscoveredGroupSummary, NodeIdentity, RemoteKnowledgeDoc, RemoteKnowledgeHit,
-    SharedKnowledgeOffer, SharedModelOffer, SharedSkillOffer,
+    ChatMessage, CollabGroup, DiscoveredGroupSummary, NodeIdentity, RemoteKnowledgeDoc,
+    RemoteKnowledgeHit, SharedKnowledgeOffer, SharedModelOffer, SharedSkillOffer,
+    SharedWorkflowOffer,
 };
 
 pub const MAX_FRAME_BYTES: usize = 1_048_576;
@@ -77,6 +78,12 @@ pub enum WireMessage {
     },
     /// 请求对端重新发送 Skill 共享目录
     SkillShareQuery {},
+    /// 发布本机 Workflow 共享目录
+    WorkflowShareAdvert {
+        offers: Vec<SharedWorkflowOffer>,
+    },
+    /// 请求对端重新发送 Workflow 共享目录
+    WorkflowShareQuery {},
     /// 对端按需拉取 Skill 正文
     SkillFetchRequest {
         request_id: String,
@@ -90,6 +97,32 @@ pub enum WireMessage {
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// 对端按需拉取 Workflow 正文
+    WorkflowFetchRequest {
+        request_id: String,
+        share_id: String,
+    },
+    WorkflowFetchResponse {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workflow_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workflow_json: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skill_md: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scripts: Option<Vec<super::workflow_share::SharedWorkflowScript>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scripts_manifest_json: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -203,7 +236,9 @@ pub async fn read_frame(reader: &mut OwnedReadHalf) -> Result<WireMessage, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lan_collab::types::{RemoteKnowledgeHit, SharedKnowledgeDocMeta, SharedKnowledgeOffer};
+    use crate::lan_collab::types::{
+        RemoteKnowledgeHit, SharedKnowledgeDocMeta, SharedKnowledgeOffer,
+    };
 
     #[test]
     fn knowledge_share_messages_roundtrip() {

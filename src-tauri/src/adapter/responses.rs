@@ -7,7 +7,8 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
 use super::ProviderAdapter;
 use super::types::{
-    InternalMessage, StreamEvent, UsageInfo, content_as_text, content_to_responses_content,
+    CompletionOutput, InternalMessage, StreamEvent, ToolCallResult, UsageInfo, content_as_text,
+    content_to_responses_content,
 };
 
 pub struct ResponsesAdapter;
@@ -165,10 +166,35 @@ impl ProviderAdapter for ResponsesAdapter {
             "response.output_item.done" => {
                 if let Some(item) = parsed.get("item") {
                     let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    if item_type == "tool_search_call" {
-                        events.push(tool_search_call_event(&parsed, item, true));
+                    match item_type {
+                        "function_call" => events.push(tool_call_done_event(
+                            &parsed,
+                            item,
+                            item.get("arguments").and_then(|v| v.as_str()),
+                        )),
+                        "custom_tool_call" => events.push(tool_call_done_event(
+                            &parsed,
+                            item,
+                            item.get("input").and_then(|v| v.as_str()),
+                        )),
+                        "tool_search_call" => {
+                            events.push(tool_search_call_event(&parsed, item, true));
+                        }
+                        _ => {}
                     }
                 }
+            }
+            "response.failed" => {
+                events.push(StreamEvent::Error(response_failure_message(&parsed)));
+            }
+            "response.incomplete" => {
+                let reason = parsed
+                    .pointer("/response/incomplete_details/reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                events.push(StreamEvent::Error(format!(
+                    "Incomplete response returned, reason: {reason}"
+                )));
             }
             "response.completed" => {
                 if let Some(response) = parsed.get("response") {
@@ -210,6 +236,168 @@ impl ProviderAdapter for ResponsesAdapter {
         }
 
         events
+    }
+
+    fn parse_non_streaming(&self, body: &str) -> Result<CompletionOutput, String> {
+        parse_non_streaming_responses(body)
+    }
+}
+
+fn parse_non_streaming_responses(body: &str) -> Result<CompletionOutput, String> {
+    let json: serde_json::Value = serde_json::from_str(body)
+        .map_err(|error| format!("Failed to parse non-streaming Responses JSON: {error}"))?;
+
+    if let Some(error) = json.get("error") {
+        let message = error
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Unknown Responses API error");
+        return Err(format!("Responses API error: {message}"));
+    }
+
+    let status = json.get("status").and_then(|value| value.as_str());
+    if matches!(
+        status,
+        Some("failed") | Some("incomplete") | Some("cancelled")
+    ) {
+        let detail = json
+            .get("incomplete_details")
+            .and_then(|value| value.get("reason"))
+            .and_then(|value| value.as_str())
+            .or_else(|| json.get("error").and_then(|value| value.as_str()))
+            .unwrap_or(status.unwrap_or("unknown"));
+        return Err(format!("Responses response {status:?}: {detail}"));
+    }
+
+    let output_items = json
+        .get("output")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for item in &output_items {
+        let item_type = item
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        match item_type {
+            "message" => {
+                if let Some(content) = item.get("content").and_then(|value| value.as_array()) {
+                    for part in content {
+                        if matches!(
+                            part.get("type").and_then(|value| value.as_str()),
+                            Some("output_text") | Some("text")
+                        ) {
+                            if let Some(text) = part.get("text").and_then(|value| value.as_str()) {
+                                text_parts.push(text.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            "function_call" => {
+                tool_calls.push(ToolCallResult {
+                    id: item
+                        .get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    name: item
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    arguments: value_to_argument_string(item.get("arguments")),
+                });
+            }
+            "custom_tool_call" => {
+                tool_calls.push(ToolCallResult {
+                    id: item
+                        .get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    name: item
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("apply_patch")
+                        .to_string(),
+                    arguments: value_to_argument_string(item.get("input")),
+                });
+            }
+            "tool_search_call" => {
+                tool_calls.push(ToolCallResult {
+                    id: item
+                        .get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    name: "tool_search".to_string(),
+                    arguments: value_to_argument_string(item.get("arguments")),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    let text = json
+        .get("output_text")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| text_parts.join(""));
+    let usage = json.get("usage").map(parse_responses_usage);
+
+    Ok(CompletionOutput {
+        text,
+        tool_calls,
+        finish_reason: status.map(str::to_string),
+        usage,
+    })
+}
+
+fn value_to_argument_string(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(value) => value.to_string(),
+        None => String::new(),
+    }
+}
+
+fn parse_responses_usage(value: &serde_json::Value) -> UsageInfo {
+    let prompt_tokens = value
+        .get("input_tokens")
+        .or_else(|| value.get("prompt_tokens"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let completion_tokens = value
+        .get("output_tokens")
+        .or_else(|| value.get("completion_tokens"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    UsageInfo {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: value
+            .get("total_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(prompt_tokens.saturating_add(completion_tokens)),
+        cached_tokens: value
+            .get("input_tokens_details")
+            .and_then(|value| value.get("cached_tokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        cache_creation_tokens: 0,
+        reasoning_tokens: value
+            .get("output_tokens_details")
+            .and_then(|value| value.get("reasoning_tokens"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
     }
 }
 
@@ -416,6 +604,48 @@ fn tool_call_delta_event(
     }
 }
 
+fn tool_call_done_event(
+    parsed: &serde_json::Value,
+    item: &serde_json::Value,
+    arguments: Option<&str>,
+) -> StreamEvent {
+    let index = parsed
+        .get("output_index")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as usize;
+    StreamEvent::ToolCallDone {
+        index,
+        id: item
+            .get("call_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        name: item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        arguments: arguments.map(str::to_string),
+    }
+}
+
+fn response_failure_message(parsed: &serde_json::Value) -> String {
+    let error = parsed
+        .pointer("/response/error")
+        .or_else(|| parsed.get("error"));
+    let code = error
+        .and_then(|value| value.get("code"))
+        .and_then(serde_json::Value::as_str);
+    let message = error
+        .and_then(|value| value.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("response.failed event received");
+    match code {
+        Some(code) if !code.is_empty() => format!("LLM response failed ({code}): {message}"),
+        _ => format!("LLM response failed: {message}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,6 +793,48 @@ mod tests {
                 name: None,
                 arguments: Some(arguments),
             } if id == "call-1" && arguments == "*** Begin Patch\n"
+        ));
+    }
+
+    #[test]
+    fn responses_parser_emits_canonical_completed_function_call() {
+        let adapter = ResponsesAdapter;
+        let events = adapter.parse_stream_line(
+            r#"data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","call_id":"call-2","name":"list_directory","arguments":"{\"path\":\".\"}"}}"#,
+        );
+
+        assert!(matches!(
+            &events[0],
+            StreamEvent::ToolCallDone {
+                index: 2,
+                id: Some(id),
+                name: Some(name),
+                arguments: Some(arguments),
+            } if id == "call-2"
+                && name == "list_directory"
+                && arguments == r#"{"path":"."}"#
+        ));
+    }
+
+    #[test]
+    fn responses_parser_surfaces_failed_and_incomplete_events() {
+        let adapter = ResponsesAdapter;
+        let failed = adapter.parse_stream_line(
+            r#"data: {"type":"response.failed","response":{"error":{"code":"server_error","message":"upstream unavailable"}}}"#,
+        );
+        let incomplete = adapter.parse_stream_line(
+            r#"data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#,
+        );
+
+        assert!(matches!(
+            &failed[0],
+            StreamEvent::Error(message)
+                if message == "LLM response failed (server_error): upstream unavailable"
+        ));
+        assert!(matches!(
+            &incomplete[0],
+            StreamEvent::Error(message)
+                if message == "Incomplete response returned, reason: max_output_tokens"
         ));
     }
 
@@ -770,5 +1042,56 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("function_call_output")
         );
+    }
+
+    #[test]
+    fn responses_parser_reads_non_streaming_output_and_usage() {
+        let adapter = ResponsesAdapter;
+        let output = adapter
+            .parse_non_streaming(
+                r#"{
+                    "status":"completed",
+                    "output_text":"Done",
+                    "output":[
+                      {"type":"function_call","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"README.md\"}"},
+                      {"type":"custom_tool_call","call_id":"call-2","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"},
+                      {"type":"tool_search_call","call_id":"call-3","arguments":{"query":"browser","limit":2}}
+                    ],
+                    "usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18,"input_tokens_details":{"cached_tokens":3},"output_tokens_details":{"reasoning_tokens":2}}
+                }"#,
+            )
+            .unwrap();
+
+        assert_eq!(output.text, "Done");
+        assert_eq!(output.tool_calls.len(), 3);
+        assert_eq!(output.tool_calls[0].name, "read_file");
+        assert_eq!(
+            output.tool_calls[1].arguments,
+            "*** Begin Patch\n*** End Patch"
+        );
+        assert_eq!(output.tool_calls[2].name, "tool_search");
+        assert_eq!(
+            output.usage.as_ref().map(|usage| usage.prompt_tokens),
+            Some(11)
+        );
+        assert_eq!(
+            output.usage.as_ref().map(|usage| usage.cached_tokens),
+            Some(3)
+        );
+        assert_eq!(
+            output.usage.as_ref().map(|usage| usage.reasoning_tokens),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn responses_parser_rejects_incomplete_non_streaming_response() {
+        let error = ResponsesAdapter
+            .parse_non_streaming(
+                r#"{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}"#,
+            )
+            .unwrap_err();
+        assert!(error.contains("incomplete"));
+        assert!(error.contains("max_output_tokens"));
     }
 }

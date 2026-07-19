@@ -9,17 +9,16 @@ use super::runtime::LanCollabRuntime;
 use super::types::{
     ChatMessage, CollabGroup, LanCollabStatus, NearbyPeer, NodeIdentity, RemoteKnowledgeDoc,
     RemoteKnowledgeHit, SharedKnowledgeDocMeta, SharedKnowledgeOffer, SharedModelOffer,
-    SharedSkillOffer,
+    SharedSkillOffer, SharedWorkflowOffer,
 };
+use super::workflow_share::WorkflowOriginSummary;
 
 /// 进程内运行时缓存（按 workspace 懒加载）。
 static RUNTIME: std::sync::OnceLock<Arc<RwLock<Option<LanCollabRuntime>>>> =
     std::sync::OnceLock::new();
 
 fn runtime_slot() -> Arc<RwLock<Option<LanCollabRuntime>>> {
-    RUNTIME
-        .get_or_init(|| Arc::new(RwLock::new(None)))
-        .clone()
+    RUNTIME.get_or_init(|| Arc::new(RwLock::new(None))).clone()
 }
 
 async fn ensure_runtime(state: &AppState, app: &AppHandle) -> Result<LanCollabRuntime, String> {
@@ -164,10 +163,8 @@ pub async fn lan_collab_share_model(
     provider_id: String,
     upstream_model: String,
     group_id: Option<String>,
-    #[allow(non_snake_case)]
-    upstream_base_url: Option<String>,
-    #[allow(non_snake_case)]
-    upstream_api_key: Option<String>,
+    #[allow(non_snake_case)] upstream_base_url: Option<String>,
+    #[allow(non_snake_case)] upstream_api_key: Option<String>,
 ) -> Result<SharedModelOffer, String> {
     let runtime = ensure_runtime(&state, &app).await?;
     runtime
@@ -349,9 +346,83 @@ pub async fn lan_collab_install_remote_skill(
     host_node_id: String,
     share_id: String,
     overwrite: Option<bool>,
+    force_overwrite: Option<bool>,
 ) -> Result<String, String> {
     let runtime = ensure_runtime(&state, &app).await?;
     runtime
-        .install_remote_skill(host_node_id, share_id, overwrite)
+        .install_remote_skill(host_node_id, share_id, overwrite, force_overwrite)
         .await
+}
+
+#[tauri::command]
+pub async fn lan_collab_share_workflow(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workflow_name: String,
+    group_id: Option<String>,
+) -> Result<SharedWorkflowOffer, String> {
+    let runtime = ensure_runtime(&state, &app).await?;
+    runtime.share_workflow(workflow_name, group_id).await
+}
+
+#[tauri::command]
+pub async fn lan_collab_unshare_workflow(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    share_id: String,
+) -> Result<(), String> {
+    let runtime = ensure_runtime(&state, &app).await?;
+    runtime.unshare_workflow(share_id).await
+}
+
+#[tauri::command]
+pub async fn lan_collab_list_local_shared_workflows(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<SharedWorkflowOffer>, String> {
+    let runtime = ensure_runtime(&state, &app).await?;
+    Ok(runtime.list_local_shared_workflows().await)
+}
+
+#[tauri::command]
+pub async fn lan_collab_list_remote_shared_workflows(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<SharedWorkflowOffer>, String> {
+    let runtime = ensure_runtime(&state, &app).await?;
+    Ok(runtime.list_remote_shared_workflows().await)
+}
+
+#[tauri::command]
+pub async fn lan_collab_install_remote_workflow(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host_node_id: String,
+    share_id: String,
+    overwrite: Option<bool>,
+    force_overwrite: Option<bool>,
+    install_as: Option<String>,
+) -> Result<String, String> {
+    let runtime = ensure_runtime(&state, &app).await?;
+    runtime
+        .install_remote_workflow(
+            host_node_id,
+            share_id,
+            overwrite,
+            force_overwrite,
+            install_as,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn lan_collab_list_workflow_share_origins(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<WorkflowOriginSummary>, String> {
+    let _ = ensure_runtime(&state, &app).await?;
+    // 直接从 workspace 扫描 origin，不依赖协作开关
+    let service =
+        super::workflow_share::WorkflowShareService::new(state.workspace_config_dir.clone());
+    Ok(service.list_local_origin_summaries())
 }

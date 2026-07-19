@@ -6,26 +6,25 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::config_system::ConfigManager;
 
-use super::identity::{load_or_create_identity, save_identity};
-use super::discovery::{
-    self, DiscoveryHandle, DiscoveredEndpoint, PresenceBeacon,
-};
+use super::discovery::{self, DiscoveredEndpoint, DiscoveryHandle, PresenceBeacon};
+use super::identity::{load_or_create_identity, new_identity_with_display_name, save_identity};
 use super::knowledge_share::KnowledgeShareService;
 use super::model_share::{ModelShareService, SharedModelConfig};
+use super::protocol::{WireMessage, read_frame, write_frame};
 use super::skill_share::{SharedSkillPayload, SkillShareService};
-use super::protocol::{read_frame, write_frame, WireMessage};
 use super::store::LanCollabStore;
 use super::types::{
     ChatMessage, CollabGroup, DiscoveredGroupSummary, DiscoveryStatus, GroupMember,
     LanCollabStatus, NearbyPeer, NodeIdentity, RemoteKnowledgeDoc, RemoteKnowledgeHit,
-    SharedKnowledgeOffer, SharedModelOffer, SharedSkillOffer,
+    SharedKnowledgeOffer, SharedModelOffer, SharedSkillOffer, SharedWorkflowOffer,
 };
+use super::workflow_share::{SharedWorkflowPayload, WorkflowShareService};
 
 const DEFAULT_PORT_START: u16 = 47800;
 const DEFAULT_PORT_END: u16 = 47820;
@@ -40,6 +39,7 @@ const EVENT_DISCOVERY: &str = "lan-collab-discovery";
 const EVENT_MODEL_SHARE: &str = "lan-collab-model-share";
 const EVENT_KNOWLEDGE_SHARE: &str = "lan-collab-knowledge-share";
 const EVENT_SKILL_SHARE: &str = "lan-collab-skill-share";
+const EVENT_WORKFLOW_SHARE: &str = "lan-collab-workflow-share";
 
 #[derive(Debug)]
 struct PeerSession {
@@ -77,6 +77,8 @@ struct RuntimeInner {
     pending_kb_fetch: HashMap<String, oneshot::Sender<Result<RemoteKnowledgeDoc, String>>>,
     /// pending skill fetch request_id
     pending_skill_fetch: HashMap<String, oneshot::Sender<Result<SharedSkillPayload, String>>>,
+    /// pending workflow fetch request_id
+    pending_workflow_fetch: HashMap<String, oneshot::Sender<Result<SharedWorkflowPayload, String>>>,
     listener_task: Option<JoinHandle<()>>,
     stop_tx: Option<mpsc::Sender<()>>,
     app_handle: Option<AppHandle>,
@@ -86,6 +88,8 @@ struct RuntimeInner {
     remote_shared_knowledge: Vec<SharedKnowledgeOffer>,
     /// 对端广播的 Skill 共享
     remote_shared_skills: Vec<SharedSkillOffer>,
+    /// 对端广播的 Workflow 共享
+    remote_shared_workflows: Vec<SharedWorkflowOffer>,
 }
 
 /// 局域网协作运行时（进程内单例状态）。
@@ -102,6 +106,7 @@ pub struct LanCollabRuntime {
     model_share: ModelShareService,
     knowledge_share: KnowledgeShareService,
     skill_share: SkillShareService,
+    workflow_share: WorkflowShareService,
 }
 
 impl LanCollabRuntime {
@@ -118,6 +123,9 @@ impl LanCollabRuntime {
         for peer in &mut peers {
             peer.connected = false;
         }
+        // 历史版本可能同时持久化了 127.0.0.1 与局域网 IP 两条记录。
+        dedupe_peers(&mut peers);
+        let _ = store.save_peers(&peers);
         let mut groups = store.load_groups().unwrap_or_default();
         for group in &mut groups {
             group.is_owner = group.owner_node_id == identity.node_id;
@@ -141,12 +149,14 @@ impl LanCollabRuntime {
                 pending_kb_search: HashMap::new(),
                 pending_kb_fetch: HashMap::new(),
                 pending_skill_fetch: HashMap::new(),
+                pending_workflow_fetch: HashMap::new(),
                 listener_task: None,
                 stop_tx: None,
                 app_handle: None,
                 remote_shared_models: Vec::new(),
                 remote_shared_knowledge: Vec::new(),
                 remote_shared_skills: Vec::new(),
+                remote_shared_workflows: Vec::new(),
             })),
             connect_lock: Arc::new(Mutex::new(())),
             discovery_handle: Arc::new(Mutex::new(None)),
@@ -158,7 +168,8 @@ impl LanCollabRuntime {
             ))),
             model_share: ModelShareService::new(config_manager),
             knowledge_share: KnowledgeShareService::new(workspace_config_dir.clone()),
-            skill_share: SkillShareService::new(workspace_config_dir),
+            skill_share: SkillShareService::new(workspace_config_dir.clone()),
+            workflow_share: WorkflowShareService::new(workspace_config_dir),
         })
     }
 
@@ -168,6 +179,16 @@ impl LanCollabRuntime {
     }
 
     pub async fn status(&self) -> LanCollabStatus {
+        // 先在写锁里固化 peers 去重，避免历史 loopback/LAN 双条目持续刷 UI。
+        {
+            let mut guard = self.inner.write().await;
+            let before = guard.peers.len();
+            dedupe_peers(&mut guard.peers);
+            if guard.peers.len() != before {
+                let _ = self.store.save_peers(&guard.peers);
+            }
+        }
+
         let guard = self.inner.read().await;
         let local_address = if guard.enabled {
             Some(format!(
@@ -179,18 +200,26 @@ impl LanCollabRuntime {
             None
         };
         let connected_peer_count = guard.sessions.len();
-        let peers = guard
+        // 返回前再去重一次，清理历史 peers.json 里残留的 loopback/LAN 双条目。
+        let mut peers: Vec<NearbyPeer> = guard
             .peers
             .iter()
             .map(|peer| {
                 let mut p = peer.clone();
                 p.connected = guard.sessions.contains_key(&peer.node_id);
+                // 已连接时优先展示会话地址（通常更稳定）。
+                if let Some(session) = guard.sessions.get(&peer.node_id) {
+                    p.address = prefer_display_address(&session.address, &p.address);
+                    p.port = session.port;
+                }
                 p
             })
             .collect();
+        dedupe_peers(&mut peers);
         let remote_shared_models = guard.remote_shared_models.clone();
         let remote_shared_knowledge = guard.remote_shared_knowledge.clone();
         let remote_shared_skills = guard.remote_shared_skills.clone();
+        let remote_shared_workflows = guard.remote_shared_workflows.clone();
         let identity = guard.identity.clone();
         let enabled = guard.enabled;
         let bind_port = guard.bind_port;
@@ -213,7 +242,7 @@ impl LanCollabRuntime {
             .unwrap_or_else(|| "127.0.0.1".to_string());
         let local_shared_models = if enabled {
             self.model_share
-                .local_offers(&identity.node_id, &identity.display_name, &host_addr)
+                .local_offers(&identity.node_id, &identity.display_name, &host_addr, None)
                 .await
         } else {
             Vec::new()
@@ -227,6 +256,13 @@ impl LanCollabRuntime {
         };
         let local_shared_skills = if enabled {
             self.skill_share
+                .local_offers(&identity.node_id, &identity.display_name, None)
+                .await
+        } else {
+            Vec::new()
+        };
+        let local_shared_workflows = if enabled {
+            self.workflow_share
                 .local_offers(&identity.node_id, &identity.display_name, None)
                 .await
         } else {
@@ -249,13 +285,16 @@ impl LanCollabRuntime {
             remote_shared_knowledge,
             local_shared_skills,
             remote_shared_skills,
+            local_shared_workflows,
+            remote_shared_workflows,
             architecture: "weak-center-owner-plus-p2p".to_string(),
             note: if enabled {
                 format!(
                     "协作已开启（TCP 监听 :{bind_port}）。已自动扫描附近节点/协作组；输入邀请码即可加入。控制面由组 Owner 权威管理；聊天/模型代理/知识拉取走 P2P。已连接 {connected_peer_count} 个对端。",
                 )
             } else {
-                "协作已关闭。开启后将自动扫描局域网协作组，输入邀请码即可加入；也可创建自己的组。".to_string()
+                "协作已关闭。开启后将自动扫描局域网协作组，输入邀请码即可加入；也可创建自己的组。"
+                    .to_string()
             },
         }
     }
@@ -275,6 +314,8 @@ impl LanCollabRuntime {
                 let mut guard = self.inner.write().await;
                 guard.remote_shared_models.clear();
                 guard.remote_shared_knowledge.clear();
+                guard.remote_shared_skills.clear();
+                guard.remote_shared_workflows.clear();
                 guard.discovered_groups.clear();
                 guard.discovery_scanning = false;
                 guard.discovery_last_scan_at = None;
@@ -299,6 +340,79 @@ impl LanCollabRuntime {
         drop(guard);
         self.refresh_beacon_cache().await;
         Ok(identity)
+    }
+
+    /// 检测到同 node_id 的其他实例时，尝试让本机换新身份。
+    /// 规则：本机没有 Owner 组时优先自愈；两边都有/都没有时由更高端口一侧自愈。
+    async fn try_heal_duplicate_identity(&self, remote: &NodeIdentity, remote_port: u16) -> bool {
+        let (local_id, local_port, owns_groups) = {
+            let guard = self.inner.read().await;
+            (
+                guard.identity.node_id.clone(),
+                guard.bind_port,
+                guard.groups.iter().any(|g| g.is_owner),
+            )
+        };
+        if remote.node_id != local_id {
+            return false;
+        }
+        // 有 Owner 组的一侧尽量保留，避免组权威丢失。
+        if owns_groups && remote_port != 0 && remote_port != local_port {
+            return false;
+        }
+        // 两边都无 Owner 组时，让端口较大的一侧换 ID，避免双边同时自愈抖动。
+        if !owns_groups && remote_port != 0 && remote_port < local_port {
+            return false;
+        }
+        self.regenerate_local_identity("handshake-duplicate").await
+    }
+
+    async fn try_heal_duplicate_identity_local(&self, remote_port: u16) -> bool {
+        let (local_port, owns_groups) = {
+            let guard = self.inner.read().await;
+            (guard.bind_port, guard.groups.iter().any(|g| g.is_owner))
+        };
+        if owns_groups {
+            return false;
+        }
+        if remote_port != 0 && remote_port < local_port {
+            return false;
+        }
+        self.regenerate_local_identity("discovery-duplicate").await
+    }
+
+    async fn regenerate_local_identity(&self, reason: &str) -> bool {
+        let mut guard = self.inner.write().await;
+        let old = guard.identity.node_id.clone();
+        let display_name = guard.identity.display_name.clone();
+        let next = new_identity_with_display_name(display_name);
+        if let Err(err) = save_identity(self.store.data_dir(), &next) {
+            tracing::warn!("[lan_collab] regenerate identity failed ({reason}): {err}");
+            return false;
+        }
+        // 本机若曾以旧 ID 作为 Owner 保存组，迁移 owner 字段，避免控制面错乱。
+        for group in &mut guard.groups {
+            if group.owner_node_id == old {
+                group.owner_node_id = next.node_id.clone();
+                group.is_owner = true;
+                for member in &mut group.members {
+                    if member.node_id == old {
+                        member.node_id = next.node_id.clone();
+                    }
+                }
+            } else {
+                group.is_owner = group.owner_node_id == next.node_id;
+            }
+        }
+        let _ = self.store.save_groups(&guard.groups);
+        guard.identity = next.clone();
+        drop(guard);
+        self.refresh_beacon_cache().await;
+        tracing::warn!(
+            "[lan_collab] regenerated local node_id {old} -> {} ({reason})",
+            next.node_id
+        );
+        true
     }
 
     pub async fn list_peers(&self) -> Vec<NearbyPeer> {
@@ -536,11 +650,7 @@ impl LanCollabRuntime {
             {
                 return Err("你不是该组成员".to_string());
             }
-            let member_ids: Vec<String> = group
-                .members
-                .iter()
-                .map(|m| m.node_id.clone())
-                .collect();
+            let member_ids: Vec<String> = group.members.iter().map(|m| m.node_id.clone()).collect();
             let message = ChatMessage {
                 message_id: format!("msg_{}", Uuid::new_v4().simple()),
                 group_id,
@@ -593,6 +703,7 @@ impl LanCollabRuntime {
         upstream_base_url: Option<String>,
         upstream_api_key: Option<String>,
     ) -> Result<SharedModelOffer, String> {
+        self.ensure_can_share_to_group(group_id.as_deref()).await?;
         {
             let guard = self.inner.read().await;
             if !guard.enabled {
@@ -640,6 +751,7 @@ impl LanCollabRuntime {
         domain: Option<String>,
         doc_ids: Vec<String>,
     ) -> Result<SharedKnowledgeOffer, String> {
+        self.ensure_can_share_to_group(group_id.as_deref()).await?;
         {
             let guard = self.inner.read().await;
             if !guard.enabled {
@@ -674,6 +786,7 @@ impl LanCollabRuntime {
         skill_id: String,
         group_id: Option<String>,
     ) -> Result<SharedSkillOffer, String> {
+        self.ensure_can_share_to_group(group_id.as_deref()).await?;
         {
             let guard = self.inner.read().await;
             if !guard.enabled {
@@ -705,8 +818,10 @@ impl LanCollabRuntime {
         host_node_id: String,
         share_id: String,
         overwrite: Option<bool>,
+        force_overwrite: Option<bool>,
     ) -> Result<String, String> {
         let overwrite = overwrite.unwrap_or(false);
+        let force_overwrite = force_overwrite.unwrap_or(false);
         {
             let guard = self.inner.read().await;
             if !guard.enabled {
@@ -727,7 +842,7 @@ impl LanCollabRuntime {
             &host_node_id,
             WireMessage::SkillFetchRequest {
                 request_id: request_id.clone(),
-                share_id,
+                share_id: share_id.clone(),
             },
         )
         .await;
@@ -743,8 +858,155 @@ impl LanCollabRuntime {
             }
         };
 
-        self.skill_share
-            .install_skill_payload(&payload, overwrite)
+        let host_display_name = {
+            let guard = self.inner.read().await;
+            guard
+                .remote_shared_skills
+                .iter()
+                .find(|o| o.host_node_id == host_node_id && o.share_id == share_id)
+                .map(|o| o.host_display_name.clone())
+                .or_else(|| {
+                    guard
+                        .peers
+                        .iter()
+                        .find(|p| p.node_id == host_node_id)
+                        .map(|p| p.display_name.clone())
+                })
+                .unwrap_or_else(|| host_node_id.clone())
+        };
+
+        // share_id 在 payload 可能为空（旧协议），用请求参数回填
+        let mut payload = payload;
+        if payload.share_id.trim().is_empty() {
+            payload.share_id = share_id;
+        }
+
+        self.skill_share.install_skill_payload(
+            &payload,
+            &host_node_id,
+            &host_display_name,
+            None,
+            overwrite,
+            force_overwrite,
+        )
+    }
+
+    /// 共享本机 Workflow。
+    pub async fn share_workflow(
+        &self,
+        workflow_name: String,
+        group_id: Option<String>,
+    ) -> Result<SharedWorkflowOffer, String> {
+        self.ensure_can_share_to_group(group_id.as_deref()).await?;
+        {
+            let guard = self.inner.read().await;
+            if !guard.enabled {
+                return Err("请先开启局域网协作".to_string());
+            }
+        }
+        let cfg = self
+            .workflow_share
+            .share_workflow(workflow_name, group_id)
+            .await?;
+        self.broadcast_local_workflow_shares().await;
+        self.local_workflow_offer_from_share_id(&cfg.share_id).await
+    }
+
+    pub async fn unshare_workflow(&self, share_id: String) -> Result<(), String> {
+        self.workflow_share.unshare_workflow(share_id).await?;
+        self.broadcast_local_workflow_shares().await;
+        Ok(())
+    }
+
+    pub async fn list_local_shared_workflows(&self) -> Vec<SharedWorkflowOffer> {
+        self.status().await.local_shared_workflows
+    }
+
+    pub async fn list_remote_shared_workflows(&self) -> Vec<SharedWorkflowOffer> {
+        self.inner.read().await.remote_shared_workflows.clone()
+    }
+
+    /// 拉取远端共享 Workflow 并安装到本机。
+    pub async fn install_remote_workflow(
+        &self,
+        host_node_id: String,
+        share_id: String,
+        overwrite: Option<bool>,
+        force_overwrite: Option<bool>,
+        install_as: Option<String>,
+    ) -> Result<String, String> {
+        let overwrite = overwrite.unwrap_or(false);
+        let force_overwrite = force_overwrite.unwrap_or(false);
+        {
+            let guard = self.inner.read().await;
+            if !guard.enabled {
+                return Err("请先开启局域网协作".to_string());
+            }
+            if !guard.sessions.contains_key(&host_node_id) {
+                return Err("共享方当前未连接".to_string());
+            }
+        }
+
+        let request_id = format!("wfetch_{}", Uuid::new_v4().simple());
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut guard = self.inner.write().await;
+            guard.pending_workflow_fetch.insert(request_id.clone(), tx);
+        }
+        self.send_to(
+            &host_node_id,
+            WireMessage::WorkflowFetchRequest {
+                request_id: request_id.clone(),
+                share_id: share_id.clone(),
+            },
+        )
+        .await;
+
+        let payload = match tokio::time::timeout(Duration::from_secs(JOIN_TIMEOUT_SECS), rx).await {
+            Ok(Ok(Ok(payload))) => payload,
+            Ok(Ok(Err(err))) => return Err(err),
+            Ok(Err(_)) => return Err("Workflow 拉取请求已取消".to_string()),
+            Err(_) => {
+                let mut guard = self.inner.write().await;
+                guard.pending_workflow_fetch.remove(&request_id);
+                return Err("Workflow 拉取超时".to_string());
+            }
+        };
+
+        let mut payload = payload;
+        if payload.share_id.trim().is_empty() {
+            payload.share_id = share_id.clone();
+        }
+
+        let (host_display_name, group_id) = {
+            let guard = self.inner.read().await;
+            let offer = guard
+                .remote_shared_workflows
+                .iter()
+                .find(|o| o.host_node_id == host_node_id && o.share_id == share_id);
+            let display = offer
+                .map(|o| o.host_display_name.clone())
+                .or_else(|| {
+                    guard
+                        .peers
+                        .iter()
+                        .find(|p| p.node_id == host_node_id)
+                        .map(|p| p.display_name.clone())
+                })
+                .unwrap_or_else(|| host_node_id.clone());
+            let gid = offer.and_then(|o| o.group_id.clone());
+            (display, gid)
+        };
+
+        self.workflow_share.install_workflow_payload(
+            &payload,
+            &host_node_id,
+            &host_display_name,
+            group_id,
+            overwrite,
+            force_overwrite,
+            install_as,
+        )
     }
 
     pub async fn list_shareable_knowledge_docs(
@@ -955,24 +1217,40 @@ impl LanCollabRuntime {
 
     async fn dial(&self, addr: SocketAddr) -> Result<NearbyPeer, String> {
         let _guard = self.connect_lock.lock().await;
-        // 已连接到同一地址则直接返回
+        // 已连接到同一地址/同一节点则直接返回，避免并发互连互相踢掉会话。
         {
             let guard = self.inner.read().await;
-            if let Some(peer) = guard.peers.iter().find(|p| {
-                p.address == addr.ip().to_string() && p.port == addr.port() && p.trusted
+            let host = addr.ip().to_string();
+            let port = addr.port();
+            if let Some(session) = guard.sessions.values().find(|s| {
+                (s.address == host && s.port == port)
+                    || (is_loopback_ip(&s.address) && is_loopback_ip(&host) && s.port == port)
             }) {
-                if guard.sessions.contains_key(&peer.node_id) {
+                if let Some(peer) = guard.peers.iter().find(|p| p.node_id == session.node_id) {
                     let mut connected = peer.clone();
                     connected.connected = true;
                     return Ok(connected);
                 }
             }
+            if let Some(peer) = guard.peers.iter().find(|p| {
+                p.address == host
+                    && p.port == port
+                    && p.trusted
+                    && guard.sessions.contains_key(&p.node_id)
+            }) {
+                let mut connected = peer.clone();
+                connected.connected = true;
+                return Ok(connected);
+            }
         }
 
-        let stream = tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS), TcpStream::connect(addr))
-            .await
-            .map_err(|_| format!("连接 {addr} 超时（{CONNECT_TIMEOUT_SECS}s）"))?
-            .map_err(|e| format!("连接 {addr} 失败: {e}"))?;
+        let stream = tokio::time::timeout(
+            Duration::from_secs(CONNECT_TIMEOUT_SECS),
+            TcpStream::connect(addr),
+        )
+        .await
+        .map_err(|_| format!("连接 {addr} 超时（{CONNECT_TIMEOUT_SECS}s）"))?
+        .map_err(|e| format!("连接 {addr} 失败: {e}"))?;
         let _ = stream.set_nodelay(true);
         self.handle_stream(stream, addr, false).await
     }
@@ -1061,7 +1339,20 @@ impl LanCollabRuntime {
         let (remote_identity, remote_listen_port) = remote;
 
         if remote_identity.node_id == identity.node_id {
-            return Err("不能连接自己".to_string());
+            // 运行时自愈：复制安装后两个实例可能共享 node_id。
+            // 优先让“非 Owner / 后启动”一侧换新身份，避免继续互相过滤。
+            if self
+                .try_heal_duplicate_identity(&remote_identity, remote_listen_port.max(addr.port()))
+                .await
+            {
+                return Err(
+                    "检测到复制安装导致的 node_id 冲突，本机已自动换新身份。请再点一次扫描/连接。"
+                        .to_string(),
+                );
+            }
+            return Err(
+                "对端 node_id 与本机相同（通常是复制安装目录导致）。请重启复制出的客户端，或删除其 codey/lan_collab/identity.json 后重开。".to_string(),
+            );
         }
 
         let peer_port = if remote_listen_port > 0 {
@@ -1083,9 +1374,37 @@ impl LanCollabRuntime {
 
         {
             let mut guard = self.inner.write().await;
-            // 同 node 重复连接：替换旧 session
-            if let Some(old) = guard.sessions.remove(&peer.node_id) {
-                drop(old);
+            // 同 node 重复连接：只保留“较小 node_id 主动拨号”的那条链路。
+            // 否则同机双开时双方会同时互拨，各自丢弃入站后把唯一会话互相掐死。
+            let prefer_this = should_prefer_connection(&identity.node_id, &peer.node_id, inbound);
+            if let Some(existing) = guard.sessions.get(&peer.node_id) {
+                if !prefer_this {
+                    let mut kept = peer.clone();
+                    kept.address = existing.address.clone();
+                    kept.port = existing.port;
+                    kept.connected = true;
+                    kept.last_seen_at = chrono::Utc::now().timestamp();
+                    upsert_peer(&mut guard.peers, kept.clone());
+                    let _ = self.store.save_peers(&guard.peers);
+                    self.emit_event(&guard, EVENT_PEER, &kept);
+                    tracing::info!(
+                        "[lan_collab] keep existing session for {} (drop duplicate {}:{})",
+                        peer.node_id,
+                        peer.address,
+                        peer.port
+                    );
+                    return Ok(kept);
+                }
+                if let Some(old) = guard.sessions.remove(&peer.node_id) {
+                    drop(old);
+                }
+                tracing::info!(
+                    "[lan_collab] replace session for {} with preferred {} connection {}:{}",
+                    peer.node_id,
+                    if inbound { "inbound" } else { "outbound" },
+                    peer.address,
+                    peer.port
+                );
             }
             upsert_peer(&mut guard.peers, peer.clone());
             let _ = self.store.save_peers(&guard.peers);
@@ -1159,6 +1478,11 @@ impl LanCollabRuntime {
                     .remote_shared_skills
                     .retain(|offer| offer.host_node_id != remote_node_id);
                 let skill_changed = guard.remote_shared_skills.len() != before_skill;
+                let before_workflow = guard.remote_shared_workflows.len();
+                guard
+                    .remote_shared_workflows
+                    .retain(|offer| offer.host_node_id != remote_node_id);
+                let workflow_changed = guard.remote_shared_workflows.len() != before_workflow;
                 let _ = runtime.store.save_groups(&guard.groups);
                 let _ = runtime.store.save_peers(&guard.peers);
                 if let Some(peer) = guard.peers.iter().find(|p| p.node_id == remote_node_id) {
@@ -1176,6 +1500,10 @@ impl LanCollabRuntime {
                     let offers = guard.remote_shared_skills.clone();
                     runtime.emit_event(&guard, EVENT_SKILL_SHARE, &offers);
                 }
+                if workflow_changed {
+                    let offers = guard.remote_shared_workflows.clone();
+                    runtime.emit_event(&guard, EVENT_WORKFLOW_SHARE, &offers);
+                }
             }
 
             if let Err(err) = read_result {
@@ -1192,7 +1520,8 @@ impl LanCollabRuntime {
 
         // 握手完成后交换模型共享目录
         self.send_local_model_shares_to(&peer.node_id).await;
-        self.send_to(&peer.node_id, WireMessage::ModelShareQuery {}).await;
+        self.send_to(&peer.node_id, WireMessage::ModelShareQuery {})
+            .await;
         // 握手完成后交换知识共享目录
         self.send_local_knowledge_shares_to(&peer.node_id).await;
         self.send_to(&peer.node_id, WireMessage::KnowledgeShareQuery {})
@@ -1200,6 +1529,10 @@ impl LanCollabRuntime {
         // 握手完成后交换 Skill 共享目录
         self.send_local_skill_shares_to(&peer.node_id).await;
         self.send_to(&peer.node_id, WireMessage::SkillShareQuery {})
+            .await;
+        // 握手完成后交换 Workflow 共享目录
+        self.send_local_workflow_shares_to(&peer.node_id).await;
+        self.send_to(&peer.node_id, WireMessage::WorkflowShareQuery {})
             .await;
         // 握手完成后交换公开协作组目录
         self.send_group_directory_to(&peer.node_id).await;
@@ -1215,9 +1548,7 @@ impl LanCollabRuntime {
             guard
                 .groups
                 .iter()
-                .filter(|g| {
-                    g.is_owner && g.members.iter().any(|m| m.node_id == node_id)
-                })
+                .filter(|g| g.is_owner && g.members.iter().any(|m| m.node_id == node_id))
                 .cloned()
                 .collect()
         };
@@ -1242,8 +1573,14 @@ impl LanCollabRuntime {
                 node_id,
                 display_name,
             } => {
-                self.handle_join_request(from_node_id, request_id, invite_code, node_id, display_name)
-                    .await;
+                self.handle_join_request(
+                    from_node_id,
+                    request_id,
+                    invite_code,
+                    node_id,
+                    display_name,
+                )
+                .await;
             }
             WireMessage::GroupJoinAccept { request_id, group } => {
                 self.handle_join_accept(request_id, group).await?;
@@ -1258,7 +1595,8 @@ impl LanCollabRuntime {
                 self.upsert_group_snapshot(group).await?;
             }
             WireMessage::GroupDirectoryAdvert { groups } => {
-                self.handle_group_directory_advert(from_node_id, groups).await;
+                self.handle_group_directory_advert(from_node_id, groups)
+                    .await;
             }
             WireMessage::GroupDirectoryQuery {} => {
                 self.send_group_directory_to(from_node_id).await;
@@ -1285,6 +1623,13 @@ impl LanCollabRuntime {
             WireMessage::SkillShareQuery {} => {
                 self.send_local_skill_shares_to(from_node_id).await;
             }
+            WireMessage::WorkflowShareAdvert { offers } => {
+                self.handle_workflow_share_advert(from_node_id, offers)
+                    .await;
+            }
+            WireMessage::WorkflowShareQuery {} => {
+                self.send_local_workflow_shares_to(from_node_id).await;
+            }
             WireMessage::SkillFetchRequest {
                 request_id,
                 share_id,
@@ -1297,21 +1642,64 @@ impl LanCollabRuntime {
                 skill_id,
                 name,
                 content,
+                content_hash,
                 error,
             } => {
                 let mut guard = self.inner.write().await;
                 if let Some(tx) = guard.pending_skill_fetch.remove(&request_id) {
-                    let _ = tx.send(match (skill_id, name, content, error) {
-                        (Some(skill_id), Some(name), Some(content), _) => Ok(SharedSkillPayload {
-                            share_id: String::new(),
-                            skill_id,
-                            name,
-                            description: String::new(),
-                            tags: Vec::new(),
-                            content,
-                        }),
-                        (_, _, _, Some(err)) => Err(err),
+                    let _ = tx.send(match (skill_id, name, content, content_hash, error) {
+                        (Some(skill_id), Some(name), Some(content), content_hash, _) => {
+                            Ok(SharedSkillPayload {
+                                share_id: String::new(),
+                                skill_id,
+                                name,
+                                description: String::new(),
+                                tags: Vec::new(),
+                                content,
+                                content_hash: content_hash.unwrap_or_default(),
+                            })
+                        }
+                        (_, _, _, _, Some(err)) => Err(err),
                         _ => Err("空的 Skill 拉取响应".to_string()),
+                    });
+                }
+            }
+            WireMessage::WorkflowFetchRequest {
+                request_id,
+                share_id,
+            } => {
+                self.handle_workflow_fetch_request(from_node_id, request_id, share_id)
+                    .await;
+            }
+            WireMessage::WorkflowFetchResponse {
+                request_id,
+                workflow_name,
+                title,
+                content_hash,
+                workflow_json,
+                skill_md,
+                scripts,
+                scripts_manifest_json,
+                error,
+            } => {
+                let mut guard = self.inner.write().await;
+                if let Some(tx) = guard.pending_workflow_fetch.remove(&request_id) {
+                    let _ = tx.send(match (workflow_name, workflow_json, error) {
+                        (Some(workflow_name), Some(workflow_json), _) => {
+                            Ok(SharedWorkflowPayload {
+                                share_id: String::new(),
+                                workflow_name,
+                                title: title.unwrap_or_default(),
+                                description: String::new(),
+                                content_hash: content_hash.unwrap_or_default(),
+                                workflow_json,
+                                skill_md: skill_md.unwrap_or_default(),
+                                scripts: scripts.unwrap_or_default(),
+                                scripts_manifest_json,
+                            })
+                        }
+                        (_, _, Some(err)) => Err(err),
+                        _ => Err("空的 Workflow 拉取响应".to_string()),
                     });
                 }
             }
@@ -1321,8 +1709,14 @@ impl LanCollabRuntime {
                 query,
                 top_k,
             } => {
-                self.handle_knowledge_search_request(from_node_id, request_id, share_id, query, top_k)
-                    .await;
+                self.handle_knowledge_search_request(
+                    from_node_id,
+                    request_id,
+                    share_id,
+                    query,
+                    top_k,
+                )
+                .await;
             }
             WireMessage::KnowledgeSearchResponse {
                 request_id,
@@ -1424,7 +1818,8 @@ impl LanCollabRuntime {
                 )
                 .await;
                 // 广播快照给其他已连接成员（弱中心收敛）
-                let member_ids: Vec<String> = group.members.iter().map(|m| m.node_id.clone()).collect();
+                let member_ids: Vec<String> =
+                    group.members.iter().map(|m| m.node_id.clone()).collect();
                 self.broadcast_to_nodes(
                     &member_ids,
                     WireMessage::GroupSnapshot {
@@ -1519,10 +1914,7 @@ impl LanCollabRuntime {
         // Owner 作为弱中心：若成员只连 Owner，由 Owner 转发组聊
         if should_relay {
             let except = message.from_node_id.clone();
-            let targets: Vec<String> = member_ids
-                .into_iter()
-                .filter(|id| id != &except)
-                .collect();
+            let targets: Vec<String> = member_ids.into_iter().filter(|id| id != &except).collect();
             self.broadcast_to_nodes(
                 &targets,
                 WireMessage::ChatText {
@@ -1572,6 +1964,57 @@ impl LanCollabRuntime {
         }
     }
 
+    async fn ensure_can_share_to_group(&self, group_id: Option<&str>) -> Result<(), String> {
+        let Some(group_id) = group_id.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Err("请选择要共享到的协作组（未选组的内容保持私有）".to_string());
+        };
+        let guard = self.inner.read().await;
+        if !guard.enabled {
+            return Err("请先开启局域网协作".to_string());
+        }
+        let self_id = guard.identity.node_id.clone();
+        let ok = guard.groups.iter().any(|g| {
+            g.group_id == group_id && (g.is_owner || g.members.iter().any(|m| m.node_id == self_id))
+        });
+        if !ok {
+            return Err("只能共享到本机已加入的协作组".to_string());
+        }
+        Ok(())
+    }
+
+    fn group_ids_for_peer_locked(guard: &RuntimeInner, node_id: &str) -> HashSet<String> {
+        guard
+            .groups
+            .iter()
+            .filter(|g| {
+                g.owner_node_id == node_id || g.members.iter().any(|m| m.node_id == node_id)
+            })
+            .map(|g| g.group_id.clone())
+            .collect()
+    }
+
+    async fn group_ids_for_peer(&self, node_id: &str) -> HashSet<String> {
+        let guard = self.inner.read().await;
+        Self::group_ids_for_peer_locked(&guard, node_id)
+    }
+
+    async fn ensure_peer_can_access_share(
+        &self,
+        peer_node_id: &str,
+        group_id: Result<Option<String>, String>,
+    ) -> Result<(), String> {
+        let group_id = group_id?;
+        let Some(group_id) = group_id.filter(|s| !s.trim().is_empty()) else {
+            return Err("该共享未绑定协作组，已保持私有".to_string());
+        };
+        let allowed = self.group_ids_for_peer(peer_node_id).await;
+        if allowed.contains(&group_id) {
+            Ok(())
+        } else {
+            Err("无权访问该共享（不在授权协作组内）".to_string())
+        }
+    }
+
     async fn local_offer_from_config(
         &self,
         cfg: &SharedModelConfig,
@@ -1591,7 +2034,7 @@ impl LanCollabRuntime {
         };
         let offers = self
             .model_share
-            .local_offers(&identity.node_id, &identity.display_name, &host_addr)
+            .local_offers(&identity.node_id, &identity.display_name, &host_addr, None)
             .await;
         offers
             .into_iter()
@@ -1599,7 +2042,10 @@ impl LanCollabRuntime {
             .ok_or_else(|| "共享项已创建但代理尚未就绪".to_string())
     }
 
-    async fn current_local_offers(&self) -> Vec<SharedModelOffer> {
+    async fn current_local_offers(
+        &self,
+        allowed_group_ids: Option<&HashSet<String>>,
+    ) -> Vec<SharedModelOffer> {
         let (enabled, identity, host_addr) = {
             let guard = self.inner.read().await;
             let host_addr = if guard.enabled {
@@ -1617,24 +2063,45 @@ impl LanCollabRuntime {
             return Vec::new();
         }
         self.model_share
-            .local_offers(&identity.node_id, &identity.display_name, &host_addr)
+            .local_offers(
+                &identity.node_id,
+                &identity.display_name,
+                &host_addr,
+                allowed_group_ids,
+            )
             .await
     }
 
     async fn send_local_model_shares_to(&self, node_id: &str) {
-        let offers = self.current_local_offers().await;
+        let allowed = self.group_ids_for_peer(node_id).await;
+        let offers = self.current_local_offers(Some(&allowed)).await;
         self.send_to(node_id, WireMessage::ModelShareAdvert { offers })
             .await;
     }
 
     async fn broadcast_local_model_shares(&self) {
-        let offers = self.current_local_offers().await;
+        let full = self.current_local_offers(None).await;
         {
             let guard = self.inner.read().await;
-            self.emit_event(&guard, EVENT_MODEL_SHARE, &offers);
+            self.emit_event(&guard, EVENT_MODEL_SHARE, &full);
         }
-        self.broadcast_wire(WireMessage::ModelShareAdvert { offers })
-            .await;
+        let peer_ids: Vec<String> = {
+            let guard = self.inner.read().await;
+            guard.sessions.keys().cloned().collect()
+        };
+        for peer_id in peer_ids {
+            let allowed = self.group_ids_for_peer(&peer_id).await;
+            let offers = full
+                .iter()
+                .filter(|o| match &o.group_id {
+                    Some(gid) => allowed.contains(gid),
+                    None => false,
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            self.send_to(&peer_id, WireMessage::ModelShareAdvert { offers })
+                .await;
+        }
     }
 
     async fn handle_model_share_advert(
@@ -1684,14 +2151,17 @@ impl LanCollabRuntime {
         &self,
         share_id: &str,
     ) -> Result<SharedKnowledgeOffer, String> {
-        let offers = self.current_local_knowledge_offers().await;
+        let offers = self.current_local_knowledge_offers(None).await;
         offers
             .into_iter()
             .find(|o| o.share_id == share_id)
             .ok_or_else(|| "知识共享项已创建但目录尚未就绪".to_string())
     }
 
-    async fn current_local_knowledge_offers(&self) -> Vec<SharedKnowledgeOffer> {
+    async fn current_local_knowledge_offers(
+        &self,
+        allowed_group_ids: Option<&HashSet<String>>,
+    ) -> Vec<SharedKnowledgeOffer> {
         let (enabled, identity) = {
             let guard = self.inner.read().await;
             (guard.enabled, guard.identity.clone())
@@ -1700,24 +2170,40 @@ impl LanCollabRuntime {
             return Vec::new();
         }
         self.knowledge_share
-            .local_offers(&identity.node_id, &identity.display_name, None)
+            .local_offers(&identity.node_id, &identity.display_name, allowed_group_ids)
             .await
     }
 
     async fn send_local_knowledge_shares_to(&self, node_id: &str) {
-        let offers = self.current_local_knowledge_offers().await;
+        let allowed = self.group_ids_for_peer(node_id).await;
+        let offers = self.current_local_knowledge_offers(Some(&allowed)).await;
         self.send_to(node_id, WireMessage::KnowledgeShareAdvert { offers })
             .await;
     }
 
     async fn broadcast_local_knowledge_shares(&self) {
-        let offers = self.current_local_knowledge_offers().await;
+        let full = self.current_local_knowledge_offers(None).await;
         {
             let guard = self.inner.read().await;
-            self.emit_event(&guard, EVENT_KNOWLEDGE_SHARE, &offers);
+            self.emit_event(&guard, EVENT_KNOWLEDGE_SHARE, &full);
         }
-        self.broadcast_wire(WireMessage::KnowledgeShareAdvert { offers })
-            .await;
+        let peer_ids: Vec<String> = {
+            let guard = self.inner.read().await;
+            guard.sessions.keys().cloned().collect()
+        };
+        for peer_id in peer_ids {
+            let allowed = self.group_ids_for_peer(&peer_id).await;
+            let offers = full
+                .iter()
+                .filter(|o| match &o.group_id {
+                    Some(gid) => allowed.contains(gid),
+                    None => false,
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            self.send_to(&peer_id, WireMessage::KnowledgeShareAdvert { offers })
+                .await;
+        }
     }
 
     async fn handle_knowledge_share_advert(
@@ -1749,14 +2235,17 @@ impl LanCollabRuntime {
         &self,
         share_id: &str,
     ) -> Result<SharedSkillOffer, String> {
-        let offers = self.current_local_skill_offers().await;
+        let offers = self.current_local_skill_offers(None).await;
         offers
             .into_iter()
             .find(|o| o.share_id == share_id)
             .ok_or_else(|| "Skill 共享项已创建但目录尚未就绪".to_string())
     }
 
-    async fn current_local_skill_offers(&self) -> Vec<SharedSkillOffer> {
+    async fn current_local_skill_offers(
+        &self,
+        allowed_group_ids: Option<&HashSet<String>>,
+    ) -> Vec<SharedSkillOffer> {
         let (enabled, identity) = {
             let guard = self.inner.read().await;
             (guard.enabled, guard.identity.clone())
@@ -1765,24 +2254,40 @@ impl LanCollabRuntime {
             return Vec::new();
         }
         self.skill_share
-            .local_offers(&identity.node_id, &identity.display_name, None)
+            .local_offers(&identity.node_id, &identity.display_name, allowed_group_ids)
             .await
     }
 
     async fn send_local_skill_shares_to(&self, node_id: &str) {
-        let offers = self.current_local_skill_offers().await;
+        let allowed = self.group_ids_for_peer(node_id).await;
+        let offers = self.current_local_skill_offers(Some(&allowed)).await;
         self.send_to(node_id, WireMessage::SkillShareAdvert { offers })
             .await;
     }
 
     async fn broadcast_local_skill_shares(&self) {
-        let offers = self.current_local_skill_offers().await;
+        let full = self.current_local_skill_offers(None).await;
         {
             let guard = self.inner.read().await;
-            self.emit_event(&guard, EVENT_SKILL_SHARE, &offers);
+            self.emit_event(&guard, EVENT_SKILL_SHARE, &full);
         }
-        self.broadcast_wire(WireMessage::SkillShareAdvert { offers })
-            .await;
+        let peer_ids: Vec<String> = {
+            let guard = self.inner.read().await;
+            guard.sessions.keys().cloned().collect()
+        };
+        for peer_id in peer_ids {
+            let allowed = self.group_ids_for_peer(&peer_id).await;
+            let offers = full
+                .iter()
+                .filter(|o| match &o.group_id {
+                    Some(gid) => allowed.contains(gid),
+                    None => false,
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            self.send_to(&peer_id, WireMessage::SkillShareAdvert { offers })
+                .await;
+        }
     }
 
     async fn handle_skill_share_advert(
@@ -1816,15 +2321,25 @@ impl LanCollabRuntime {
         request_id: String,
         share_id: String,
     ) {
-        let result = self.skill_share.fetch_share(&share_id).await;
-        let (skill_id, name, content, error) = match result {
+        let result = match self
+            .ensure_peer_can_access_share(
+                from_node_id,
+                self.skill_share.share_group_id(&share_id).await,
+            )
+            .await
+        {
+            Ok(()) => self.skill_share.fetch_share(&share_id).await,
+            Err(err) => Err(err),
+        };
+        let (skill_id, name, content, content_hash, error) = match result {
             Ok(payload) => (
                 Some(payload.skill_id),
                 Some(payload.name),
                 Some(payload.content),
+                Some(payload.content_hash),
                 None,
             ),
-            Err(err) => (None, None, None, Some(err)),
+            Err(err) => (None, None, None, None, Some(err)),
         };
         self.send_to(
             from_node_id,
@@ -1833,10 +2348,138 @@ impl LanCollabRuntime {
                 skill_id,
                 name,
                 content,
+                content_hash,
                 error,
             },
         )
         .await;
+    }
+
+    async fn local_workflow_offer_from_share_id(
+        &self,
+        share_id: &str,
+    ) -> Result<SharedWorkflowOffer, String> {
+        self.current_local_workflow_offers(None)
+            .await
+            .into_iter()
+            .find(|o| o.share_id == share_id)
+            .ok_or_else(|| "Workflow 共享项已创建但目录尚未就绪".to_string())
+    }
+
+    async fn current_local_workflow_offers(
+        &self,
+        allowed_group_ids: Option<&HashSet<String>>,
+    ) -> Vec<SharedWorkflowOffer> {
+        let (enabled, identity) = {
+            let guard = self.inner.read().await;
+            (guard.enabled, guard.identity.clone())
+        };
+        if !enabled {
+            return Vec::new();
+        }
+        self.workflow_share
+            .local_offers(&identity.node_id, &identity.display_name, allowed_group_ids)
+            .await
+    }
+
+    async fn send_local_workflow_shares_to(&self, node_id: &str) {
+        let allowed = self.group_ids_for_peer(node_id).await;
+        let offers = self.current_local_workflow_offers(Some(&allowed)).await;
+        self.send_to(node_id, WireMessage::WorkflowShareAdvert { offers })
+            .await;
+    }
+
+    async fn broadcast_local_workflow_shares(&self) {
+        let full = self.current_local_workflow_offers(None).await;
+        {
+            let guard = self.inner.read().await;
+            self.emit_event(&guard, EVENT_WORKFLOW_SHARE, &full);
+        }
+        let peer_ids: Vec<String> = {
+            let guard = self.inner.read().await;
+            guard.sessions.keys().cloned().collect()
+        };
+        for peer_id in peer_ids {
+            let allowed = self.group_ids_for_peer(&peer_id).await;
+            let offers = full
+                .iter()
+                .filter(|o| match &o.group_id {
+                    Some(gid) => allowed.contains(gid),
+                    None => false,
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            self.send_to(&peer_id, WireMessage::WorkflowShareAdvert { offers })
+                .await;
+        }
+    }
+
+    async fn handle_workflow_share_advert(
+        &self,
+        from_node_id: &str,
+        mut offers: Vec<SharedWorkflowOffer>,
+    ) {
+        offers.retain(|o| o.host_node_id == from_node_id);
+        for offer in &mut offers {
+            offer.online = true;
+        }
+        let mut guard = self.inner.write().await;
+        guard
+            .remote_shared_workflows
+            .retain(|o| o.host_node_id != from_node_id);
+        guard.remote_shared_workflows.extend(offers);
+        let snapshot = guard.remote_shared_workflows.clone();
+        self.emit_event(&guard, EVENT_WORKFLOW_SHARE, &snapshot);
+        tracing::info!(
+            "[lan_collab] workflow share advert from {from_node_id}: {} offers",
+            snapshot
+                .iter()
+                .filter(|o| o.host_node_id == from_node_id)
+                .count()
+        );
+    }
+
+    async fn handle_workflow_fetch_request(
+        &self,
+        from_node_id: &str,
+        request_id: String,
+        share_id: String,
+    ) {
+        let result = match self
+            .ensure_peer_can_access_share(
+                from_node_id,
+                self.workflow_share.share_group_id(&share_id).await,
+            )
+            .await
+        {
+            Ok(()) => self.workflow_share.fetch_share(&share_id).await,
+            Err(err) => Err(err),
+        };
+        let msg = match result {
+            Ok(payload) => WireMessage::WorkflowFetchResponse {
+                request_id,
+                workflow_name: Some(payload.workflow_name),
+                title: Some(payload.title),
+                content_hash: Some(payload.content_hash),
+                workflow_json: Some(payload.workflow_json),
+                skill_md: Some(payload.skill_md),
+                scripts: Some(payload.scripts),
+                scripts_manifest_json: payload.scripts_manifest_json,
+                error: None,
+            },
+            Err(err) => WireMessage::WorkflowFetchResponse {
+                request_id,
+                workflow_name: None,
+                title: None,
+                content_hash: None,
+                workflow_json: None,
+                skill_md: None,
+                scripts: None,
+                scripts_manifest_json: None,
+                error: Some(err),
+            },
+        };
+        self.send_to(from_node_id, msg).await;
     }
 
     async fn handle_knowledge_search_request(
@@ -1847,10 +2490,20 @@ impl LanCollabRuntime {
         query: String,
         top_k: usize,
     ) {
-        let result = self
-            .knowledge_share
-            .search_share(&share_id, &query, top_k)
-            .await;
+        let result = match self
+            .ensure_peer_can_access_share(
+                from_node_id,
+                self.knowledge_share.share_group_id(&share_id).await,
+            )
+            .await
+        {
+            Ok(()) => {
+                self.knowledge_share
+                    .search_share(&share_id, &query, top_k)
+                    .await
+            }
+            Err(err) => Err(err),
+        };
         let (hits, error) = match result {
             Ok(mut hits) => {
                 let host = {
@@ -1884,7 +2537,16 @@ impl LanCollabRuntime {
         share_id: String,
         doc_id: String,
     ) {
-        let result = self.knowledge_share.fetch_doc(&share_id, &doc_id).await;
+        let result = match self
+            .ensure_peer_can_access_share(
+                from_node_id,
+                self.knowledge_share.share_group_id(&share_id).await,
+            )
+            .await
+        {
+            Ok(()) => self.knowledge_share.fetch_doc(&share_id, &doc_id).await,
+            Err(err) => Err(err),
+        };
         let (doc, error) = match result {
             Ok(mut doc) => {
                 let host = {
@@ -1936,17 +2598,9 @@ impl LanCollabRuntime {
 
         let beacon_cache = self.beacon_cache.clone();
         let get_beacon = Arc::new(move || {
-            beacon_cache
-                .read()
-                .map(|b| b.clone())
-                .unwrap_or_else(|_| {
-                    PresenceBeacon::new(
-                        String::new(),
-                        String::new(),
-                        listen_port,
-                        Vec::new(),
-                    )
-                })
+            beacon_cache.read().map(|b| b.clone()).unwrap_or_else(|_| {
+                PresenceBeacon::new(String::new(), String::new(), listen_port, Vec::new())
+            })
         });
 
         let on_discovered: discovery::DiscoveryCallback = Arc::new(move |endpoint| {
@@ -2028,6 +2682,22 @@ impl LanCollabRuntime {
                 return;
             }
             if endpoint.node_id == guard.identity.node_id {
+                // 复制安装会让两个实例共享 node_id：不能当普通对端处理，
+                // 但可以尝试让本机自动换新身份，否则永远扫不到对方的组。
+                let self_port = guard.bind_port;
+                let owns_groups = guard.groups.iter().any(|g| g.is_owner);
+                drop(guard);
+                if endpoint.port != 0 && endpoint.port != self_port {
+                    tracing::warn!(
+                        "[lan_collab] discovered peer with same node_id={} at {}:{} (copied install? owns_groups={owns_groups})",
+                        endpoint.node_id,
+                        endpoint.address,
+                        endpoint.port
+                    );
+                    if !owns_groups {
+                        let _ = self.try_heal_duplicate_identity_local(endpoint.port).await;
+                    }
+                }
                 return;
             }
 
@@ -2063,46 +2733,70 @@ impl LanCollabRuntime {
                 let _ = self.store.save_peers(&guard.peers);
                 self.emit_event(&guard, EVENT_PEER, &peer);
 
-                if !guard.sessions.contains_key(&endpoint.node_id)
+                // 仅较小 node_id 主动拨号，避免双方同时互连。
+                let local_node_id = guard.identity.node_id.clone();
+                if should_dial_peer(&local_node_id, &endpoint.node_id)
+                    && !guard.sessions.contains_key(&endpoint.node_id)
                     && !guard.auto_connect_inflight.contains(&connect_key)
                 {
-                    guard.auto_connect_inflight.insert(connect_key.clone());
-                    should_connect = true;
+                    // 同 node 的其他地址也算 in-flight，减少 127.0.0.1 / 局域网 IP 双拨。
+                    let node_key = format!("node:{}", endpoint.node_id);
+                    if !guard.auto_connect_inflight.contains(&node_key) {
+                        guard.auto_connect_inflight.insert(connect_key.clone());
+                        guard.auto_connect_inflight.insert(node_key);
+                        should_connect = true;
+                    }
                 }
             } else if !endpoint.from_beacon {
                 // 端口扫描候选：若尚未连接该地址则自动拨号
                 let already_connected = guard.sessions.values().any(|s| {
-                    s.address == endpoint.address && s.port == endpoint.port
+                    (s.address == endpoint.address && s.port == endpoint.port)
+                        || (is_loopback_ip(&s.address)
+                            && is_loopback_ip(&endpoint.address)
+                            && s.port == endpoint.port)
                 }) || guard.peers.iter().any(|p| {
                     p.address == endpoint.address
                         && p.port == endpoint.port
                         && guard.sessions.contains_key(&p.node_id)
+                }) || guard.peers.iter().any(|p| {
+                    // 已通过真实 node_id 连上同一端口时，跳过 scan: 重复拨号
+                    !p.node_id.starts_with("scan:")
+                        && p.port == endpoint.port
+                        && (p.address == endpoint.address
+                            || (is_loopback_ip(&p.address) && is_loopback_ip(&endpoint.address)))
+                        && guard.sessions.contains_key(&p.node_id)
                 });
-                if !already_connected && !guard.auto_connect_inflight.contains(&connect_key) {
-                    guard.auto_connect_inflight.insert(connect_key.clone());
-                    should_connect = true;
+                // 扫描候选尚不知对端 node_id：用端口大小做单向拨号，降低双连概率。
+                let local_port = guard.bind_port;
+                if !already_connected
+                    && local_port < endpoint.port
+                    && !guard.auto_connect_inflight.contains(&connect_key)
+                {
+                    let port_key = format!("port:{}", endpoint.port);
+                    if !guard.auto_connect_inflight.contains(&port_key) {
+                        guard.auto_connect_inflight.insert(connect_key.clone());
+                        guard.auto_connect_inflight.insert(port_key);
+                        should_connect = true;
+                    }
                 }
             }
 
             // 扫描候选也先展示到附近设备，避免“扫到了但列表空白”
             if !endpoint.from_beacon {
-                let already_listed = guard.peers.iter().any(|p| {
-                    (p.address == endpoint.address && p.port == endpoint.port)
-                        || (p.node_id == endpoint.node_id)
-                });
+                let probe = NearbyPeer {
+                    node_id: endpoint.node_id.clone(),
+                    display_name: endpoint.display_name.clone(),
+                    address: endpoint.address.clone(),
+                    port: endpoint.port,
+                    last_seen_at: now,
+                    trusted: false,
+                    connected: false,
+                };
+                let already_listed = guard.peers.iter().any(|p| same_peer_record(p, &probe));
                 if !already_listed {
-                    let peer = NearbyPeer {
-                        node_id: endpoint.node_id.clone(),
-                        display_name: endpoint.display_name.clone(),
-                        address: endpoint.address.clone(),
-                        port: endpoint.port,
-                        last_seen_at: now,
-                        trusted: false,
-                        connected: false,
-                    };
-                    upsert_peer(&mut guard.peers, peer.clone());
+                    upsert_peer(&mut guard.peers, probe.clone());
                     let _ = self.store.save_peers(&guard.peers);
-                    self.emit_event(&guard, EVENT_PEER, &peer);
+                    self.emit_event(&guard, EVENT_PEER, &probe);
                 }
             }
 
@@ -2114,11 +2808,20 @@ impl LanCollabRuntime {
             let runtime = self.clone();
             let host = endpoint.address.clone();
             let port = endpoint.port;
+            let node_id = endpoint.node_id.clone();
             tokio::spawn(async move {
                 let result = runtime.connect_peer(host.clone(), port).await;
                 {
                     let mut guard = runtime.inner.write().await;
-                    guard.auto_connect_inflight.remove(&format!("{host}:{port}"));
+                    guard
+                        .auto_connect_inflight
+                        .remove(&format!("{host}:{port}"));
+                    if !node_id.is_empty() {
+                        guard
+                            .auto_connect_inflight
+                            .remove(&format!("node:{node_id}"));
+                    }
+                    guard.auto_connect_inflight.remove(&format!("port:{port}"));
                 }
                 if let Err(err) = result {
                     tracing::debug!("[lan_collab] auto-connect {host}:{port} failed: {err}");
@@ -2237,7 +2940,12 @@ impl LanCollabRuntime {
         self.emit_event(&guard, EVENT_DISCOVERY, &snapshot);
     }
 
-    fn emit_event<T: serde::Serialize + Clone>(&self, guard: &RuntimeInner, event: &str, payload: &T) {
+    fn emit_event<T: serde::Serialize + Clone>(
+        &self,
+        guard: &RuntimeInner,
+        event: &str,
+        payload: &T,
+    ) {
         if let Some(app) = guard.app_handle.as_ref() {
             let _ = app.emit(event, payload.clone());
         }
@@ -2245,19 +2953,144 @@ impl LanCollabRuntime {
 }
 
 fn upsert_peer(peers: &mut Vec<NearbyPeer>, peer: NearbyPeer) {
-    if let Some(existing) = peers.iter_mut().find(|p| {
-        p.node_id == peer.node_id
-            || (p.address == peer.address
-                && p.port == peer.port
-                && (p.node_id.starts_with("scan:") || peer.node_id.starts_with("scan:")))
-    }) {
-        *existing = peer;
+    // 同机双开时，同一节点常同时被 127.0.0.1 与局域网 IP 发现。
+    // 这里按 node_id / 同端口 loopback+LAN / scan 候选合并，避免 UI 来回闪地址。
+    if let Some(idx) = peers.iter().position(|p| same_peer_record(p, &peer)) {
+        let existing = peers[idx].clone();
+        peers[idx] = merge_peer_record(existing, peer);
+        // 合并后可能把 scan: 候选与真实 node 合成一条，清理残留的同端口占位项。
+        dedupe_peers(peers);
     } else {
         peers.push(peer);
+        dedupe_peers(peers);
     }
 }
 
-fn upsert_discovered_group(groups: &mut Vec<DiscoveredGroupSummary>, group: DiscoveredGroupSummary) {
+fn same_peer_record(a: &NearbyPeer, b: &NearbyPeer) -> bool {
+    if a.node_id == b.node_id {
+        return true;
+    }
+    // 扫描占位项与真实节点：同一端口且地址等价（含 loopback/本机 LAN）
+    if a.port == b.port
+        && same_host_endpoint(&a.address, &b.address)
+        && (a.node_id.starts_with("scan:")
+            || b.node_id.starts_with("scan:")
+            || a.display_name == format!("{}:{}", a.address, a.port)
+            || b.display_name == format!("{}:{}", b.address, b.port))
+    {
+        return true;
+    }
+    // 真实节点偶发只改地址：同 node 前缀已覆盖；这里兜底同端口 + 同主机族
+    !a.node_id.starts_with("scan:")
+        && !b.node_id.starts_with("scan:")
+        && a.port == b.port
+        && same_host_endpoint(&a.address, &b.address)
+}
+
+fn merge_peer_record(existing: NearbyPeer, incoming: NearbyPeer) -> NearbyPeer {
+    let prefer_incoming = prefer_peer_record(&incoming, &existing);
+    let (primary, secondary) = if prefer_incoming {
+        (incoming, existing)
+    } else {
+        (existing, incoming)
+    };
+    NearbyPeer {
+        node_id: if primary.node_id.starts_with("scan:") && !secondary.node_id.starts_with("scan:")
+        {
+            secondary.node_id
+        } else {
+            primary.node_id
+        },
+        display_name: if primary.display_name.contains(':')
+            && !secondary.display_name.contains(':')
+            && !secondary.display_name.is_empty()
+        {
+            secondary.display_name
+        } else if !primary.display_name.is_empty() {
+            primary.display_name
+        } else {
+            secondary.display_name
+        },
+        address: prefer_display_address(&primary.address, &secondary.address),
+        port: primary.port,
+        last_seen_at: primary.last_seen_at.max(secondary.last_seen_at),
+        trusted: primary.trusted || secondary.trusted,
+        connected: primary.connected || secondary.connected,
+    }
+}
+
+fn prefer_peer_record(candidate: &NearbyPeer, current: &NearbyPeer) -> bool {
+    let candidate_real = !candidate.node_id.starts_with("scan:");
+    let current_real = !current.node_id.starts_with("scan:");
+    match (candidate_real, current_real) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => {
+            // 优先保留已连接 / 可信会话地址；否则优先非 loopback，减少 127.0.0.1 闪烁。
+            if candidate.connected != current.connected {
+                return candidate.connected;
+            }
+            if candidate.trusted != current.trusted {
+                return candidate.trusted;
+            }
+            match (
+                is_loopback_ip(&candidate.address),
+                is_loopback_ip(&current.address),
+            ) {
+                (false, true) => true,
+                (true, false) => false,
+                _ => candidate.last_seen_at >= current.last_seen_at,
+            }
+        }
+    }
+}
+
+fn prefer_display_address(primary: &str, secondary: &str) -> String {
+    if is_loopback_ip(primary) && !is_loopback_ip(secondary) {
+        secondary.to_string()
+    } else if primary.is_empty() {
+        secondary.to_string()
+    } else {
+        primary.to_string()
+    }
+}
+
+fn same_host_endpoint(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    if is_loopback_ip(a) && is_loopback_ip(b) {
+        return true;
+    }
+    // 同机双开：一端扫到 127.0.0.1，另一端扫到本机局域网 IP，视为同一主机。
+    let local_lan = local_ip_hint();
+    match local_lan.as_deref() {
+        Some(lan) => {
+            (is_loopback_ip(a) && b == lan)
+                || (is_loopback_ip(b) && a == lan)
+                || (a == lan && b == lan)
+        }
+        None => false,
+    }
+}
+
+fn dedupe_peers(peers: &mut Vec<NearbyPeer>) {
+    let mut kept: Vec<NearbyPeer> = Vec::with_capacity(peers.len());
+    for peer in peers.drain(..) {
+        if let Some(idx) = kept.iter().position(|p| same_peer_record(p, &peer)) {
+            let existing = kept[idx].clone();
+            kept[idx] = merge_peer_record(existing, peer);
+        } else {
+            kept.push(peer);
+        }
+    }
+    *peers = kept;
+}
+
+fn upsert_discovered_group(
+    groups: &mut Vec<DiscoveredGroupSummary>,
+    group: DiscoveredGroupSummary,
+) {
     if let Some(existing) = groups.iter_mut().find(|g| g.group_id == group.group_id) {
         *existing = group;
     } else {
@@ -2281,10 +3114,30 @@ fn make_invite_code(name: &str) -> String {
     format!("{prefix}-{suffix}")
 }
 
+fn is_loopback_ip(ip: &str) -> bool {
+    ip == "127.0.0.1" || ip == "::1" || ip == "localhost" || ip.starts_with("127.")
+}
+
+/// 较小 node_id 的节点负责主动拨号。
+fn should_dial_peer(local_node_id: &str, remote_node_id: &str) -> bool {
+    !remote_node_id.is_empty()
+        && !remote_node_id.starts_with("scan:")
+        && local_node_id < remote_node_id
+}
+
+/// 重复连接裁决：只保留“较小 node_id 拨号”的那条连接。
+fn should_prefer_connection(local_node_id: &str, remote_node_id: &str, inbound: bool) -> bool {
+    if inbound {
+        // 对端拨入：对端 node_id 更小时保留
+        remote_node_id < local_node_id
+    } else {
+        // 本机拨出：本机 node_id 更小时保留
+        local_node_id < remote_node_id
+    }
+}
+
 fn local_ip_hint() -> Option<String> {
-    local_ip_address::local_ip()
-        .ok()
-        .map(|ip| ip.to_string())
+    local_ip_address::local_ip().ok().map(|ip| ip.to_string())
 }
 
 #[cfg(test)]
@@ -2293,19 +3146,18 @@ mod tests {
     use crate::config_system::ConfigManager;
     use axum::routing::post;
     use axum::{Json, Router};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::fs;
     use std::path::Path;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::net::TcpListener;
 
     fn write_kb_doc(kdir: &Path, doc_id: &str, title: &str, body: &str) {
         let docs = kdir.join("docs");
         fs::create_dir_all(&docs).unwrap();
-        let content = format!(
-            "---\ntype: Knowledge\ntitle: {title}\ndomain: test\n---\n\n{body}\n"
-        );
+        let content =
+            format!("---\ntype: Knowledge\ntitle: {title}\ndomain: test\n---\n\n{body}\n");
         fs::write(docs.join(format!("{doc_id}.md")), content).unwrap();
     }
 
@@ -2324,7 +3176,11 @@ mod tests {
             })).collect::<Vec<_>>()
         });
         fs::create_dir_all(kdir).unwrap();
-        fs::write(kdir.join("index.json"), serde_json::to_string_pretty(&index).unwrap()).unwrap();
+        fs::write(
+            kdir.join("index.json"),
+            serde_json::to_string_pretty(&index).unwrap(),
+        )
+        .unwrap();
     }
 
     async fn wait_until<F, Fut>(mut cond: F, timeout_ms: u64) -> bool
@@ -2386,7 +3242,10 @@ mod tests {
 
         // A 侧准备本地知识库
         let kdir = ws_a.join("memories").join("knowledge");
-        write_kb_index(&kdir, &[("doc_alpha", "Alpha Doc"), ("doc_beta", "Beta Doc")]);
+        write_kb_index(
+            &kdir,
+            &[("doc_alpha", "Alpha Doc"), ("doc_beta", "Beta Doc")],
+        );
         write_kb_doc(
             &kdir,
             "doc_alpha",
@@ -2407,14 +3266,8 @@ mod tests {
         let node_b =
             LanCollabRuntime::open(ws_b.join("lan_collab"), config_b, ws_b.clone()).unwrap();
 
-        node_a
-            .set_display_name("OwnerA".into())
-            .await
-            .unwrap();
-        node_b
-            .set_display_name("MemberB".into())
-            .await
-            .unwrap();
+        node_a.set_display_name("OwnerA".into()).await.unwrap();
+        node_b.set_display_name("MemberB".into()).await.unwrap();
 
         let status_a = node_a.set_enabled(true).await.unwrap();
         let status_b = node_b.set_enabled(true).await.unwrap();
@@ -2531,7 +3384,10 @@ mod tests {
         let content = body["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or_default();
-        assert!(content.contains("ok:demo-model"), "unexpected content: {content}");
+        assert!(
+            content.contains("ok:demo-model"),
+            "unexpected content: {content}"
+        );
         assert_eq!(upstream_hits.load(Ordering::SeqCst), 1);
 
         // 知识共享：A 仅共享 alpha，B 可拉取；beta 被拒绝；撤销后失败
@@ -2594,5 +3450,56 @@ mod tests {
         // 清理：关闭监听，避免端口占用影响后续测试
         let _ = node_a.set_enabled(false).await;
         let _ = node_b.set_enabled(false).await;
+    }
+
+    #[test]
+    fn merge_loopback_and_lan_peer_into_one() {
+        let mut peers = Vec::new();
+
+        // 先以局域网地址建立真实节点，再反复用 loopback 刷新：
+        // 应始终合并为 1 条，并稳定展示非 loopback 地址。
+        upsert_peer(
+            &mut peers,
+            NearbyPeer {
+                node_id: "node_owner".into(),
+                display_name: "OwnerA".into(),
+                address: "192.168.0.108".into(),
+                port: 47800,
+                last_seen_at: 1,
+                trusted: true,
+                connected: true,
+            },
+        );
+        upsert_peer(
+            &mut peers,
+            NearbyPeer {
+                node_id: "node_owner".into(),
+                display_name: "OwnerA".into(),
+                address: "127.0.0.1".into(),
+                port: 47800,
+                last_seen_at: 2,
+                trusted: true,
+                connected: true,
+            },
+        );
+        upsert_peer(
+            &mut peers,
+            NearbyPeer {
+                node_id: "scan:127.0.0.1:47800".into(),
+                display_name: "127.0.0.1:47800".into(),
+                address: "127.0.0.1".into(),
+                port: 47800,
+                last_seen_at: 3,
+                trusted: false,
+                connected: false,
+            },
+        );
+
+        assert_eq!(peers.len(), 1, "same node must collapse to one row");
+        assert_eq!(peers[0].node_id, "node_owner");
+        assert_eq!(peers[0].display_name, "OwnerA");
+        assert_eq!(peers[0].address, "192.168.0.108");
+        assert!(peers[0].trusted);
+        assert!(peers[0].connected);
     }
 }

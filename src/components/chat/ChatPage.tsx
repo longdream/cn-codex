@@ -161,6 +161,7 @@ export function ChatPage() {
             ),
             smartbrainEnabled,
           },
+          userMessage.id,
         );
       } catch (err) {
         if (dispatchSeqRef.current === dispatchSeq) {
@@ -241,9 +242,15 @@ export function ChatPage() {
       }
 
       try {
-        await standaloneThreadTruncateBefore(threadId, messageId);
+        await standaloneThreadTruncateBefore(threadId, messageId, target.content);
       } catch (err) {
         console.error("Failed to truncate thread before resend:", err);
+        useAppStore.getState().addMessage({
+          id: crypto.randomUUID(),
+          role: "system",
+          content: intl.formatMessage({ id: "chat.resendTruncateFailed" }),
+          timestamp: Date.now(),
+        });
         return;
       }
 
@@ -255,7 +262,7 @@ export function ChatPage() {
       // 以编辑后的内容重新发送（作为新的 user turn）
       await handleSend(newText, state.chatMode, target.attachments ?? []);
     },
-    [handleInterrupt, handleSend, isDispatching],
+    [handleInterrupt, handleSend, intl, isDispatching],
   );
 
   const addSystemMessage = useCallback((content: string) => {

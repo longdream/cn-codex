@@ -126,6 +126,12 @@ pub struct LanCollabStatus {
     /// 从对端发现的 Skill 共享
     #[serde(default)]
     pub remote_shared_skills: Vec<SharedSkillOffer>,
+    /// 本机发布的 Workflow 共享
+    #[serde(default)]
+    pub local_shared_workflows: Vec<SharedWorkflowOffer>,
+    /// 从对端发现的 Workflow 共享
+    #[serde(default)]
+    pub remote_shared_workflows: Vec<SharedWorkflowOffer>,
     pub architecture: String,
     pub note: String,
 }
@@ -197,6 +203,29 @@ pub struct SharedSkillOffer {
     pub description: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    pub group_id: Option<String>,
+    pub online: bool,
+    /// 内容哈希（sha256:...）；旧节点可能缺省
+    #[serde(default)]
+    pub content_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+}
+
+/// Workflow 共享条目（本机发布或远端发现）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedWorkflowOffer {
+    pub share_id: String,
+    pub host_node_id: String,
+    pub host_display_name: String,
+    pub workflow_name: String,
+    pub title: String,
+    pub description: String,
+    pub node_count: usize,
+    /// 内容哈希（sha256:...）
+    #[serde(default)]
+    pub content_hash: String,
     pub group_id: Option<String>,
     pub online: bool,
 }

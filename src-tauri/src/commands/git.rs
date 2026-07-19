@@ -89,7 +89,13 @@ pub async fn git_status(
     let service = git_service_from_state(&state, cwd).await?;
     let output = service
         .run(
-            &["-c", "core.quotePath=false", "status", "--porcelain=1", "-b"],
+            &[
+                "-c",
+                "core.quotePath=false",
+                "status",
+                "--porcelain=1",
+                "-b",
+            ],
             DEFAULT_MAX_OUTPUT_BYTES,
         )
         .await?;
@@ -638,9 +644,7 @@ fn decode_git_quoted_path(value: &str) -> String {
                 && source[index].is_ascii_digit()
                 && source[index] < b'8'
             {
-                value = value
-                    .saturating_mul(8)
-                    .saturating_add(source[index] - b'0');
+                value = value.saturating_mul(8).saturating_add(source[index] - b'0');
                 index += 1;
                 digits += 1;
             }
@@ -779,7 +783,10 @@ mod tests {
 
     #[test]
     fn clean_git_path_preserves_unquoted_utf8_paths() {
-        assert_eq!(clean_git_path("publish/docs/测试.txt"), "publish/docs/测试.txt");
+        assert_eq!(
+            clean_git_path("publish/docs/测试.txt"),
+            "publish/docs/测试.txt"
+        );
     }
 
     #[test]

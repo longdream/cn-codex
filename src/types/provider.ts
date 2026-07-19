@@ -9,6 +9,18 @@ export type ProviderCategory = "global" | "china" | "local" | "other";
 /** 非视觉模型的图片后备策略 */
 export type VisionFallbackKind = "multimodal" | "local_ocr";
 
+export interface ProviderModelCapabilities {
+  structuredTools: boolean | null;
+  streaming: boolean | null;
+  reasoning: boolean | null;
+  usage: boolean | null;
+  parallelToolCalls: boolean | null;
+  recommendedWireApi?: string;
+  probedAt: number;
+  fingerprint: string;
+  wireApi: string;
+}
+
 /** 资源池模型的单个后端端点地址 */
 export interface PoolModelEndpoint {
   id: string;
@@ -41,6 +53,8 @@ export interface ProviderModel {
   contextLength: number;
   /** 单次回复最大输出 token 数，默认 65535 */
   maxOutputTokens: number;
+  /** 最近一次无副作用能力探测结果。null 表示尚未探测或结果不确定。 */
+  capabilities?: ProviderModelCapabilities;
   /** 仅 local-pool 供应商使用：该模型的后端端点列表，按顺序切换容灾 */
   endpoints?: PoolModelEndpoint[];
 }

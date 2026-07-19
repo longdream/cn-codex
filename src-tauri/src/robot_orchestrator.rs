@@ -249,8 +249,14 @@ impl RobotOrchestrator {
              must be signaled with `{done_marker}`, and the orchestrator will advance or finish the \
              overall workflow for you.\n\
              - When CURRENT node is fully complete, include `{done_marker}` exactly once, and \
-             wrap a concise delivery summary (what you produced, decided, or changed for the next \
-             node) inside `{summary_marker}` ... `{summary_end_marker}`.\n\
+             wrap a concise delivery summary inside `{summary_marker}` ... `{summary_end_marker}`.\n\
+             - Delivery summary MUST include these sections (keep labels exactly):\n\
+               Artifacts:\n\
+               Decisions:\n\
+               Validation:\n\
+               Open items:\n\
+             - Prefer concrete paths/commands/evidence. If verification is incomplete, say so under \
+             Validation/Open items instead of inventing success.\n\
              - If node is not complete, do NOT output `{done_marker}` or `{summary_marker}`.\n\
              - Keep the delivery summary self-contained: it is the ONLY context the next node gets \
              about this node, so include concrete artifacts, decisions, file paths, and results.",
@@ -305,15 +311,16 @@ impl RobotOrchestrator {
 
         // 累计当前已完成节点的交付总结（截断到 4000 字符，避免总结本身膨胀污染上下文）。
         let completed_index = state.current_node_index;
-        let delivery = delivery_summary
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| truncate_utf8_by_bytes(&s, 4000).to_string())
-            .unwrap_or_else(|| {
-                format!(
-                    "Node {} completed (no explicit delivery summary provided).",
-                    completed_index.saturating_add(1)
-                )
-            });
+        let node_objective = state
+            .runtime_nodes
+            .get(completed_index)
+            .map(String::as_str)
+            .unwrap_or("");
+        let delivery = truncate_utf8_by_bytes(
+            &normalize_node_delivery_summary(completed_index, node_objective, delivery_summary),
+            4000,
+        )
+        .to_string();
 
         let next_index = state.current_node_index.saturating_add(1);
         if next_index >= state.runtime_nodes.len() {
@@ -472,7 +479,8 @@ pub fn build_robot_node_advance_prompt(next_node_index: usize, total_nodes: usiz
         "Workflow node completed. Continue with node {}/{}. \
          Focus ONLY on this new current node. \
          When this new node is fully complete, include `{}` exactly once and wrap a concise \
-         delivery summary inside `{}` ... `{}`.",
+         delivery summary inside `{}` ... `{}`. \
+         Delivery summary sections: Artifacts / Decisions / Validation / Open items.",
         next_node_index.saturating_add(1),
         total_nodes.max(1),
         ROBOT_NODE_DONE_SENTINEL,
@@ -504,6 +512,68 @@ fn normalize_root_objective(value: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// 规范化节点交付总结：
+/// - 有显式 summary 时尽量补齐结构化小节；
+/// - 无 summary 时使用带风险提示的结构化占位，避免下游误判“已验证完成”。
+fn normalize_node_delivery_summary(
+    node_index: usize,
+    node_objective: &str,
+    delivery_summary: Option<String>,
+) -> String {
+    let node_no = node_index.saturating_add(1);
+    let objective = {
+        let trimmed = node_objective.trim();
+        if trimmed.is_empty() {
+            "(unspecified node objective)".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+
+    match delivery_summary
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(summary) => ensure_structured_delivery_summary(&summary),
+        None => format!(
+            "Node {node_no} completed without an explicit delivery summary.\n\
+             Node objective: {objective}\n\
+             Artifacts: (none verified)\n\
+             Decisions: (none recorded)\n\
+             Validation: not provided by model; downstream MUST re-confirm before relying on this node.\n\
+             Open items: re-check node outputs and evidence before continuing."
+        ),
+    }
+}
+
+fn ensure_structured_delivery_summary(summary: &str) -> String {
+    let lower = summary.to_ascii_lowercase();
+    let has_artifacts = lower.contains("artifacts:");
+    let has_decisions = lower.contains("decisions:");
+    let has_validation = lower.contains("validation:");
+    let has_open_items = lower.contains("open items:");
+
+    if has_artifacts && has_decisions && has_validation && has_open_items {
+        return summary.trim().to_string();
+    }
+
+    let mut sections = Vec::new();
+    if !has_artifacts {
+        sections.push("Artifacts: (see free-form summary above; no structured list provided)");
+    }
+    if !has_decisions {
+        sections.push("Decisions: (see free-form summary above; no structured list provided)");
+    }
+    if !has_validation {
+        sections.push("Validation: not explicitly stated; treat as unverified");
+    }
+    if !has_open_items {
+        sections.push("Open items: none listed");
+    }
+
+    format!("{}\n{}", summary.trim(), sections.join("\n"))
 }
 
 /// 根据固定 workflowNodes 编译本轮 runtime 节点目标（固定顺序，不增删节点）。
@@ -768,6 +838,43 @@ mod tests {
         assert!(overlay.contains("Completed Node Deliveries"));
         assert!(overlay.contains("Do NOT call `update_goal` with status `complete`"));
         assert!(overlay.contains("已完成需求分析与接口设计"));
+        assert!(overlay.contains("Artifacts:"));
+        assert!(overlay.contains("Decisions:"));
+        assert!(overlay.contains("Validation:"));
+        assert!(overlay.contains("Open items:"));
         let _ = std::fs::remove_dir_all(workspace_root);
+    }
+
+    #[test]
+    fn normalize_node_delivery_summary_builds_safe_fallback() {
+        let fallback = normalize_node_delivery_summary(0, "阶段 1：需求分析", None);
+        assert!(fallback.contains("Node 1 completed without an explicit delivery summary."));
+        assert!(fallback.contains("Node objective: 阶段 1：需求分析"));
+        assert!(fallback.contains("Artifacts: (none verified)"));
+        assert!(fallback.contains("Validation: not provided by model"));
+        assert!(fallback.contains("downstream MUST re-confirm"));
+        assert!(!fallback.contains("no explicit delivery summary provided"));
+    }
+
+    #[test]
+    fn normalize_node_delivery_summary_fills_missing_sections() {
+        let normalized = normalize_node_delivery_summary(
+            1,
+            "阶段 2：实现",
+            Some("已完成接口草案，待联调。".to_string()),
+        );
+        assert!(normalized.contains("已完成接口草案，待联调。"));
+        assert!(normalized.contains("Artifacts:"));
+        assert!(normalized.contains("Decisions:"));
+        assert!(normalized.contains("Validation: not explicitly stated"));
+        assert!(normalized.contains("Open items: none listed"));
+    }
+
+    #[test]
+    fn normalize_node_delivery_summary_keeps_complete_structure() {
+        let input =
+            "Artifacts: a.rs\nDecisions: use REST\nValidation: cargo test ok\nOpen items: none";
+        let normalized = normalize_node_delivery_summary(0, "obj", Some(input.to_string()));
+        assert_eq!(normalized, input);
     }
 }

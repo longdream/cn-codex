@@ -182,6 +182,10 @@ impl SmartBrainConfig {
     pub fn is_active(&self) -> bool {
         self.enabled
     }
+
+    pub fn knowledge_is_active(&self) -> bool {
+        self.enabled && self.knowledge_enabled
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1229,6 +1233,7 @@ mod tests {
         let config = ConfigToml::default();
         let smartbrain = config.smartbrain_config();
         assert!(smartbrain.knowledge_chunk_files_enabled);
+        assert!(smartbrain.knowledge_is_active() == smartbrain.enabled);
         assert!(smartbrain.search_okf_prefilter_enabled);
         assert_eq!(
             smartbrain.search_okf_prefilter_order,
@@ -1246,6 +1251,15 @@ mod tests {
                 "relative_path".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn knowledge_enabled_gates_knowledge_features_without_disabling_smartbrain() {
+        let mut smartbrain = SmartBrainConfig::default();
+        smartbrain.enabled = true;
+        smartbrain.knowledge_enabled = false;
+        assert!(smartbrain.is_active());
+        assert!(!smartbrain.knowledge_is_active());
     }
 
     #[test]

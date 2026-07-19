@@ -557,6 +557,11 @@ textarea:focus {
   -webkit-user-select: text;
 }
 
+/* 流式输出容器：隔离布局计算，降低 token 增长时整页回流抖动。 */
+.chat-prose-streaming {
+  contain: content;
+}
+
 .prose-plan,
 .prose-plan * {
   user-select: text;

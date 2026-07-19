@@ -246,13 +246,8 @@ pub async fn run_external_browser(
 ) -> Result<BrowserRunOutput, String> {
     let started_at = Instant::now();
 
-    let cdp_endpoint = ensure_cdp_ready(
-        &http,
-        cdp_endpoint,
-        Duration::from_secs(12),
-        &cancel_flag,
-    )
-    .await?;
+    let cdp_endpoint =
+        ensure_cdp_ready(&http, cdp_endpoint, Duration::from_secs(12), &cancel_flag).await?;
     let mut session =
         BrowserSession::connect(http.clone(), cdp_endpoint.clone(), cancel_flag.clone()).await?;
 

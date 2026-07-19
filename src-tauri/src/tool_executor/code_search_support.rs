@@ -15,7 +15,7 @@ const CODE_SEARCH_TIMEOUT_MAX_MS: u64 = 120_000;
 const CODE_SEARCH_HEAD_LIMIT_DEFAULT: usize = 50;
 const CODE_SEARCH_HEAD_LIMIT_MAX: usize = 200;
 const CODE_SEARCH_CONTEXT_MAX: usize = 5;
-const CODE_SEARCH_OUTPUT_MAX_CHARS: usize = 16_000;
+const CODE_SEARCH_OUTPUT_MAX_CHARS: usize = 8_000;
 
 #[cfg(windows)]
 const RG_BINARY_NAME: &str = "rg.exe";
@@ -53,9 +53,7 @@ pub(crate) struct CodeSearchCommand {
 }
 
 pub(crate) fn resolve_rg_binary(_project_root: &Path) -> Result<PathBuf, String> {
-    EMBEDDED_RG_PATH
-        .get_or_init(extract_embedded_rg)
-        .clone()
+    EMBEDDED_RG_PATH.get_or_init(extract_embedded_rg).clone()
 }
 
 #[cfg(windows)]
@@ -135,8 +133,8 @@ fn embedded_rg_file_matches(path: &Path, expected_digest: &str) -> Result<bool, 
     if !path.is_file() {
         return Ok(false);
     }
-    let bytes = std::fs::read(path)
-        .map_err(|e| format!("Failed to inspect cached embedded rg: {e}"))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Failed to inspect cached embedded rg: {e}"))?;
     Ok(hex::encode(Sha256::digest(bytes)) == expected_digest)
 }
 
@@ -253,7 +251,10 @@ pub(crate) fn build_code_search_command(
             if trimmed.is_empty() {
                 continue;
             }
-            if trimmed.chars().any(|ch| matches!(ch, ';' | '|' | '&' | '`' | '\n' | '\r')) {
+            if trimmed
+                .chars()
+                .any(|ch| matches!(ch, ';' | '|' | '&' | '`' | '\n' | '\r'))
+            {
                 return Err(format!(
                     "Error: invalid code_search glob (contains shell metacharacters): {trimmed}"
                 ));
@@ -333,7 +334,12 @@ pub(crate) fn format_code_search_output(
         output.push_str(line);
         output.push('\n');
     }
-    if stdout.lines().filter(|line| !line.trim().is_empty()).count() > lines.len() {
+    if stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+        > lines.len()
+    {
         output.push_str(&format!(
             "\n... additional matches truncated by head_limit={head_limit}\n"
         ));

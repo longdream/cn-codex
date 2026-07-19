@@ -6,10 +6,12 @@ import {
   lanCollabStatus,
   lanCollabUnshareModel,
   sharedModelBaseUrl,
+  type CollabGroup,
   type SharedModelOffer,
 } from "../../api/lanCollab";
 import { useAppStore } from "../../stores/appStore";
 import type { ProviderConfig, ProviderModel } from "../../types/provider";
+import { LanShareGroupPicker, groupLabel } from "./LanShareGroupPicker";
 
 export function LanModelShareSection() {
   const intl = useIntl();
@@ -24,6 +26,8 @@ export function LanModelShareSection() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [shareSelection, setShareSelection] = useState("");
+  const [shareGroupId, setShareGroupId] = useState("");
+  const [groups, setGroups] = useState<CollabGroup[]>([]);
   const [localShared, setLocalShared] = useState<SharedModelOffer[]>([]);
   const [remoteShared, setRemoteShared] = useState<SharedModelOffer[]>([]);
 
@@ -50,6 +54,7 @@ export function LanModelShareSection() {
     try {
       const status = await lanCollabStatus();
       setEnabled(status.enabled);
+      setGroups(status.groups ?? []);
       setLocalShared(status.localSharedModels ?? []);
       setRemoteShared(status.remoteSharedModels ?? []);
       setError(null);
@@ -113,19 +118,33 @@ export function LanModelShareSection() {
       if (!option) {
         throw new Error(intl.formatMessage({ id: "lanCollab.sharePickRequired" }));
       }
-      if (!option.provider.baseUrl?.trim()) {
+      if (!shareGroupId) {
+        throw new Error(intl.formatMessage({ id: "settings.lanShare.groupPickRequired" }));
+      }
+      const activeEndpoint =
+        option.provider.type === "local-pool"
+          ? option.model.endpoints?.find((endpoint) => endpoint.enabled && endpoint.url.trim())
+          : null;
+      const upstreamBaseUrl =
+        activeEndpoint?.url?.trim() || option.provider.baseUrl?.trim() || "";
+      const upstreamApiKey =
+        activeEndpoint?.apiKey?.trim() || option.provider.apiKey?.trim() || "";
+      const upstreamModel =
+        activeEndpoint?.model?.trim() || option.model.id;
+      if (!upstreamBaseUrl) {
         throw new Error(intl.formatMessage({ id: "lanCollab.shareNeedBaseUrl" }));
       }
-      if (option.provider.requiresOpenAIAuth && !option.provider.apiKey?.trim()) {
+      if (option.provider.requiresOpenAIAuth && !upstreamApiKey) {
         throw new Error(intl.formatMessage({ id: "lanCollab.shareNeedApiKey" }));
       }
       await lanCollabShareModel({
         modelId: option.model.id,
         displayName: `${option.provider.name} / ${option.model.label || option.model.id}`,
         providerId: option.provider.type || option.provider.id,
-        upstreamModel: option.model.id,
-        upstreamBaseUrl: option.provider.baseUrl,
-        upstreamApiKey: option.provider.apiKey || null,
+        upstreamModel,
+        groupId: shareGroupId,
+        upstreamBaseUrl,
+        upstreamApiKey: upstreamApiKey || null,
       });
       setShareSelection("");
       setNotice(intl.formatMessage({ id: "lanCollab.shareSuccess" }));
@@ -203,6 +222,18 @@ export function LanModelShareSection() {
         )}
       </div>
 
+      <LanShareGroupPicker
+        groups={groups}
+        value={shareGroupId}
+        onChange={setShareGroupId}
+        disabled={!enabled || busy}
+        emptyLabel={intl.formatMessage({ id: "settings.lanShare.groupEmpty" })}
+        placeholder={intl.formatMessage({ id: "settings.lanShare.groupPickPlaceholder" })}
+      />
+      <p className="text-[11px] text-[var(--text-faint)]">
+        {intl.formatMessage({ id: "settings.lanShare.groupHint" })}
+      </p>
+
       <div className="flex flex-wrap gap-2">
         <select
           value={shareSelection}
@@ -225,7 +256,7 @@ export function LanModelShareSection() {
         <button
           type="button"
           onClick={handleShareSelected}
-          disabled={!enabled || busy || !shareSelection}
+          disabled={!enabled || busy || !shareSelection || !shareGroupId || groups.length === 0}
           className="rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 text-[11px] text-[var(--accent-strong)] disabled:opacity-50"
         >
           {intl.formatMessage({ id: "lanCollab.shareModel" })}
@@ -249,6 +280,10 @@ export function LanModelShareSection() {
                   </div>
                   <div className="font-mono text-[10px] text-[var(--text-faint)]">
                     :{offer.proxyPort} · {offer.upstreamModel}
+                    {` · ${intl.formatMessage(
+                      { id: "settings.lanShare.sharedToGroup" },
+                      { group: groupLabel(groups, offer.groupId) },
+                    )}`}
                   </div>
                 </div>
                 <button

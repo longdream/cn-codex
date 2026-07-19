@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use reqwest::Url;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::HashMap;
-use types::{InternalMessage, StreamEvent};
+use types::{CompletionOutput, InternalMessage, StreamEvent};
 
 /// 所有供应商 adapter 必须实现的 trait
 #[async_trait]
@@ -38,6 +38,12 @@ pub trait ProviderAdapter: Send + Sync {
 
     /// 解析单条 SSE data 行，返回零或多个 StreamEvent
     fn parse_stream_line(&self, line: &str) -> Vec<StreamEvent>;
+
+    /// 解析完整的非流式 JSON 响应。
+    /// 默认 adapter 继续由上层使用其兼容路径；Responses adapter 提供完整 output[] 解析。
+    fn parse_non_streaming(&self, _body: &str) -> Result<CompletionOutput, String> {
+        Err("non-streaming JSON parsing is not implemented for this wire API".to_string())
+    }
 }
 
 /// 根据 wire_api 字符串选择对应的 adapter 实例

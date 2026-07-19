@@ -50,6 +50,29 @@ export function LanGroupChatLauncher() {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const selfNodeId = status?.identity.nodeId;
+  const errorClearTimerRef = useRef<number | null>(null);
+
+  const dismissError = useCallback(() => {
+    if (errorClearTimerRef.current != null) {
+      window.clearTimeout(errorClearTimerRef.current);
+      errorClearTimerRef.current = null;
+    }
+    setError(null);
+  }, []);
+
+  const showError = useCallback(
+    (message: string) => {
+      setError(message);
+      if (errorClearTimerRef.current != null) {
+        window.clearTimeout(errorClearTimerRef.current);
+      }
+      errorClearTimerRef.current = window.setTimeout(() => {
+        setError(null);
+        errorClearTimerRef.current = null;
+      }, 12000);
+    },
+    [],
+  );
 
   useEffect(() => {
     openRef.current = open;
@@ -68,9 +91,9 @@ export function LanGroupChatLauncher() {
         return next.groups[0]?.groupId ?? null;
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      showError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [showError]);
 
   const refreshMessages = useCallback(async (groupId: string | null) => {
     if (!groupId) {
@@ -81,9 +104,9 @@ export function LanGroupChatLauncher() {
       const list = await lanCollabListMessages(groupId);
       setMessages(list);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      showError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [showError]);
 
   useEffect(() => {
     void refreshStatus();
@@ -138,7 +161,7 @@ export function LanGroupChatLauncher() {
         );
       } catch (err) {
         if (!disposed) {
-          setError(err instanceof Error ? err.message : String(err));
+          showError(err instanceof Error ? err.message : String(err));
         }
       }
     };
@@ -154,7 +177,15 @@ export function LanGroupChatLauncher() {
         }
       }
     };
-  }, [refreshStatus, selfNodeId]);
+  }, [refreshStatus, selfNodeId, showError]);
+
+  useEffect(() => {
+    return () => {
+      if (errorClearTimerRef.current != null) {
+        window.clearTimeout(errorClearTimerRef.current);
+      }
+    };
+  }, []);
 
   // 打开时轮询兜底
   useEffect(() => {
@@ -218,13 +249,13 @@ export function LanGroupChatLauncher() {
   const handleSend = async () => {
     if (!selectedGroupId || !messageDraft.trim() || busy) return;
     setBusy(true);
-    setError(null);
+    dismissError();
     try {
       await lanCollabSendMessage(selectedGroupId, messageDraft);
       setMessageDraft("");
       await refreshMessages(selectedGroupId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      showError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -353,6 +384,24 @@ export function LanGroupChatLauncher() {
                 </div>
               )}
 
+              {error && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 border-b border-[var(--danger)]/30 bg-[var(--danger-soft)] px-3 py-1.5 text-[11px] text-[var(--danger)]"
+                >
+                  <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">{error}</div>
+                  <button
+                    type="button"
+                    onClick={dismissError}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--danger)]/80 transition-colors hover:bg-[var(--danger)]/10 hover:text-[var(--danger)]"
+                    title={intl.formatMessage({ id: "lanCollab.dismissError" })}
+                    aria-label={intl.formatMessage({ id: "lanCollab.dismissError" })}
+                  >
+                    <IconX size={12} stroke={2} />
+                  </button>
+                </div>
+              )}
+
               <div className="thin-scrollbar min-h-0 flex-1 space-y-2 overflow-auto p-2.5">
                 {messages.length === 0 ? (
                   <p className="p-2 text-[11px] text-[var(--text-muted)]">
@@ -385,12 +434,6 @@ export function LanGroupChatLauncher() {
                 )}
                 <div ref={messagesEndRef} />
               </div>
-
-              {error && (
-                <div className="border-t border-[var(--border-subtle)] px-3 py-1.5 text-[11px] text-[var(--danger)]">
-                  {error}
-                </div>
-              )}
 
               <div className="flex gap-2 border-t border-[var(--border-subtle)] p-2.5">
                 <input

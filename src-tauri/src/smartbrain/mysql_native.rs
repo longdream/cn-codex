@@ -170,7 +170,8 @@ fn parse_handshake(packet: &[u8]) -> Result<Handshake, String> {
             .collect::<Vec<_>>();
         auth_plugin_data.extend_from_slice(&trimmed);
     }
-    let auth_plugin_name = if (capability_flags & CLIENT_PLUGIN_AUTH) != 0 && offset < packet.len() {
+    let auth_plugin_name = if (capability_flags & CLIENT_PLUGIN_AUTH) != 0 && offset < packet.len()
+    {
         read_null_terminated_string(packet, &mut offset).unwrap_or_default()
     } else {
         String::new()
@@ -253,7 +254,9 @@ fn complete_authentication(
                 response = read_packet(stream, seq)?;
             }
             other => {
-                return Err(format!("不支持的 caching_sha2_password 状态: 0x{other:02x}"));
+                return Err(format!(
+                    "不支持的 caching_sha2_password 状态: 0x{other:02x}"
+                ));
             }
         }
     }

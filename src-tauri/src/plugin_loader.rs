@@ -243,7 +243,9 @@ pub fn is_invalid_computer_use_mcp_server(server: &McpServerConfig) -> bool {
 
 /// Computer Use 统一走 MCP 入口：即使插件被禁用，也注入其 MCP 配置。
 fn computer_use_mcp_server(workspace_config_dir: &Path) -> Option<(String, McpServerConfig)> {
-    let plugin_root = workspace_config_dir.join("plugins").join(COMPUTER_USE_MCP_SERVER_NAME);
+    let plugin_root = workspace_config_dir
+        .join("plugins")
+        .join(COMPUTER_USE_MCP_SERVER_NAME);
     if !plugin_root.is_dir() || find_plugin_manifest_path(&plugin_root).is_none() {
         return None;
     }
@@ -295,8 +297,14 @@ pub fn list_plugin_mcp_servers(workspace_config_dir: &Path) -> HashMap<String, M
         }
     }
 
-    // Computer Use 从插件能力迁移为 MCP，即使插件被禁用也保持可用。
-    if let Some((name, server)) = computer_use_mcp_server(workspace_config_dir) {
+    // Computer Use 从插件能力迁移为 MCP；仍需尊重插件的启用状态，
+    // 避免用户禁用后模型仍能自动调用并触发控制遮罩。
+    let computer_use_root = workspace_config_dir
+        .join("plugins")
+        .join(COMPUTER_USE_MCP_SERVER_NAME);
+    if !is_plugin_disabled_root(&computer_use_root)
+        && let Some((name, server)) = computer_use_mcp_server(workspace_config_dir)
+    {
         // 若已有配置但入口错误（client 库），用正确的 MCP Server 覆盖。
         if servers
             .get(&name)
@@ -1165,11 +1173,7 @@ mod tests {
 
         set_plugin_enabled(&root, "computer-use", false).expect("disable computer-use plugin");
         let servers = list_plugin_mcp_servers(&root);
-        assert!(servers.contains_key("computer-use"));
-        assert_eq!(
-            servers.get("computer-use").map(|server| server.command.as_str()),
-            Some("node")
-        );
+        assert!(!servers.contains_key("computer-use"));
 
         let _ = fs::remove_dir_all(root);
     }

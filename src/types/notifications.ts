@@ -47,6 +47,27 @@ export interface PatchProgressChange {
   path: string;
   action: string;
   moveTo?: string;
+  additions?: number;
+  deletions?: number;
+}
+
+export interface TurnTerminalNotification {
+  threadId: string;
+  eventSeq?: number;
+  status: "failed" | "cancelled";
+  error?: string;
+  turn: { id: string };
+}
+
+export interface TurnLoadingNotification {
+  threadId: string;
+  turnId?: string;
+  eventSeq?: number;
+  kind: "skill" | "mcp";
+  phase: string;
+  status: "started" | "completed" | "failed";
+  durationMs?: number;
+  error?: string | null;
 }
 
 export interface FileChangePatchUpdated {
@@ -162,6 +183,9 @@ export type ServerEventName =
   | "agent-message-delta"
   | "turn-started"
   | "turn-completed"
+  | "turn-failed"
+  | "turn-cancelled"
+  | "turn-loading"
   | "turn-diff-updated"
   | "turn-plan-updated"
   | "item-started"

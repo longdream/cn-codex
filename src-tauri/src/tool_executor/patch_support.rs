@@ -24,6 +24,8 @@ pub(crate) struct ApplyPatchProgressChange {
     pub(crate) action: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) move_to: Option<String>,
+    pub(crate) additions: usize,
+    pub(crate) deletions: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +48,8 @@ pub(crate) enum ParsedPatchAction {
 pub(crate) struct PatchHunk {
     old_lines: Vec<String>,
     new_lines: Vec<String>,
+    additions: usize,
+    deletions: usize,
 }
 
 enum PreparedPatchAction {
@@ -109,26 +113,40 @@ pub(crate) fn apply_patch_progress_changes(
     actions
         .iter()
         .map(|action| match action {
-            ParsedPatchAction::Add { path, .. } => ApplyPatchProgressChange {
+            ParsedPatchAction::Add { path, lines } => ApplyPatchProgressChange {
                 path: normalize_patch_display_path(path),
                 action: "created",
                 move_to: None,
+                additions: lines.len(),
+                deletions: 0,
             },
-            ParsedPatchAction::Update { path, move_to, .. } => ApplyPatchProgressChange {
-                path: normalize_patch_display_path(path),
-                action: if move_to.is_some() {
-                    "renamed"
-                } else {
-                    "modified"
-                },
-                move_to: move_to
-                    .as_ref()
-                    .map(|dest| normalize_patch_display_path(dest)),
-            },
+            ParsedPatchAction::Update {
+                path,
+                move_to,
+                hunks,
+            } => {
+                let additions = hunks.iter().map(|hunk| hunk.additions).sum();
+                let deletions = hunks.iter().map(|hunk| hunk.deletions).sum();
+                ApplyPatchProgressChange {
+                    path: normalize_patch_display_path(path),
+                    action: if move_to.is_some() {
+                        "renamed"
+                    } else {
+                        "modified"
+                    },
+                    move_to: move_to
+                        .as_ref()
+                        .map(|dest| normalize_patch_display_path(dest)),
+                    additions,
+                    deletions,
+                }
+            }
             ParsedPatchAction::Delete { path } => ApplyPatchProgressChange {
                 path: normalize_patch_display_path(path),
                 action: "deleted",
                 move_to: None,
+                additions: 0,
+                deletions: 0,
             },
         })
         .collect()
@@ -390,6 +408,8 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
                     current = Some(PatchHunk {
                         old_lines: Vec::new(),
                         new_lines: Vec::new(),
+                        additions: 0,
+                        deletions: 0,
                     });
                     i += 1;
                     continue;
@@ -398,6 +418,8 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
                 let hunk = current.get_or_insert_with(|| PatchHunk {
                     old_lines: Vec::new(),
                     new_lines: Vec::new(),
+                    additions: 0,
+                    deletions: 0,
                 });
 
                 if let Some(content) = line.strip_prefix(' ') {
@@ -405,8 +427,10 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
                     hunk.new_lines.push(content.to_string());
                 } else if let Some(content) = line.strip_prefix('-') {
                     hunk.old_lines.push(content.to_string());
+                    hunk.deletions += 1;
                 } else if let Some(content) = line.strip_prefix('+') {
                     hunk.new_lines.push(content.to_string());
+                    hunk.additions += 1;
                 } else {
                     return Err(format!("invalid update line for {path}: {line}"));
                 }
@@ -462,11 +486,17 @@ fn extract_embedded_patch_block(input: &str) -> Result<String, String> {
 }
 
 fn is_patch_begin_marker(line: &str) -> bool {
-    matches!(normalize_patch_directive_line(line).as_str(), "*** Begin Patch")
+    matches!(
+        normalize_patch_directive_line(line).as_str(),
+        "*** Begin Patch"
+    )
 }
 
 fn is_patch_end_marker(line: &str) -> bool {
-    matches!(normalize_patch_directive_line(line).as_str(), "*** End Patch")
+    matches!(
+        normalize_patch_directive_line(line).as_str(),
+        "*** End Patch"
+    )
 }
 
 fn normalize_patch_directive_line(line: &str) -> String {
@@ -495,7 +525,7 @@ fn apply_update_hunks(
         let pos = find_subsequence(lines, &hunk.old_lines, cursor)
             .or_else(|| find_subsequence(lines, &hunk.old_lines, 0))
             .or_else(|| find_unique_relaxed_subsequence(lines, &hunk.old_lines))
-            .ok_or_else(|| format_hunk_match_error(path, &hunk.old_lines))?;
+            .ok_or_else(|| format_hunk_match_error(path, &hunk.old_lines, lines))?;
         let end = pos + hunk.old_lines.len();
         lines.splice(pos..end, hunk.new_lines.clone());
         cursor = pos + hunk.new_lines.len();
@@ -547,7 +577,7 @@ fn relaxed_patch_line(line: &str) -> &str {
     line.trim_start_matches('\u{feff}').trim_end()
 }
 
-fn format_hunk_match_error(path: &str, old_lines: &[String]) -> String {
+fn format_hunk_match_error(path: &str, old_lines: &[String], current_lines: &[String]) -> String {
     const MAX_PREVIEW_LINES: usize = 8;
     const MAX_PREVIEW_CHARS: usize = 600;
 
@@ -564,10 +594,39 @@ fn format_hunk_match_error(path: &str, old_lines: &[String]) -> String {
         preview.push_str("\n...");
     }
 
+    let current_context = nearest_hunk_context(current_lines, old_lines)
+        .map(|context| format!("\nFresh current context:\n{context}"))
+        .unwrap_or_default();
+
     format!(
-        "failed to match hunk in {path} ({} expected lines). The file content has changed or the patch context is stale. Re-read the current file and retry apply_patch with a smaller hunk containing only the changed lines and a few current context lines. Preview: {preview}",
+        "failed to match hunk in {path} ({} expected lines). The file content has changed or the patch context is stale. Build a new, smaller hunk from the fresh context below; use read_file only if that context is insufficient. Expected context: {preview}{current_context}",
         old_lines.len()
     )
+}
+
+fn nearest_hunk_context(current_lines: &[String], expected_lines: &[String]) -> Option<String> {
+    const CONTEXT_BEFORE: usize = 2;
+    const CONTEXT_AFTER: usize = 4;
+    const MAX_CONTEXT_CHARS: usize = 800;
+
+    let anchor = expected_lines.iter().find_map(|expected| {
+        current_lines
+            .iter()
+            .position(|actual| relaxed_patch_line(actual) == relaxed_patch_line(expected))
+    })?;
+    let start = anchor.saturating_sub(CONTEXT_BEFORE);
+    let end = (anchor + CONTEXT_AFTER + 1).min(current_lines.len());
+    let mut context = current_lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, line)| format!("{:>5} | {line}", start + offset + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if context.chars().count() > MAX_CONTEXT_CHARS {
+        context = context.chars().take(MAX_CONTEXT_CHARS).collect();
+        context.push_str("...");
+    }
+    Some(context)
 }
 
 #[allow(dead_code)]
@@ -800,6 +859,8 @@ done"#;
                 "  return updated;".to_string(),
                 "}".to_string(),
             ],
+            additions: 1,
+            deletions: 1,
         }];
 
         apply_update_hunks(&mut lines, &hunks, "src/App.tsx").unwrap();
@@ -812,10 +873,39 @@ done"#;
         let hunks = vec![PatchHunk {
             old_lines: vec!["same".to_string()],
             new_lines: vec!["changed".to_string()],
+            additions: 1,
+            deletions: 1,
         }];
 
         let error = apply_update_hunks(&mut lines, &hunks, "src/App.tsx").unwrap_err();
-        assert!(error.contains("Re-read the current file"));
+        assert!(error.contains("Build a new, smaller hunk"));
         assert!(error.contains("smaller hunk"));
+    }
+
+    #[test]
+    fn hunk_match_error_includes_fresh_nearby_file_context() {
+        let mut lines = vec![
+            "  \"settings.provider.activate\": \"启用\",".to_string(),
+            "  \"settings.provider.activateThis\": \"设置默认供应商\",".to_string(),
+            "  \"settings.provider.addCustom\": \"自定义\",".to_string(),
+        ];
+        let hunks = vec![PatchHunk {
+            old_lines: vec![
+                "  \"settings.provider.activate\": \"启用\",".to_string(),
+                "  \"settings.provider.activateThis\": \"启用此供应商\",".to_string(),
+                "  \"settings.provider.addCustom\": \"自定义\",".to_string(),
+            ],
+            new_lines: Vec::new(),
+            additions: 0,
+            deletions: 1,
+        }];
+
+        let error =
+            apply_update_hunks(&mut lines, &hunks, "src/i18n/zh-CN/common.json").unwrap_err();
+
+        assert!(error.contains("Expected context"));
+        assert!(error.contains("Fresh current context"));
+        assert!(error.contains("设置默认供应商"));
+        assert!(error.contains("settings.provider.addCustom"));
     }
 }

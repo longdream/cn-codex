@@ -44,6 +44,34 @@ export interface FetchProviderModelsResult {
   models: RemoteProviderModel[];
 }
 
+export interface ProviderCapabilityProbeResult {
+  success: boolean;
+  cached: boolean;
+  fingerprint: string;
+  probedAt: number;
+  latencyMs?: number;
+  capabilities: {
+    structuredTools: boolean | null;
+    streaming: boolean | null;
+    reasoning: boolean | null;
+    usage: boolean | null;
+    parallelToolCalls: boolean | null;
+    recommendedWireApi?: string;
+  };
+  error?: string;
+}
+
+export async function probeModelCapabilities(params: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  wireApi: string;
+  providerKey?: string;
+  forceRefresh?: boolean;
+}): Promise<ProviderCapabilityProbeResult> {
+  return invoke("probe_model_capabilities", params);
+}
+
 export async function fetchProviderModels(params: {
   baseUrl: string;
   apiKey: string;
@@ -236,6 +264,7 @@ export async function standaloneChat(
   goalBudgetTokens?: number,
   robotId?: string,
   overrides?: StandaloneChatOverrides,
+  clientMessageId?: string,
 ): Promise<{ status: string }> {
   return invoke("standalone_chat", {
     threadId,
@@ -247,6 +276,7 @@ export async function standaloneChat(
     robotId,
     provider: overrides?.provider ?? null,
     smartbrainEnabled: overrides?.smartbrainEnabled ?? null,
+    clientMessageId: clientMessageId ?? null,
   });
 }
 
@@ -254,10 +284,12 @@ export async function standaloneChat(
 export async function standaloneThreadTruncateBefore(
   threadId: string,
   messageId: string,
+  messageContent?: string,
 ): Promise<{ status: string; keptCount: number }> {
   return invoke("standalone_thread_truncate_before", {
     threadId,
     messageId,
+    messageContent: messageContent ?? null,
   });
 }
 

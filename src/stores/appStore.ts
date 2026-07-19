@@ -64,6 +64,8 @@ export interface PatchProgressChange {
   path: string;
   action: string;
   moveTo?: string;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface TokenUsage {
@@ -148,6 +150,105 @@ export interface ChatMessage {
   fileChanges?: { path: string; action: string }[];
   runSummary?: RunSummary;
   planFile?: PlanFile;
+}
+
+/** 按 id 合并工具调用列表，保留既有顺序，新项追加到末尾。 */
+export function mergeToolCallItems(
+  existing: ToolCallItem[],
+  incoming: ToolCallItem[],
+): ToolCallItem[] {
+  if (incoming.length === 0) {
+    return existing.slice();
+  }
+  const merged = existing.slice();
+  const indexById = new Map(merged.map((item, index) => [item.id, index]));
+  for (const item of incoming) {
+    const existingIndex = indexById.get(item.id);
+    if (existingIndex === undefined) {
+      indexById.set(item.id, merged.length);
+      merged.push(item);
+      continue;
+    }
+    const prev = merged[existingIndex];
+    merged[existingIndex] = {
+      ...prev,
+      ...item,
+      // 已有输出优先保留，除非新项显式提供 output。
+      output: item.output !== undefined ? item.output : prev.output,
+      patchProgress: item.patchProgress ?? prev.patchProgress,
+    };
+  }
+  return merged;
+}
+
+/**
+ * 查找当前用户轮次内可继续追加的工具调用卡片。
+ * 仅当“最近一条 user 之后的最后一条消息”本身就是工具卡时才复用，
+ * 避免把后续工具合并到中间文本之前的旧卡片上。
+ */
+export function findOpenToolCallGroupIndex(messages: ChatMessage[]): number {
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  const lastIdx = messages.length - 1;
+  if (lastIdx <= lastUserIdx) return -1;
+  const last = messages[lastIdx];
+  if (last.toolCalls && last.toolCalls.length > 0) {
+    return lastIdx;
+  }
+  return -1;
+}
+
+/**
+ * 将同一用户轮次内“连续”的多张工具调用卡合并为一张。
+ * 若中间插入了助手文本/摘要等内容，则保留时间线，不跨内容合并。
+ */
+export function collapseToolCallCardsPerUserTurn(messages: ChatMessage[]): ChatMessage[] {
+  const result: ChatMessage[] = [];
+  let currentTurnToolMsgIdx = -1;
+
+  for (const message of messages) {
+    if (message.role === "user") {
+      result.push(message);
+      currentTurnToolMsgIdx = -1;
+      continue;
+    }
+
+    if (message.toolCalls && message.toolCalls.length > 0) {
+      if (currentTurnToolMsgIdx >= 0) {
+        const existing = result[currentTurnToolMsgIdx];
+        result[currentTurnToolMsgIdx] = {
+          ...existing,
+          toolCalls: mergeToolCallItems(existing.toolCalls ?? [], message.toolCalls),
+        };
+        continue;
+      }
+      currentTurnToolMsgIdx = result.length;
+      result.push(message);
+      continue;
+    }
+
+    // 非工具内容打断当前开放工具组，后续工具卡应出现在该内容之后。
+    if (shouldBreakToolCallGroup(message)) {
+      currentTurnToolMsgIdx = -1;
+    }
+
+    result.push(message);
+  }
+
+  return result;
+}
+
+/** 判断消息是否应打断连续工具卡合并。 */
+function shouldBreakToolCallGroup(message: ChatMessage): boolean {
+  if (message.runSummary || message.planFile) return true;
+  if (message.role === "assistant") return true;
+  if (message.role === "system" && message.content.trim().length > 0) return true;
+  return false;
 }
 
 export interface ThreadSummary {
@@ -910,7 +1011,8 @@ function mapTurnsToMessages(
   }
 
   return {
-    messages,
+    // 同一用户轮次内连续的多批 toolUse 合并为一张工具调用卡。
+    messages: collapseToolCallCardsPerUserTurn(messages),
     activePlan: hydratedActivePlan,
   };
 }
@@ -1030,6 +1132,23 @@ function normalizeProviderModel(
   const normalizedEndpoints = Array.isArray(model.endpoints)
     ? model.endpoints.map((endpoint) => normalizePoolModelEndpoint(endpoint, id))
     : undefined;
+  const capabilities = model.capabilities && typeof model.capabilities === "object"
+    ? {
+      structuredTools: model.capabilities.structuredTools === true
+        ? true : model.capabilities.structuredTools === false ? false : null,
+      streaming: model.capabilities.streaming === true
+        ? true : model.capabilities.streaming === false ? false : null,
+      reasoning: model.capabilities.reasoning === true
+        ? true : model.capabilities.reasoning === false ? false : null,
+      usage: model.capabilities.usage === true
+        ? true : model.capabilities.usage === false ? false : null,
+      parallelToolCalls: model.capabilities.parallelToolCalls === true
+        ? true : model.capabilities.parallelToolCalls === false ? false : null,
+      probedAt: typeof model.capabilities.probedAt === "number" ? model.capabilities.probedAt : 0,
+      fingerprint: typeof model.capabilities.fingerprint === "string" ? model.capabilities.fingerprint : "",
+      wireApi: typeof model.capabilities.wireApi === "string" ? model.capabilities.wireApi : "",
+    }
+    : undefined;
   return {
     id,
     label,
@@ -1046,6 +1165,7 @@ function normalizeProviderModel(
       : {}),
     contextLength: normalizeContextLength(model.contextLength),
     maxOutputTokens: normalizeModelMaxOutputTokens(model.maxOutputTokens, fallbackMaxOutputTokens),
+    ...(capabilities ? { capabilities } : {}),
     ...(normalizedEndpoints !== undefined ? { endpoints: normalizedEndpoints } : {}),
   };
 }
@@ -1792,6 +1912,12 @@ interface AppState {
 
   // ─── Per-thread 方法族（事件处理器调用） ─────────────────────
   addMessageToThread: (threadId: string, message: ChatMessage) => void;
+  /**
+   * 将工具调用并入当前用户轮次的开放工具卡。
+   * 若当前轮次尚无工具卡，则新建一张。
+   * 返回该工具卡消息 id。
+   */
+  appendToolCallsToThread: (threadId: string, items: ToolCallItem[]) => string | null;
   setStreamingForThread: (threadId: string, v: boolean) => void;
   appendStreamingTextForThread: (threadId: string, delta: string) => void;
   clearStreamingTextForThread: (threadId: string) => void;
@@ -3278,6 +3404,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().applyToThread(threadId, (draft) => ({
       messages: [...draft.messages, message],
     }));
+  },
+
+  appendToolCallsToThread: (threadId, items) => {
+    if (!items.length) return null;
+    let messageId: string | null = null;
+    get().applyToThread(threadId, (draft) => {
+      const msgs = [...draft.messages];
+      const openIdx = findOpenToolCallGroupIndex(msgs);
+      if (openIdx >= 0) {
+        const existing = msgs[openIdx];
+        messageId = existing.id;
+        msgs[openIdx] = {
+          ...existing,
+          toolCalls: mergeToolCallItems(existing.toolCalls ?? [], items),
+        };
+        return { messages: msgs };
+      }
+
+      messageId = `tcg-${crypto.randomUUID()}`;
+      msgs.push({
+        id: messageId,
+        role: "system",
+        content: "",
+        timestamp: Date.now(),
+        toolCalls: items,
+      });
+      return { messages: msgs };
+    });
+    return messageId;
   },
 
   setStreamingForThread: (threadId, v) => {

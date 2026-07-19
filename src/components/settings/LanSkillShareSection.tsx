@@ -6,9 +6,11 @@ import {
   lanCollabShareSkill,
   lanCollabStatus,
   lanCollabUnshareSkill,
+  type CollabGroup,
   type SharedSkillOffer,
 } from "../../api/lanCollab";
 import type { SkillSummary } from "../../types/skill";
+import { LanShareGroupPicker, groupLabel } from "./LanShareGroupPicker";
 
 interface LanSkillShareSectionProps {
   skills: SkillSummary[];
@@ -22,18 +24,26 @@ export function LanSkillShareSection({ skills, onInstalled }: LanSkillShareSecti
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [shareSelection, setShareSelection] = useState("");
+  const [shareGroupId, setShareGroupId] = useState("");
+  const [groups, setGroups] = useState<CollabGroup[]>([]);
   const [localShared, setLocalShared] = useState<SharedSkillOffer[]>([]);
   const [remoteShared, setRemoteShared] = useState<SharedSkillOffer[]>([]);
 
   const shareableOptions = useMemo(() => {
-    const sharedIds = new Set(localShared.map((item) => item.skillId));
-    return skills.filter((skill) => !sharedIds.has(skill.id));
-  }, [skills, localShared]);
+    // 同一 Skill 可共享到不同协作组；仅过滤“当前所选组已共享”的条目
+    const sharedInSelectedGroup = new Set(
+      localShared
+        .filter((item) => !shareGroupId || item.groupId === shareGroupId)
+        .map((item) => item.skillId),
+    );
+    return skills.filter((skill) => !sharedInSelectedGroup.has(skill.id));
+  }, [skills, localShared, shareGroupId]);
 
   const refresh = useCallback(async () => {
     try {
       const status = await lanCollabStatus();
       setEnabled(status.enabled);
+      setGroups(status.groups ?? []);
       setLocalShared(status.localSharedSkills ?? []);
       setRemoteShared(status.remoteSharedSkills ?? []);
       setError(null);
@@ -96,7 +106,10 @@ export function LanSkillShareSection({ skills, onInstalled }: LanSkillShareSecti
       if (!shareSelection) {
         throw new Error(intl.formatMessage({ id: "settings.lanShare.skillPickRequired" }));
       }
-      await lanCollabShareSkill({ skillId: shareSelection });
+      if (!shareGroupId) {
+        throw new Error(intl.formatMessage({ id: "settings.lanShare.groupPickRequired" }));
+      }
+      await lanCollabShareSkill({ skillId: shareSelection, groupId: shareGroupId });
       setShareSelection("");
       setNotice(intl.formatMessage({ id: "settings.lanShare.skillShareSuccess" }));
       await refresh();
@@ -124,10 +137,21 @@ export function LanSkillShareSection({ skills, onInstalled }: LanSkillShareSecti
         );
         if (!overwrite) return;
       }
+      // 若本机已安装共享副本且用户选择覆盖，允许 force（后端会在 localModified 时再校验）
+      let forceOverwrite = false;
+      if (exists && overwrite) {
+        forceOverwrite = window.confirm(
+          intl.formatMessage(
+            { id: "settings.lanShare.skillForceOverwriteConfirm" },
+            { id: offer.skillId },
+          ),
+        );
+      }
       const installedId = await lanCollabInstallRemoteSkill({
         hostNodeId: offer.hostNodeId,
         shareId: offer.shareId,
         overwrite,
+        forceOverwrite: forceOverwrite || overwrite,
       });
       setNotice(
         intl.formatMessage(
@@ -154,6 +178,18 @@ export function LanSkillShareSection({ skills, onInstalled }: LanSkillShareSecti
         )}
       </div>
 
+      <LanShareGroupPicker
+        groups={groups}
+        value={shareGroupId}
+        onChange={setShareGroupId}
+        disabled={!enabled || busy}
+        emptyLabel={intl.formatMessage({ id: "settings.lanShare.groupEmpty" })}
+        placeholder={intl.formatMessage({ id: "settings.lanShare.groupPickPlaceholder" })}
+      />
+      <p className="text-[11px] text-[var(--text-faint)]">
+        {intl.formatMessage({ id: "settings.lanShare.groupHint" })}
+      </p>
+
       <div className="flex flex-wrap gap-2">
         <select
           value={shareSelection}
@@ -175,7 +211,7 @@ export function LanSkillShareSection({ skills, onInstalled }: LanSkillShareSecti
         <button
           type="button"
           onClick={handleShare}
-          disabled={!enabled || busy || !shareSelection}
+          disabled={!enabled || busy || !shareSelection || !shareGroupId || groups.length === 0}
           className="rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 text-[11px] text-[var(--accent-strong)] disabled:opacity-50"
         >
           {intl.formatMessage({ id: "settings.lanShare.skillShare" })}
@@ -200,6 +236,10 @@ export function LanSkillShareSection({ skills, onInstalled }: LanSkillShareSecti
                   <div className="truncate text-[10px] text-[var(--text-faint)]">
                     {offer.skillId}
                     {offer.description ? ` · ${offer.description}` : ""}
+                    {` · ${intl.formatMessage(
+                      { id: "settings.lanShare.sharedToGroup" },
+                      { group: groupLabel(groups, offer.groupId) },
+                    )}`}
                   </div>
                 </div>
                 <button

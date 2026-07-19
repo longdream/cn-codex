@@ -1,0 +1,26 @@
+[
+  {
+    "groupId": "grp_e6dbe092a0dc47aabeb25712e38a98b2",
+    "name": "123",
+    "ownerNodeId": "node_e853f540c5894a43816acc8d90026e91",
+    "createdAt": 1784290858,
+    "snapshotVersion": 2,
+    "inviteCode": "123-8F67",
+    "members": [
+      {
+        "nodeId": "node_e853f540c5894a43816acc8d90026e91",
+        "displayName": "LONGDREAM1",
+        "role": "owner",
+        "joinedAt": 1784290858
+      },
+      {
+        "nodeId": "node_d0910a000ba54f1681e43f5f2738097e",
+        "displayName": "LONGDREAM",
+        "role": "member",
+        "joinedAt": 1784293345
+      }
+    ],
+    "isOwner": false,
+    "ownerOnline": true
+  }
+]

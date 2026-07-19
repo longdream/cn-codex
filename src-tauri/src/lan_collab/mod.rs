@@ -11,11 +11,13 @@ pub mod discovery;
 pub mod identity;
 pub mod knowledge_share;
 pub mod model_share;
-pub mod skill_share;
 pub mod protocol;
 pub mod runtime;
+pub mod share_origin;
+pub mod skill_share;
 pub mod store;
 pub mod types;
+pub mod workflow_share;
 
 pub use commands::*;
 pub use runtime::LanCollabRuntime;

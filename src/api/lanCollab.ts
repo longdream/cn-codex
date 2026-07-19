@@ -79,6 +79,8 @@ export interface LanCollabStatus {
   remoteSharedKnowledge?: SharedKnowledgeOffer[];
   localSharedSkills?: SharedSkillOffer[];
   remoteSharedSkills?: SharedSkillOffer[];
+  localSharedWorkflows?: SharedWorkflowOffer[];
+  remoteSharedWorkflows?: SharedWorkflowOffer[];
   architecture: string;
   note: string;
 }
@@ -157,6 +159,32 @@ export interface SharedSkillOffer {
   tags?: string[];
   groupId?: string | null;
   online: boolean;
+  contentHash?: string;
+  updatedAt?: number | null;
+}
+
+export interface SharedWorkflowOffer {
+  shareId: string;
+  hostNodeId: string;
+  hostDisplayName: string;
+  workflowName: string;
+  title: string;
+  description: string;
+  nodeCount: number;
+  contentHash?: string;
+  groupId?: string | null;
+  online: boolean;
+}
+
+export interface WorkflowOriginSummary {
+  workflowName: string;
+  title: string;
+  sourceHostDisplayName: string;
+  sourceShareId: string;
+  sourceHostNodeId: string;
+  installedContentHash: string;
+  currentContentHash?: string | null;
+  localModified: boolean;
 }
 
 export function lanCollabStatus() {
@@ -325,12 +353,56 @@ export function lanCollabInstallRemoteSkill(params: {
   hostNodeId: string;
   shareId: string;
   overwrite?: boolean;
+  forceOverwrite?: boolean;
 }) {
   return invoke<string>("lan_collab_install_remote_skill", {
     hostNodeId: params.hostNodeId,
     shareId: params.shareId,
     overwrite: params.overwrite ?? false,
+    forceOverwrite: params.forceOverwrite ?? false,
   });
+}
+
+export function lanCollabShareWorkflow(params: {
+  workflowName: string;
+  groupId?: string | null;
+}) {
+  return invoke<SharedWorkflowOffer>("lan_collab_share_workflow", {
+    workflowName: params.workflowName,
+    groupId: params.groupId ?? null,
+  });
+}
+
+export function lanCollabUnshareWorkflow(shareId: string) {
+  return invoke<void>("lan_collab_unshare_workflow", { shareId });
+}
+
+export function lanCollabListLocalSharedWorkflows() {
+  return invoke<SharedWorkflowOffer[]>("lan_collab_list_local_shared_workflows");
+}
+
+export function lanCollabListRemoteSharedWorkflows() {
+  return invoke<SharedWorkflowOffer[]>("lan_collab_list_remote_shared_workflows");
+}
+
+export function lanCollabInstallRemoteWorkflow(params: {
+  hostNodeId: string;
+  shareId: string;
+  overwrite?: boolean;
+  forceOverwrite?: boolean;
+  installAs?: string | null;
+}) {
+  return invoke<string>("lan_collab_install_remote_workflow", {
+    hostNodeId: params.hostNodeId,
+    shareId: params.shareId,
+    overwrite: params.overwrite ?? false,
+    forceOverwrite: params.forceOverwrite ?? false,
+    installAs: params.installAs ?? null,
+  });
+}
+
+export function lanCollabListWorkflowShareOrigins() {
+  return invoke<WorkflowOriginSummary[]>("lan_collab_list_workflow_share_origins");
 }
 
 /** 根据共享 offer 生成接收方 OpenAI 兼容 baseUrl。 */

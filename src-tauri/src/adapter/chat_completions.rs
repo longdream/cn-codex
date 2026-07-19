@@ -14,6 +14,8 @@ pub struct ChatCompletionsAdapter;
 #[derive(Debug, Deserialize)]
 struct StreamChoice {
     delta: Option<DeltaContent>,
+    /// 兼容部分 OpenAI Chat 中转站：流式帧使用完整的 message 而非 delta。
+    message: Option<DeltaContent>,
     finish_reason: Option<String>,
 }
 
@@ -21,6 +23,8 @@ struct StreamChoice {
 #[derive(Debug, Deserialize)]
 struct DeltaContent {
     content: Option<String>,
+    #[serde(default, alias = "reasoning", alias = "reasoning_text")]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<DeltaToolCall>>,
 }
 
@@ -44,6 +48,8 @@ struct DeltaFunction {
 struct StreamChunk {
     choices: Option<Vec<StreamChoice>>,
     usage: Option<ChunkUsage>,
+    #[serde(default)]
+    error: Option<serde_json::Value>,
 }
 
 /// usage 字段（部分供应商在最后一个 chunk 中返回）
@@ -163,6 +169,18 @@ impl ProviderAdapter for ChatCompletionsAdapter {
             }
         };
 
+        if let Some(error) = &chunk.error {
+            let message = error
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| error.as_str())
+                .unwrap_or("Unknown provider stream error");
+            events.push(StreamEvent::Error(format!(
+                "LLM API stream error: {message}"
+            )));
+            return events;
+        }
+
         // 处理 usage-only chunk（部分供应商在流末尾单独发送 usage）
         if let Some(usage) = &chunk.usage {
             let prompt_details = usage.prompt_tokens_details.as_ref();
@@ -186,14 +204,26 @@ impl ProviderAdapter for ChatCompletionsAdapter {
         // 处理 choices
         if let Some(choices) = chunk.choices {
             for choice in choices {
-                // finish_reason
-                if let Some(ref reason) = choice.finish_reason {
-                    events.push(StreamEvent::Done {
-                        finish_reason: Some(reason.clone()),
-                    });
-                }
+                let StreamChoice {
+                    delta,
+                    message,
+                    finish_reason,
+                } = choice;
+                // DeepSeek-compatible gateways use an empty string while a
+                // choice is still streaming. Only a non-empty value is terminal.
+                let finish_reason = finish_reason.filter(|reason| !reason.trim().is_empty());
 
-                if let Some(delta) = choice.delta {
+                // 标准 SSE 使用 delta；部分中转站在流式帧中返回完整 message。
+                // 完整 message 是累计值，只在终止帧消费一次，否则每帧都会重复拼接。
+                let payload =
+                    delta.or_else(|| finish_reason.is_some().then_some(message).flatten());
+                if let Some(delta) = payload {
+                    if let Some(ref reasoning) = delta.reasoning_content {
+                        if !reasoning.is_empty() {
+                            events.push(StreamEvent::ReasoningDelta(reasoning.clone()));
+                        }
+                    }
+
                     // 文本增量
                     if let Some(ref content) = delta.content {
                         if !content.is_empty() {
@@ -216,6 +246,12 @@ impl ProviderAdapter for ChatCompletionsAdapter {
                             });
                         }
                     }
+                }
+
+                if let Some(reason) = finish_reason {
+                    events.push(StreamEvent::Done {
+                        finish_reason: Some(reason),
+                    });
                 }
             }
         }
@@ -413,5 +449,84 @@ mod tests {
         assert_eq!(formatted[1]["role"], "assistant");
         assert_eq!(formatted[2]["role"], "tool");
         assert_eq!(formatted[2]["tool_call_id"], "call-1");
+    }
+
+    #[test]
+    fn parse_stream_line_reads_message_content_from_chat_gateway() {
+        let adapter = ChatCompletionsAdapter;
+
+        let events = adapter.parse_stream_line(
+            r#"data: {"choices":[{"message":{"content":"Hello from message"},"finish_reason":"stop"}]}"#,
+        );
+
+        assert!(matches!(
+            events.as_slice(),
+            [
+                StreamEvent::TextDelta(text),
+                StreamEvent::Done {
+                    finish_reason: Some(reason)
+                }
+            ] if reason == "stop" && text == "Hello from message"
+        ));
+    }
+
+    #[test]
+    fn parse_stream_line_keeps_deepseek_empty_finish_reason_open() {
+        let adapter = ChatCompletionsAdapter;
+
+        let events = adapter.parse_stream_line(
+            r#"data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thinking"},"finish_reason":""}]}"#,
+        );
+
+        assert!(matches!(
+            events.as_slice(),
+            [StreamEvent::ReasoningDelta(reasoning)] if reasoning == "thinking"
+        ));
+    }
+
+    #[test]
+    fn parse_stream_line_reads_deepseek_content_before_terminal_frame() {
+        let adapter = ChatCompletionsAdapter;
+
+        let content_events = adapter.parse_stream_line(
+            r#"data: {"choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":""}]}"#,
+        );
+        let terminal_events = adapter.parse_stream_line(
+            r#"data: {"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}"#,
+        );
+
+        assert!(matches!(
+            content_events.as_slice(),
+            [StreamEvent::TextDelta(text)] if text == "OK"
+        ));
+        assert!(matches!(
+            terminal_events.as_slice(),
+            [StreamEvent::Done { finish_reason: Some(reason) }] if reason == "stop"
+        ));
+    }
+
+    #[test]
+    fn parse_stream_line_surfaces_provider_error() {
+        let adapter = ChatCompletionsAdapter;
+
+        let events = adapter.parse_stream_line(
+            r#"data: {"error":{"message":"model unavailable","type":"upstream_error"}}"#,
+        );
+
+        assert!(matches!(
+            events.as_slice(),
+            [StreamEvent::Error(message)] if message.contains("model unavailable")
+        ));
+    }
+
+    #[test]
+    fn parse_stream_line_ignores_cumulative_message_before_terminal_frame() {
+        let adapter = ChatCompletionsAdapter;
+
+        let events = adapter.parse_stream_line(
+            r#"data: {"choices":[{"message":{"content":"cumulative text"},"finish_reason":null}]}"#,
+        );
+
+        assert!(events.is_empty());
     }
 }

@@ -75,11 +75,7 @@ impl KnowledgeShareService {
         guard
             .iter()
             .filter(|s| s.enabled)
-            .filter(|s| match (&s.group_id, allowed_group_ids) {
-                (None, _) => true,
-                (Some(_), None) => true,
-                (Some(gid), Some(allowed)) => allowed.contains(gid),
-            })
+            .filter(|s| group_allowed(&s.group_id, allowed_group_ids))
             .map(|s| self.config_to_offer(s, host_node_id, host_display_name))
             .collect()
     }
@@ -92,6 +88,7 @@ impl KnowledgeShareService {
         domain: Option<String>,
         doc_ids: Vec<String>,
     ) -> Result<SharedKnowledgeConfig, String> {
+        let group_id = require_group_id(group_id)?;
         let title = title.trim().to_string();
         let title = if title.is_empty() {
             "共享知识库".to_string()
@@ -111,6 +108,11 @@ impl KnowledgeShareService {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
+        if doc_ids.is_empty() && source_group.is_none() && domain.is_none() {
+            return Err(
+                "请至少选择要共享的文档，或指定来源组/领域（禁止一键共享全部）".to_string(),
+            );
+        }
 
         // 至少要有可共享文档
         let docs = self.list_shareable_docs(&source_group, &domain, &doc_ids)?;
@@ -121,9 +123,7 @@ impl KnowledgeShareService {
         let cfg = SharedKnowledgeConfig {
             share_id: format!("kshare_{}", Uuid::new_v4().simple()),
             title,
-            group_id: group_id
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
+            group_id: Some(group_id),
             source_group,
             domain,
             doc_ids,
@@ -143,6 +143,15 @@ impl KnowledgeShareService {
             return Err("未找到该知识共享项".to_string());
         }
         Ok(())
+    }
+
+    pub async fn share_group_id(&self, share_id: &str) -> Result<Option<String>, String> {
+        let guard = self.shares.read().await;
+        guard
+            .iter()
+            .find(|s| s.enabled && s.share_id == share_id)
+            .map(|s| s.group_id.clone())
+            .ok_or_else(|| "知识共享不存在或已撤销".to_string())
     }
 
     pub fn list_shareable_docs(
@@ -227,7 +236,12 @@ impl KnowledgeShareService {
             timestamp_after: None,
             timestamp_before: None,
         };
-        let mut results = search::unified_search_with_filter(&bm25_path, query, top_k.max(DEFAULT_SEARCH_TOP_K) * 2, filter);
+        let mut results = search::unified_search_with_filter(
+            &bm25_path,
+            query,
+            top_k.max(DEFAULT_SEARCH_TOP_K) * 2,
+            filter,
+        );
 
         // 若指定了 doc_ids，进一步收敛到这些文档（含 chunk parent）
         if !cfg.doc_ids.is_empty() {
@@ -236,7 +250,9 @@ impl KnowledgeShareService {
                 let parent = r.parent_doc_id.as_deref().unwrap_or(r.doc_id.as_str());
                 // chunk doc_id 形如 parent::chunk:n 时也尝试剥离
                 let base = strip_chunk_suffix(&r.doc_id);
-                allowed.contains(parent) || allowed.contains(base) || allowed.contains(r.doc_id.as_str())
+                allowed.contains(parent)
+                    || allowed.contains(base)
+                    || allowed.contains(r.doc_id.as_str())
             });
         }
 
@@ -267,7 +283,10 @@ impl KnowledgeShareService {
 
         let base_doc_id = strip_chunk_suffix(doc_id).to_string();
         if !cfg.doc_ids.is_empty()
-            && !cfg.doc_ids.iter().any(|id| id == &base_doc_id || id == doc_id)
+            && !cfg
+                .doc_ids
+                .iter()
+                .any(|id| id == &base_doc_id || id == doc_id)
         {
             return Err("该文档不在共享范围内".to_string());
         }
@@ -336,6 +355,23 @@ impl KnowledgeShareService {
     }
 }
 
+fn group_allowed(group_id: &Option<String>, allowed: Option<&HashSet<String>>) -> bool {
+    match (group_id, allowed) {
+        // 本机清单：不过滤
+        (_, None) => true,
+        // 对端目录：未绑定协作组的条目不再视为全员公开
+        (None, Some(_)) => false,
+        (Some(gid), Some(set)) => set.contains(gid),
+    }
+}
+
+fn require_group_id(group_id: Option<String>) -> Result<String, String> {
+    group_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "请选择要共享到的协作组（未选组的内容保持私有）".to_string())
+}
+
 fn strip_chunk_suffix(doc_id: &str) -> &str {
     if let Some(idx) = doc_id.find("::chunk:") {
         &doc_id[..idx]
@@ -356,7 +392,10 @@ fn hit_from_search(
         share_id: share_id.to_string(),
         host_node_id: host_node_id.to_string(),
         host_display_name: host_display_name.to_string(),
-        doc_id: r.parent_doc_id.clone().unwrap_or_else(|| strip_chunk_suffix(&r.doc_id).to_string()),
+        doc_id: r
+            .parent_doc_id
+            .clone()
+            .unwrap_or_else(|| strip_chunk_suffix(&r.doc_id).to_string()),
         title: r.title,
         score: r.score,
         domain: r.domain,
@@ -412,9 +451,8 @@ mod tests {
     fn write_doc(kdir: &Path, doc_id: &str, title: &str, body: &str) {
         let docs = kdir.join("docs");
         fs::create_dir_all(&docs).unwrap();
-        let content = format!(
-            "---\ntype: Knowledge\ntitle: {title}\ndomain: test\n---\n\n{body}\n"
-        );
+        let content =
+            format!("---\ntype: Knowledge\ntitle: {title}\ndomain: test\n---\n\n{body}\n");
         fs::write(docs.join(format!("{doc_id}.md")), content).unwrap();
     }
 
@@ -433,7 +471,11 @@ mod tests {
             })).collect::<Vec<_>>()
         });
         fs::create_dir_all(kdir).unwrap();
-        fs::write(kdir.join("index.json"), serde_json::to_string_pretty(&index).unwrap()).unwrap();
+        fs::write(
+            kdir.join("index.json"),
+            serde_json::to_string_pretty(&index).unwrap(),
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -452,7 +494,7 @@ mod tests {
         let cfg = service
             .share_knowledge(
                 "Team KB".to_string(),
-                None,
+                Some("grp_test".to_string()),
                 None,
                 None,
                 vec!["doc_a".to_string()],
@@ -461,9 +503,7 @@ mod tests {
             .unwrap();
         assert!(cfg.share_id.starts_with("kshare_"));
 
-        let offers = service
-            .local_offers("node_a", "Alice", None)
-            .await;
+        let offers = service.local_offers("node_a", "Alice", None).await;
         assert_eq!(offers.len(), 1);
         assert_eq!(offers[0].title, "Team KB");
         assert_eq!(offers[0].doc_count, 1);
@@ -475,7 +515,10 @@ mod tests {
         let denied = service.fetch_doc(&cfg.share_id, "doc_b").await;
         assert!(denied.is_err());
 
-        service.unshare_knowledge(cfg.share_id.clone()).await.unwrap();
+        service
+            .unshare_knowledge(cfg.share_id.clone())
+            .await
+            .unwrap();
         let after = service.fetch_doc(&cfg.share_id, "doc_a").await;
         assert!(after.is_err());
     }

@@ -6,18 +6,19 @@
 //! - 接收方通过 `http://host:proxy_port/v1` 调用，鉴权用 share token
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -90,6 +91,9 @@ impl ModelShareService {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(600))
+            // Upstream LLM calls should bypass system proxies so LAN/shared endpoints
+            // do not fail with opaque 502 Bad Gateway responses.
+            .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
@@ -134,6 +138,7 @@ impl ModelShareService {
         host_node_id: &str,
         host_display_name: &str,
         host_address: &str,
+        allowed_group_ids: Option<&HashSet<String>>,
     ) -> Vec<SharedModelOffer> {
         let guard = self.inner.read().await;
         if !guard.enabled || guard.bind_port == 0 {
@@ -143,6 +148,7 @@ impl ModelShareService {
             .shares
             .iter()
             .filter(|s| s.enabled)
+            .filter(|s| group_allowed(&s.group_id, allowed_group_ids))
             .map(|s| SharedModelOffer {
                 share_id: s.share_id.clone(),
                 host_node_id: host_node_id.to_string(),
@@ -185,6 +191,7 @@ impl ModelShareService {
         if model_id.is_empty() || provider_id.is_empty() {
             return Err("modelId / providerId 不能为空".to_string());
         }
+        let group_id = Some(require_group_id(group_id)?);
 
         // 优先用前端传入的本机上游配置；否则回落 ConfigManager（已激活供应商）
         let (upstream_base_url, upstream_api_key) = {
@@ -279,6 +286,16 @@ impl ModelShareService {
         Ok(())
     }
 
+    pub async fn share_group_id(&self, share_id: &str) -> Result<Option<String>, String> {
+        let guard = self.inner.read().await;
+        guard
+            .shares
+            .iter()
+            .find(|s| s.enabled && s.share_id == share_id)
+            .map(|s| s.group_id.clone())
+            .ok_or_else(|| "共享项不存在".to_string())
+    }
+
     async fn ensure_proxy_running(&self) -> Result<(), String> {
         {
             let guard = self.inner.read().await;
@@ -306,9 +323,8 @@ impl ModelShareService {
                 }
             }
         }
-        let (listener, port) = bound.ok_or_else(|| {
-            format!("无法绑定模型代理端口 {PROXY_PORT_START}-{PROXY_PORT_END}")
-        })?;
+        let (listener, port) = bound
+            .ok_or_else(|| format!("无法绑定模型代理端口 {PROXY_PORT_START}-{PROXY_PORT_END}"))?;
 
         let state = ProxyState {
             service: self.clone(),
@@ -350,7 +366,10 @@ impl ModelShareService {
     async fn authorized(&self, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
         let guard = self.inner.read().await;
         if !guard.enabled {
-            return Err((StatusCode::SERVICE_UNAVAILABLE, "model share disabled".into()));
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "model share disabled".into(),
+            ));
         }
         let expected = format!("Bearer {}", guard.token);
         let auth = headers
@@ -436,7 +455,13 @@ impl ModelShareService {
             let mut provider = ModelProviderInfo::default();
             provider.base_url = Some(base);
             provider.experimental_bearer_token = if key.is_empty() { None } else { Some(key) };
-            provider.requires_openai_auth = Some(!share.upstream_api_key.as_ref().map(|s| s.is_empty()).unwrap_or(true));
+            provider.requires_openai_auth = Some(
+                !share
+                    .upstream_api_key
+                    .as_ref()
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true),
+            );
             provider.wire_api = Some("chat".to_string());
             return Ok((provider, share.upstream_model.clone()));
         }
@@ -504,7 +529,10 @@ async fn get_model_handler(
         return error_response(code, msg);
     }
     let shares = state.service.list_local_shares().await;
-    if let Some(s) = shares.into_iter().find(|s| s.share_id == share_id && s.enabled) {
+    if let Some(s) = shares
+        .into_iter()
+        .find(|s| s.share_id == share_id && s.enabled)
+    {
         return Json(json!({
             "id": s.share_id,
             "object": "model",
@@ -581,6 +609,12 @@ async fn chat_completions_handler(
         Ok(resp) => resp,
         Err(err) => {
             counter.fetch_sub(1, Ordering::SeqCst);
+            tracing::warn!(
+                "[lan_model_share] upstream request failed share={} model={} url={} err={err}",
+                share.share_id,
+                upstream_model,
+                url
+            );
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 format!("upstream request failed: {err}"),
@@ -588,8 +622,8 @@ async fn chat_completions_handler(
         }
     };
 
-    let status = StatusCode::from_u16(upstream.status().as_u16())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream
         .headers()
         .get(header::CONTENT_TYPE)
@@ -619,7 +653,12 @@ async fn chat_completions_handler(
             .status(status)
             .header(header::CONTENT_TYPE, content_type)
             .body(Body::from(bytes))
-            .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "response build failed".into()));
+            .unwrap_or_else(|_| {
+                error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "response build failed".into(),
+                )
+            });
     }
 
     // stream: 透传 SSE 字节流
@@ -629,7 +668,10 @@ async fn chat_completions_handler(
         |(mut stream, counter, share_id, started)| async move {
             use futures_util::StreamExt;
             match stream.next().await {
-                Some(Ok(chunk)) => Some((Ok::<_, std::io::Error>(chunk), (stream, counter, share_id, started))),
+                Some(Ok(chunk)) => Some((
+                    Ok::<_, std::io::Error>(chunk),
+                    (stream, counter, share_id, started),
+                )),
                 Some(Err(err)) => {
                     counter.fetch_sub(1, Ordering::SeqCst);
                     tracing::warn!("[lan_model_share] stream error share={share_id}: {err}");
@@ -661,6 +703,23 @@ async fn chat_completions_handler(
                 "stream response build failed".into(),
             )
         })
+}
+
+fn group_allowed(group_id: &Option<String>, allowed: Option<&HashSet<String>>) -> bool {
+    match (group_id, allowed) {
+        // 本机清单：不过滤
+        (_, None) => true,
+        // 对端目录：未绑定协作组的条目不再视为全员公开
+        (None, Some(_)) => false,
+        (Some(gid), Some(set)) => set.contains(gid),
+    }
+}
+
+fn require_group_id(group_id: Option<String>) -> Result<String, String> {
+    group_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "请选择要共享到的协作组（未选组的内容保持私有）".to_string())
 }
 
 fn build_chat_url(base_url: &str) -> String {

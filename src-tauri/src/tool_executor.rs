@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose};
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
@@ -45,11 +45,9 @@ use code_review_support::{
     code_review_untracked_paths, format_code_review_output, validate_code_review_base_ref,
     validate_code_review_paths,
 };
-use code_search_support::{
-    CodeSearchArgs, build_code_search_command, format_code_search_output,
-};
 #[cfg(test)]
 use code_review_support::{CodeReviewSummary, ReviewFinding};
+use code_search_support::{CodeSearchArgs, build_code_search_command, format_code_search_output};
 use memory_support::{
     MemoryListEntry, MemoryOutputFormat, format_memory_list_output, format_memory_search_output,
     parse_memory_cursor, read_okf_body_lines, resolve_memory_path, search_memory_files,
@@ -57,13 +55,11 @@ use memory_support::{
 #[cfg(test)]
 use memory_support::{MemorySearchMatch, MemorySearchResult};
 use patch_support::{
-    ApplyPatchProgressChange, apply_patch_to_workspace, extract_patch_argument,
-    format_apply_patch_report, patch_display_label,
+    ApplyPatchProgressChange, apply_patch_progress_changes, apply_patch_to_workspace,
+    extract_patch_argument, format_apply_patch_report, parse_patch_actions, patch_display_label,
 };
 #[cfg(test)]
-use patch_support::{
-    ApplyPatchReport, ApplyPatchReportChange, apply_patch_progress_changes, parse_patch_actions,
-};
+use patch_support::{ApplyPatchReport, ApplyPatchReportChange};
 
 /// Provider configuration for internal subagents (set by parent agent before each turn).
 #[derive(Debug, Clone, Default)]
@@ -84,6 +80,9 @@ pub struct ToolExecutor {
     mcp_tool_aliases: HashMap<String, McpToolAlias>,
     mcp_tool_specs: HashMap<String, serde_json::Value>,
     mcp_direct_tools_discovered: bool,
+    mcp_discovery_retry_after: Option<Instant>,
+    /// Per-thread tools activated via `tool_search` (or explicit activation) for layered schema loading.
+    activated_tools_by_thread: Arc<Mutex<HashMap<String, BTreeSet<String>>>>,
     mcp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpSession>>>>>,
     mcp_http_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpHttpSession>>>>>,
     web_search_enabled: bool,
@@ -216,6 +215,20 @@ struct ShellArgs {
 const SHELL_TIMEOUT_MIN_MS: u64 = 1_000;
 const SHELL_TIMEOUT_MAX_MS: u64 = 3_600_000;
 const SHELL_TIMEOUT_DEFAULT_MS: u64 = 30_000;
+
+/// Unified hard caps for tool outputs returned to the model.
+/// These keep prompt growth predictable without stripping critical head/tail context.
+const TOOL_OUTPUT_SHELL_MAX_CHARS: usize = 6_000;
+const TOOL_OUTPUT_SHELL_PARTIAL_MAX_CHARS: usize = 4_000;
+const TOOL_OUTPUT_READ_FILE_MAX_CHARS: usize = 8_000;
+const TOOL_OUTPUT_BROWSER_MAX_CHARS: usize = 8_000;
+const TOOL_OUTPUT_SEARCH_MAX_CHARS: usize = 8_000;
+const TOOL_OUTPUT_MEMORY_MAX_CHARS: usize = 8_000;
+const TOOL_OUTPUT_SMARTBRAIN_MAX_CHARS: usize = 8_000;
+
+/// Default pagination window for `read_file` when no range is requested.
+const READ_FILE_DEFAULT_MAX_LINES: usize = 200;
+const READ_FILE_MAX_LINES_HARD_CAP: usize = 400;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -711,6 +724,8 @@ impl ToolExecutor {
             mcp_tool_aliases: HashMap::new(),
             mcp_tool_specs: HashMap::new(),
             mcp_direct_tools_discovered: false,
+            mcp_discovery_retry_after: None,
+            activated_tools_by_thread: Arc::new(Mutex::new(HashMap::new())),
             mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
             mcp_http_sessions: Arc::new(Mutex::new(HashMap::new())),
             web_search_enabled: false,
@@ -733,6 +748,88 @@ impl ToolExecutor {
         self.cwd = cwd;
     }
 
+    /// Thread-scoped tools activated by `tool_search` (or explicit activation).
+    pub async fn activate_tools_for_thread<I, S>(&self, thread_id: &str, names: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let thread_id = thread_id.trim();
+        if thread_id.is_empty() {
+            return;
+        }
+        let mut by_thread = self.activated_tools_by_thread.lock().await;
+        let activated = by_thread
+            .entry(thread_id.to_string())
+            .or_insert_with(BTreeSet::new);
+        for name in names {
+            let name = name.as_ref().trim();
+            if !name.is_empty() {
+                activated.insert(name.to_string());
+            }
+        }
+    }
+
+    pub async fn activated_tool_names_for_thread(&self, thread_id: &str) -> BTreeSet<String> {
+        let thread_id = thread_id.trim();
+        if thread_id.is_empty() {
+            return BTreeSet::new();
+        }
+        self.activated_tools_by_thread
+            .lock()
+            .await
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub async fn clear_activated_tools_for_thread(&self, thread_id: &str) {
+        let thread_id = thread_id.trim();
+        if thread_id.is_empty() {
+            return;
+        }
+        self.activated_tools_by_thread
+            .lock()
+            .await
+            .remove(thread_id);
+    }
+
+    fn tool_spec_name(spec: &serde_json::Value) -> Option<&str> {
+        spec.pointer("/function/name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+
+    /// Built-in tools that are always exposed to the model (small core set).
+    /// Everything else — especially MCP/Playwright direct schemas — is lazy-loaded via `tool_search`.
+    fn is_core_tool_name(name: &str) -> bool {
+        matches!(
+            name,
+            "shell"
+                | "shell_command"
+                | "exec_command"
+                | "write_stdin"
+                | "close_exec_session"
+                | "read_file"
+                | "write_file"
+                | "apply_patch"
+                | "list_directory"
+                | "code_search"
+                | "tool_search"
+                | "update_plan"
+                | "request_user_input"
+                | "request_permissions"
+                | "view_image"
+                | "code_review"
+                | "smartbrain_search"
+                | "browser_run"
+                // Optional web tools are only present in `tool_specs` when enabled.
+                | "web_search"
+                | "web_fetch"
+        )
+    }
+
     pub fn set_mcp_servers(&mut self, mcp_servers: HashMap<String, McpServerConfig>) {
         if self.mcp_servers == mcp_servers {
             return;
@@ -741,6 +838,7 @@ impl ToolExecutor {
         self.mcp_tool_aliases.clear();
         self.mcp_tool_specs.clear();
         self.mcp_direct_tools_discovered = false;
+        self.mcp_discovery_retry_after = None;
         clear_mcp_sessions_async(self.mcp_sessions.clone());
         clear_mcp_http_sessions_async(self.mcp_http_sessions.clone());
     }
@@ -1140,7 +1238,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "read_file",
-                    "description": "Read the contents of a file at the given path. For large files or targeted inspection, pass line_offset/max_lines/end_line to return only a numbered line window and reduce tokens. Prefer this over shell/python for reading source slices.",
+                    "description": "Read the contents of a file at the given path. Returns a numbered page by default (max_lines defaults to 200, hard cap 400). Use line_offset/end_line to page through large files. Prefer this over shell/python for reading source slices.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1156,8 +1254,8 @@ impl ToolExecutor {
                             "max_lines": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "maximum": 1000,
-                                "description": "Maximum lines to return. Defaults to 200 when a range is requested; omit with no range params to read the full file."
+                                "maximum": 400,
+                                "description": "Maximum lines to return. Defaults to 200. Large files are always returned as a numbered page; use line_offset to continue."
                             },
                             "end_line": {
                                 "type": "integer",
@@ -1198,7 +1296,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "tool_search",
-                    "description": "Search available CN-Codex tools, local skills, plugin skills, and discovered MCP tools. Use this when you need a capability but are unsure which tool or skill provides it.",
+                    "description": "Search available CN-Codex tools, local skills, plugin skills, and discovered MCP tools, then activate matching non-core tool schemas for the next model call in this same turn (and later iterations in the thread). Default turns only expose a small core tool set; use this to lazy-load MCP/Playwright and other non-core tools before calling them.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -2575,11 +2673,60 @@ impl ToolExecutor {
     pub async fn tool_specs_with_mcp(
         &mut self,
         web_search_enabled: bool,
+        thread_id: Option<&str>,
+    ) -> Vec<serde_json::Value> {
+        self.tool_specs_for_turn(web_search_enabled, true, thread_id)
+            .await
+    }
+
+    /// Layered tool schema assembly:
+    /// - always include the small core built-in set
+    /// - optionally discover MCP catalogs for search/activation
+    /// - only attach non-core built-ins / MCP direct tools that have been activated
+    pub async fn tool_specs_for_turn(
+        &mut self,
+        web_search_enabled: bool,
+        discover_mcp: bool,
+        thread_id: Option<&str>,
     ) -> Vec<serde_json::Value> {
         self.web_search_enabled = web_search_enabled;
-        let mut tools = self.tool_specs(web_search_enabled);
-        let mcp_tools = self.discover_mcp_direct_tool_specs().await;
-        tools.extend(mcp_tools);
+        if discover_mcp {
+            // Discover catalogs for search + activation, but do not attach all schemas yet.
+            let _ = self.discover_mcp_direct_tool_specs().await;
+        }
+
+        let activated = match thread_id {
+            Some(id) => self.activated_tool_names_for_thread(id).await,
+            None => BTreeSet::new(),
+        };
+        let mut tools = Vec::new();
+        let mut seen = BTreeSet::new();
+
+        for spec in self.tool_specs(web_search_enabled) {
+            let Some(name) = Self::tool_spec_name(&spec) else {
+                continue;
+            };
+            if Self::is_core_tool_name(name) || activated.contains(name) {
+                if seen.insert(name.to_string()) {
+                    tools.push(spec);
+                }
+            }
+        }
+
+        // Activated MCP direct tools (including Playwright) are attached only after search/activation.
+        let mut mcp_aliases = self.mcp_tool_specs.keys().cloned().collect::<Vec<_>>();
+        mcp_aliases.sort();
+        for alias in mcp_aliases {
+            if !activated.contains(&alias) {
+                continue;
+            }
+            if let Some(spec) = self.mcp_tool_specs.get(&alias).cloned() {
+                if seen.insert(alias) {
+                    tools.push(spec);
+                }
+            }
+        }
+
         tools
     }
 
@@ -2640,6 +2787,33 @@ impl ToolExecutor {
             }
         }
 
+        // A configured server name is enough for tool discovery. Do not call
+        // tools/list here: this offline index lets the model activate the
+        // generic MCP tools through tool_search without starting any server.
+        let mut configured_servers = self.enabled_mcp_servers();
+        configured_servers.sort_by(|left, right| left.name.cmp(&right.name));
+        for server in configured_servers {
+            let mut metadata = BTreeMap::new();
+            metadata.insert("server".to_string(), server.name.clone());
+            metadata.insert("transport".to_string(), server.transport.clone());
+            entries.push(ToolSearchEntry {
+                kind: "mcp_server".to_string(),
+                name: format!("MCP server: {}", server.name),
+                description: format!(
+                    "Configured MCP server '{}'. Activate it only when the request needs its capability; then list tools for this server.",
+                    server.name
+                ),
+                source: format!("mcp:{}", server.name),
+                path: None,
+                spec: None,
+                metadata,
+                usage: Some(format!(
+                    "The next model call can use mcp_list_tools or mcp_call_tool with server=\"{}\". This server is not connected until one of those tools is called.",
+                    server.name
+                )),
+            });
+        }
+
         entries.extend(local_skill_search_entries(&self.workspace_config_dir));
         entries.extend(plugin_skill_search_entries(&self.workspace_config_dir));
         entries.extend(plugin_app_search_entries(&self.workspace_config_dir));
@@ -2653,6 +2827,7 @@ impl ToolExecutor {
         call_id: &str,
         app_handle: &AppHandle,
         thread_id: &str,
+        turn_id: Option<&str>,
     ) -> AppResult<String> {
         if let Some(alias) = self.mcp_tool_aliases.get(tool_name).cloned() {
             return self
@@ -2694,7 +2869,7 @@ impl ToolExecutor {
                     .await
             }
             "tool_search" => {
-                self.exec_tool_search(arguments, call_id, app_handle, thread_id)
+                self.exec_tool_search(arguments, call_id, app_handle, thread_id, turn_id)
                     .await
             }
             "apps_list" => {
@@ -2836,7 +3011,7 @@ impl ToolExecutor {
                     .await
             }
             "mcp_list_tools" => {
-                self.exec_mcp_list_tools(arguments, call_id, app_handle, thread_id)
+                self.exec_mcp_list_tools(arguments, call_id, app_handle, thread_id, turn_id)
                     .await
             }
             "mcp_call_tool" => {
@@ -3099,7 +3274,7 @@ impl ToolExecutor {
                 let stderr = decode_command_output_bytes(&stderr_buffer.lock().await);
                 let exit_code = status.code().unwrap_or(-1);
                 let output = format_shell_command_output(exit_code, &stdout, &stderr);
-                let truncated = truncate_shell_output(&output, 12_000);
+                let truncated = truncate_shell_output(&output, TOOL_OUTPUT_SHELL_MAX_CHARS);
                 self.emit_tool_end(
                     app_handle, thread_id, call_id, tool_name, exit_code, &truncated,
                 );
@@ -3110,8 +3285,10 @@ impl ToolExecutor {
                 wait_for_shell_stream_task(&mut stderr_handle, 300).await;
                 let stdout = decode_command_output_bytes(&stdout_buffer.lock().await);
                 let stderr = decode_command_output_bytes(&stderr_buffer.lock().await);
-                let partial =
-                    truncate_shell_output(&format_shell_partial_output(&stdout, &stderr), 10_000);
+                let partial = truncate_shell_output(
+                    &format_shell_partial_output(&stdout, &stderr),
+                    TOOL_OUTPUT_SHELL_PARTIAL_MAX_CHARS,
+                );
                 let msg = if partial.trim().is_empty() {
                     format!("Failed to wait for command: {error}")
                 } else {
@@ -3129,8 +3306,10 @@ impl ToolExecutor {
                 info!("Shell command timed out after {timeout_ms} ms: {cmd_display}");
                 let stdout = decode_command_output_bytes(&stdout_buffer.lock().await);
                 let stderr = decode_command_output_bytes(&stderr_buffer.lock().await);
-                let partial =
-                    truncate_shell_output(&format_shell_partial_output(&stdout, &stderr), 10_000);
+                let partial = truncate_shell_output(
+                    &format_shell_partial_output(&stdout, &stderr),
+                    TOOL_OUTPUT_SHELL_PARTIAL_MAX_CHARS,
+                );
                 let msg = if partial.trim().is_empty() {
                     format!(
                         "Command timed out after {timeout_ms} ms.\nThe command '{cmd_display}' did not complete before the deadline and was terminated.\nNo partial output was captured."
@@ -3529,7 +3708,7 @@ impl ToolExecutor {
                     args.end_line,
                     args.show_line_numbers,
                 );
-                let truncated = truncate_output(&formatted, 16000);
+                let truncated = truncate_output(&formatted, TOOL_OUTPUT_READ_FILE_MAX_CHARS);
                 self.emit_tool_end(app_handle, thread_id, call_id, "read_file", 0, &truncated);
                 truncated
             }
@@ -3604,7 +3783,7 @@ impl ToolExecutor {
                     "invalid patch",
                 );
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
-                return Ok(msg);
+                return Err(crate::error::AppError::Custom(msg));
             }
         };
 
@@ -3617,22 +3796,21 @@ impl ToolExecutor {
             "apply_patch",
             &display_label,
         );
+        let progress_changes = parse_patch_actions(&patch)
+            .map(|actions| apply_patch_progress_changes(&actions))
+            .unwrap_or_default();
 
         let result = match apply_patch_to_workspace(&self.cwd, &patch) {
             Ok(report) => {
                 let msg = format_apply_patch_report(&report);
                 // 仅在真正写盘成功后再广播 progress，避免失败时 UI 误显示“已修改”。
-                let changes = report
-                    .changes
-                    .iter()
-                    .map(|change| ApplyPatchProgressChange {
-                        path: change.path.clone(),
-                        action: change.action,
-                        move_to: change.move_to.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                if !changes.is_empty() {
-                    self.emit_apply_patch_progress(app_handle, thread_id, call_id, &changes);
+                if !progress_changes.is_empty() {
+                    self.emit_apply_patch_progress(
+                        app_handle,
+                        thread_id,
+                        call_id,
+                        &progress_changes,
+                    );
                 }
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", 0, &msg);
                 msg
@@ -3642,7 +3820,7 @@ impl ToolExecutor {
                     "Error applying patch: {err}\nDo not fall back to Python, PowerShell, sed, or other shell-based file editing. Correct the patch path or context and retry apply_patch so text encoding is preserved."
                 );
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
-                msg
+                return Err(crate::error::AppError::Custom(msg));
             }
         };
 
@@ -4484,7 +4662,7 @@ impl ToolExecutor {
             ),
         };
 
-        let truncated = truncate_output(&output, 16_000);
+        let truncated = truncate_output(&output, TOOL_OUTPUT_BROWSER_MAX_CHARS);
         self.emit_tool_end(
             app_handle,
             thread_id,
@@ -5265,6 +5443,7 @@ impl ToolExecutor {
         call_id: &str,
         app_handle: &AppHandle,
         thread_id: &str,
+        turn_id: Option<&str>,
     ) -> AppResult<String> {
         let args: ToolSearchArgs = match serde_json::from_str(arguments) {
             Ok(args) => args,
@@ -5286,8 +5465,54 @@ impl ToolExecutor {
 
         let limit = args.limit.unwrap_or(8).clamp(1, 50);
         let matches = search_tool_entries(self.tool_search_entries(), query, limit);
+        let mut activated_names = BTreeSet::new();
+        for entry in &matches {
+            if entry.kind == "tool" && !Self::is_core_tool_name(&entry.name) {
+                activated_names.insert(entry.name.clone());
+            }
+            if entry.kind == "mcp_server" {
+                activated_names.insert("mcp_list_tools".to_string());
+                activated_names.insert("mcp_call_tool".to_string());
+            }
+        }
+        let activated_names: Vec<String> = activated_names.into_iter().collect();
+        let activated_count = activated_names.len();
+        if activated_count > 0 {
+            self.activate_tools_for_thread(thread_id, activated_names.iter().cloned())
+                .await;
+        }
+        let skill_match_count = matches.iter().filter(|entry| entry.kind == "skill").count();
+        let mcp_match_count = matches
+            .iter()
+            .filter(|entry| entry.source.starts_with("mcp:"))
+            .count();
+        crate::agent::emit_and_broadcast(
+            app_handle,
+            "turn-loading",
+            serde_json::json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "callId": call_id,
+                "kind": if mcp_match_count > 0 { "mcp" } else { "skill" },
+                "phase": "activation",
+                "status": "completed",
+                "query": query,
+                "skillMatchCount": skill_match_count,
+                "mcpMatchCount": mcp_match_count,
+                "activatedCount": activated_count,
+                "activatedTools": activated_names.clone(),
+            }),
+        );
         let output = format_tool_search_output(query, matches);
-        let output = truncate_output(&output, 20_000);
+        let output = truncate_output(&output, TOOL_OUTPUT_SEARCH_MAX_CHARS);
+        let output = if activated_count > 0 {
+            format!(
+                "{output}\n\n[activated {activated_count} non-core tool schema(s) for the next model call in this turn: {}]",
+                activated_names.join(", ")
+            )
+        } else {
+            output
+        };
         self.emit_tool_end(app_handle, thread_id, call_id, "tool_search", 0, &output);
         Ok(output)
     }
@@ -5322,7 +5547,7 @@ impl ToolExecutor {
             connector_filter,
             args.include_tools.unwrap_or(true),
         );
-        let output = truncate_output(&output, 20_000);
+        let output = truncate_output(&output, TOOL_OUTPUT_SEARCH_MAX_CHARS);
         self.emit_tool_end(app_handle, thread_id, call_id, "apps_list", 0, &output);
         Ok(output)
     }
@@ -5396,7 +5621,7 @@ impl ToolExecutor {
             "tools": candidates,
         }))
         .unwrap_or_default();
-        let output = truncate_output(&output, 20_000);
+        let output = truncate_output(&output, TOOL_OUTPUT_SEARCH_MAX_CHARS);
         self.emit_tool_end(
             app_handle,
             thread_id,
@@ -5672,7 +5897,7 @@ impl ToolExecutor {
             }
         };
 
-        let output = truncate_output(&output, 20_000);
+        let output = truncate_output(&output, TOOL_OUTPUT_SEARCH_MAX_CHARS);
         self.emit_tool_end(app_handle, thread_id, call_id, "plugin_manage", 0, &output);
         Ok(output)
     }
@@ -5855,13 +6080,8 @@ impl ToolExecutor {
         });
 
         let child = Arc::new(Mutex::new(child));
-        self.register_active_tool_process(
-            thread_id,
-            call_id,
-            "code_search",
-            child.clone(),
-        )
-        .await;
+        self.register_active_tool_process(thread_id, call_id, "code_search", child.clone())
+            .await;
 
         let (exit_code, timed_out) =
             match wait_for_child_with_timeout(&child, command.timeout_ms).await {
@@ -5877,21 +6097,15 @@ impl ToolExecutor {
                     self.unregister_active_tool_process(thread_id, call_id)
                         .await;
                     let msg = format!("Failed to wait for code_search: {error}");
-                    self.emit_tool_end(
-                        app_handle,
-                        thread_id,
-                        call_id,
-                        "code_search",
-                        -1,
-                        &msg,
-                    );
+                    self.emit_tool_end(app_handle, thread_id, call_id, "code_search", -1, &msg);
                     return Ok(msg);
                 }
             };
 
         wait_for_shell_stream_task(&mut stdout_handle, 1_500).await;
         wait_for_shell_stream_task(&mut stderr_handle, 1_500).await;
-        self.unregister_active_tool_process(thread_id, call_id).await;
+        self.unregister_active_tool_process(thread_id, call_id)
+            .await;
         let stdout = decode_command_output_bytes(&stdout_buffer.lock().await);
         let stderr = decode_command_output_bytes(&stderr_buffer.lock().await);
         let output = if timed_out {
@@ -6228,7 +6442,7 @@ impl ToolExecutor {
                 text
             }
         };
-        let output = truncate_output(&output_body, 16_000);
+        let output = truncate_output(&output_body, TOOL_OUTPUT_MEMORY_MAX_CHARS);
         self.emit_tool_end(app_handle, thread_id, call_id, "memory_read", 0, &output);
 
         self.track_experience_usage(&args.path);
@@ -6312,7 +6526,7 @@ impl ToolExecutor {
             }
         };
 
-        let output = truncate_output(&output, 16_000);
+        let output = truncate_output(&output, TOOL_OUTPUT_MEMORY_MAX_CHARS);
         self.emit_tool_end(app_handle, thread_id, call_id, "memory_search", 0, &output);
         Ok(output)
     }
@@ -6365,8 +6579,9 @@ impl ToolExecutor {
         }
 
         if !self.smartbrain_is_active() {
-            let msg = "Local Knowledge Base is disabled. Enable it in Settings to use smartbrain_search."
-                .to_string();
+            let msg =
+                "Local Knowledge Base is disabled. Enable it in Settings to use smartbrain_search."
+                    .to_string();
             self.emit_tool_end(
                 app_handle,
                 thread_id,
@@ -6539,7 +6754,7 @@ impl ToolExecutor {
             lines.join("\n")
         };
 
-        let output = truncate_output(&output, 16_000);
+        let output = truncate_output(&output, TOOL_OUTPUT_SMARTBRAIN_MAX_CHARS);
         self.emit_tool_end(
             app_handle,
             thread_id,
@@ -7169,6 +7384,7 @@ impl ToolExecutor {
         call_id: &str,
         app_handle: &AppHandle,
         thread_id: &str,
+        turn_id: Option<&str>,
     ) -> AppResult<String> {
         #[derive(Deserialize, Default)]
         struct Args {
@@ -7179,11 +7395,40 @@ impl ToolExecutor {
         let args: Args = serde_json::from_str(arguments).unwrap_or_default();
         let display = args.server.as_deref().unwrap_or("all");
         self.emit_tool_start(app_handle, thread_id, call_id, "mcp_list_tools", display);
+        let started = Instant::now();
+        crate::agent::emit_and_broadcast(
+            app_handle,
+            "turn-loading",
+            serde_json::json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "callId": call_id,
+                "kind": "mcp",
+                "phase": "catalog",
+                "status": "started",
+                "server": display,
+            }),
+        );
 
         let output = self
             .mcp_request_for_selection(args.server.as_deref(), "tools/list", serde_json::json!({}))
             .await;
         let (exit_code, text) = format_mcp_selection_result(output, "tools");
+        crate::agent::emit_and_broadcast(
+            app_handle,
+            "turn-loading",
+            serde_json::json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "callId": call_id,
+                "kind": "mcp",
+                "phase": "catalog",
+                "status": if exit_code == 0 { "completed" } else { "failed" },
+                "server": display,
+                "durationMs": started.elapsed().as_millis() as u64,
+                "error": if exit_code == 0 { serde_json::Value::Null } else { serde_json::json!(&text) },
+            }),
+        );
         self.emit_tool_end(
             app_handle,
             thread_id,
@@ -7565,7 +7810,7 @@ impl ToolExecutor {
     }
 
     async fn discover_mcp_direct_tool_specs(&mut self) -> Vec<serde_json::Value> {
-        if self.mcp_direct_tools_discovered {
+        if !self.mcp_discovery_needs_refresh() {
             return sorted_mcp_tool_specs(&self.mcp_tool_specs);
         }
 
@@ -7576,15 +7821,36 @@ impl ToolExecutor {
 
         let mut used_names = BTreeSet::new();
         let mut specs = Vec::new();
-        let mut had_error = false;
+        let discovery_timeout = Duration::from_secs(6);
+        let requests = servers.iter().map(|server| async {
+            let result = tokio::time::timeout(
+                discovery_timeout,
+                self.mcp_request(server, "tools/list", serde_json::json!({})),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "MCP server '{}' catalog discovery timed out after {} seconds",
+                    server.name,
+                    discovery_timeout.as_secs()
+                ))
+            });
+            (server.clone(), result)
+        });
+        let results = futures_util::future::join_all(requests).await;
+        let mut failed_servers = Vec::new();
 
-        for server in servers {
-            let result = self
-                .mcp_request(&server, "tools/list", serde_json::json!({}))
-                .await;
-            let Ok(result) = result else {
-                had_error = true;
-                continue;
+        for (server, result) in results {
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    warn!(
+                        "MCP catalog discovery failed for '{}': {error}",
+                        server.name
+                    );
+                    failed_servers.push(server.name.clone());
+                    continue;
+                }
             };
             let Some(tools) = result.get("tools").and_then(serde_json::Value::as_array) else {
                 continue;
@@ -7610,8 +7876,25 @@ impl ToolExecutor {
             }
         }
 
-        self.mcp_direct_tools_discovered = !had_error;
+        self.mcp_direct_tools_discovered = failed_servers.is_empty();
+        self.mcp_discovery_retry_after = if failed_servers.is_empty() {
+            None
+        } else {
+            warn!(
+                "MCP catalog discovery failed for {}; keeping partial catalog and retrying after cooldown",
+                failed_servers.join(", ")
+            );
+            Some(Instant::now() + Duration::from_secs(300))
+        };
         specs
+    }
+
+    pub fn mcp_discovery_needs_refresh(&self) -> bool {
+        if self.mcp_direct_tools_discovered {
+            return false;
+        }
+        self.mcp_discovery_retry_after
+            .is_none_or(|retry_after| Instant::now() >= retry_after)
     }
 
     async fn mcp_request(
@@ -8009,7 +8292,8 @@ impl ToolExecutor {
             .current_dir(resolve_command_cwd(&self.cwd, server.cwd.as_deref()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         #[cfg(windows)]
         command.no_console();
 
@@ -8142,6 +8426,14 @@ impl ToolExecutor {
             .filter(|server| !server.disabled)
             .cloned()
             .collect()
+    }
+
+    pub fn mcp_loading_snapshot(&self) -> (usize, usize, bool) {
+        (
+            self.enabled_mcp_servers().len(),
+            self.mcp_tool_specs.len(),
+            self.mcp_direct_tools_discovered,
+        )
     }
 
     fn mcp_server(&self, name: &str) -> Result<&McpServerConfig, String> {
@@ -8520,7 +8812,7 @@ impl ToolExecutor {
     fn smartbrain_is_active(&self) -> bool {
         let config_path = self.workspace_config_dir.join("config.toml");
         ConfigToml::load(&config_path)
-            .map(|config| config.smartbrain_config().is_active())
+            .map(|config| config.smartbrain_config().knowledge_is_active())
             .unwrap_or(false)
     }
 
@@ -9044,6 +9336,18 @@ fn tool_search_entry_from_function_spec(
     })
 }
 
+/// Prefer short relative skill paths in tool_search results.
+fn skill_search_path(workspace_config_dir: &Path, skill_md: &Path) -> String {
+    let workspace_root = workspace_config_dir
+        .parent()
+        .unwrap_or(workspace_config_dir);
+    skill_md
+        .strip_prefix(workspace_root)
+        .or_else(|_| skill_md.strip_prefix(workspace_config_dir))
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| skill_md.to_string_lossy().replace('\\', "/"))
+}
+
 fn local_skill_search_entries(workspace_config_dir: &Path) -> Vec<ToolSearchEntry> {
     let skills_dir = workspace_config_dir.join("skills");
     let Ok(entries) = std::fs::read_dir(&skills_dir) else {
@@ -9079,7 +9383,7 @@ fn local_skill_search_entries(workspace_config_dir: &Path) -> Vec<ToolSearchEntr
             name: display_name,
             description: description_parts.join(" | "),
             source: "codey/skills".to_string(),
-            path: Some(skill_md.to_string_lossy().to_string()),
+            path: Some(skill_search_path(workspace_config_dir, &skill_md)),
             spec: None,
             metadata: BTreeMap::new(),
             usage: Some("Read this skill's SKILL.md before applying it.".to_string()),
@@ -9097,7 +9401,7 @@ fn plugin_skill_search_entries(workspace_config_dir: &Path) -> Vec<ToolSearchEnt
             name: format!("{}: {}", skill.plugin_display_name, skill.skill_name),
             description: skill.description,
             source: format!("plugin:{}", skill.plugin_id),
-            path: Some(skill.path.to_string_lossy().to_string()),
+            path: Some(skill_search_path(workspace_config_dir, &skill.path)),
             spec: None,
             metadata: BTreeMap::new(),
             usage: Some("Read this plugin skill's SKILL.md before applying it.".to_string()),
@@ -12586,7 +12890,7 @@ fn truncate_output(s: &str, max_chars: usize) -> String {
 ///
 /// Design goals:
 /// - replace shell snippets that dump `start..=end` line ranges
-/// - keep full-file reads compatible when no range is requested
+/// - always page large files with a stable default window
 /// - return pagination metadata so the model can continue with `line_offset`
 fn format_read_file_output(
     path: &str,
@@ -12596,15 +12900,6 @@ fn format_read_file_output(
     end_line: Option<usize>,
     show_line_numbers: Option<bool>,
 ) -> String {
-    let ranged = line_offset.is_some() || max_lines.is_some() || end_line.is_some();
-    if !ranged {
-        if show_line_numbers.unwrap_or(false) {
-            let lines = content.lines().collect::<Vec<_>>();
-            return render_numbered_file_slice(path, &lines, 1, lines.len(), false);
-        }
-        return content.to_string();
-    }
-
     let lines = content.lines().collect::<Vec<_>>();
     let total_lines = lines.len();
     if total_lines == 0 {
@@ -12620,15 +12915,13 @@ fn format_read_file_output(
 
     let requested_count = if let Some(end) = end_line {
         if end < start {
-            return format!(
-                "File: {path}\nError: end_line {end} must be >= line_offset {start}."
-            );
+            return format!("File: {path}\nError: end_line {end} must be >= line_offset {start}.");
         }
         end.saturating_sub(start).saturating_add(1)
     } else {
-        max_lines.unwrap_or(200)
+        max_lines.unwrap_or(READ_FILE_DEFAULT_MAX_LINES)
     };
-    let count = requested_count.clamp(1, 1000);
+    let count = requested_count.clamp(1, READ_FILE_MAX_LINES_HARD_CAP);
     let selected = lines
         .iter()
         .skip(start.saturating_sub(1))
@@ -12637,6 +12930,7 @@ fn format_read_file_output(
         .collect::<Vec<_>>();
     let end = start.saturating_add(selected.len().saturating_sub(1));
     let has_more = end < total_lines;
+    // Default to numbered pages so models can resume with exact line_offset values.
     let with_numbers = show_line_numbers.unwrap_or(true);
 
     if with_numbers {
@@ -12765,6 +13059,261 @@ mod tests {
         assert!(enabled_names.contains(&"close_agent"));
         assert!(enabled_names.contains(&"close_exec_session"));
         assert!(enabled_names.contains(&"mcp_status"));
+    }
+
+    #[tokio::test]
+    async fn layered_tool_specs_default_to_core_only_and_activate_via_search() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("workspace");
+        let config_dir = root.join("codey");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+
+        let mut executor = ToolExecutor::with_workspace_config_dir(root, config_dir);
+        executor.mcp_tool_specs.insert(
+            "mcp__playwright__browser_navigate".to_string(),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "mcp__playwright__browser_navigate",
+                    "description": "Navigate Playwright browser to a URL",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "url": { "type": "string" } },
+                        "required": ["url"]
+                    }
+                }
+            }),
+        );
+        executor.mcp_tool_aliases.insert(
+            "mcp__playwright__browser_navigate".to_string(),
+            McpToolAlias {
+                server: "playwright".to_string(),
+                tool: "browser_navigate".to_string(),
+                connector: McpConnectorMetadata::default(),
+            },
+        );
+        executor.mcp_direct_tools_discovered = true;
+
+        let default_specs = executor
+            .tool_specs_for_turn(true, false, Some("thread-layered"))
+            .await;
+        let default_names: BTreeSet<_> = default_specs
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+
+        assert!(default_names.contains("shell"));
+        assert!(default_names.contains("read_file"));
+        assert!(default_names.contains("tool_search"));
+        assert!(default_names.contains("web_search"));
+        assert!(!default_names.contains("memory_list"));
+        assert!(!default_names.contains("spawn_agent"));
+        assert!(!default_names.contains("mcp_list_tools"));
+        assert!(!default_names.contains("mcp__playwright__browser_navigate"));
+        assert!(
+            default_names.len() <= 22,
+            "core schema set should stay small, got {}",
+            default_names.len()
+        );
+
+        executor
+            .activate_tools_for_thread(
+                "thread-layered",
+                ["mcp__playwright__browser_navigate", "memory_list"],
+            )
+            .await;
+
+        let activated_specs = executor
+            .tool_specs_for_turn(true, false, Some("thread-layered"))
+            .await;
+        let activated_names: BTreeSet<_> = activated_specs
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+        assert!(activated_names.contains("mcp__playwright__browser_navigate"));
+        assert!(activated_names.contains("memory_list"));
+
+        // Other threads remain core-only.
+        let other_specs = executor
+            .tool_specs_for_turn(true, false, Some("thread-other"))
+            .await;
+        let other_names: BTreeSet<_> = other_specs
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+        assert!(!other_names.contains("mcp__playwright__browser_navigate"));
+        assert!(!other_names.contains("memory_list"));
+    }
+
+    #[test]
+    fn core_tool_name_set_is_intentionally_small() {
+        assert!(ToolExecutor::is_core_tool_name("tool_search"));
+        assert!(ToolExecutor::is_core_tool_name("apply_patch"));
+        assert!(!ToolExecutor::is_core_tool_name(
+            "mcp__playwright__browser_click"
+        ));
+        assert!(!ToolExecutor::is_core_tool_name("memory_list"));
+        assert!(!ToolExecutor::is_core_tool_name("spawn_agent"));
+    }
+
+    #[tokio::test]
+    async fn tool_search_activates_non_core_tools_for_same_thread_only() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("workspace");
+        let config_dir = root.join("codey");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+
+        let mut executor = ToolExecutor::with_workspace_config_dir(root, config_dir);
+        executor.mcp_tool_specs.insert(
+            "mcp__playwright__browser_navigate".to_string(),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "mcp__playwright__browser_navigate",
+                    "description": "Navigate Playwright browser to a URL",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "url": { "type": "string" } },
+                        "required": ["url"]
+                    }
+                }
+            }),
+        );
+        executor.mcp_tool_aliases.insert(
+            "mcp__playwright__browser_navigate".to_string(),
+            McpToolAlias {
+                server: "playwright".to_string(),
+                tool: "browser_navigate".to_string(),
+                connector: McpConnectorMetadata::default(),
+            },
+        );
+        executor.mcp_direct_tools_discovered = true;
+
+        // Simulate what exec_tool_search does after ranking matches.
+        let matches = search_tool_entries(executor.tool_search_entries(), "playwright navigate", 8);
+        assert!(
+            matches
+                .iter()
+                .any(|entry| entry.name == "mcp__playwright__browser_navigate"),
+            "playwright tool should be discoverable via tool_search"
+        );
+
+        let activated_names: Vec<String> = matches
+            .iter()
+            .filter(|entry| entry.kind == "tool")
+            .filter(|entry| !ToolExecutor::is_core_tool_name(&entry.name))
+            .map(|entry| entry.name.clone())
+            .collect();
+        assert!(
+            activated_names
+                .iter()
+                .any(|name| name == "mcp__playwright__browser_navigate")
+        );
+        executor
+            .activate_tools_for_thread("thread-search", activated_names)
+            .await;
+
+        let activated = executor
+            .tool_specs_for_turn(true, false, Some("thread-search"))
+            .await;
+        let activated_set: BTreeSet<_> = activated
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+        assert!(activated_set.contains("mcp__playwright__browser_navigate"));
+
+        let other = executor
+            .tool_specs_for_turn(true, false, Some("thread-other"))
+            .await;
+        let other_set: BTreeSet<_> = other
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+        assert!(!other_set.contains("mcp__playwright__browser_navigate"));
+    }
+
+    #[tokio::test]
+    async fn tool_search_hot_mounts_schemas_for_same_turn_next_iteration() {
+        // Mirrors the agent loop: iteration N runs tool_search (activate),
+        // iteration N+1 rebuilds tool_specs_for_turn and must include the schemas.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("workspace");
+        let config_dir = root.join("codey");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+
+        let mut executor = ToolExecutor::with_workspace_config_dir(root, config_dir);
+        executor.mcp_tool_specs.insert(
+            "mcp__playwright__browser_navigate".to_string(),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "mcp__playwright__browser_navigate",
+                    "description": "Navigate Playwright browser to a URL",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "url": { "type": "string" } },
+                        "required": ["url"]
+                    }
+                }
+            }),
+        );
+        executor.mcp_tool_aliases.insert(
+            "mcp__playwright__browser_navigate".to_string(),
+            McpToolAlias {
+                server: "playwright".to_string(),
+                tool: "browser_navigate".to_string(),
+                connector: McpConnectorMetadata::default(),
+            },
+        );
+        executor.mcp_direct_tools_discovered = true;
+
+        let thread_id = "thread-same-turn";
+
+        // Iteration N: default core-only schema set.
+        let before = executor
+            .tool_specs_for_turn(true, false, Some(thread_id))
+            .await;
+        let before_names: BTreeSet<_> = before
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+        assert!(!before_names.contains("mcp__playwright__browser_navigate"));
+
+        // Simulate tool_search activation mid-turn.
+        let matches = search_tool_entries(executor.tool_search_entries(), "playwright navigate", 8);
+        let activated_names: Vec<String> = matches
+            .iter()
+            .filter(|entry| entry.kind == "tool")
+            .filter(|entry| !ToolExecutor::is_core_tool_name(&entry.name))
+            .map(|entry| entry.name.clone())
+            .collect();
+        assert!(
+            activated_names
+                .iter()
+                .any(|name| name == "mcp__playwright__browser_navigate")
+        );
+        executor
+            .activate_tools_for_thread(thread_id, activated_names)
+            .await;
+
+        // Iteration N+1 (same user turn): rebuild tools before the next model call.
+        let after = executor
+            .tool_specs_for_turn(true, false, Some(thread_id))
+            .await;
+        let after_names: BTreeSet<_> = after
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+        assert!(after_names.contains("mcp__playwright__browser_navigate"));
+        assert!(after_names.contains("tool_search"));
+        assert!(after_names.len() > before_names.len());
     }
 
     #[test]
@@ -13589,6 +14138,72 @@ mod tests {
         assert!(executor.mcp_tool_specs.is_empty());
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn mcp_discovery_cooldown_skips_repeated_turn_loading() {
+        let root = std::env::temp_dir().join(format!(
+            "cn-codex-mcp-cooldown-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut executor =
+            ToolExecutor::with_workspace_config_dir(root.clone(), root.join("codey"));
+
+        assert!(executor.mcp_discovery_needs_refresh());
+
+        executor.mcp_discovery_retry_after = Some(Instant::now() + Duration::from_secs(300));
+        assert!(!executor.mcp_discovery_needs_refresh());
+
+        executor.mcp_discovery_retry_after = Some(Instant::now() - Duration::from_secs(1));
+        assert!(executor.mcp_discovery_needs_refresh());
+
+        executor.mcp_direct_tools_discovered = true;
+        assert!(!executor.mcp_discovery_needs_refresh());
+    }
+
+    #[tokio::test]
+    async fn initial_turn_defers_mcp_connection_until_tool_search_activation() {
+        let root = std::env::temp_dir().join(format!(
+            "cn-codex-mcp-lazy-turn-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut executor =
+            ToolExecutor::with_workspace_config_dir(root.clone(), root.join("codey"));
+        executor.set_mcp_servers(HashMap::from([(
+            "playwright".to_string(),
+            McpServerConfig {
+                name: "playwright".to_string(),
+                transport: "stdio".to_string(),
+                command: "this-command-must-not-run".to_string(),
+                args: Vec::new(),
+                env: HashMap::new(),
+                cwd: None,
+                url: None,
+                headers: HashMap::new(),
+                disabled: false,
+            },
+        )]));
+
+        let tools = executor
+            .tool_specs_for_turn(false, false, Some("thread-1"))
+            .await;
+        let tool_names = tools
+            .iter()
+            .filter_map(|tool| {
+                tool.pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!tool_names.contains(&"mcp_list_tools"));
+        assert!(!tool_names.contains(&"mcp_call_tool"));
+        assert!(executor.mcp_tool_specs.is_empty());
+        assert!(!executor.mcp_direct_tools_discovered);
+        assert!(executor.tool_search_entries().iter().any(|entry| {
+            entry.kind == "mcp_server"
+                && entry.name == "MCP server: playwright"
+                && entry.source == "mcp:playwright"
+        }));
     }
 
     #[tokio::test]
@@ -14888,21 +15503,29 @@ index 1111111..2222222 100644
                     path: "src/new.txt".to_string(),
                     action: "created",
                     move_to: None,
+                    additions: 1,
+                    deletions: 0,
                 },
                 ApplyPatchProgressChange {
                     path: "src/app.txt".to_string(),
                     action: "modified",
                     move_to: None,
+                    additions: 1,
+                    deletions: 1,
                 },
                 ApplyPatchProgressChange {
                     path: "src/old-name.txt".to_string(),
                     action: "renamed",
                     move_to: Some("src/new-name.txt".to_string()),
+                    additions: 1,
+                    deletions: 1,
                 },
                 ApplyPatchProgressChange {
                     path: "src/remove.txt".to_string(),
                     action: "deleted",
                     move_to: None,
+                    additions: 0,
+                    deletions: 0,
                 },
             ]
         );
@@ -15710,7 +16333,12 @@ index 1111111..2222222 100644
     fn format_read_file_output_returns_full_file_without_range() {
         let content = "alpha\nbeta\ngamma\n";
         let output = format_read_file_output("src/demo.rs", content, None, None, None, None);
-        assert_eq!(output, content);
+        assert!(output.contains("File: src/demo.rs"));
+        assert!(output.contains("Lines: 1-3 / 3"));
+        assert!(output.contains("1|alpha"));
+        assert!(output.contains("2|beta"));
+        assert!(output.contains("3|gamma"));
+        assert!(!output.contains("Next line_offset:"));
     }
 
     #[test]
@@ -15720,14 +16348,8 @@ index 1111111..2222222 100644
             .collect::<Vec<_>>()
             .join("\n");
 
-        let output = format_read_file_output(
-            "src/demo.rs",
-            &content,
-            Some(4),
-            None,
-            Some(6),
-            Some(true),
-        );
+        let output =
+            format_read_file_output("src/demo.rs", &content, Some(4), None, Some(6), Some(true));
 
         assert!(output.contains("File: src/demo.rs"));
         assert!(output.contains("Lines: 4-6 / 12"));
@@ -15741,15 +16363,38 @@ index 1111111..2222222 100644
 
     #[test]
     fn format_read_file_output_rejects_invalid_end_line() {
-        let output = format_read_file_output(
-            "src/demo.rs",
-            "a\nb\nc\n",
-            Some(3),
-            None,
-            Some(1),
-            None,
-        );
+        let output =
+            format_read_file_output("src/demo.rs", "a\nb\nc\n", Some(3), None, Some(1), None);
         assert!(output.contains("end_line 1 must be >= line_offset 3"));
+    }
+
+    #[test]
+    fn format_read_file_output_defaults_to_paginated_window() {
+        let content = (1..=250)
+            .map(|idx| format!("line-{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let output = format_read_file_output("src/demo.rs", &content, None, None, None, None);
+        assert!(output.contains("Lines: 1-200 / 250"));
+        assert!(output.contains("Next line_offset: 201"));
+        assert!(output.contains("1|line-1"));
+        assert!(output.contains("200|line-200"));
+        assert!(!output.contains("201|line-201"));
+    }
+
+    #[test]
+    fn format_read_file_output_hard_caps_max_lines() {
+        let content = (1..=500)
+            .map(|idx| format!("line-{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let output =
+            format_read_file_output("src/demo.rs", &content, Some(1), Some(1000), None, None);
+        assert!(output.contains("Lines: 1-400 / 500"));
+        assert!(output.contains("Next line_offset: 401"));
+        assert!(!output.contains("401|line-401"));
     }
 
     #[test]
@@ -15784,5 +16429,15 @@ index 1111111..2222222 100644
             .unwrap_or_default();
         assert!(description.contains("line_offset"));
         assert!(description.contains("Prefer this over shell"));
+
+        let max_lines = properties
+            .pointer("/max_lines/maximum")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        assert_eq!(max_lines, 400);
+        assert!(
+            description.contains("Defaults to a numbered page")
+                || description.contains("numbered page")
+        );
     }
 }

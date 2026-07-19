@@ -604,11 +604,17 @@ fn extract_embedded_patch_block(input: &str) -> Result<String, String> {
 }
 
 fn is_patch_begin_marker(line: &str) -> bool {
-    matches!(normalize_patch_directive_line(line).as_str(), "*** Begin Patch")
+    matches!(
+        normalize_patch_directive_line(line).as_str(),
+        "*** Begin Patch"
+    )
 }
 
 fn is_patch_end_marker(line: &str) -> bool {
-    matches!(normalize_patch_directive_line(line).as_str(), "*** End Patch")
+    matches!(
+        normalize_patch_directive_line(line).as_str(),
+        "*** End Patch"
+    )
 }
 
 fn normalize_patch_directive_line(line: &str) -> String {

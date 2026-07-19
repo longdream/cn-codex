@@ -65,10 +65,108 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   const initError = useAppStore((state) => state.initError);
   const retryInit = useAppStore((state) => state.retryInit);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const previousIsStreamingRef = useRef(isStreaming);
+  const scrollRafRef = useRef<number | null>(null);
+  // 流式输出时不要每个 token 都完整重渲染 Markdown，否则段落/列表结构会反复重排导致抖动。
+  const [stableStreamingText, setStableStreamingText] = useState(streamingText);
+  const streamingFlushTimerRef = useRef<number | null>(null);
+  const latestStreamingTextRef = useRef(streamingText);
+  latestStreamingTextRef.current = streamingText;
+
+  const isNearBottom = useCallback((el: HTMLDivElement) => {
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return distance < 96;
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    if (!stickToBottomRef.current) return;
+
+    // smooth 动画会被高频 token 更新反复打断，表现为整段“抽搐”。
+    // 流式阶段统一用即时贴底；消息结构变化时也优先 auto。
+    scroller.scrollTop = scroller.scrollHeight;
+  }, []);
+
+  const scheduleScrollToBottom = useCallback(() => {
+    if (!stickToBottomRef.current) return;
+    if (scrollRafRef.current != null) return;
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      scrollToBottom();
+    });
+  }, [scrollToBottom]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingText]);
+    if (!isStreaming) {
+      // 结束后直接清空稳定文本，避免和已落库消息短暂双渲染。
+      setStableStreamingText("");
+      if (streamingFlushTimerRef.current != null) {
+        window.clearTimeout(streamingFlushTimerRef.current);
+        streamingFlushTimerRef.current = null;
+      }
+      return;
+    }
+
+    // 首包立刻显示；后续合并到约 100ms 一帧，减少 Markdown 结构抖动。
+    if (!latestStreamingTextRef.current) return;
+    setStableStreamingText((prev) => {
+      if (!prev) {
+        return latestStreamingTextRef.current;
+      }
+      return prev;
+    });
+    if (streamingFlushTimerRef.current != null) return;
+    streamingFlushTimerRef.current = window.setTimeout(() => {
+      streamingFlushTimerRef.current = null;
+      const next = latestStreamingTextRef.current;
+      setStableStreamingText((prev) => (prev === next ? prev : next));
+    }, 100);
+  }, [isStreaming, streamingText]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current != null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+      }
+      if (streamingFlushTimerRef.current != null) {
+        window.clearTimeout(streamingFlushTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // 新消息结构变化：若用户仍贴底，则滚到底。
+    scheduleScrollToBottom();
+  }, [messages, scheduleScrollToBottom]);
+
+  useEffect(() => {
+    const wasStreaming = previousIsStreamingRef.current;
+    previousIsStreamingRef.current = isStreaming;
+    if (isStreaming && !wasStreaming) {
+      stickToBottomRef.current = true;
+      scheduleScrollToBottom();
+    }
+  }, [isStreaming, scheduleScrollToBottom]);
+
+  useEffect(() => {
+    // 流式文本增长：仅在贴底时跟随，且不做 smooth。
+    if (!isStreaming) return;
+    scheduleScrollToBottom();
+  }, [stableStreamingText, isStreaming, scheduleScrollToBottom]);
+
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      scheduleScrollToBottom();
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [scheduleScrollToBottom]);
 
   if (messages.length === 0 && !isStreaming) {
     if (!initialized && initError) {
@@ -111,8 +209,14 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   }
 
   return (
-    <div className="chat-dialog-surface thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pb-7 pt-6 sm:px-8">
-      <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-5">
+    <div
+      ref={scrollerRef}
+      className="chat-dialog-surface thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pb-7 pt-6 sm:px-8"
+      onScroll={(event) => {
+        stickToBottomRef.current = isNearBottom(event.currentTarget);
+      }}
+    >
+      <div ref={contentRef} className="mx-auto flex w-full max-w-[1180px] flex-col gap-5">
         {messages.map((message, index) => (
           <MessageRow
             key={message.id}
@@ -132,8 +236,8 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
               <span>{streamingLabel || intl.formatMessage({ id: "chat.runSummary.running" })}</span>
               <IconChevronRight size={16} stroke={1.8} className="text-[var(--chat-faint)]" />
             </div>
-            <div className="chat-prose max-w-[980px]">
-              <MessageContent content={streamingText} />
+            <div className="chat-prose chat-prose-streaming max-w-[980px]">
+              <StreamingMessageContent content={stableStreamingText || streamingText} />
               <span className="ml-1 inline-block h-3.5 w-1 animate-pulse rounded-sm bg-[var(--accent)] align-middle" />
             </div>
           </article>
@@ -800,92 +904,84 @@ function LegacyToolExecRow({ message }: { message: ChatMessage }) {
 function ToolCallsCard({ calls }: { calls: ToolCallItem[] }) {
   const visibleCalls = calls.filter((call) => !isHiddenShellToolCall(call));
   const hasRunning = visibleCalls.some((c) => c.status === "running");
-  const groups = groupToolCalls(visibleCalls);
+  const hasFailed = visibleCalls.some((c) => c.status === "failed");
+  const allSuccess = visibleCalls.length > 0 && visibleCalls.every((c) => c.status === "success");
+  const intl = useIntl();
+  // 工具调用默认收起，展开状态只由用户操作控制，避免流式状态变化造成卡片闪开闪合。
+  const [userExpanded, setUserExpanded] = useState(false);
+  const isExpanded = userExpanded;
 
-  if (groups.length === 0) return null;
+  if (visibleCalls.length === 0) return null;
+
+  const count = visibleCalls.length;
+  const runningCount = visibleCalls.filter((c) => c.status === "running").length;
+  const failedCount = visibleCalls.filter((c) => c.status === "failed").length;
+  const successCount = visibleCalls.filter((c) => c.status === "success").length;
+
+  const statusColor = hasRunning
+    ? "text-[var(--warning)]"
+    : hasFailed
+      ? "text-[var(--danger)]"
+      : "text-[var(--accent)]";
+
+  const bulletColor = hasRunning
+    ? "bg-[var(--warning)]"
+    : hasFailed
+      ? "bg-[var(--danger)]"
+      : "bg-[var(--accent)]";
+
+  const statusText = hasRunning
+    ? intl.formatMessage(
+        { id: "chat.toolCalls.runningStatus" },
+        { running: runningCount, total: count },
+      )
+    : hasFailed
+      ? intl.formatMessage(
+          { id: "chat.toolCalls.failedStatus" },
+          { failed: failedCount, total: count },
+        )
+      : allSuccess
+        ? intl.formatMessage(
+            { id: "chat.toolCalls.doneStatus" },
+            { success: successCount, total: count },
+          )
+        : intl.formatMessage({ id: "chat.toolCalls.count" }, { count });
+
+  const title = intl.formatMessage({ id: "chat.toolCalls.parent" }, { count });
 
   return (
-    <div className="max-w-[980px] space-y-2">
-      {groups.map((group, gi) => (
-        <ToolGroup key={gi} group={group} forceExpanded={hasRunning} />
-      ))}
+    <div className="chat-tool-card max-w-[980px] overflow-hidden text-xs">
+      <button
+        type="button"
+        onClick={() => setUserExpanded((prev) => !prev)}
+        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+        aria-expanded={isExpanded}
+      >
+        {hasRunning ? (
+          <IconLoader2 size={12} stroke={2} className="animate-spin text-[var(--warning)]" />
+        ) : (
+          <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${bulletColor}`} />
+        )}
+        <IconTerminal2 size={13} stroke={1.8} className="flex-shrink-0" />
+        <span className="min-w-0 flex-1 truncate font-medium text-[var(--chat-prose)]">
+          {title}
+        </span>
+        <span className={`flex-shrink-0 ${statusColor}`}>{statusText}</span>
+        {isExpanded
+          ? <IconChevronDown size={12} stroke={2} className="flex-shrink-0 opacity-50" />
+          : <IconChevronRight size={12} stroke={2} className="flex-shrink-0 opacity-50" />
+        }
+      </button>
+
+      {isExpanded && (
+        <div className="space-y-1 border-t border-[var(--chat-line)] px-2 py-2">
+          {visibleCalls.map((item) => (
+            <NestedToolItem key={item.id} item={item} />
+          ))}
+        </div>
+      )}
     </div>
   );
-}
-
-interface ToolGroup {
-  type:
-    | "shell"
-    | "shell_command"
-    | "exec_command"
-    | "write_stdin"
-    | "close_exec_session"
-    | "read_file"
-    | "write_file"
-    | "tool_search"
-    | "code_review"
-    | "apply_patch"
-    | "list_directory"
-    | "update_plan"
-    | "request_user_input"
-    | "request_permissions"
-    | "view_image"
-    | "image_generate"
-    | "echarts_report"
-    | "memory_list"
-    | "memory_read"
-    | "memory_search"
-    | "memory_write"
-    | "memory_update"
-    | "memory_forget"
-    | "mcp_list_servers"
-    | "mcp_status"
-    | "mcp_list_tools"
-    | "mcp_call_tool"
-    | "mcp_list_resources"
-    | "mcp_read_resource"
-    | "mcp_list_resource_templates"
-    | "mcp_list_prompts"
-    | "mcp_get_prompt"
-    | "apps_list"
-    | "list_available_plugins_to_install"
-    | "request_plugin_install"
-    | "plugin_manage"
-    | "browser_run"
-    | "spawn_agent"
-    | "wait_agent"
-    | "send_input"
-    | "resume_agent"
-    | "list_agents"
-    | "close_agent"
-    | "web_search"
-    | "web_fetch";
-  items: ToolCallItem[];
-}
-
-function groupToolCalls(calls: ToolCallItem[]): ToolGroup[] {
-  const groups: ToolGroup[] = [];
-  let current: ToolGroup | null = null;
-
-  for (const call of calls) {
-    const t = call.name as ToolGroup["type"];
-    if (isShellToolName(t)) {
-      if (current && isShellToolName(current.type)) {
-        current.items.push(call);
-      } else {
-        current = { type: t, items: [call] };
-        groups.push(current);
-      }
-    } else {
-      if (current && current.type === t) {
-        current.items.push(call);
-      } else {
-        current = { type: t, items: [call] };
-        groups.push(current);
-      }
-    }
-  }
-  return groups;
 }
 
 function isShellToolName(name: string): boolean {
@@ -963,121 +1059,6 @@ function toolGroupIcon(type: string) {
     case "web_search": return <IconSearch size={13} stroke={1.8} />;
     case "web_fetch": return <IconFileText size={13} stroke={1.8} />;
     default: return <IconFile size={13} stroke={1.8} />;
-  }
-}
-
-function toolGroupSummary(group: ToolGroup): string {
-  const n = group.items.length;
-  if (group.type.startsWith("mcp__")) {
-    return n === 1 ? `Called MCP tool ${group.items[0].displayLabel}` : `Called ${n} MCP tools`;
-  }
-  switch (group.type) {
-    case "shell":
-    case "shell_command":
-    case "exec_command":
-      return n === 1 ? group.items[0].displayLabel : `Ran ${n} shell commands`;
-    case "write_stdin":
-      return n === 1 ? `Wrote stdin ${group.items[0].displayLabel}` : `Wrote stdin ${n} times`;
-    case "close_exec_session":
-      return n === 1 ? `Closed exec session ${group.items[0].displayLabel}` : `Closed exec sessions ${n} times`;
-    case "read_file":
-      return n === 1 ? `Read ${group.items[0].displayLabel}` : `Read ${n} files`;
-    case "write_file":
-      return n === 1 ? `Edited ${group.items[0].displayLabel}` : `Edited ${n} files`;
-    case "tool_search":
-      return n === 1 ? `Searched tools ${group.items[0].displayLabel}` : `Searched tools ${n} times`;
-    case "code_review":
-      return n === 1 ? `Reviewed code ${group.items[0].displayLabel}` : `Reviewed code ${n} times`;
-    case "apply_patch":
-      {
-        const hasRunning = group.items.some((c) => c.status === "running");
-        const hasFailed = group.items.some((c) => c.status === "failed");
-        if (hasRunning) {
-          return n === 1
-            ? `Applying patch ${group.items[0].displayLabel}`
-            : `Applying ${n} patches`;
-        }
-        if (hasFailed) {
-          return n === 1
-            ? `Failed to apply patch ${group.items[0].displayLabel}`
-            : `Failed to apply ${n} patches`;
-        }
-        return n === 1
-          ? `Applied patch ${group.items[0].displayLabel}`
-          : `Applied ${n} patches`;
-      }
-    case "list_directory":
-      return n === 1 ? `Listed ${group.items[0].displayLabel}` : `Listed ${n} directories`;
-    case "update_plan":
-      return n === 1 ? `Updated plan ${group.items[0].displayLabel}` : `Updated plan ${n} times`;
-    case "request_user_input":
-      return n === 1 ? `Asked user ${group.items[0].displayLabel}` : `Asked user ${n} times`;
-    case "request_permissions":
-      return n === 1 ? `Requested permissions ${group.items[0].displayLabel}` : `Requested permissions ${n} times`;
-    case "view_image":
-      return n === 1 ? `Viewed image ${group.items[0].displayLabel}` : `Viewed ${n} images`;
-    case "image_generate":
-      return n === 1 ? `Generated image ${group.items[0].displayLabel}` : `Generated ${n} images`;
-    case "echarts_report":
-      return n === 1 ? `Rendered chart ${group.items[0].displayLabel}` : `Rendered ${n} charts`;
-    case "memory_list":
-      return n === 1 ? `Listed memories ${group.items[0].displayLabel}` : `Listed ${n} memory paths`;
-    case "memory_read":
-      return n === 1 ? `Read memory ${group.items[0].displayLabel}` : `Read ${n} memories`;
-    case "memory_search":
-      return n === 1 ? `Searched memories ${group.items[0].displayLabel}` : `Searched ${n} memory queries`;
-    case "memory_write":
-      return n === 1 ? `Wrote memory ${group.items[0].displayLabel}` : `Wrote ${n} memories`;
-    case "memory_update":
-      return n === 1 ? `Updated memory ${group.items[0].displayLabel}` : `Updated ${n} memories`;
-    case "memory_forget":
-      return n === 1 ? `Forgot memory ${group.items[0].displayLabel}` : `Forgot ${n} memories`;
-    case "mcp_list_servers":
-      return "Listed MCP servers";
-    case "mcp_status":
-      return n === 1 ? `Checked MCP status ${group.items[0].displayLabel}` : `Checked MCP status ${n} times`;
-    case "mcp_list_tools":
-      return n === 1 ? `Listed MCP tools ${group.items[0].displayLabel}` : `Listed MCP tools ${n} times`;
-    case "mcp_call_tool":
-      return n === 1 ? `Called MCP tool ${group.items[0].displayLabel}` : `Called ${n} MCP tools`;
-    case "mcp_list_resources":
-      return n === 1 ? `Listed MCP resources ${group.items[0].displayLabel}` : `Listed MCP resources ${n} times`;
-    case "mcp_read_resource":
-      return n === 1 ? `Read MCP resource ${group.items[0].displayLabel}` : `Read ${n} MCP resources`;
-    case "mcp_list_resource_templates":
-      return n === 1 ? `Listed MCP resource templates ${group.items[0].displayLabel}` : `Listed MCP resource templates ${n} times`;
-    case "mcp_list_prompts":
-      return n === 1 ? `Listed MCP prompts ${group.items[0].displayLabel}` : `Listed MCP prompts ${n} times`;
-    case "mcp_get_prompt":
-      return n === 1 ? `Got MCP prompt ${group.items[0].displayLabel}` : `Got ${n} MCP prompts`;
-    case "apps_list":
-      return n === 1 ? `Listed apps ${group.items[0].displayLabel}` : `Listed apps ${n} times`;
-    case "list_available_plugins_to_install":
-      return n === 1 ? `Listed installable plugins ${group.items[0].displayLabel}` : `Listed installable plugins ${n} times`;
-    case "request_plugin_install":
-      return n === 1 ? `Installed plugin ${group.items[0].displayLabel}` : `Installed plugins ${n} times`;
-    case "plugin_manage":
-      return n === 1 ? `Managed plugin ${group.items[0].displayLabel}` : `Managed plugins ${n} times`;
-    case "browser_run":
-      return n === 1 ? `Browsed ${group.items[0].displayLabel}` : `Ran browser ${n} times`;
-    case "spawn_agent":
-      return n === 1 ? `Spawned agent ${group.items[0].displayLabel}` : `Spawned ${n} agents`;
-    case "wait_agent":
-      return n === 1 ? `Waited for agent ${group.items[0].displayLabel}` : `Waited for agents ${n} times`;
-    case "send_input":
-      return n === 1 ? `Messaged agent ${group.items[0].displayLabel}` : `Messaged agents ${n} times`;
-    case "resume_agent":
-      return n === 1 ? `Resumed agent ${group.items[0].displayLabel}` : `Resumed agents ${n} times`;
-    case "list_agents":
-      return n === 1 ? `Listed agents ${group.items[0].displayLabel}` : `Listed agents ${n} times`;
-    case "close_agent":
-      return n === 1 ? `Closed agent ${group.items[0].displayLabel}` : `Closed agents ${n} times`;
-    case "web_search":
-      return n === 1 ? `Searched ${group.items[0].displayLabel}` : `Searched ${n} queries`;
-    case "web_fetch":
-      return n === 1 ? `Fetched ${group.items[0].displayLabel}` : `Fetched ${n} pages`;
-    default:
-      return `${n} tool calls`;
   }
 }
 
@@ -1217,108 +1198,54 @@ function stringField(record: Record<string, unknown>, key: string): string | und
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function ToolGroup({
-  group,
-  forceExpanded,
-}: {
-  group: ToolGroup;
-  forceExpanded: boolean;
-}) {
-  const hasRunning = group.items.some((c) => c.status === "running");
-  const allSuccess = group.items.every((c) => c.status === "success");
-  const hasFailed = group.items.some((c) => c.status === "failed");
-  const [localExpanded, setLocalExpanded] = useState(false);
-  const isExpanded = localExpanded || (forceExpanded && hasRunning);
+function NestedToolItem({ item }: { item: ToolCallItem }) {
+  // 明细同样只在用户点击时展开，避免工具状态更新时展开内容跳动。
+  const [userExpanded, setUserExpanded] = useState(false);
+  const isExpanded = userExpanded;
 
-  const statusColor = hasRunning
-    ? "text-[var(--warning)]"
-    : hasFailed
-      ? "text-[var(--danger)]"
-      : "text-[var(--accent)]";
-
-  const bulletColor = hasRunning
-    ? "bg-[var(--warning)]"
-    : hasFailed
-      ? "bg-[var(--danger)]"
-      : "bg-[var(--accent)]";
-
-  const isMulti = group.items.length > 1;
+  const statusColor =
+    item.status === "running"
+      ? "text-[var(--warning)]"
+      : item.status === "failed"
+        ? "text-[var(--danger)]"
+        : "text-[var(--accent)]";
 
   return (
-    <div className="chat-tool-card overflow-hidden text-xs">
+    <div className="overflow-hidden rounded-[var(--radius-sm)]">
       <button
-        onClick={() => setLocalExpanded(!localExpanded)}
-        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+        type="button"
+        onClick={() => setUserExpanded((prev) => !prev)}
+        className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2.5 py-1.5 text-left text-[var(--chat-muted)] transition-colors hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+        aria-expanded={isExpanded}
       >
-        {hasRunning ? (
-          <IconLoader2 size={12} stroke={2} className="animate-spin text-[var(--warning)]" />
+        {item.status === "running" ? (
+          <IconLoader2 size={11} stroke={2} className="animate-spin text-[var(--warning)]" />
+        ) : item.status === "success" ? (
+          <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--accent)]" />
         ) : (
-          <span className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${bulletColor}`} />
+          <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--danger)]" />
         )}
-        {toolGroupIcon(group.type)}
-        <span className="min-w-0 flex-1 truncate font-mono">{toolGroupSummary(group)}</span>
-        {!hasRunning && (
+        {toolGroupIcon(item.name)}
+        <span className="min-w-0 flex-1 truncate">
+          <span className="font-mono text-[var(--chat-prose)]">{item.name}</span>
+          {item.displayLabel && item.displayLabel !== item.name && (
+            <span className="ml-1.5 text-[var(--chat-faint)]">{item.displayLabel}</span>
+          )}
+        </span>
+        {item.status !== "running" && (
           <span className={`flex-shrink-0 ${statusColor}`}>
-            {allSuccess ? "done" : hasFailed ? "failed" : ""}
+            {item.status === "success" ? "done" : "failed"}
           </span>
         )}
         {isExpanded
-          ? <IconChevronDown size={12} stroke={2} className="flex-shrink-0 opacity-50" />
-          : <IconChevronRight size={12} stroke={2} className="flex-shrink-0 opacity-50" />
+          ? <IconChevronDown size={11} stroke={2} className="flex-shrink-0 opacity-40" />
+          : <IconChevronRight size={11} stroke={2} className="flex-shrink-0 opacity-40" />
         }
       </button>
-
       {isExpanded && (
-        <div className="space-y-1 border-t border-[var(--chat-line)] px-3.5 py-2">
-          {isMulti ? (
-            group.items.map((item) => (
-              <MultiToolItem key={item.id} item={item} />
-            ))
-          ) : (
-            <ToolDetailView item={group.items[0]} />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MultiToolItem({ item }: { item: ToolCallItem }) {
-  const [expanded, setExpanded] = useState(false);
-  const hasOutput = !!item.output && item.status !== "running";
-  const hasPatchDetails = item.name === "apply_patch" && !!item.patchProgress?.length;
-  const hasDetails = hasOutput || hasPatchDetails;
-
-  return (
-    <div>
-      <button
-        onClick={() => hasDetails && setExpanded(!expanded)}
-        className={`flex w-full items-center gap-2 rounded-[var(--radius-sm)] py-1 pl-1 pr-2 text-left text-[var(--chat-faint)] ${hasDetails ? "cursor-pointer hover:bg-[var(--chat-chip)] hover:text-[var(--chat-muted)]" : "cursor-default"}`}
-      >
-        <span className="h-px w-3 bg-[var(--chat-line)]" />
-        {item.status === "running" ? (
-          <IconLoader2 size={10} stroke={2} className="animate-spin" />
-        ) : item.status === "success" ? (
-          <span className="h-1 w-1 rounded-full bg-[var(--accent)]" />
-        ) : (
-          <span className="h-1 w-1 rounded-full bg-[var(--danger)]" />
-        )}
-        <span className="min-w-0 flex-1 truncate font-mono">{item.displayLabel}</span>
-        {hasDetails && (
-          expanded
-            ? <IconChevronDown size={10} stroke={2} className="flex-shrink-0 opacity-40" />
-            : <IconChevronRight size={10} stroke={2} className="flex-shrink-0 opacity-40" />
-        )}
-      </button>
-      {expanded && item.name === "apply_patch" && (
-        <div className="ml-5 mt-1">
+        <div className="border-t border-[var(--chat-line)]/70 px-2.5 py-1.5">
           <ToolDetailView item={item} />
         </div>
-      )}
-      {expanded && item.name !== "apply_patch" && item.output && (
-        <pre className="chat-tool-output thin-scrollbar ml-5 mt-1 max-h-[150px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[var(--chat-prose)]">
-          {item.output}
-        </pre>
       )}
     </div>
   );
@@ -2362,6 +2289,34 @@ function MessageContent({ content }: { content: string }) {
 
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {content}
+    </ReactMarkdown>
+  );
+}
+
+// 流式阶段用更轻量的 Markdown 组件，避免图表/代码高亮等重组件反复挂载造成整段抖动。
+const streamingMarkdownComponents: Components = {
+  ...markdownComponents,
+  code: ({ className, children }) => {
+    const code = String(children).replace(/\n$/, "");
+    const language = /language-([\w-]+)/.exec(className ?? "")?.[1] ?? "";
+    const isBlockCode = Boolean(language) || code.includes("\n");
+    if (isBlockCode) {
+      return (
+        <pre className="chat-tool-output thin-scrollbar my-3 overflow-x-auto px-3 py-3 text-[13px] leading-relaxed">
+          <code>{code}</code>
+        </pre>
+      );
+    }
+    return <code className="chat-inline-code">{code}</code>;
+  },
+};
+
+function StreamingMessageContent({ content }: { content: string }) {
+  if (!content) return null;
+
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={streamingMarkdownComponents}>
       {content}
     </ReactMarkdown>
   );

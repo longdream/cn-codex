@@ -915,9 +915,7 @@ pub async fn window_get_document_detail_path(
 }
 
 #[tauri::command]
-pub async fn window_get_document_detail_line(
-    state: State<'_, AppState>,
-) -> AppResult<Option<u32>> {
+pub async fn window_get_document_detail_line(state: State<'_, AppState>) -> AppResult<Option<u32>> {
     Ok(*state.document_detail_active_line.read().await)
 }
 
@@ -1859,9 +1857,8 @@ fn is_non_blank_browser_tab(tab: &RemoteTabInfo) -> bool {
 
 async fn list_browser_tabs(cdp_endpoint: &str) -> AppResult<Vec<RemoteTabInfo>> {
     let http = local_cdp_http_client();
-    let mut last_error = AppError::Custom(
-        "Failed to query browser tabs: no CDP endpoint candidates".to_string(),
-    );
+    let mut last_error =
+        AppError::Custom("Failed to query browser tabs: no CDP endpoint candidates".to_string());
 
     for endpoint in cdp_endpoint_candidates_for(cdp_endpoint) {
         match list_browser_tabs_at(&http, &endpoint).await {
@@ -2448,12 +2445,72 @@ const DEFAULT_SEARCH_MAX_FILES: usize = 8_000;
 const DEFAULT_SEARCH_MAX_MATCHES_PER_FILE: usize = 5;
 const DEFAULT_SEARCH_MAX_FILE_BYTES: u64 = 1024 * 1024;
 const SEARCH_TEXT_EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "jsonc", "md", "mdx", "txt", "log",
-    "rs", "py", "go", "java", "c", "h", "cpp", "cc", "cxx", "hpp", "cs", "kt", "swift",
-    "html", "htm", "css", "scss", "less", "sass", "vue", "svelte", "xml", "yml", "yaml",
-    "toml", "ini", "cfg", "conf", "env", "sql", "sh", "bash", "zsh", "ps1", "bat", "cmd",
-    "csv", "tsv", "graphql", "gql", "proto", "rb", "php", "lua", "r", "dart", "scala",
-    "dockerfile", "makefile", "cmake", "gradle", "properties", "gitignore", "editorconfig",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "json",
+    "jsonc",
+    "md",
+    "mdx",
+    "txt",
+    "log",
+    "rs",
+    "py",
+    "go",
+    "java",
+    "c",
+    "h",
+    "cpp",
+    "cc",
+    "cxx",
+    "hpp",
+    "cs",
+    "kt",
+    "swift",
+    "html",
+    "htm",
+    "css",
+    "scss",
+    "less",
+    "sass",
+    "vue",
+    "svelte",
+    "xml",
+    "yml",
+    "yaml",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "env",
+    "sql",
+    "sh",
+    "bash",
+    "zsh",
+    "ps1",
+    "bat",
+    "cmd",
+    "csv",
+    "tsv",
+    "graphql",
+    "gql",
+    "proto",
+    "rb",
+    "php",
+    "lua",
+    "r",
+    "dart",
+    "scala",
+    "dockerfile",
+    "makefile",
+    "cmake",
+    "gradle",
+    "properties",
+    "gitignore",
+    "editorconfig",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -2843,10 +2900,7 @@ pub async fn search_workspace_files(
 }
 
 #[tauri::command]
-pub async fn delete_path(
-    path: String,
-    recursive: Option<bool>,
-) -> AppResult<()> {
+pub async fn delete_path(path: String, recursive: Option<bool>) -> AppResult<()> {
     let (display_path, target_path) = resolve_existing_path(&path)?;
 
     let metadata = fs::symlink_metadata(&target_path)
@@ -3359,9 +3413,12 @@ mod tests {
             false,
             None,
         );
-        assert!(result.matches.iter().any(|item| {
-            item.kind == "name" && item.name.contains("unique_search_target")
-        }));
+        assert!(
+            result
+                .matches
+                .iter()
+                .any(|item| { item.kind == "name" && item.name.contains("unique_search_target") })
+        );
         assert!(result.matches.iter().any(|item| {
             item.kind == "content"
                 && item.line == Some(1)
@@ -3371,9 +3428,12 @@ mod tests {
                     .unwrap_or_default()
                     .contains("unique_search_marker")
         }));
-        assert!(!result.matches.iter().any(|item| {
-            item.relative_path.contains("node_modules")
-        }));
+        assert!(
+            !result
+                .matches
+                .iter()
+                .any(|item| { item.relative_path.contains("node_modules") })
+        );
 
         fs::remove_dir_all(&temp_dir).unwrap();
     }

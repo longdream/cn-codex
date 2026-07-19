@@ -7,7 +7,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { invoke } from "@tauri-apps/api/core";
 const mockInvoke = vi.mocked(invoke);
 
-import { useAppStore } from "../stores/appStore";
+import {
+  collapseToolCallCardsPerUserTurn,
+  findOpenToolCallGroupIndex,
+  mergeToolCallItems,
+  useAppStore,
+} from "../stores/appStore";
 
 describe("appStore", () => {
   beforeEach(() => {
@@ -170,6 +175,294 @@ describe("appStore", () => {
       expect(toolCall?.patchProgress).toEqual([
         { path: "src/app.ts", action: "modified" },
         { path: "src/old.ts", action: "renamed", moveTo: "src/new.ts" },
+      ]);
+    });
+
+    it("merges tool calls by id and appends new ones", () => {
+      const merged = mergeToolCallItems(
+        [
+          {
+            id: "a",
+            name: "shell",
+            arguments: "{}",
+            status: "running",
+            displayLabel: "shell",
+          },
+        ],
+        [
+          {
+            id: "a",
+            name: "shell",
+            arguments: "{}",
+            status: "success",
+            displayLabel: "shell",
+            output: "done",
+          },
+          {
+            id: "b",
+            name: "read_file",
+            arguments: "{}",
+            status: "running",
+            displayLabel: "read_file",
+          },
+        ],
+      );
+
+      expect(merged).toHaveLength(2);
+      expect(merged[0].status).toBe("success");
+      expect(merged[0].output).toBe("done");
+      expect(merged[1].id).toBe("b");
+    });
+
+    it("finds the open tool-call card only after the latest user message", () => {
+      const messages = [
+        {
+          id: "u1",
+          role: "user" as const,
+          content: "first",
+          timestamp: 1,
+        },
+        {
+          id: "tc1",
+          role: "system" as const,
+          content: "",
+          timestamp: 2,
+          toolCalls: [
+            {
+              id: "old",
+              name: "shell",
+              arguments: "{}",
+              status: "success" as const,
+              displayLabel: "shell",
+            },
+          ],
+        },
+        {
+          id: "u2",
+          role: "user" as const,
+          content: "second",
+          timestamp: 3,
+        },
+        {
+          id: "a1",
+          role: "assistant" as const,
+          content: "thinking",
+          timestamp: 4,
+        },
+      ];
+
+      expect(findOpenToolCallGroupIndex(messages)).toBe(-1);
+
+      const withTool = [
+        ...messages,
+        {
+          id: "tc2",
+          role: "system" as const,
+          content: "",
+          timestamp: 5,
+          toolCalls: [
+            {
+              id: "new",
+              name: "read_file",
+              arguments: "{}",
+              status: "running" as const,
+              displayLabel: "read_file",
+            },
+          ],
+        },
+      ];
+      expect(findOpenToolCallGroupIndex(withTool)).toBe(4);
+    });
+
+    it("collapses multiple tool-call cards within the same user turn", () => {
+      const collapsed = collapseToolCallCardsPerUserTurn([
+        {
+          id: "u1",
+          role: "user",
+          content: "do work",
+          timestamp: 1,
+        },
+        {
+          id: "tc1",
+          role: "system",
+          content: "",
+          timestamp: 2,
+          toolCalls: [
+            {
+              id: "c1",
+              name: "shell",
+              arguments: "{}",
+              status: "success",
+              displayLabel: "shell",
+            },
+          ],
+        },
+        {
+          id: "a1",
+          role: "assistant",
+          content: "partial",
+          timestamp: 3,
+        },
+        {
+          id: "tc2",
+          role: "system",
+          content: "",
+          timestamp: 4,
+          toolCalls: [
+            {
+              id: "c2",
+              name: "read_file",
+              arguments: "{}",
+              status: "success",
+              displayLabel: "read_file",
+            },
+            {
+              id: "c3",
+              name: "code_search",
+              arguments: "{}",
+              status: "success",
+              displayLabel: "code_search",
+            },
+          ],
+        },
+        {
+          id: "u2",
+          role: "user",
+          content: "next",
+          timestamp: 5,
+        },
+        {
+          id: "tc3",
+          role: "system",
+          content: "",
+          timestamp: 6,
+          toolCalls: [
+            {
+              id: "c4",
+              name: "shell",
+              arguments: "{}",
+              status: "success",
+              displayLabel: "shell",
+            },
+          ],
+        },
+      ]);
+
+      const toolCards = collapsed.filter((message) => message.toolCalls?.length);
+      // 中间有 assistant 文本时，不跨文本合并工具卡，保持时间线顺序。
+      expect(toolCards).toHaveLength(3);
+      expect(toolCards[0].toolCalls?.map((call) => call.id)).toEqual(["c1"]);
+      expect(toolCards[1].toolCalls?.map((call) => call.id)).toEqual(["c2", "c3"]);
+      expect(toolCards[2].toolCalls?.map((call) => call.id)).toEqual(["c4"]);
+      expect(collapsed.map((message) => message.id)).toEqual([
+        "u1",
+        "tc1",
+        "a1",
+        "tc2",
+        "u2",
+        "tc3",
+      ]);
+    });
+
+    it("appends subsequent tool batches into one live card for the same turn", () => {
+      useAppStore.setState({ currentThreadId: "thread-tools" });
+      useAppStore.getState().addMessageToThread("thread-tools", {
+        id: "user-1",
+        role: "user",
+        content: "please investigate",
+        timestamp: 1,
+      });
+
+      const firstId = useAppStore.getState().appendToolCallsToThread("thread-tools", [
+        {
+          id: "tool-1",
+          name: "shell",
+          arguments: "{}",
+          status: "running",
+          displayLabel: "shell",
+        },
+      ]);
+      const secondId = useAppStore.getState().appendToolCallsToThread("thread-tools", [
+        {
+          id: "tool-2",
+          name: "read_file",
+          arguments: "{}",
+          status: "running",
+          displayLabel: "read_file",
+        },
+        {
+          id: "tool-3",
+          name: "code_search",
+          arguments: "{}",
+          status: "running",
+          displayLabel: "code_search",
+        },
+      ]);
+
+      expect(firstId).toBeTruthy();
+      expect(secondId).toBe(firstId);
+
+      const toolCards = useAppStore
+        .getState()
+        .messages.filter((message) => message.toolCalls?.length);
+      expect(toolCards).toHaveLength(1);
+      expect(toolCards[0].toolCalls?.map((call) => call.id)).toEqual([
+        "tool-1",
+        "tool-2",
+        "tool-3",
+      ]);
+    });
+
+    it("starts a new tool card after intermediate assistant text in the same turn", () => {
+      useAppStore.setState({ currentThreadId: "thread-tools-split" });
+      useAppStore.getState().addMessageToThread("thread-tools-split", {
+        id: "user-1",
+        role: "user",
+        content: "please investigate",
+        timestamp: 1,
+      });
+
+      const firstId = useAppStore.getState().appendToolCallsToThread("thread-tools-split", [
+        {
+          id: "tool-1",
+          name: "shell",
+          arguments: "{}",
+          status: "running",
+          displayLabel: "shell",
+        },
+      ]);
+
+      useAppStore.getState().addMessageToThread("thread-tools-split", {
+        id: "assistant-1",
+        role: "assistant",
+        content: "我先读一下相关文件。",
+        timestamp: 2,
+      });
+
+      const secondId = useAppStore.getState().appendToolCallsToThread("thread-tools-split", [
+        {
+          id: "tool-2",
+          name: "read_file",
+          arguments: "{}",
+          status: "running",
+          displayLabel: "read_file",
+        },
+      ]);
+
+      expect(firstId).toBeTruthy();
+      expect(secondId).toBeTruthy();
+      expect(secondId).not.toBe(firstId);
+
+      const messages = useAppStore.getState().messages;
+      const toolCards = messages.filter((message) => message.toolCalls?.length);
+      expect(toolCards).toHaveLength(2);
+      expect(toolCards[0].toolCalls?.map((call) => call.id)).toEqual(["tool-1"]);
+      expect(toolCards[1].toolCalls?.map((call) => call.id)).toEqual(["tool-2"]);
+      expect(messages.map((message) => message.id)).toEqual([
+        "user-1",
+        firstId,
+        "assistant-1",
+        secondId,
       ]);
     });
   });
@@ -378,6 +671,81 @@ describe("appStore", () => {
         durationMs: 0,
         changedFiles: [],
       });
+    });
+
+    it("keeps history toolUse batches separated when assistant text is between them", async () => {
+      mockInvoke.mockImplementation(async (command) => {
+        if (command === "standalone_thread_read") {
+          return {
+            thread: {
+              id: "t-merge-tools",
+              turns: [
+                {
+                  id: "turn-merge",
+                  startedAt: 100,
+                  items: [
+                    {
+                      type: "userMessage",
+                      id: "u-merge",
+                      content: [{ type: "text", text: "请调查" }],
+                    },
+                    {
+                      type: "toolUse",
+                      id: "tools-1",
+                      calls: [
+                        {
+                          id: "call-1",
+                          name: "shell",
+                          arguments: "{}",
+                        },
+                      ],
+                    },
+                    {
+                      type: "agentMessage",
+                      id: "a-partial",
+                      text: "继续",
+                    },
+                    {
+                      type: "toolUse",
+                      id: "tools-2",
+                      calls: [
+                        {
+                          id: "call-2",
+                          name: "read_file",
+                          arguments: "{}",
+                        },
+                        {
+                          id: "call-3",
+                          name: "code_search",
+                          arguments: "{}",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          };
+        }
+        return {};
+      });
+
+      await useAppStore.getState().loadThread("t-merge-tools");
+
+      const messages = useAppStore.getState().messages;
+      const toolCards = messages.filter((message) => message.toolCalls?.length);
+      expect(toolCards).toHaveLength(2);
+      expect(toolCards[0].toolCalls?.map((call) => call.id)).toEqual(["call-1"]);
+      expect(toolCards[1].toolCalls?.map((call) => call.id)).toEqual([
+        "call-2",
+        "call-3",
+      ]);
+      const assistantIdx = messages.findIndex((message) => message.content === "继续");
+      const firstToolIdx = messages.findIndex((message) => message.toolCalls?.[0]?.id === "call-1");
+      const secondToolIdx = messages.findIndex((message) => message.toolCalls?.[0]?.id === "call-2");
+      expect(firstToolIdx).toBeGreaterThanOrEqual(0);
+      expect(assistantIdx).toBeGreaterThan(firstToolIdx);
+      expect(secondToolIdx).toBeGreaterThan(assistantIdx);
     });
 
     it("labels restored browser_run tool calls with url and action count", async () => {

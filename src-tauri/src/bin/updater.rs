@@ -362,11 +362,9 @@ fn replace_executable(temp_path: &Path, target: &Path) -> Result<(), String> {
                 // Try restore old binary if replace failed.
                 let _ = fs::rename(&backup, target);
                 // Final fallback: copy bytes.
-                fs::copy(temp_path, target)
-                    .map(|_| ())
-                    .map_err(|copy_err| {
-                        format!("replace failed: rename={rename_err}; copy={copy_err}")
-                    })
+                fs::copy(temp_path, target).map(|_| ()).map_err(|copy_err| {
+                    format!("replace failed: rename={rename_err}; copy={copy_err}")
+                })
             }
         }
     } else {
@@ -399,8 +397,7 @@ fn is_zip_package(url: &str, package_path: &Path) -> bool {
 
 fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
     let file = File::open(zip_path).map_err(|err| format!("open zip failed: {err}"))?;
-    let mut archive =
-        ZipArchive::new(file).map_err(|err| format!("read zip failed: {err}"))?;
+    let mut archive = ZipArchive::new(file).map_err(|err| format!("read zip failed: {err}"))?;
 
     for index in 0..archive.len() {
         let mut entry = archive
@@ -415,20 +412,18 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
 
         let out_path = dest_dir.join(&rel);
         if entry.is_dir() || rel.to_string_lossy().ends_with('/') {
-            fs::create_dir_all(&out_path).map_err(|err| {
-                format!("create dir {} failed: {err}", out_path.display())
-            })?;
+            fs::create_dir_all(&out_path)
+                .map_err(|err| format!("create dir {} failed: {err}", out_path.display()))?;
             continue;
         }
 
         if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| {
-                format!("create parent {} failed: {err}", parent.display())
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("create parent {} failed: {err}", parent.display()))?;
         }
 
-        let mut outfile =
-            File::create(&out_path).map_err(|err| format!("create {} failed: {err}", out_path.display()))?;
+        let mut outfile = File::create(&out_path)
+            .map_err(|err| format!("create {} failed: {err}", out_path.display()))?;
         io::copy(&mut entry, &mut outfile)
             .map_err(|err| format!("extract {} failed: {err}", out_path.display()))?;
     }
@@ -588,10 +583,7 @@ fn copy_file_replace(src: &Path, dest: &Path) -> Result<(), String> {
                 let _ = fs::remove_file(&backup);
                 if let Err(rename_err) = fs::rename(dest, &backup) {
                     let _ = fs::remove_file(&temp);
-                    return Err(format!(
-                        "backup {} failed: {rename_err}",
-                        dest.display()
-                    ));
+                    return Err(format!("backup {} failed: {rename_err}", dest.display()));
                 }
                 match fs::rename(&temp, dest) {
                     Ok(()) => {
@@ -601,15 +593,16 @@ fn copy_file_replace(src: &Path, dest: &Path) -> Result<(), String> {
                     Err(final_err) => {
                         let _ = fs::rename(&backup, dest);
                         let _ = fs::remove_file(&temp);
-                        Err(format!(
-                            "replace {} failed: {final_err}",
-                            dest.display()
-                        ))
+                        Err(format!("replace {} failed: {final_err}", dest.display()))
                     }
                 }
             } else {
                 fs::rename(&temp, dest).map_err(|err| {
-                    format!("move {} -> {} failed: {err}", temp.display(), dest.display())
+                    format!(
+                        "move {} -> {} failed: {err}",
+                        temp.display(),
+                        dest.display()
+                    )
                 })
             }
         }
@@ -619,7 +612,9 @@ fn copy_file_replace(src: &Path, dest: &Path) -> Result<(), String> {
 fn is_self_updater_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map(|name| name.eq_ignore_ascii_case("updater.exe") || name.eq_ignore_ascii_case("updater"))
+        .map(|name| {
+            name.eq_ignore_ascii_case("updater.exe") || name.eq_ignore_ascii_case("updater")
+        })
         .unwrap_or(false)
 }
 
@@ -664,13 +659,16 @@ fn process_exists(pid: u32) -> bool {
     {
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::Threading::{
-            OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+            WaitForSingleObject,
         };
 
         unsafe {
-            let Ok(handle) =
-                OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid)
-            else {
+            let Ok(handle) = OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                false,
+                pid,
+            ) else {
                 return false;
             };
             let result = WaitForSingleObject(handle, 0);
@@ -801,8 +799,8 @@ impl ProgressUi {
         {
             if let Some(status) = self.status_hwnd {
                 unsafe {
-                    use windows::core::PCWSTR;
                     use windows::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+                    use windows::core::PCWSTR;
                     let wide = to_wide(text);
                     let _ = SetWindowTextW(
                         windows::Win32::Foundation::HWND(status as *mut _),
@@ -837,8 +835,8 @@ impl ProgressUi {
             }
             if let Some(percent_hwnd) = self.percent_hwnd {
                 unsafe {
-                    use windows::core::PCWSTR;
                     use windows::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+                    use windows::core::PCWSTR;
                     let wide = to_wide(&format!("{clamped}%"));
                     let _ = SetWindowTextW(
                         windows::Win32::Foundation::HWND(percent_hwnd as *mut _),
@@ -861,8 +859,8 @@ impl ProgressUi {
         {
             if let Some(detail) = self.detail_hwnd {
                 unsafe {
-                    use windows::core::PCWSTR;
                     use windows::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+                    use windows::core::PCWSTR;
                     let wide = to_wide("更新失败，请查看提示后重试");
                     let _ = SetWindowTextW(
                         windows::Win32::Foundation::HWND(detail as *mut _),
@@ -871,8 +869,8 @@ impl ProgressUi {
                 }
             }
             unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
                 use windows::core::PCWSTR;
-                use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
                 let text = to_wide(message);
                 let caption = to_wide("CN-Codex 更新失败");
                 let _ = MessageBoxW(
@@ -906,21 +904,22 @@ impl ProgressUi {
 
     #[cfg(windows)]
     fn create_windows(title: &str) -> Self {
-        use windows::core::PCWSTR;
         use windows::Win32::Foundation::{LPARAM, WPARAM};
         use windows::Win32::Graphics::Gdi::{
-            CreateSolidBrush, GetStockObject, UpdateWindow, DEFAULT_GUI_FONT, HBRUSH, WHITE_BRUSH,
+            CreateSolidBrush, DEFAULT_GUI_FONT, GetStockObject, HBRUSH, UpdateWindow, WHITE_BRUSH,
         };
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows::Win32::UI::Controls::{
-            InitCommonControlsEx, ICC_PROGRESS_CLASS, INITCOMMONCONTROLSEX, PBM_SETRANGE, PBM_SETPOS,
+            ICC_PROGRESS_CLASS, INITCOMMONCONTROLSEX, InitCommonControlsEx, PBM_SETPOS,
+            PBM_SETRANGE,
         };
         use windows::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, GetSystemMetrics, LoadCursorW, RegisterClassW, SendMessageW,
-            SetWindowLongPtrW, ShowWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, IDC_ARROW,
-            SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, WINDOW_EX_STYLE, WNDCLASSW, WS_CAPTION, WS_CHILD,
+            CS_HREDRAW, CS_VREDRAW, CreateWindowExW, GWLP_USERDATA, GetSystemMetrics, IDC_ARROW,
+            LoadCursorW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, SendMessageW,
+            SetWindowLongPtrW, ShowWindow, WINDOW_EX_STYLE, WNDCLASSW, WS_CAPTION, WS_CHILD,
             WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
         };
+        use windows::core::PCWSTR;
 
         unsafe {
             let _ = InitCommonControlsEx(&INITCOMMONCONTROLSEX {
@@ -1154,7 +1153,7 @@ unsafe extern "system" fn wnd_proc(
     use windows::Win32::Foundation::LRESULT;
     use windows::Win32::Graphics::Gdi::{SetBkColor, SetTextColor};
     use windows::Win32::UI::WindowsAndMessaging::{
-        DefWindowProcW, GetWindowLongPtrW, PostQuitMessage, SetWindowLongPtrW, GWLP_USERDATA,
+        DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, PostQuitMessage, SetWindowLongPtrW,
         WM_CTLCOLORSTATIC, WM_DESTROY,
     };
 
@@ -1190,7 +1189,7 @@ unsafe extern "system" fn wnd_proc(
 #[cfg(windows)]
 fn pump_messages() {
     use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
     };
     unsafe {
         let mut msg = MSG::default();
