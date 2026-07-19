@@ -10,6 +10,7 @@ import {
   standaloneThreadGoalClear,
   standaloneThreadGoalEdit,
   standaloneThreadGoalStatus,
+  standaloneThreadPeekGoal,
   standaloneThreadCreate,
 } from "../../api";
 import {
@@ -39,7 +40,12 @@ export function ChatPage() {
   // 发送请求已发起，但后端 turn-started 事件尚未到达时保持“运行中”态，
   // 避免上一轮 turn-completed 把输入区短暂打回空闲按钮。
   const [isDispatching, setIsDispatching] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const dispatchSeqRef = useRef(0);
+  const activeDispatchSeqRef = useRef<number | null>(null);
+  const activeDispatchPromiseRef = useRef<Promise<unknown> | null>(null);
+  const interruptedDispatchSeqRef = useRef<number | null>(null);
+  const isBusy = isStreaming || isDispatching || isStopping;
 
   const handleSend = useCallback(
     async (
@@ -130,7 +136,9 @@ export function ChatPage() {
 
       const dispatchSeq = dispatchSeqRef.current + 1;
       dispatchSeqRef.current = dispatchSeq;
+      activeDispatchSeqRef.current = dispatchSeq;
       setIsDispatching(true);
+      let dispatchPromise: Promise<unknown> | null = null;
       try {
         const latest = useAppStore.getState();
         const threadPref = threadId ? latest.threadPreferences[threadId] : undefined;
@@ -146,7 +154,7 @@ export function ChatPage() {
           latest.currentThreadId === threadId
             ? latest.smartbrainEnabled
             : (threadPref?.smartbrainEnabled ?? false);
-        await standaloneChat(
+        dispatchPromise = standaloneChat(
           threadId,
           text,
           cwd,
@@ -163,12 +171,29 @@ export function ChatPage() {
           },
           userMessage.id,
         );
-      } catch (err) {
+        activeDispatchPromiseRef.current = dispatchPromise;
+        await dispatchPromise;
         if (dispatchSeqRef.current === dispatchSeq) {
-          setIsDispatching(false);
+          const settledStore = useAppStore.getState();
+          // The command resolves only after the backend turn has ended. Keep this
+          // idempotent fallback in case a terminal event was stale or missed.
+          settledStore.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
+          if (actualMode === "goal") {
+            const runtime = settledStore.getThreadRuntimeState(threadId);
+            if (runtime?.currentGoal?.status === "active") {
+              settledStore.setCurrentGoalForThread(threadId, {
+                ...runtime.currentGoal,
+                status: "paused",
+              });
+            }
+          }
         }
+      } catch (err) {
+        // Cancellation is an expected result of the stop flow, not a send failure.
+        if (interruptedDispatchSeqRef.current === dispatchSeq) return;
+        if (dispatchSeqRef.current !== dispatchSeq) return;
         const store = useAppStore.getState();
-        store.setStreaming(false);
+        store.setStreamingForThread(threadId, false);
         store.addMessage({
           id: crypto.randomUUID(),
           role: "assistant",
@@ -178,6 +203,20 @@ export function ChatPage() {
         // Goal 模式下后端已回退为 paused，前端同步状态
         if (actualMode === "goal" && store.currentGoal) {
           store.setCurrentGoal({ ...store.currentGoal, status: "paused" });
+        }
+      } finally {
+        if (activeDispatchSeqRef.current === dispatchSeq) {
+          activeDispatchSeqRef.current = null;
+        }
+        if (dispatchPromise && activeDispatchPromiseRef.current === dispatchPromise) {
+          activeDispatchPromiseRef.current = null;
+        }
+        if (dispatchSeqRef.current === dispatchSeq) {
+          setIsDispatching(false);
+        }
+        if (interruptedDispatchSeqRef.current === dispatchSeq) {
+          interruptedDispatchSeqRef.current = null;
+          setIsStopping(false);
         }
       }
     },
@@ -190,6 +229,13 @@ export function ChatPage() {
     const currentGoal = store.currentGoal;
     const shouldPauseGoal =
       store.chatMode === "goal" && !!threadId && currentGoal?.status === "active";
+
+    const activeDispatch = activeDispatchPromiseRef.current;
+    if (activeDispatch) {
+      interruptedDispatchSeqRef.current = activeDispatchSeqRef.current;
+      setIsStopping(true);
+    }
+    setIsDispatching(false);
 
     // 先做前端状态收敛，保证点击“停止”后转圈立即结束。
     store.markRunningToolCallsInterrupted(intl.formatMessage({ id: "chat.toolInterrupted" }));
@@ -225,6 +271,11 @@ export function ChatPage() {
     }
 
     await interruptPromise;
+    if (activeDispatch) {
+      await activeDispatch.catch(() => undefined);
+    } else {
+      setIsStopping(false);
+    }
   }, [intl]);
 
   const handleResendUserMessage = useCallback(
@@ -347,24 +398,24 @@ export function ChatPage() {
 
   // 排队消息自动发送：当 isStreaming 从 true 变为 false 时，自动取出队首消息发送。
   // 线程切换时不触发（避免从流式线程切到非流式线程时误发队列消息）。
-  const wasStreamingRef = useRef(false);
+  const wasBusyRef = useRef(false);
   const lastAutoSendThreadIdRef = useRef<string | null>(null);
   useEffect(() => {
     // 线程切换时重置 ref，避免跨线程误触发自动发送
     if (lastAutoSendThreadIdRef.current !== currentThreadId) {
       lastAutoSendThreadIdRef.current = currentThreadId;
-      wasStreamingRef.current = isStreaming;
+      wasBusyRef.current = isBusy;
       return;
     }
-    if (wasStreamingRef.current && !isStreaming) {
+    if (wasBusyRef.current && !isBusy) {
       const store = useAppStore.getState();
       const next = store.dequeueMessage();
       if (next) {
         handleSend(next.text, next.mode, next.attachments, next.options);
       }
     }
-    wasStreamingRef.current = isStreaming;
-  }, [isStreaming, currentThreadId, handleSend]);
+    wasBusyRef.current = isBusy;
+  }, [isBusy, currentThreadId, handleSend]);
 
   const handleJumpQueue = useCallback(async (messageId: string) => {
     const store = useAppStore.getState();
@@ -374,7 +425,8 @@ export function ChatPage() {
 
     store.removeQueuedMessage(messageId);
 
-    if (store.isStreaming) {
+    if (store.isStreaming || activeDispatchPromiseRef.current) {
+      wasBusyRef.current = false;
       store.markRunningToolCallsInterrupted(intl.formatMessage({ id: "chat.toolInterrupted" }));
       const partialText = store.streamingText;
       if (partialText) {
@@ -388,15 +440,13 @@ export function ChatPage() {
       }
       store.setStreaming(false);
       store.setCurrentTurnId(null);
-      standaloneTurnInterrupt().catch((err) => {
-        console.error("Failed to interrupt turn:", err);
-      });
+      await handleInterrupt();
     }
 
-    // 跳过 wasStreamingRef 的自动触发，直接手动发送目标消息
-    wasStreamingRef.current = false;
+    // Skip the automatic busy-to-idle queue transition; send this item explicitly.
+    wasBusyRef.current = false;
     handleSend(target.text, target.mode, target.attachments, target.options);
-  }, [handleSend, intl]);
+  }, [handleInterrupt, handleSend, intl]);
 
   // 注意：所有 Hook 必须在任何条件 return 之前声明，避免项目切换时触发 Hook 顺序错误。
   const [copyDone, setCopyDone] = useState(false);
@@ -415,9 +465,35 @@ export function ChatPage() {
   }, [isStreaming]);
 
   useEffect(() => {
-    dispatchSeqRef.current = 0;
     setIsDispatching(false);
   }, [currentThreadId]);
+
+  useEffect(() => {
+    if (chatMode !== "goal" || !currentThreadId || !isStreaming) return;
+
+    let disposed = false;
+    const reconcileGoalRuntime = async () => {
+      try {
+        const response = await standaloneThreadPeekGoal(currentThreadId);
+        if (disposed || response.goal?.status === "active") return;
+        const store = useAppStore.getState();
+        if (store.currentThreadId !== currentThreadId) return;
+        store.setCurrentGoalForThread(currentThreadId, response.goal ?? null);
+        store.flushAndStopStreamingForThread(currentThreadId, { commitStreamingText: true });
+      } catch (err) {
+        console.warn("Failed to reconcile goal runtime state:", err);
+      }
+    };
+
+    void reconcileGoalRuntime();
+    const timer = window.setInterval(() => {
+      void reconcileGoalRuntime();
+    }, 1500);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [chatMode, currentThreadId, isStreaming]);
 
   useEffect(() => {
     // 切换对话时重置
@@ -477,7 +553,7 @@ export function ChatPage() {
   const isGeneralMode = currentProjectId === GENERAL_PROJECT_ID;
   const hasProject = (!!currentProjectId && !!workspaceCwd) || isGeneralMode;
   const effectiveMode = chatMode;
-  const showEmpty = messages.length === 0 && !isStreaming;
+  const showEmpty = messages.length === 0 && !isBusy;
 
   const handleExecutePlan = useCallback(
     (planContent: string) => {
@@ -550,8 +626,14 @@ export function ChatPage() {
           <MessageList
             messages={messages}
             streamingText={streamingText}
-            streamingLabel={streamingLabel}
-            isStreaming={isStreaming}
+            streamingLabel={
+              streamingLabel || (isStopping
+                ? intl.formatMessage({ id: "streaming.stopping" })
+                : isDispatching
+                  ? intl.formatMessage({ id: "streaming.processing" })
+                  : "")
+            }
+            isStreaming={isBusy}
             onExecutePlan={handleExecutePlan}
             onResendUserMessage={handleResendUserMessage}
           />
@@ -565,7 +647,7 @@ export function ChatPage() {
         onInterrupt={handleInterrupt}
         onJumpQueue={handleJumpQueue}
         isStreaming={isStreaming}
-        isDispatching={isDispatching}
+        isDispatching={isDispatching || isStopping}
         disabled={!initialized || !hasProject}
         mode={effectiveMode}
         onGoalCommand={handleGoalCommand}

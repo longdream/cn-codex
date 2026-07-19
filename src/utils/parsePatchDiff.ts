@@ -7,6 +7,10 @@ export interface PatchDiffEntry {
   afterContent: string;
 }
 
+function normalizeDirectivePath(value: string): string {
+  return value.replace(/\s+\*{3}\s*$/, "").trim();
+}
+
 /**
  * 解析 apply_patch 文本得到每个文件的 before/after 内容块。
  * 说明：这里是“补丁级还原”，用于 Diff 可视化，不做完整文件重建。
@@ -29,7 +33,7 @@ export function parsePatchDiffEntries(patch: string): PatchDiffEntry[] {
     const line = lines[idx];
 
     if (line.startsWith("*** Add File: ")) {
-      const path = line.slice("*** Add File: ".length).trim();
+      const path = normalizeDirectivePath(line.slice("*** Add File: ".length));
       idx += 1;
       const afterLines: string[] = [];
       while (idx < lines.length && !isBoundary(lines[idx])) {
@@ -48,7 +52,7 @@ export function parsePatchDiffEntries(patch: string): PatchDiffEntry[] {
     }
 
     if (line.startsWith("*** Delete File: ")) {
-      const path = line.slice("*** Delete File: ".length).trim();
+      const path = normalizeDirectivePath(line.slice("*** Delete File: ".length));
       idx += 1;
       result.push({
         paths: [path],
@@ -60,7 +64,7 @@ export function parsePatchDiffEntries(patch: string): PatchDiffEntry[] {
     }
 
     if (line.startsWith("*** Update File: ")) {
-      const path = line.slice("*** Update File: ".length).trim();
+      const path = normalizeDirectivePath(line.slice("*** Update File: ".length));
       let moveTo: string | null = null;
       const beforeLines: string[] = [];
       const afterLines: string[] = [];
@@ -68,7 +72,7 @@ export function parsePatchDiffEntries(patch: string): PatchDiffEntry[] {
       while (idx < lines.length && !isBoundary(lines[idx])) {
         const body = lines[idx];
         if (body.startsWith("*** Move to: ")) {
-          moveTo = body.slice("*** Move to: ".length).trim();
+          moveTo = normalizeDirectivePath(body.slice("*** Move to: ".length));
           idx += 1;
           continue;
         }

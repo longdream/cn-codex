@@ -86,6 +86,8 @@ pub struct ToolExecutor {
     mcp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpSession>>>>>,
     mcp_http_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpHttpSession>>>>>,
     web_search_enabled: bool,
+    /// Request-scoped SmartBrain override. `None` falls back to workspace config.
+    smartbrain_enabled_override: Option<bool>,
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
     subagent_handles: Arc<Mutex<HashMap<String, crate::subagent_engine::SubagentHandle>>>,
     exec_sessions: Arc<Mutex<HashMap<u64, ExecSessionRecord>>>,
@@ -729,6 +731,7 @@ impl ToolExecutor {
             mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
             mcp_http_sessions: Arc::new(Mutex::new(HashMap::new())),
             web_search_enabled: false,
+            smartbrain_enabled_override: None,
             subagents: Arc::new(Mutex::new(subagents)),
             subagent_handles: Arc::new(Mutex::new(HashMap::new())),
             exec_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -746,6 +749,10 @@ impl ToolExecutor {
 
     pub fn set_cwd(&mut self, cwd: PathBuf) {
         self.cwd = cwd;
+    }
+
+    pub fn set_smartbrain_enabled_override(&mut self, enabled: Option<bool>) {
+        self.smartbrain_enabled_override = enabled;
     }
 
     /// Thread-scoped tools activated by `tool_search` (or explicit activation).
@@ -1615,7 +1622,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "apply_patch",
-                    "description": "Default tool for editing existing text files, whether one file or many. Applies contextual diffs while preserving encoding and line endings, and supports add/update/delete/move in Codex apply_patch format. Read the current file before editing and keep update hunks small: include only changed lines plus a few exact current context lines. If a hunk does not match, re-read the file and retry apply_patch with refreshed, smaller context. Relative paths are preferred; absolute paths must resolve inside the workspace. Prefer the raw/freeform patch body when supported; function-call providers may use JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
+                    "description": "Default tool for editing existing text files, whether one file or many. Applies contextual diffs while preserving encoding and line endings, and supports add/update/delete/move in Codex apply_patch format. Read the current file before editing. Each update hunk starts with @@, optionally followed by an exact class, function, section, or other source line that anchors the search (for example: @@ function renderApp()). Every hunk body line must start with exactly one marker: '-' for removed lines, '+' for added lines, or one space for unchanged context. Do not use '|-', '+|', '||', or separate old/new blocks. Include about 3 exact context lines above and below each small change; use an anchor when the snippet repeats. Use *** End of File after a hunk that must match the file ending. If a hunk does not match, re-read that file and retry apply_patch with refreshed, smaller context. Relative paths are preferred; absolute paths must resolve inside the workspace. Prefer the raw/freeform patch body when supported; function-call providers may use JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -8810,6 +8817,9 @@ impl ToolExecutor {
     }
 
     fn smartbrain_is_active(&self) -> bool {
+        if let Some(enabled) = self.smartbrain_enabled_override {
+            return enabled;
+        }
         let config_path = self.workspace_config_dir.join("config.toml");
         ConfigToml::load(&config_path)
             .map(|config| config.smartbrain_config().knowledge_is_active())
@@ -13332,7 +13342,8 @@ mod tests {
         )
         .expect("should write config");
 
-        let executor = ToolExecutor::with_workspace_config_dir(root.clone(), config_dir.clone());
+        let mut executor =
+            ToolExecutor::with_workspace_config_dir(root.clone(), config_dir.clone());
         let disabled_tools = executor.tool_specs(false);
         let disabled_names: Vec<_> = disabled_tools
             .iter()
@@ -13356,6 +13367,15 @@ mod tests {
             enabled_names.contains(&"smartbrain_sql_query"),
             "smartbrain_sql_query must be exposed when Local Knowledge Base is enabled"
         );
+
+        executor.set_smartbrain_enabled_override(Some(false));
+        let overridden_specs = executor.tool_specs(false);
+        let overridden_names: Vec<_> = overridden_specs
+            .iter()
+            .filter_map(|tool| tool.get("function")?.get("name")?.as_str())
+            .collect();
+        assert!(!overridden_names.contains(&"smartbrain_search"));
+        assert!(!overridden_names.contains(&"smartbrain_sql_query"));
     }
 
     #[test]

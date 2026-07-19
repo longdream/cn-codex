@@ -46,8 +46,10 @@ pub(crate) enum ParsedPatchAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatchHunk {
+    change_context: Option<String>,
     old_lines: Vec<String>,
     new_lines: Vec<String>,
+    is_end_of_file: bool,
     additions: usize,
     deletions: usize,
 }
@@ -366,6 +368,7 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
             let mut move_to = None;
             let mut hunks = Vec::new();
             let mut current: Option<PatchHunk> = None;
+            let mut implicit_context_count = 0usize;
 
             while i < lines.len() && !is_patch_section_boundary(lines[i]) {
                 let line = lines[i];
@@ -384,6 +387,12 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
                 }
 
                 if line == "*** End of File" {
+                    let Some(hunk) = current.as_mut() else {
+                        return Err(format!(
+                            "end-of-file marker for {path} must follow an update hunk"
+                        ));
+                    };
+                    hunk.is_end_of_file = true;
                     i += 1;
                     continue;
                 }
@@ -403,11 +412,14 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
 
                 if line.starts_with("@@") {
                     if let Some(hunk) = current.take() {
-                        hunks.push(hunk);
+                        hunks.push(finalize_parsed_hunk(hunk, implicit_context_count));
                     }
+                    implicit_context_count = 0;
                     current = Some(PatchHunk {
+                        change_context: parse_hunk_change_context(line),
                         old_lines: Vec::new(),
                         new_lines: Vec::new(),
+                        is_end_of_file: false,
                         additions: 0,
                         deletions: 0,
                     });
@@ -416,8 +428,10 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
                 }
 
                 let hunk = current.get_or_insert_with(|| PatchHunk {
+                    change_context: None,
                     old_lines: Vec::new(),
                     new_lines: Vec::new(),
+                    is_end_of_file: false,
                     additions: 0,
                     deletions: 0,
                 });
@@ -425,22 +439,42 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
                 if let Some(content) = line.strip_prefix(' ') {
                     hunk.old_lines.push(content.to_string());
                     hunk.new_lines.push(content.to_string());
+                } else if line.starts_with("|-|") {
+                    hunk.old_lines
+                        .push(normalize_pipe_wrapped_content(&line[2..]));
+                    hunk.deletions += 1;
+                } else if line.starts_with("+||") {
+                    hunk.new_lines
+                        .push(normalize_pipe_wrapped_content(&line[2..]));
+                    hunk.additions += 1;
                 } else if let Some(content) = line.strip_prefix('-') {
                     hunk.old_lines.push(content.to_string());
                     hunk.deletions += 1;
                 } else if let Some(content) = line.strip_prefix('+') {
                     hunk.new_lines.push(content.to_string());
                     hunk.additions += 1;
+                } else if line.is_empty() {
+                    hunk.old_lines.push(String::new());
+                    hunk.new_lines.push(String::new());
                 } else {
-                    return Err(format!("invalid update line for {path}: {line}"));
+                    let content = if line.starts_with("||") {
+                        line.strip_prefix('|').unwrap_or(line)
+                    } else {
+                        line
+                    };
+                    let content = normalize_pipe_wrapped_content(content);
+                    hunk.old_lines.push(content.clone());
+                    hunk.new_lines.push(content);
+                    implicit_context_count += 1;
                 }
 
                 i += 1;
             }
 
             if let Some(hunk) = current.take() {
-                hunks.push(hunk);
+                hunks.push(finalize_parsed_hunk(hunk, implicit_context_count));
             }
+            hunks = combine_implicit_replacement_pairs(hunks);
             if hunks.is_empty() && move_to.is_none() {
                 return Err(format!("update for {path} contains no changes"));
             }
@@ -456,6 +490,75 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
     }
 
     Err("patch must end with *** End Patch".to_string())
+}
+
+fn normalize_pipe_wrapped_content(content: &str) -> String {
+    if content.starts_with('|') && content[1..].contains('│') {
+        format!("│{}", &content[1..])
+    } else {
+        content.to_string()
+    }
+}
+
+fn finalize_parsed_hunk(mut hunk: PatchHunk, implicit_context_count: usize) -> PatchHunk {
+    if implicit_context_count > 0 && hunk.deletions == 0 && hunk.additions > 0 {
+        let implicit_prefix = implicit_context_count.min(hunk.new_lines.len());
+        hunk.new_lines.drain(..implicit_prefix);
+        hunk.deletions += implicit_prefix;
+    }
+    hunk
+}
+
+fn combine_implicit_replacement_pairs(hunks: Vec<PatchHunk>) -> Vec<PatchHunk> {
+    let mut combined = Vec::with_capacity(hunks.len());
+    let mut index = 0usize;
+    while index < hunks.len() {
+        let first = &hunks[index];
+        let paired = hunks.get(index + 1).is_some_and(|second| {
+            first.change_context.is_some()
+                && first.additions == 0
+                && first.deletions == 0
+                && first.old_lines == first.new_lines
+                && second.change_context.is_none()
+                && second.additions == 0
+                && second.deletions == 0
+                && second.old_lines == second.new_lines
+        });
+        if paired {
+            let second = &hunks[index + 1];
+            if first.old_lines != second.old_lines {
+                let mut replacement = first.clone();
+                replacement.new_lines = second.new_lines.clone();
+                replacement.deletions = replacement.old_lines.len();
+                replacement.additions = replacement.new_lines.len();
+                combined.push(replacement);
+            }
+            index += 2;
+        } else {
+            combined.push(first.clone());
+            index += 1;
+        }
+    }
+    combined
+}
+
+fn parse_hunk_change_context(line: &str) -> Option<String> {
+    let suffix = line.strip_prefix("@@")?;
+    let suffix = suffix.strip_prefix(' ').unwrap_or(suffix);
+    if suffix.trim().is_empty() || suffix.trim() == "*** End of File" {
+        return None;
+    }
+
+    // Standard unified-diff ranges are positional metadata, not source text.
+    if suffix.starts_with('-') {
+        return suffix
+            .find("@@")
+            .map(|end| suffix[end + 2..].trim())
+            .filter(|context| !context.is_empty())
+            .map(str::to_string);
+    }
+
+    Some(suffix.to_string())
 }
 
 fn is_patch_section_boundary(line: &str) -> bool {
@@ -504,7 +607,11 @@ fn normalize_patch_directive_line(line: &str) -> String {
     if !trimmed.starts_with("*** ") {
         return line.to_string();
     }
-    trimmed.strip_suffix(" ***").unwrap_or(trimmed).to_string()
+    let normalized = trimmed.strip_suffix(" ***").unwrap_or(trimmed);
+    match normalized {
+        "*** End of Patch" => "*** End Patch".to_string(),
+        other => other.to_string(),
+    }
 }
 
 #[allow(dead_code)]
@@ -514,24 +621,195 @@ fn apply_update_hunks(
     path: &str,
 ) -> Result<(), String> {
     let mut cursor = 0usize;
+    let mut replacements: Vec<(usize, usize, Vec<String>)> = Vec::new();
 
     for hunk in hunks {
+        if let Some(context) = &hunk.change_context {
+            if let Some(line_hint) = parse_patch_line_hint(context) {
+                cursor = line_hint.saturating_sub(1).min(lines.len());
+            } else {
+                let context_lines = std::slice::from_ref(context);
+                let context_pos = seek_sequence(lines, context_lines, cursor, false)
+                    .or_else(|| find_unique_line_containing(lines, context, cursor));
+                if let Some(context_pos) = context_pos {
+                    let repeats_context_as_first_line =
+                        hunk.old_lines.first().is_some_and(|first| {
+                            normalize_patch_punctuation(first)
+                                == normalize_patch_punctuation(context)
+                        });
+                    cursor = context_pos + usize::from(!repeats_context_as_first_line);
+                }
+            }
+        }
+
         if hunk.old_lines.is_empty() {
-            lines.splice(cursor..cursor, hunk.new_lines.clone());
-            cursor += hunk.new_lines.len();
+            if hunk.new_lines.is_empty() {
+                continue;
+            }
+            replacements.push((lines.len(), 0, hunk.new_lines.clone()));
             continue;
         }
 
-        let pos = find_subsequence(lines, &hunk.old_lines, cursor)
-            .or_else(|| find_subsequence(lines, &hunk.old_lines, 0))
-            .or_else(|| find_unique_relaxed_subsequence(lines, &hunk.old_lines))
-            .ok_or_else(|| format_hunk_match_error(path, &hunk.old_lines, lines))?;
-        let end = pos + hunk.old_lines.len();
-        lines.splice(pos..end, hunk.new_lines.clone());
-        cursor = pos + hunk.new_lines.len();
+        let mut old_lines = hunk.old_lines.as_slice();
+        let mut new_lines = hunk.new_lines.as_slice();
+        let mut pos = seek_sequence(lines, old_lines, cursor, hunk.is_end_of_file).or_else(|| {
+            hunk.change_context
+                .as_ref()
+                .and_then(|_| seek_sequence(lines, old_lines, 0, hunk.is_end_of_file))
+        });
+
+        // A final blank context line represents the file's trailing newline,
+        // which split_file_lines stores separately from the line vector.
+        if pos.is_none() && old_lines.last().is_some_and(String::is_empty) {
+            old_lines = &old_lines[..old_lines.len() - 1];
+            if new_lines.last().is_some_and(String::is_empty) {
+                new_lines = &new_lines[..new_lines.len() - 1];
+            }
+            pos = seek_sequence(lines, old_lines, cursor, hunk.is_end_of_file);
+        }
+
+        if pos.is_none()
+            && !hunk.is_end_of_file
+            && let Some((reduced_pos, reduced_old, reduced_new)) =
+                find_context_reduced_match(lines, old_lines, new_lines, cursor)
+        {
+            pos = Some(reduced_pos);
+            old_lines = reduced_old;
+            new_lines = reduced_new;
+        }
+
+        let Some(pos) = pos else {
+            let applied_start = if hunk.is_end_of_file {
+                lines.len().saturating_sub(new_lines.len())
+            } else {
+                cursor
+            };
+            if let Some(applied_pos) =
+                find_unique_subsequence(lines, new_lines, applied_start, hunk.is_end_of_file)
+            {
+                cursor = applied_pos + new_lines.len();
+                continue;
+            }
+            return Err(format_hunk_match_error(path, &hunk.old_lines, lines));
+        };
+        replacements.push((pos, old_lines.len(), new_lines.to_vec()));
+        cursor = pos + old_lines.len();
+    }
+
+    // Positions refer to the original file. Applying from bottom to top keeps
+    // earlier replacements from shifting later coordinates.
+    for (pos, old_len, new_lines) in replacements.into_iter().rev() {
+        lines.splice(pos..pos + old_len, new_lines);
     }
 
     Ok(())
+}
+
+fn find_context_reduced_match<'a>(
+    lines: &[String],
+    old_lines: &'a [String],
+    new_lines: &'a [String],
+    start: usize,
+) -> Option<(usize, &'a [String], &'a [String])> {
+    let common_prefix = old_lines
+        .iter()
+        .zip(new_lines.iter())
+        .take_while(|(old, new)| old == new)
+        .count();
+    let remaining_old = old_lines.len().saturating_sub(common_prefix);
+    let remaining_new = new_lines.len().saturating_sub(common_prefix);
+    let common_suffix = old_lines
+        .iter()
+        .rev()
+        .take(remaining_old)
+        .zip(new_lines.iter().rev().take(remaining_new))
+        .take_while(|(old, new)| old == new)
+        .count();
+
+    for total_trim in 1..=common_prefix + common_suffix {
+        for leading_trim in 0..=common_prefix.min(total_trim) {
+            let trailing_trim = total_trim - leading_trim;
+            if trailing_trim > common_suffix
+                || leading_trim + trailing_trim >= old_lines.len()
+                || leading_trim + trailing_trim > new_lines.len()
+            {
+                continue;
+            }
+
+            let old_end = old_lines.len() - trailing_trim;
+            let new_end = new_lines.len() - trailing_trim;
+            let reduced_old = &old_lines[leading_trim..old_end];
+            let reduced_new = &new_lines[leading_trim..new_end];
+            if let Some(pos) = seek_sequence(lines, reduced_old, start, false) {
+                return Some((pos, reduced_old, reduced_new));
+            }
+        }
+    }
+
+    None
+}
+
+fn seek_sequence(
+    lines: &[String],
+    needle: &[String],
+    start: usize,
+    end_of_file: bool,
+) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(start.min(lines.len()));
+    }
+    if needle.len() > lines.len() {
+        return None;
+    }
+
+    let max_start = lines.len() - needle.len();
+    let search_start = if end_of_file { max_start } else { start };
+    find_subsequence(lines, needle, search_start)
+        .or_else(|| {
+            find_unique_matching_subsequence(lines, needle, search_start, |actual, expected| {
+                patch_line_without_bom(actual).trim_end()
+                    == patch_line_without_bom(expected).trim_end()
+            })
+        })
+        .or_else(|| {
+            find_unique_matching_subsequence(lines, needle, search_start, |actual, expected| {
+                patch_line_without_bom(actual).trim() == patch_line_without_bom(expected).trim()
+            })
+        })
+        .or_else(|| {
+            find_unique_matching_subsequence(lines, needle, search_start, |actual, expected| {
+                normalize_patch_punctuation(actual) == normalize_patch_punctuation(expected)
+            })
+        })
+}
+
+fn parse_patch_line_hint(context: &str) -> Option<usize> {
+    context
+        .trim()
+        .strip_prefix("line ")
+        .unwrap_or(context.trim())
+        .parse::<usize>()
+        .ok()
+        .filter(|line| *line > 0)
+}
+
+fn find_unique_line_containing(lines: &[String], context: &str, start: usize) -> Option<usize> {
+    let context = patch_line_without_bom(context).trim();
+    if context.is_empty() || start >= lines.len() {
+        return None;
+    }
+    let mut matches = lines
+        .iter()
+        .enumerate()
+        .skip(start)
+        .filter_map(|(index, line)| {
+            patch_line_without_bom(line)
+                .trim()
+                .contains(context)
+                .then_some(index)
+        });
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 #[allow(dead_code)]
@@ -542,8 +820,10 @@ fn find_subsequence(lines: &[String], needle: &[String], start: usize) -> Option
     if needle.len() > lines.len() {
         return None;
     }
-    let max_start = lines.len().saturating_sub(needle.len());
-    let start = start.min(max_start);
+    let max_start = lines.len() - needle.len();
+    if start > max_start {
+        return None;
+    }
     (start..=max_start).find(|idx| {
         lines[*idx..*idx + needle.len()]
             .iter()
@@ -552,17 +832,51 @@ fn find_subsequence(lines: &[String], needle: &[String], start: usize) -> Option
     })
 }
 
-fn find_unique_relaxed_subsequence(lines: &[String], needle: &[String]) -> Option<usize> {
+fn find_unique_subsequence(
+    lines: &[String],
+    needle: &[String],
+    start: usize,
+    end_of_file: bool,
+) -> Option<usize> {
     if needle.is_empty() || needle.len() > lines.len() {
         return None;
     }
 
+    let max_start = lines.len() - needle.len();
+    let start = if end_of_file { max_start } else { start };
+    if start > max_start {
+        return None;
+    }
+    let mut matches = (start..=max_start).filter(|index| {
+        lines[*index..*index + needle.len()]
+            .iter()
+            .zip(needle.iter())
+            .all(|(actual, expected)| actual == expected)
+    });
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn find_unique_matching_subsequence(
+    lines: &[String],
+    needle: &[String],
+    start: usize,
+    matches_line: impl Fn(&str, &str) -> bool,
+) -> Option<usize> {
+    if needle.is_empty() || needle.len() > lines.len() {
+        return None;
+    }
+
+    let max_start = lines.len() - needle.len();
+    if start > max_start {
+        return None;
+    }
     let mut matched = None;
-    for index in 0..=lines.len() - needle.len() {
+    for index in start..=max_start {
         let is_match = lines[index..index + needle.len()]
             .iter()
             .zip(needle.iter())
-            .all(|(actual, expected)| relaxed_patch_line(actual) == relaxed_patch_line(expected));
+            .all(|(actual, expected)| matches_line(actual, expected));
         if is_match {
             if matched.is_some() {
                 return None;
@@ -573,8 +887,30 @@ fn find_unique_relaxed_subsequence(lines: &[String], needle: &[String]) -> Optio
     matched
 }
 
+fn patch_line_without_bom(line: &str) -> &str {
+    line.trim_start_matches('\u{feff}')
+}
+
+fn normalize_patch_punctuation(line: &str) -> String {
+    patch_line_without_bom(line)
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
+            | '\u{2212}' => '-',
+            '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' => '\'',
+            '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' => '"',
+            '\u{00a0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}'
+            | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200a}' | '\u{202f}' | '\u{205f}'
+            | '\u{3000}' => ' ',
+            '\u{2502}' => '|',
+            other => other,
+        })
+        .collect()
+}
+
 fn relaxed_patch_line(line: &str) -> &str {
-    line.trim_start_matches('\u{feff}').trim_end()
+    patch_line_without_bom(line).trim_end()
 }
 
 fn format_hunk_match_error(path: &str, old_lines: &[String], current_lines: &[String]) -> String {
@@ -599,7 +935,7 @@ fn format_hunk_match_error(path: &str, old_lines: &[String], current_lines: &[St
         .unwrap_or_default();
 
     format!(
-        "failed to match hunk in {path} ({} expected lines). The file content has changed or the patch context is stale. Build a new, smaller hunk from the fresh context below; use read_file only if that context is insufficient. Expected context: {preview}{current_context}",
+        "failed to match hunk in {path} ({} expected lines). The file content has changed or the patch context is stale. Use read_file around the fresh context below, then build a new, smaller hunk from the current content. Expected context: {preview}{current_context}",
         old_lines.len()
     )
 }
@@ -609,11 +945,14 @@ fn nearest_hunk_context(current_lines: &[String], expected_lines: &[String]) -> 
     const CONTEXT_AFTER: usize = 4;
     const MAX_CONTEXT_CHARS: usize = 800;
 
-    let anchor = expected_lines.iter().find_map(|expected| {
-        current_lines
-            .iter()
-            .position(|actual| relaxed_patch_line(actual) == relaxed_patch_line(expected))
-    })?;
+    let anchor = expected_lines
+        .iter()
+        .filter(|expected| !relaxed_patch_line(expected).trim().is_empty())
+        .find_map(|expected| {
+            current_lines
+                .iter()
+                .position(|actual| relaxed_patch_line(actual) == relaxed_patch_line(expected))
+        })?;
     let start = anchor.saturating_sub(CONTEXT_BEFORE);
     let end = (anchor + CONTEXT_AFTER + 1).min(current_lines.len());
     let mut context = current_lines[start..end]
@@ -783,6 +1122,14 @@ mod tests {
         parse_patch_actions,
     };
 
+    fn apply_parsed_update(lines: &mut Vec<String>, patch: &str, path: &str) {
+        let actions = parse_patch_actions(patch).unwrap();
+        let ParsedPatchAction::Update { hunks, .. } = &actions[0] else {
+            panic!("expected update action");
+        };
+        apply_update_hunks(lines, hunks, path).unwrap();
+    }
+
     #[test]
     fn extract_patch_argument_accepts_wrapped_raw_patch_block() {
         let raw = r#"D:\rustwork\cn-codex-lite-rs\src\App.tsx ***
@@ -842,6 +1189,332 @@ done"#;
     }
 
     #[test]
+    fn parse_patch_actions_preserves_context_and_end_of_file_markers() {
+        let patch = r#"*** Begin Patch
+*** Update File: src/App.tsx
+@@ function renderApp()
+-old
++new
+*** End of File
+*** End Patch"#;
+
+        let actions = parse_patch_actions(patch).unwrap();
+        let ParsedPatchAction::Update { hunks, .. } = &actions[0] else {
+            panic!("expected update action");
+        };
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(
+            hunks[0].change_context.as_deref(),
+            Some("function renderApp()")
+        );
+        assert!(hunks[0].is_end_of_file);
+    }
+
+    #[test]
+    fn parse_patch_actions_does_not_treat_unified_ranges_as_source_context() {
+        let patch = r#"*** Begin Patch
+*** Update File: src/App.tsx
+@@ -10,2 +10,2 @@
+-old
++new
+*** End Patch"#;
+
+        let actions = parse_patch_actions(patch).unwrap();
+        let ParsedPatchAction::Update { hunks, .. } = &actions[0] else {
+            panic!("expected update action");
+        };
+        assert_eq!(hunks[0].change_context, None);
+    }
+
+    #[test]
+    fn parse_patch_actions_accepts_provider_bare_blank_context_lines() {
+        let patch = concat!(
+            "*** Begin Patch ***\n",
+            "*** Update File: D:\\workspace\\scripts\\MainController.gd ***\n",
+            "--- a/scripts/MainController.gd\n",
+            "+++ b/scripts/MainController.gd\n",
+            "@@ -252,7 +252,7 @@ func _on_enemy_turn_ended() -> void:\n",
+            "\n",
+            " func _on_end_turn_pressed() -> void:\n",
+            " \t\"\"\"end turn\"\"\"\n",
+            "-\tif battle_manager and battle_manager.state == OLD_STATE:\n",
+            "+\tif battle_manager and battle_manager.state == ",
+            "BattleManager.BattleState.PLAYER_TURN:\n",
+            " \t\tbattle_manager.end_player_turn()\n",
+            " \n",
+            " \n",
+            "*** End Patch ***",
+        );
+
+        let actions = parse_patch_actions(patch).unwrap();
+        let ParsedPatchAction::Update { hunks, .. } = &actions[0] else {
+            panic!("expected update action");
+        };
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(
+            hunks[0].change_context.as_deref(),
+            Some("func _on_enemy_turn_ended() -> void:")
+        );
+        assert_eq!(hunks[0].old_lines.first(), Some(&String::new()));
+        assert_eq!(hunks[0].old_lines.last(), Some(&String::new()));
+    }
+
+    #[test]
+    fn apply_patch_accepts_wrapped_markdown_diff_lines_and_end_marker_typo() {
+        let mut lines = vec![
+            "| `StatusEffect` | `(pending)` | old |".to_string(),
+            "| `RewardManager` | `(pending)` | old |".to_string(),
+        ];
+        let patch = r#"*** Begin Patch
+*** Update File: DESIGN.md
+@@ status table update
+|-| `StatusEffect` | `(pending)` | old |
+|-| `RewardManager` | `(pending)` | old |
++|| `StatusEffect` | `StatusEffect.gd` | implemented |
++|| `EffectExecutor` | `EffectExecutor.gd` | implemented |
++|| `RewardManager` | `(pending)` | old |
+*** End of Patch"#;
+
+        apply_parsed_update(&mut lines, patch, "DESIGN.md");
+        assert_eq!(
+            lines,
+            vec![
+                "| `StatusEffect` | `StatusEffect.gd` | implemented |",
+                "| `EffectExecutor` | `EffectExecutor.gd` | implemented |",
+                "| `RewardManager` | `(pending)` | old |",
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_patch_accepts_line_hint_old_block_new_block_dialect() {
+        let mut lines = vec![
+            "header".to_string(),
+            "| `StatusEffect` | `(pending)` | old |".to_string(),
+            "footer".to_string(),
+        ];
+        let patch = r#"*** Begin Patch
+*** Update File: DESIGN.md
+@@ line 2
+| `StatusEffect` | `(pending)` | old |
+@@
+| `StatusEffect` | `StatusEffect.gd` | implemented |
+| `EffectExecutor` | `EffectExecutor.gd` | implemented |
+@@ line 3
+footer
+@@
+footer
+*** End Patch"#;
+
+        apply_parsed_update(&mut lines, patch, "DESIGN.md");
+        assert_eq!(
+            lines,
+            vec![
+                "header",
+                "| `StatusEffect` | `StatusEffect.gd` | implemented |",
+                "| `EffectExecutor` | `EffectExecutor.gd` | implemented |",
+                "footer",
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_patch_unwraps_directory_tree_context_without_changing_tree_glyphs() {
+        let mut lines = vec![
+            "│   │   ├── StatusEffect.gd      # pending".to_string(),
+            "│   │   └── RewardManager.gd     # pending".to_string(),
+        ];
+        let patch = r#"*** Begin Patch
+*** Update File: DESIGN.md
+@@ directory tree
+||   │   ├── StatusEffect.gd      # pending
+||   │   └── RewardManager.gd     # pending
++||   │   ├── StatusEffect.gd      # implemented
++||   │   ├── EffectExecutor.gd    # implemented
++||   │   └── RewardManager.gd     # pending
+*** End Patch"#;
+
+        apply_parsed_update(&mut lines, patch, "DESIGN.md");
+        assert_eq!(
+            lines,
+            vec![
+                "│   │   ├── StatusEffect.gd      # implemented",
+                "│   │   ├── EffectExecutor.gd    # implemented",
+                "│   │   └── RewardManager.gd     # pending",
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_patch_treats_a_description_context_as_advisory() {
+        let mut lines = vec![
+            "var effect: Node = null".to_string(),
+            String::new(),
+            "func get_name() -> String:".to_string(),
+            "\treturn \"effect\"".to_string(),
+            String::new(),
+            "func setup() -> void:".to_string(),
+            "\teffect = StatusEffect.new()".to_string(),
+        ];
+        let patch = r#"*** Begin Patch
+*** Update File: test_status_effect.gd
+@@ setup
+ var effect: Node = null
++const StatusEffectScript = preload("StatusEffect.gd")
+
+ func get_name() -> String:
+@@ func setup() -> void:
+ func setup() -> void:
+-	effect = StatusEffect.new()
++	effect = StatusEffectScript.new()
+*** End Patch"#;
+
+        apply_parsed_update(&mut lines, patch, "test_status_effect.gd");
+        assert!(
+            lines.contains(&"const StatusEffectScript = preload(\"StatusEffect.gd\")".to_string())
+        );
+        assert!(lines.contains(&"\teffect = StatusEffectScript.new()".to_string()));
+    }
+
+    #[test]
+    fn apply_patch_does_not_treat_end_of_file_written_in_a_hunk_header_as_source() {
+        let mut lines = vec![
+            "before".to_string(),
+            "old value".to_string(),
+            "after".to_string(),
+        ];
+        let patch = r#"*** Begin Patch
+*** Update File: DESIGN.md
+@@ *** End of File
+-old value
++new value
+*** End Patch"#;
+
+        apply_parsed_update(&mut lines, patch, "DESIGN.md");
+        assert_eq!(lines, vec!["before", "new value", "after"]);
+    }
+
+    #[test]
+    fn apply_update_hunks_uses_context_to_select_the_correct_repeated_block() {
+        let mut lines = vec![
+            "function first()".to_string(),
+            "target: old".to_string(),
+            "function second()".to_string(),
+            "target: old".to_string(),
+        ];
+        let hunks = vec![PatchHunk {
+            change_context: Some("function second()".to_string()),
+            old_lines: vec!["target: old".to_string()],
+            new_lines: vec!["target: new".to_string()],
+            is_end_of_file: false,
+            additions: 1,
+            deletions: 1,
+        }];
+
+        apply_update_hunks(&mut lines, &hunks, "src/App.tsx").unwrap();
+        assert_eq!(lines[1], "target: old");
+        assert_eq!(lines[3], "target: new");
+    }
+
+    #[test]
+    fn apply_update_hunks_accepts_an_anchor_repeated_as_the_first_context_line() {
+        let mut lines = vec![
+            "func _on_end_turn_pressed() -> void:".to_string(),
+            "\t\"\"\"end turn\"\"\"".to_string(),
+            "\tif state == OLD_STATE:".to_string(),
+            "\t\tend_turn()".to_string(),
+        ];
+        let hunks = vec![PatchHunk {
+            change_context: Some("func _on_end_turn_pressed() -> void:".to_string()),
+            old_lines: vec![
+                "func _on_end_turn_pressed() -> void:".to_string(),
+                "\t\"\"\"end turn\"\"\"".to_string(),
+                "\tif state == OLD_STATE:".to_string(),
+                "\t\tend_turn()".to_string(),
+            ],
+            new_lines: vec![
+                "func _on_end_turn_pressed() -> void:".to_string(),
+                "\t\"\"\"end turn\"\"\"".to_string(),
+                "\tif state == BattleState.PLAYER_TURN:".to_string(),
+                "\t\tend_turn()".to_string(),
+            ],
+            is_end_of_file: false,
+            additions: 1,
+            deletions: 1,
+        }];
+
+        apply_update_hunks(&mut lines, &hunks, "MainController.gd").unwrap();
+        assert_eq!(lines[2], "\tif state == BattleState.PLAYER_TURN:");
+    }
+
+    #[test]
+    fn apply_update_hunks_trims_only_stale_unchanged_edge_context() {
+        let mut lines = vec![
+            "var max_hand_width: float = 800.0".to_string(),
+            String::new(),
+            "## Battle state constant".to_string(),
+            "const PLAYER_TURN_STATE = 1".to_string(),
+            String::new(),
+            String::new(),
+            "func _ready() -> void:".to_string(),
+            "\t# Find BattleManager".to_string(),
+            "\tbattle_manager = _find_battle_manager()".to_string(),
+        ];
+        let hunks = vec![PatchHunk {
+            change_context: None,
+            old_lines: vec![
+                "var max_hand_width: float = 800.0".to_string(),
+                String::new(),
+                "## Battle state constant".to_string(),
+                "const PLAYER_TURN_STATE = 1".to_string(),
+                String::new(),
+                String::new(),
+                "func _ready() -> void:".to_string(),
+                "\t# Find BattleManager".to_string(),
+                "\t_find_battle_manager()".to_string(),
+            ],
+            new_lines: vec![
+                "var max_hand_width: float = 800.0".to_string(),
+                String::new(),
+                "func _ready() -> void:".to_string(),
+                "\t# Find BattleManager".to_string(),
+                "\t_find_battle_manager()".to_string(),
+            ],
+            is_end_of_file: false,
+            additions: 0,
+            deletions: 4,
+        }];
+
+        apply_update_hunks(&mut lines, &hunks, "HandUI.gd").unwrap();
+        assert_eq!(
+            lines,
+            vec![
+                "var max_hand_width: float = 800.0",
+                "",
+                "func _ready() -> void:",
+                "\t# Find BattleManager",
+                "\tbattle_manager = _find_battle_manager()",
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_update_hunks_honors_end_of_file_for_repeated_content() {
+        let mut lines = vec!["tail".to_string(), "middle".to_string(), "tail".to_string()];
+        let hunks = vec![PatchHunk {
+            change_context: None,
+            old_lines: vec!["tail".to_string()],
+            new_lines: vec!["final tail".to_string()],
+            is_end_of_file: true,
+            additions: 1,
+            deletions: 1,
+        }];
+
+        apply_update_hunks(&mut lines, &hunks, "src/App.tsx").unwrap();
+        assert_eq!(lines, vec!["tail", "middle", "final tail"]);
+    }
+
+    #[test]
     fn apply_update_hunks_accepts_unique_trailing_whitespace_and_bom_differences() {
         let mut lines = vec![
             "\u{feff}function parseChart() {   ".to_string(),
@@ -849,6 +1522,7 @@ done"#;
             "}".to_string(),
         ];
         let hunks = vec![PatchHunk {
+            change_context: None,
             old_lines: vec![
                 "function parseChart() {".to_string(),
                 "  return old;".to_string(),
@@ -859,6 +1533,7 @@ done"#;
                 "  return updated;".to_string(),
                 "}".to_string(),
             ],
+            is_end_of_file: false,
             additions: 1,
             deletions: 1,
         }];
@@ -868,18 +1543,116 @@ done"#;
     }
 
     #[test]
+    fn apply_update_hunks_accepts_unique_unicode_punctuation_differences() {
+        let mut lines = vec!["label = \"old — value\"".to_string()];
+        let hunks = vec![PatchHunk {
+            change_context: None,
+            old_lines: vec!["label = \"old - value\"".to_string()],
+            new_lines: vec!["label = \"new - value\"".to_string()],
+            is_end_of_file: false,
+            additions: 1,
+            deletions: 1,
+        }];
+
+        apply_update_hunks(&mut lines, &hunks, "src/App.tsx").unwrap();
+        assert_eq!(lines, vec!["label = \"new - value\""]);
+    }
+
+    #[test]
     fn apply_update_hunks_rejects_ambiguous_relaxed_matches() {
         let mut lines = vec!["same ".to_string(), "same\t".to_string()];
         let hunks = vec![PatchHunk {
+            change_context: None,
             old_lines: vec!["same".to_string()],
             new_lines: vec!["changed".to_string()],
+            is_end_of_file: false,
             additions: 1,
             deletions: 1,
         }];
 
         let error = apply_update_hunks(&mut lines, &hunks, "src/App.tsx").unwrap_err();
-        assert!(error.contains("Build a new, smaller hunk"));
+        assert!(error.contains("build a new, smaller hunk"));
         assert!(error.contains("smaller hunk"));
+    }
+
+    #[test]
+    fn apply_update_hunks_accepts_a_uniquely_already_applied_hunk() {
+        let expected = vec![
+            "# Design".to_string(),
+            "new architecture".to_string(),
+            "stable footer".to_string(),
+        ];
+        let mut lines = expected.clone();
+        let hunks = vec![PatchHunk {
+            change_context: None,
+            old_lines: vec![
+                "# Design".to_string(),
+                "old architecture".to_string(),
+                "stable footer".to_string(),
+            ],
+            new_lines: expected.clone(),
+            is_end_of_file: false,
+            additions: 1,
+            deletions: 1,
+        }];
+
+        apply_update_hunks(&mut lines, &hunks, "DESIGN.md").unwrap();
+        assert_eq!(lines, expected);
+    }
+
+    #[test]
+    fn apply_update_hunks_still_rejects_a_stale_unapplied_hunk() {
+        let mut lines = vec!["# Design".to_string(), "user revision".to_string()];
+        let original = lines.clone();
+        let hunks = vec![PatchHunk {
+            change_context: None,
+            old_lines: vec!["# Design".to_string(), "old architecture".to_string()],
+            new_lines: vec!["# Design".to_string(), "new architecture".to_string()],
+            is_end_of_file: false,
+            additions: 1,
+            deletions: 1,
+        }];
+
+        let error = apply_update_hunks(&mut lines, &hunks, "DESIGN.md").unwrap_err();
+        assert!(error.contains("failed to match hunk"));
+        assert_eq!(lines, original);
+    }
+
+    #[test]
+    fn apply_update_hunks_handles_applied_and_pending_hunks_together() {
+        let mut lines = vec![
+            "section one: new".to_string(),
+            "separator".to_string(),
+            "section two: old".to_string(),
+        ];
+        let hunks = vec![
+            PatchHunk {
+                change_context: None,
+                old_lines: vec!["section one: old".to_string()],
+                new_lines: vec!["section one: new".to_string()],
+                is_end_of_file: false,
+                additions: 1,
+                deletions: 1,
+            },
+            PatchHunk {
+                change_context: None,
+                old_lines: vec!["section two: old".to_string()],
+                new_lines: vec!["section two: new".to_string()],
+                is_end_of_file: false,
+                additions: 1,
+                deletions: 1,
+            },
+        ];
+
+        apply_update_hunks(&mut lines, &hunks, "DESIGN.md").unwrap();
+        assert_eq!(
+            lines,
+            vec![
+                "section one: new".to_string(),
+                "separator".to_string(),
+                "section two: new".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -890,12 +1663,14 @@ done"#;
             "  \"settings.provider.addCustom\": \"自定义\",".to_string(),
         ];
         let hunks = vec![PatchHunk {
+            change_context: None,
             old_lines: vec![
                 "  \"settings.provider.activate\": \"启用\",".to_string(),
                 "  \"settings.provider.activateThis\": \"启用此供应商\",".to_string(),
                 "  \"settings.provider.addCustom\": \"自定义\",".to_string(),
             ],
             new_lines: Vec::new(),
+            is_end_of_file: false,
             additions: 0,
             deletions: 1,
         }];
@@ -907,5 +1682,41 @@ done"#;
         assert!(error.contains("Fresh current context"));
         assert!(error.contains("设置默认供应商"));
         assert!(error.contains("settings.provider.addCustom"));
+    }
+
+    #[test]
+    fn hunk_match_error_does_not_use_a_blank_line_as_the_fresh_context_anchor() {
+        let mut lines = vec![
+            "# Design".to_string(),
+            String::new(),
+            "introduction".to_string(),
+            String::new(),
+            "## 8. Directory".to_string(),
+            String::new(),
+            "current tree".to_string(),
+        ];
+        let hunks = vec![PatchHunk {
+            change_context: None,
+            old_lines: vec![
+                String::new(),
+                "## 8. Directory".to_string(),
+                String::new(),
+                "stale tree".to_string(),
+            ],
+            new_lines: vec![
+                String::new(),
+                "## 8. Directory".to_string(),
+                String::new(),
+                "new tree".to_string(),
+            ],
+            is_end_of_file: false,
+            additions: 1,
+            deletions: 1,
+        }];
+
+        let error = apply_update_hunks(&mut lines, &hunks, "DESIGN.md").unwrap_err();
+        assert!(error.contains("    5 | ## 8. Directory"));
+        assert!(error.contains("    7 | current tree"));
+        assert!(!error.contains("    1 | # Design"));
     }
 }

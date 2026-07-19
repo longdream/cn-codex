@@ -32,27 +32,91 @@ Use this to build on the work that has already been done and avoid duplicating w
 Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
 
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
-const COMPACTION_MIN_TOOL_RESULTS: usize = 100;
+const COMPACTION_TOOL_RESULT_LIMIT: usize = 100;
 const COMPACTION_TOOL_RESULT_MAX_CHARS: usize = 1_600;
 const COMPACTION_TOOL_CALL_MAX_CHARS: usize = 1_200;
-const COMPACTION_MAX_INPUT_CHARS: usize = 240_000;
+const COMPACTION_REQUEST_INPUT_PERCENT: usize = 70;
+const COMPACTION_TARGET_HISTORY_PERCENT: usize = 50;
+const COMPACTION_TARGET_THRESHOLD_PERCENT: usize = 60;
+const COMPACTION_MAX_OUTPUT_TOKENS: usize = 8_192;
+const COMPACTION_MIN_CONTEXT_WINDOW: usize = 4_096;
 const DEFAULT_CONTEXT_WINDOW: i64 = 128_000;
 const COMPACT_THRESHOLD_PERCENT: i64 = 80;
 
 fn approx_token_count(text: &str) -> usize {
-    text.len() / 3
+    text.len().div_ceil(3)
+}
+
+fn context_window_tokens(config: &ConfigToml) -> usize {
+    config
+        .model_context_window
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW)
+        .max(COMPACTION_MIN_CONTEXT_WINDOW as i64) as usize
+}
+
+fn percent_of(value: usize, percent: usize) -> usize {
+    value.saturating_mul(percent) / 100
+}
+
+fn compaction_request_input_budget(config: &ConfigToml) -> usize {
+    percent_of(
+        context_window_tokens(config),
+        COMPACTION_REQUEST_INPUT_PERCENT,
+    )
+}
+
+fn compacted_history_budget(config: &ConfigToml) -> usize {
+    let context_budget = percent_of(
+        context_window_tokens(config),
+        COMPACTION_TARGET_HISTORY_PERCENT,
+    );
+    let trigger_budget = percent_of(
+        compact_threshold(config).min(usize::MAX as u64) as usize,
+        COMPACTION_TARGET_THRESHOLD_PERCENT,
+    );
+    context_budget.min(trigger_budget).max(1)
+}
+
+fn compaction_output_limit(config: &ConfigToml) -> i64 {
+    let context_limit = percent_of(context_window_tokens(config), 15).max(512);
+    let configured_limit = config
+        .max_output_tokens
+        .filter(|limit| *limit > 0)
+        .map(|limit| limit as usize)
+        .unwrap_or(COMPACTION_MAX_OUTPUT_TOKENS);
+    configured_limit
+        .min(COMPACTION_MAX_OUTPUT_TOKENS)
+        .min(context_limit) as i64
+}
+
+fn truncate_to_token_budget(text: &str, max_tokens: usize) -> String {
+    let max_bytes = max_tokens.saturating_mul(3);
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+
+    let mut end = max_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
 }
 
 pub fn compact_threshold(config: &ConfigToml) -> u64 {
+    let context_window = context_window_tokens(config) as u64;
+    let percentage_threshold =
+        context_window.saturating_mul(COMPACT_THRESHOLD_PERCENT as u64) / 100;
     if let Some(limit) = config.model_auto_compact_token_limit {
         if limit > 0 {
-            return limit as u64;
+            // An absolute override may request earlier compaction, but it must never
+            // move the trigger past the context-window percentage safety line.
+            return (limit as u64).min(percentage_threshold).max(1);
         }
     }
-    let context_window = config
-        .model_context_window
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
-    ((context_window * COMPACT_THRESHOLD_PERCENT) / 100) as u64
+    percentage_threshold.max(1)
 }
 
 pub fn should_compact(prompt_tokens: u64, config: &ConfigToml) -> bool {
@@ -99,7 +163,16 @@ fn truncate_compaction_text(text: &str, max_chars: usize) -> String {
     format!("{head}\n...[compaction truncation]...\n{tail}")
 }
 
-fn build_compaction_messages(history: &[ThreadMessage]) -> Vec<InternalMessage> {
+fn internal_message_tokens(message: &InternalMessage) -> usize {
+    message
+        .content
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .map(approx_token_count)
+        .unwrap_or_default()
+}
+
+fn build_compaction_messages(history: &[ThreadMessage], max_tokens: usize) -> Vec<InternalMessage> {
     let mut messages = Vec::with_capacity(history.len() + 1);
     messages.push(InternalMessage {
         role: "system".to_string(),
@@ -161,47 +234,34 @@ fn build_compaction_messages(history: &[ThreadMessage]) -> Vec<InternalMessage> 
         });
     }
 
-    // Keep the summarization request bounded even for very long robot/agent turns.
-    // Drop the oldest command transcripts first; user and assistant decisions remain.
-    while messages
-        .iter()
-        .map(|message| {
-            message
-                .content
-                .as_ref()
-                .map(|value| value.to_string().len())
-                .unwrap_or(0)
-        })
-        .sum::<usize>()
-        > COMPACTION_MAX_INPUT_CHARS
-    {
-        let tool_result_count = messages
-            .iter()
-            .filter(|message| {
-                message.content.as_ref().is_some_and(|content| {
-                    content
-                        .as_str()
-                        .is_some_and(|text| text.starts_with("[Command result:"))
-                })
-            })
-            .count();
-        if tool_result_count <= COMPACTION_MIN_TOOL_RESULTS {
-            break;
+    let system = messages.remove(0);
+    let mut remaining = max_tokens.saturating_sub(internal_message_tokens(&system));
+    let mut selected = Vec::new();
+    for mut message in messages.into_iter().rev() {
+        let tokens = internal_message_tokens(&message);
+        if tokens <= remaining {
+            remaining = remaining.saturating_sub(tokens);
+            selected.push(message);
+            continue;
         }
-        let Some(index) = messages.iter().position(|message| {
-            message.role == "user"
-                && message.content.as_ref().is_some_and(|content| {
-                    content
-                        .as_str()
-                        .is_some_and(|text| text.starts_with("[Command result:"))
-                })
-        }) else {
-            break;
-        };
-        messages.remove(index);
-    }
 
-    messages
+        if remaining > 0
+            && let Some(content) = message.content.as_ref().and_then(serde_json::Value::as_str)
+        {
+            let truncated = truncate_to_token_budget(content, remaining);
+            if !truncated.is_empty() {
+                message.content = text_content(truncated);
+                selected.push(message);
+            }
+        }
+        break;
+    }
+    selected.reverse();
+
+    let mut fitted = Vec::with_capacity(selected.len() + 1);
+    fitted.push(system);
+    fitted.extend(selected);
+    fitted
 }
 
 fn collect_recent_tool_context(history: &[ThreadMessage], limit: usize) -> Vec<String> {
@@ -246,30 +306,32 @@ pub fn build_compacted_history(
     user_messages: &[String],
     summary_text: &str,
     recent_tool_context: &[String],
+    max_tokens: usize,
 ) -> Vec<ThreadMessage> {
-    let mut selected: Vec<String> = Vec::new();
-    let mut remaining = COMPACT_USER_MESSAGE_MAX_TOKENS;
+    let summary_prefix = format!("{SUMMARY_PREFIX}\n");
+    let summary_body_budget = max_tokens.saturating_sub(approx_token_count(&summary_prefix));
+    let summary_body_source = if summary_text.is_empty() {
+        "(no summary available)"
+    } else {
+        summary_text
+    };
+    let summary_body = truncate_to_token_budget(summary_body_source, summary_body_budget);
+    let final_summary = format!("{summary_prefix}{summary_body}");
+    let summary_tokens = approx_token_count(&final_summary);
+    let remaining = max_tokens.saturating_sub(summary_tokens);
 
-    for message in user_messages.iter().rev() {
-        if remaining == 0 {
-            break;
-        }
-        let tokens = approx_token_count(message);
-        if tokens <= remaining {
-            selected.push(message.clone());
-            remaining = remaining.saturating_sub(tokens);
-        } else {
-            let chars_budget = remaining * 3;
-            let truncated: String = message.chars().take(chars_budget).collect();
-            selected.push(truncated);
-            break;
-        }
-    }
-    selected.reverse();
+    let user_budget = COMPACT_USER_MESSAGE_MAX_TOKENS.min(remaining / 2);
+    let selected_users = select_recent_texts(user_messages, user_budget);
+    let selected_user_tokens = selected_users
+        .iter()
+        .map(|message| approx_token_count(message))
+        .sum::<usize>();
+    let tool_budget = remaining.saturating_sub(selected_user_tokens);
+    let selected_tool_context = select_recent_texts(recent_tool_context, tool_budget);
 
     let mut messages: Vec<ThreadMessage> = Vec::new();
 
-    for text in &selected {
+    for text in &selected_users {
         messages.push(ThreadMessage {
             id: uuid::Uuid::new_v4().to_string(),
             role: "user".to_string(),
@@ -282,7 +344,7 @@ pub fn build_compacted_history(
         });
     }
 
-    for context in recent_tool_context {
+    for context in &selected_tool_context {
         messages.push(ThreadMessage {
             id: uuid::Uuid::new_v4().to_string(),
             role: "user".to_string(),
@@ -294,12 +356,6 @@ pub fn build_compacted_history(
             attachments: Vec::new(),
         });
     }
-
-    let final_summary = if summary_text.is_empty() {
-        format!("{SUMMARY_PREFIX}\n(no summary available)")
-    } else {
-        format!("{SUMMARY_PREFIX}\n{summary_text}")
-    };
 
     messages.push(ThreadMessage {
         id: uuid::Uuid::new_v4().to_string(),
@@ -313,6 +369,36 @@ pub fn build_compacted_history(
     });
 
     messages
+}
+
+fn select_recent_texts(items: &[String], max_tokens: usize) -> Vec<String> {
+    let mut selected = Vec::new();
+    let mut remaining = max_tokens;
+    for item in items.iter().rev() {
+        if remaining == 0 {
+            break;
+        }
+        let tokens = approx_token_count(item);
+        if tokens <= remaining {
+            selected.push(item.clone());
+            remaining = remaining.saturating_sub(tokens);
+        } else {
+            let truncated = truncate_to_token_budget(item, remaining);
+            if !truncated.is_empty() {
+                selected.push(truncated);
+            }
+            break;
+        }
+    }
+    selected.reverse();
+    selected
+}
+
+fn estimated_history_tokens(history: &[ThreadMessage]) -> usize {
+    history
+        .iter()
+        .map(|message| approx_token_count(&message.content))
+        .sum()
 }
 
 pub async fn run_compaction(
@@ -336,12 +422,15 @@ pub async fn run_compaction(
     app_handle.emit("compaction-started", payload.clone()).ok();
     crate::mobile_server::broadcast("compaction-started", payload);
 
-    let history = thread_store.get_thread_messages(thread_id).await;
+    let history = thread_store.get_model_history(thread_id).await;
     if history.is_empty() {
         return Ok(());
     }
 
-    let mut messages = build_compaction_messages(&history);
+    let request_input_budget = compaction_request_input_budget(config);
+    let summarization_prompt_tokens = approx_token_count(SUMMARIZATION_PROMPT);
+    let history_input_budget = request_input_budget.saturating_sub(summarization_prompt_tokens);
+    let mut messages = build_compaction_messages(&history, history_input_budget);
 
     messages.push(InternalMessage {
         role: "user".to_string(),
@@ -357,13 +446,14 @@ pub async fn run_compaction(
     let (url, headers) =
         adapter::apply_request_overrides(url, headers, query_params, extra_headers)
             .map_err(AppError::Custom)?;
-    let body = adapter.build_body(model, &messages, None, config.max_output_tokens);
+    let body = adapter.build_body(
+        model,
+        &messages,
+        None,
+        Some(compaction_output_limit(config)),
+    );
 
-    let input_chars: usize = messages
-        .iter()
-        .map(|m| m.content.as_ref().map(|c| c.to_string().len()).unwrap_or(0))
-        .sum();
-    let estimated_input_tokens = input_chars / 3;
+    let estimated_input_tokens = messages.iter().map(internal_message_tokens).sum::<usize>();
     info!(
         "Compaction LLM request: url={url}, model={model}, history_msgs={}, estimated_input_tokens={estimated_input_tokens}",
         history.len()
@@ -435,8 +525,15 @@ pub async fn run_compaction(
     );
 
     let user_messages = collect_user_messages(&history);
-    let recent_tool_context = collect_recent_tool_context(&history, COMPACTION_MIN_TOOL_RESULTS);
-    let new_history = build_compacted_history(&user_messages, &summary_text, &recent_tool_context);
+    let recent_tool_context = collect_recent_tool_context(&history, COMPACTION_TOOL_RESULT_LIMIT);
+    let history_budget = compacted_history_budget(config);
+    let new_history = build_compacted_history(
+        &user_messages,
+        &summary_text,
+        &recent_tool_context,
+        history_budget,
+    );
+    let compacted_prompt_tokens = estimated_history_tokens(&new_history) as u64;
 
     let backup_path = thread_store
         .backup_thread_before_compaction(thread_id)
@@ -447,11 +544,10 @@ pub async fn run_compaction(
     );
 
     thread_store
-        .replace_messages(thread_id, new_history)
+        .replace_model_history(thread_id, new_history, compacted_prompt_tokens)
         .await?;
 
     // compaction 后立即回推一份 token usage，确保前端在 idle/turn 间隙也能同步到新占用。
-    let compacted_prompt_tokens = thread_store.get_thread_total_tokens(thread_id).await;
     let model_context_window = config
         .model_context_window
         .unwrap_or(DEFAULT_CONTEXT_WINDOW)
@@ -538,7 +634,7 @@ mod tests {
         tool.tool_call_id = Some("call-1".to_string());
         tool.tool_name = Some("read_file".to_string());
 
-        let messages = build_compaction_messages(&[assistant, tool]);
+        let messages = build_compaction_messages(&[assistant, tool], 10_000);
 
         assert!(messages.iter().any(|message| {
             message_text(message).contains("[Assistant command requests]")
@@ -557,10 +653,40 @@ mod tests {
         config.model_context_window = Some(100_000);
 
         assert_eq!(compact_threshold(&config), 80_000);
+        assert_eq!(compacted_history_budget(&config), 48_000);
     }
 
     #[test]
-    fn compaction_transcript_preserves_at_least_one_hundred_recent_results() {
+    fn compacted_history_budget_stays_below_custom_trigger() {
+        let mut config = ConfigToml::default();
+        config.model_context_window = Some(128_000);
+        config.model_auto_compact_token_limit = Some(20_000);
+
+        assert_eq!(compacted_history_budget(&config), 12_000);
+    }
+
+    #[test]
+    fn absolute_trigger_cannot_exceed_context_percentage() {
+        let mut config = ConfigToml::default();
+        config.model_context_window = Some(65_535);
+        config.model_auto_compact_token_limit = Some(80_000);
+
+        assert_eq!(compact_threshold(&config), 52_428);
+        assert!(!should_compact(52_427, &config));
+        assert!(should_compact(52_428, &config));
+    }
+
+    #[test]
+    fn smaller_absolute_trigger_can_request_earlier_compaction() {
+        let mut config = ConfigToml::default();
+        config.model_context_window = Some(100_000);
+        config.model_auto_compact_token_limit = Some(40_000);
+
+        assert_eq!(compact_threshold(&config), 40_000);
+    }
+
+    #[test]
+    fn compaction_respects_dynamic_budgets_and_keeps_latest_results() {
         let history = (0..180)
             .map(|index| {
                 let mut tool = message("tool", &format!("RESULT_{index}_{}", "x".repeat(3_000)));
@@ -570,34 +696,54 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let messages = build_compaction_messages(&history);
+        let request_budget = 5_000;
+        let messages = build_compaction_messages(&history, request_budget);
         let retained_results = messages
             .iter()
             .filter(|message| message_text(message).starts_with("[Command result:"))
             .count();
 
-        assert!(retained_results >= COMPACTION_MIN_TOOL_RESULTS);
+        assert!(retained_results > 0);
+        assert!(retained_results < COMPACTION_TOOL_RESULT_LIMIT);
+        assert!(messages.iter().map(internal_message_tokens).sum::<usize>() <= request_budget);
         assert!(
             messages
                 .iter()
                 .any(|message| { message_text(message).contains("RESULT_179_") })
         );
 
-        let recent_context = collect_recent_tool_context(&history, COMPACTION_MIN_TOOL_RESULTS);
-        assert_eq!(recent_context.len(), COMPACTION_MIN_TOOL_RESULTS);
+        let recent_context = collect_recent_tool_context(&history, COMPACTION_TOOL_RESULT_LIMIT);
+        assert_eq!(recent_context.len(), COMPACTION_TOOL_RESULT_LIMIT);
         assert!(recent_context.last().unwrap().contains("RESULT_179_"));
 
+        let history_budget = 10_000;
         let compacted = build_compacted_history(
             &["keep the long task running".to_string()],
             "handoff summary",
             &recent_context,
+            history_budget,
         );
-        assert_eq!(
+        let retained_contexts = compacted
+            .iter()
+            .filter(|message| message.content.starts_with("[Recent command context]"))
+            .count();
+        assert!(retained_contexts > 0);
+        assert!(retained_contexts < COMPACTION_TOOL_RESULT_LIMIT);
+        assert!(estimated_history_tokens(&compacted) <= history_budget);
+        assert!(
             compacted
                 .iter()
-                .filter(|message| message.content.starts_with("[Recent command context]"))
-                .count(),
-            COMPACTION_MIN_TOOL_RESULTS
+                .any(|message| message.content.contains("RESULT_179_"))
         );
+        assert!(is_summary_message(&compacted.last().unwrap().content));
+    }
+
+    #[test]
+    fn token_budget_truncation_stays_on_utf8_boundaries() {
+        let text = "中文内容".repeat(1_000);
+        let truncated = truncate_to_token_budget(&text, 100);
+
+        assert!(approx_token_count(&truncated) <= 100);
+        assert!(text.starts_with(&truncated));
     }
 }

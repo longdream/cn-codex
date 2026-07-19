@@ -1,4 +1,9 @@
-import type { ChatMessage, FileChangeSnapshot, ToolCallItem } from "../stores/appStore";
+import type {
+  ChatMessage,
+  FileChangeSnapshot,
+  ThreadGoal,
+  ToolCallItem,
+} from "../stores/appStore";
 import { buildPatchLineDiff } from "./lineDiff";
 
 export type PlanProgressStepStatus = "pending" | "in_progress" | "completed";
@@ -8,8 +13,23 @@ export interface PlanProgressStep {
   status: PlanProgressStepStatus;
 }
 
+export interface RobotWorkflowNodeProgress extends PlanProgressStep {
+  deliverySummary?: string;
+}
+
+export interface RobotWorkflowExecutionProgress {
+  robotId?: string;
+  rootObjective?: string;
+  currentNodeIndex: number;
+  completed: boolean;
+  summarizedCount: number;
+  nodes: RobotWorkflowNodeProgress[];
+}
+
 export interface PlanExecutionProgress {
   steps: PlanProgressStep[];
+  hasExplicitPlan: boolean;
+  robotWorkflow?: RobotWorkflowExecutionProgress;
   currentStep: number;
   totalSteps: number;
   changedFileCount: number;
@@ -170,6 +190,7 @@ function currentStepNumber(steps: PlanProgressStep[]): number {
 export function derivePlanExecutionProgress(
   messages: ChatMessage[],
   running: boolean,
+  workflowProgress?: ThreadGoal["workflowProgress"],
 ): PlanExecutionProgress | null {
   let lastUserIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -180,6 +201,7 @@ export function derivePlanExecutionProgress(
   }
   const scope = messages.slice(Math.max(0, lastUserIndex));
   let steps: PlanProgressStep[] | null = null;
+  let hasExplicitPlan = false;
   let latestSummary: ChatMessage["runSummary"];
   const changedPaths = new Set<string>();
   let additions = 0;
@@ -199,6 +221,7 @@ export function derivePlanExecutionProgress(
       const parsedPlan = planFromToolCall(toolCall);
       if (parsedPlan) {
         steps = parsedPlan;
+        hasExplicitPlan = true;
       }
       if (toolCall.name === "write_file" && toolCall.status === "success") {
         const parsed = parseArguments(toolCall.arguments);
@@ -233,6 +256,39 @@ export function derivePlanExecutionProgress(
     }
   }
 
+  let robotWorkflow: RobotWorkflowExecutionProgress | undefined;
+  if (workflowProgress?.runtimeNodes.length) {
+    const currentNodeIndex = Math.min(
+      workflowProgress.runtimeNodes.length - 1,
+      Math.max(0, workflowProgress.currentNodeIndex),
+    );
+    const completed = workflowProgress.completed === true;
+    const deliveries = workflowProgress.nodeDeliveries ?? [];
+    const nodes: RobotWorkflowNodeProgress[] = workflowProgress.runtimeNodes.map((step, index) => {
+      const deliverySummary = deliveries[index]?.trim();
+      return {
+        step,
+        status: index < currentNodeIndex || (completed && index === currentNodeIndex)
+          ? "completed"
+          : index === currentNodeIndex
+            ? "in_progress"
+            : "pending",
+        ...(deliverySummary ? { deliverySummary } : {}),
+      };
+    });
+    robotWorkflow = {
+      ...(workflowProgress.robotId ? { robotId: workflowProgress.robotId } : {}),
+      ...(workflowProgress.rootObjective ? { rootObjective: workflowProgress.rootObjective } : {}),
+      currentNodeIndex,
+      completed,
+      summarizedCount: nodes.filter((node) => Boolean(node.deliverySummary)).length,
+      nodes,
+    };
+    if (!steps) {
+      steps = nodes.map(({ step, status }) => ({ step, status }));
+    }
+  }
+
   if (!steps) {
     return null;
   }
@@ -248,6 +304,8 @@ export function derivePlanExecutionProgress(
 
   return {
     steps,
+    hasExplicitPlan,
+    ...(robotWorkflow ? { robotWorkflow } : {}),
     currentStep: currentStepNumber(steps),
     totalSteps: steps.length,
     changedFileCount: changedPaths.size,

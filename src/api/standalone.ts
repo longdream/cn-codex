@@ -127,6 +127,7 @@ export async function standaloneThreadRead(threadId: string): Promise<{
     id: string;
     name?: string;
     goal?: ThreadGoal | null;
+    robotState?: RobotWorkflowProgress | null;
     activePlan?: {
       path: string;
       content: string;
@@ -175,6 +176,15 @@ export type ThreadGoalStatus =
   | "budgetLimited"
   | "complete";
 
+export interface RobotWorkflowProgress {
+  robotId?: string;
+  currentNodeIndex: number;
+  rootObjective?: string;
+  runtimeNodes: string[];
+  nodeDeliveries?: string[];
+  completed?: boolean;
+}
+
 export interface ThreadGoal {
   objective: string;
   status: ThreadGoalStatus;
@@ -182,6 +192,7 @@ export interface ThreadGoal {
   tokensUsed?: number;
   createdAt?: number;
   updatedAt?: number;
+  workflowProgress?: RobotWorkflowProgress;
 }
 
 export async function standaloneThreadGoalSet(

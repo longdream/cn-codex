@@ -91,7 +91,10 @@ pub struct ThreadRobotState {
     /// 用于在下个节点以“总结”替代上游节点的原始杂乱历史，保持上下文纯净。
     #[serde(default)]
     pub node_deliveries: Vec<String>,
-    /// 当前节点起始消息 id，用于模型上下文裁剪：仅保留当前节点自身消息与原始用户目标。
+    /// 工作流是否已完成。完成后的快照继续保留，供 UI 展示节点和交付总结。
+    #[serde(default)]
+    pub completed: bool,
+    /// 当前节点起始消息 id，用于模型上下文裁剪：仅保留当前节点自身消息。
     /// 为 None 时（首个节点/未初始化）由 agent 层按首个用户消息 id 填充。
     #[serde(default)]
     pub current_node_start_message_id: Option<String>,
@@ -170,6 +173,14 @@ pub struct StoredThread {
     #[serde(default)]
     pub robot_state: Option<ThreadRobotState>,
     pub turns: Vec<StoredTurn>,
+    /// Model-facing history after the latest compaction checkpoint. The full
+    /// user-visible transcript remains in `turns`.
+    #[serde(default, skip_serializing)]
+    pub model_history: Option<Vec<ThreadMessage>>,
+    /// Token estimate installed with a compaction checkpoint, then replaced by
+    /// authoritative prompt usage after a later model response.
+    #[serde(default, skip_serializing)]
+    pub model_history_prompt_tokens: Option<u64>,
 }
 
 impl StoredThread {
@@ -212,6 +223,11 @@ enum RolloutLine {
         goal_budget_tokens: Option<u64>,
     },
     Message(ThreadMessage),
+    ModelHistoryReplace {
+        messages: Vec<ThreadMessage>,
+        estimated_tokens: u64,
+        compacted_at: i64,
+    },
     TurnEnd {
         turn_id: String,
         completed_at: i64,
@@ -375,6 +391,8 @@ impl ThreadStore {
                         active_plan: None,
                         robot_state: None,
                         turns: Vec::new(),
+                        model_history: None,
+                        model_history_prompt_tokens: None,
                     });
                 }
                 RolloutLine::TurnStart {
@@ -397,8 +415,24 @@ impl ThreadStore {
                     });
                 }
                 RolloutLine::Message(msg) => {
+                    if let Some(ref mut t) = thread
+                        && let Some(ref mut model_history) = t.model_history
+                    {
+                        model_history.push(msg.clone());
+                    }
                     if let Some(ref mut turn) = current_turn {
                         turn.messages.push(msg);
+                    }
+                }
+                RolloutLine::ModelHistoryReplace {
+                    messages,
+                    estimated_tokens,
+                    compacted_at,
+                } => {
+                    if let Some(ref mut t) = thread {
+                        t.model_history = Some(messages);
+                        t.model_history_prompt_tokens = Some(estimated_tokens);
+                        t.updated_at = compacted_at;
                     }
                 }
                 RolloutLine::TurnEnd {
@@ -409,6 +443,13 @@ impl ThreadStore {
                     usage,
                     budget_limited,
                 } => {
+                    let reported_prompt_tokens = usage.as_ref().map(|usage| {
+                        if usage.last_single_prompt_tokens > 0 {
+                            usage.last_single_prompt_tokens
+                        } else {
+                            usage.prompt_tokens
+                        }
+                    });
                     if let Some(mut turn) = current_turn.take() {
                         turn.completed_at = Some(completed_at);
                         turn.duration_ms = duration_ms;
@@ -416,6 +457,11 @@ impl ThreadStore {
                         turn.usage = usage;
                         turn.budget_limited = budget_limited;
                         if let Some(ref mut t) = thread {
+                            if t.model_history.is_some()
+                                && let Some(prompt_tokens) = reported_prompt_tokens
+                            {
+                                t.model_history_prompt_tokens = Some(prompt_tokens);
+                            }
                             t.updated_at = completed_at;
                             t.turns.push(turn);
                         }
@@ -568,6 +614,22 @@ impl ThreadStore {
             }
         }
 
+        if let Some(model_history) = &thread.model_history {
+            let checkpoint = RolloutLine::ModelHistoryReplace {
+                messages: model_history.clone(),
+                estimated_tokens: thread.model_history_prompt_tokens.unwrap_or_else(|| {
+                    model_history
+                        .iter()
+                        .map(|message| approximate_tokens(&message.content))
+                        .sum()
+                }),
+                compacted_at: thread.updated_at,
+            };
+            let json = serde_json::to_string(&checkpoint)
+                .map_err(|e| AppError::Custom(format!("Serialize error: {e}")))?;
+            writeln!(file, "{json}").map_err(|e| AppError::Custom(format!("Write error: {e}")))?;
+        }
+
         Ok(())
     }
 
@@ -587,6 +649,8 @@ impl ThreadStore {
             active_plan: None,
             robot_state: None,
             turns: Vec::new(),
+            model_history: None,
+            model_history_prompt_tokens: None,
         };
 
         self.append_line(
@@ -649,6 +713,9 @@ impl ThreadStore {
 
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(thread_id) {
+            if let Some(model_history) = thread.model_history.as_mut() {
+                model_history.push(msg.clone());
+            }
             if let Some(turn) = thread.turns.last_mut() {
                 turn.messages.push(msg);
             }
@@ -682,12 +749,24 @@ impl ThreadStore {
 
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(thread_id) {
+            let reported_prompt_tokens = usage.as_ref().map(|usage| {
+                if usage.last_single_prompt_tokens > 0 {
+                    usage.last_single_prompt_tokens
+                } else {
+                    usage.prompt_tokens
+                }
+            });
             if let Some(turn) = thread.turns.iter_mut().find(|t| t.turn_id == turn_id) {
                 turn.completed_at = Some(now);
                 turn.duration_ms = duration_ms;
                 turn.changed_files = changed_files;
                 turn.usage = usage;
                 turn.budget_limited = budget_limited;
+            }
+            if thread.model_history.is_some()
+                && let Some(prompt_tokens) = reported_prompt_tokens
+            {
+                thread.model_history_prompt_tokens = Some(prompt_tokens);
             }
             thread.updated_at = now;
         }
@@ -1032,7 +1111,30 @@ impl ThreadStore {
         let threads = self.threads.read().await;
         threads
             .get(thread_id)
-            .map(|t| t.all_messages().into_iter().cloned().collect())
+            .map(|thread| thread.all_messages().into_iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub async fn get_model_history(&self, thread_id: &str) -> Vec<ThreadMessage> {
+        self.ensure_loaded().await;
+        let threads = self.threads.read().await;
+        threads
+            .get(thread_id)
+            .map(|thread| {
+                thread
+                    .model_history
+                    .clone()
+                    .unwrap_or_else(|| thread.all_messages().into_iter().cloned().collect())
+            })
+            .unwrap_or_default()
+    }
+
+    async fn get_thread_transcript_messages(&self, thread_id: &str) -> Vec<ThreadMessage> {
+        self.ensure_loaded().await;
+        let threads = self.threads.read().await;
+        threads
+            .get(thread_id)
+            .map(|thread| thread.all_messages().into_iter().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -1042,6 +1144,9 @@ impl ThreadStore {
         let Some(thread) = threads.get(thread_id) else {
             return 0;
         };
+        if let Some(prompt_tokens) = thread.model_history_prompt_tokens {
+            return prompt_tokens;
+        }
         thread
             .turns
             .iter()
@@ -1082,12 +1187,6 @@ impl ThreadStore {
             return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
         };
 
-        // Estimate token count of compacted history to prevent re-triggering compaction
-        let estimated_tokens: u64 = new_messages
-            .iter()
-            .map(|m| (m.content.len() / 3) as u64)
-            .sum();
-
         thread.turns.clear();
         let turn_id = uuid::Uuid::new_v4().to_string();
         let now = now_secs();
@@ -1098,23 +1197,47 @@ impl ThreadStore {
             mode: Some("compaction".to_string()),
             duration_ms: None,
             changed_files: Vec::new(),
-            usage: Some(TurnUsage {
-                prompt_tokens: estimated_tokens,
-                completion_tokens: 0,
-                total_tokens: estimated_tokens,
-                cached_tokens: 0,
-                cache_creation_tokens: 0,
-                reasoning_tokens: 0,
-                call_count: 0,
-                last_single_prompt_tokens: estimated_tokens,
-            }),
+            usage: None,
             goal_budget_tokens: None,
             budget_limited: false,
             messages: new_messages.clone(),
         });
+        thread.model_history = None;
+        thread.model_history_prompt_tokens = None;
         thread.updated_at = now;
 
         self.rewrite_thread_file(thread_id, thread)?;
+        Ok(())
+    }
+
+    pub async fn replace_model_history(
+        &self,
+        thread_id: &str,
+        new_messages: Vec<ThreadMessage>,
+        estimated_tokens: u64,
+    ) -> AppResult<()> {
+        self.ensure_loaded().await;
+        if !self.threads.read().await.contains_key(thread_id) {
+            return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
+        }
+
+        let compacted_at = now_secs();
+        self.append_line(
+            thread_id,
+            &RolloutLine::ModelHistoryReplace {
+                messages: new_messages.clone(),
+                estimated_tokens,
+                compacted_at,
+            },
+        )?;
+
+        let mut threads = self.threads.write().await;
+        let Some(thread) = threads.get_mut(thread_id) else {
+            return Err(AppError::Custom(format!("Thread not found: {thread_id}")));
+        };
+        thread.model_history = Some(new_messages);
+        thread.model_history_prompt_tokens = Some(estimated_tokens);
+        thread.updated_at = compacted_at;
         Ok(())
     }
 
@@ -1159,7 +1282,7 @@ impl ThreadStore {
         fallback_content: Option<&str>,
     ) -> AppResult<Vec<ThreadMessage>> {
         self.ensure_loaded().await;
-        let existing = self.get_thread_messages(thread_id).await;
+        let existing = self.get_thread_transcript_messages(thread_id).await;
         let idx = existing
             .iter()
             .position(|m| m.id == keep_before_message_id)
@@ -1205,6 +1328,10 @@ fn normalize_user_message_content(content: &str) -> String {
         .to_string()
 }
 
+fn approximate_tokens(content: &str) -> u64 {
+    content.len().div_ceil(3) as u64
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1225,6 +1352,19 @@ fn edited_goal_status(status: ThreadGoalStatus) -> ThreadGoalStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_message(id: &str, role: &str, content: &str) -> ThreadMessage {
+        ThreadMessage {
+            id: id.to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            timestamp: 1,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+            attachments: Vec::new(),
+        }
+    }
 
     #[test]
     fn end_turn_persists_usage_metadata() {
@@ -1444,6 +1584,7 @@ mod tests {
                             "阶段 3：验证并总结".to_string(),
                         ],
                         node_deliveries: vec![],
+                        completed: false,
                         current_node_start_message_id: None,
                     },
                 )
@@ -1462,6 +1603,7 @@ mod tests {
                         "阶段 3：验证并总结".to_string(),
                     ],
                     node_deliveries: vec![],
+                    completed: false,
                     current_node_start_message_id: None,
                 })
             );
@@ -1486,6 +1628,7 @@ mod tests {
                     "阶段 3：验证并总结".to_string(),
                 ],
                 node_deliveries: vec![],
+                completed: false,
                 current_node_start_message_id: None,
             })
         );
@@ -1566,6 +1709,111 @@ mod tests {
             std::fs::read(store.thread_file(&thread_id)).unwrap(),
             std::fs::read(&backup_path).unwrap()
         );
+
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn compacted_model_history_preserves_transcript_and_survives_reload() {
+        let workspace_dir =
+            std::env::temp_dir().join(format!("cn-codex-model-history-{}", uuid::Uuid::new_v4()));
+        let store = ThreadStore::new(&workspace_dir);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let thread_id = runtime.block_on(async {
+            let thread = store.create_thread(None).await.unwrap();
+            let first_turn = store.start_turn(&thread.id, None, None).await.unwrap();
+            store
+                .add_message(
+                    &thread.id,
+                    test_message("original", "user", "original request"),
+                )
+                .await
+                .unwrap();
+            store
+                .end_turn(
+                    &thread.id,
+                    &first_turn,
+                    None,
+                    Vec::new(),
+                    Some(TurnUsage {
+                        prompt_tokens: 10_000,
+                        completion_tokens: 100,
+                        total_tokens: 10_100,
+                        cached_tokens: 0,
+                        cache_creation_tokens: 0,
+                        reasoning_tokens: 0,
+                        call_count: 1,
+                        last_single_prompt_tokens: 10_000,
+                    }),
+                    false,
+                )
+                .await
+                .unwrap();
+
+            store
+                .replace_model_history(
+                    &thread.id,
+                    vec![test_message("summary", "user", "compacted summary")],
+                    120,
+                )
+                .await
+                .unwrap();
+
+            let visible = store.get_thread(&thread.id).await.unwrap();
+            assert_eq!(visible.turns.len(), 1);
+            assert_eq!(visible.turns[0].messages[0].content, "original request");
+            assert_eq!(
+                store.get_model_history(&thread.id).await[0].content,
+                "compacted summary"
+            );
+            assert_eq!(store.get_thread_total_tokens(&thread.id).await, 120);
+
+            let second_turn = store.start_turn(&thread.id, None, None).await.unwrap();
+            store
+                .add_message(&thread.id, test_message("next", "user", "next request"))
+                .await
+                .unwrap();
+            store
+                .end_turn(
+                    &thread.id,
+                    &second_turn,
+                    None,
+                    Vec::new(),
+                    Some(TurnUsage {
+                        prompt_tokens: 150,
+                        completion_tokens: 10,
+                        total_tokens: 160,
+                        cached_tokens: 0,
+                        cache_creation_tokens: 0,
+                        reasoning_tokens: 0,
+                        call_count: 1,
+                        last_single_prompt_tokens: 150,
+                    }),
+                    false,
+                )
+                .await
+                .unwrap();
+            thread.id
+        });
+
+        drop(store);
+        let reloaded_store = ThreadStore::new(&workspace_dir);
+        runtime.block_on(async {
+            let visible = reloaded_store.get_thread(&thread_id).await.unwrap();
+            assert_eq!(visible.turns.len(), 2);
+            assert_eq!(visible.turns[0].messages[0].content, "original request");
+            assert_eq!(visible.turns[1].messages[0].content, "next request");
+
+            let model_history = reloaded_store.get_model_history(&thread_id).await;
+            assert_eq!(model_history.len(), 2);
+            assert_eq!(model_history[0].content, "compacted summary");
+            assert_eq!(model_history[1].content, "next request");
+            assert_eq!(
+                reloaded_store.get_thread_total_tokens(&thread_id).await,
+                150
+            );
+        });
 
         drop(runtime);
         let _ = std::fs::remove_dir_all(workspace_dir);

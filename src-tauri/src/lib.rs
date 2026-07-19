@@ -52,9 +52,11 @@ use tracing::{info, warn};
 pub struct MobileServerInfo {
     pub port: u16,
     pub broadcast_tx: broadcast::Sender<mobile_server::BroadcastEvent>,
+    pub server_abort: tokio::task::AbortHandle,
 }
 
-pub static MOBILE_SERVER: std::sync::OnceLock<MobileServerInfo> = std::sync::OnceLock::new();
+pub static MOBILE_SERVER: std::sync::LazyLock<std::sync::Mutex<Option<MobileServerInfo>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 #[cfg(all(target_os = "windows", not(debug_assertions)))]
 const WEBVIEW2_RUNTIME_VERSION: &str = include_str!("../../release/webview2-runtime.version");

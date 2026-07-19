@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, HashSet, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -53,6 +53,21 @@ pub(crate) fn emit_and_broadcast(app_handle: &AppHandle, event: &str, payload: s
     }
     app_handle.emit(event, sequenced_payload.clone()).ok();
     crate::mobile_server::broadcast(event, sequenced_payload);
+}
+
+fn emit_robot_progress_updated(
+    app_handle: &AppHandle,
+    thread_id: &str,
+    robot_state: Option<&ThreadRobotState>,
+) {
+    emit_and_broadcast(
+        app_handle,
+        "robot-progress-updated",
+        serde_json::json!({
+            "threadId": thread_id,
+            "robotState": robot_state,
+        }),
+    );
 }
 
 /// 按 UTF-8 字符边界截断字符串，避免按字节切片导致 panic。
@@ -125,7 +140,69 @@ struct GoalUpdateOutcome {
 
 enum RobotGoalCompletionOutcome {
     Advanced(ThreadRobotState),
-    Completed,
+    Completed(ThreadRobotState),
+}
+
+const ROBOT_COMPACTION_COOLDOWN_CALLS: u32 = 8;
+
+fn mid_turn_compaction_allowed(
+    last_compaction_call_count: Option<u32>,
+    llm_call_count: u32,
+    robot_active: bool,
+) -> bool {
+    match last_compaction_call_count {
+        None => true,
+        Some(last_call_count) => {
+            robot_active
+                && llm_call_count.saturating_sub(last_call_count) >= ROBOT_COMPACTION_COOLDOWN_CALLS
+        }
+    }
+}
+
+fn reset_robot_node_runtime_counters(
+    iteration: &mut u32,
+    last_prompt_tokens: &mut u64,
+    last_mid_turn_compaction_call_count: &mut Option<u32>,
+) {
+    *iteration = 0;
+    *last_prompt_tokens = 0;
+    *last_mid_turn_compaction_call_count = None;
+}
+
+fn estimate_robot_checkpoint_tokens(messages: &[ThreadMessage]) -> u64 {
+    let chars = messages.iter().fold(0usize, |total, message| {
+        let tool_call_chars = message
+            .tool_calls
+            .as_ref()
+            .map(|calls| {
+                calls.iter().fold(0usize, |call_total, call| {
+                    call_total
+                        .saturating_add(call.name.chars().count())
+                        .saturating_add(call.arguments.chars().count())
+                })
+            })
+            .unwrap_or_default();
+        total
+            .saturating_add(message.content.chars().count())
+            .saturating_add(tool_call_chars)
+    });
+    chars.div_ceil(3).max(1) as u64
+}
+
+async fn checkpoint_robot_model_history(
+    thread_store: &ThreadStore,
+    thread_id: &str,
+    state: &ThreadRobotState,
+) -> AppResult<u64> {
+    let history = thread_store.get_model_history(thread_id).await;
+    let focused_history = build_robot_model_history(&history, state);
+    let estimated_tokens = estimate_robot_checkpoint_tokens(&focused_history);
+    if focused_history.len() < history.len() {
+        thread_store
+            .replace_model_history(thread_id, focused_history, estimated_tokens)
+            .await?;
+    }
+    Ok(estimated_tokens)
 }
 
 fn extract_update_goal_status(arguments: &str) -> Option<String> {
@@ -176,9 +253,12 @@ async fn advance_robot_workflow_from_goal_completion(
                 )
                 .await
                 .map_err(|e| e.to_string())?;
+            checkpoint_robot_model_history(thread_store, thread_id, &advanced_state)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(RobotGoalCompletionOutcome::Advanced(advanced_state))
         }
-        NodeProgressResult::Completed => Ok(RobotGoalCompletionOutcome::Completed),
+        NodeProgressResult::Completed { state } => Ok(RobotGoalCompletionOutcome::Completed(state)),
     }
 }
 
@@ -227,6 +307,23 @@ pub struct AgentEngine {
     usage_recorder: Option<Arc<UsageRecorder>>,
     conversation_logger: Option<Arc<crate::conversation_logger::ConversationLogger>>,
     cancel_flag: Arc<AtomicBool>,
+    active_threads: Arc<StdMutex<HashSet<String>>>,
+}
+
+#[derive(Debug)]
+struct ActiveThreadGuard {
+    active_threads: Arc<StdMutex<HashSet<String>>>,
+    thread_id: String,
+}
+
+impl Drop for ActiveThreadGuard {
+    fn drop(&mut self) {
+        let mut active_threads = self
+            .active_threads
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        active_threads.remove(&self.thread_id);
+    }
 }
 
 impl AgentEngine {
@@ -256,6 +353,23 @@ impl AgentEngine {
             usage_recorder: None,
             conversation_logger: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            active_threads: Arc::new(StdMutex::new(HashSet::new())),
+        })
+    }
+
+    fn claim_thread_turn(&self, thread_id: &str) -> AppResult<ActiveThreadGuard> {
+        let mut active_threads = self
+            .active_threads
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !active_threads.insert(thread_id.to_string()) {
+            return Err(AppError::TurnAlreadyRunning {
+                thread_id: thread_id.to_string(),
+            });
+        }
+        Ok(ActiveThreadGuard {
+            active_threads: self.active_threads.clone(),
+            thread_id: thread_id.to_string(),
         })
     }
 
@@ -316,6 +430,7 @@ impl AgentEngine {
         robot_id: Option<&str>,
         client_message_id: Option<String>,
     ) -> AppResult<()> {
+        let _active_thread_guard = self.claim_thread_turn(thread_id)?;
         self.cancel_flag.store(false, Ordering::SeqCst);
 
         if user_input.trim() == "/compact" {
@@ -355,6 +470,8 @@ impl AgentEngine {
             _ => "chat",
         }
         .to_string();
+        let robot_execution_enabled = should_enable_robot_orchestration(&turn_mode, robot_id);
+        let existing_robot_state = self.thread_store.get_thread_robot_state(thread_id).await;
         let turn_started_at_ms = now_millis();
         let turn_timer = Instant::now();
         let mut model = config.resolve_model();
@@ -380,7 +497,7 @@ impl AgentEngine {
         // model on the next iteration.
         let mut issued_tool_call_ids = self
             .thread_store
-            .get_thread_messages(thread_id)
+            .get_model_history(thread_id)
             .await
             .iter()
             .filter_map(|message| message.tool_calls.as_ref())
@@ -477,7 +594,16 @@ impl AgentEngine {
             .await;
 
         // Pre-turn compaction: 在 start_turn 之前执行，避免 replace_messages 破坏当前 turn
-        let pre_turn_tokens = self.thread_store.get_thread_total_tokens(thread_id).await;
+        let pre_turn_tokens = if robot_execution_enabled {
+            match existing_robot_state.as_ref() {
+                Some(state) => {
+                    checkpoint_robot_model_history(&self.thread_store, thread_id, state).await?
+                }
+                None => 0,
+            }
+        } else {
+            self.thread_store.get_thread_total_tokens(thread_id).await
+        };
         if crate::compaction::should_compact(pre_turn_tokens, config) {
             info!("Pre-turn compaction triggered: {pre_turn_tokens} tokens");
             if let Err(error) = crate::compaction::run_compaction(
@@ -681,19 +807,26 @@ impl AgentEngine {
         // - 仅 mode=goal 且携带 robot_id 时启用；
         // - 编排细节下沉到 robot_orchestrator，agent 仅处理“启用判断 + 结果接线”；
         // - 非机器人路径保持原有 goal/chat 行为不变。
-        let robot_orchestrator = RobotOrchestrator::new(&self.cwd);
-        let robot_execution_enabled = should_enable_robot_orchestration(&turn_mode, robot_id);
+        let robot_orchestrator = RobotOrchestrator::with_project_root(&self.cwd, &effective_cwd);
         let mut robot_progress: Option<ThreadRobotState> = None;
-        let existing_robot_state = self.thread_store.get_thread_robot_state(thread_id).await;
 
         if robot_execution_enabled {
             let rid = robot_id.unwrap_or_default();
-            let prepared_state = robot_orchestrator
+            let mut prepared_state = robot_orchestrator
                 .prepare_state(&self.thread_store, thread_id, rid, user_input)
                 .await?;
+            if prepared_state.current_node_start_message_id.is_none() {
+                prepared_state.current_node_start_message_id = Some(user_message_id.clone());
+                self.thread_store
+                    .set_thread_robot_state(thread_id, prepared_state.clone())
+                    .await?;
+            }
+            checkpoint_robot_model_history(&self.thread_store, thread_id, &prepared_state).await?;
+            emit_robot_progress_updated(app_handle, thread_id, Some(&prepared_state));
             robot_progress = Some(prepared_state);
         } else if existing_robot_state.is_some() {
             let _ = self.thread_store.clear_thread_robot_state(thread_id).await;
+            emit_robot_progress_updated(app_handle, thread_id, None);
         }
 
         let mut stop_hooks_satisfied = false;
@@ -816,7 +949,7 @@ impl AgentEngine {
         // 追踪最近一次 API 调用返回的 prompt_tokens（代表当前 context 实际大小），
         // 而非累加值，用于 mid-turn compaction 判断。
         let mut last_prompt_tokens: u64 = 0;
-        let mut mid_turn_compacted = false;
+        let mut last_mid_turn_compaction_call_count: Option<u32> = None;
         let mut rate_limit_retry_count: u32 = 0;
         let mut stream_read_retry_count: u32 = 0;
         let mut upstream_retry_count: u32 = 0;
@@ -877,8 +1010,13 @@ impl AgentEngine {
                         break;
                     }
                     if iteration >= MAX_AGENT_ITERATIONS_PER_TURN {
+                        let scope = if robot_progress.is_some() {
+                            "workflow node"
+                        } else {
+                            "turn"
+                        };
                         let message = format!(
-                            "Agent stopped after {MAX_AGENT_ITERATIONS_PER_TURN} model iterations in one turn. This usually indicates a repeated tool-call or model protocol loop."
+                            "Agent stopped after {MAX_AGENT_ITERATIONS_PER_TURN} model iterations in one {scope}. This usually indicates a repeated tool-call or model protocol loop."
                         );
                         error!("Turn {turn_id}: {message}");
                         emit_and_broadcast(
@@ -896,8 +1034,8 @@ impl AgentEngine {
                     info!("Agent loop iteration {iteration} for turn {turn_id}");
                     iteration += 1;
 
-                    let history = self.thread_store.get_thread_messages(thread_id).await;
-                    // 机器人编排分支：把历史裁剪为“原始用户目标 + 当前节点自身消息”，
+                    let history = self.thread_store.get_model_history(thread_id).await;
+                    // 机器人编排分支：把历史裁剪为“当前节点自身消息”，
                     // 已完成上游节点的原始杂乱历史由 node_deliveries 以总结形式替代，保持上下文纯净。
                     let model_history = if let Some(state) = robot_progress.as_ref() {
                         build_robot_model_history(&history, state)
@@ -936,10 +1074,11 @@ impl AgentEngine {
                         active_plan_context,
                         smartbrain_recall_context.as_deref(),
                     );
+                    let smartbrain_enabled = config.smartbrain_config().knowledge_is_active();
                     let tools = if turn_mode == "robot-create" || turn_mode == "robot-modify" {
-                        self.tool_executor
-                            .write()
-                            .await
+                        let mut executor = self.tool_executor.write().await;
+                        executor.set_smartbrain_enabled_override(Some(smartbrain_enabled));
+                        executor
                             .tool_specs(false)
                             .into_iter()
                             .filter(|spec| {
@@ -962,9 +1101,9 @@ impl AgentEngine {
                             "web_search",
                             "web_fetch",
                         ];
-                        self.tool_executor
-                            .write()
-                            .await
+                        let mut executor = self.tool_executor.write().await;
+                        executor.set_smartbrain_enabled_override(Some(smartbrain_enabled));
+                        executor
                             .tool_specs(config.web_search_enabled())
                             .into_iter()
                             .filter(|spec| {
@@ -975,6 +1114,7 @@ impl AgentEngine {
                             .collect()
                     } else {
                         let mut executor = self.tool_executor.write().await;
+                        executor.set_smartbrain_enabled_override(Some(smartbrain_enabled));
                         // MCP discovery is intentionally deferred. A normal chat turn must
                         // not spawn or connect to MCP servers; tool_search activates the
                         // generic MCP tools only when the model actually needs that capability.
@@ -1403,12 +1543,21 @@ impl AgentEngine {
                                             attachments: Vec::new(),
                                         };
                                         self.thread_store.add_message(thread_id, msg).await?;
+                                        if let Some(state) = robot_progress.as_ref() {
+                                            checkpoint_robot_model_history(
+                                                &self.thread_store,
+                                                thread_id,
+                                                state,
+                                            )
+                                            .await?;
+                                            last_prompt_tokens = 0;
+                                        }
                                         continue;
                                     }
                                     NodeProgressResult::Advanced { state, nudge } => {
                                         // 将推进后的 nudge 消息 id 记为“当前节点起点边界”，
                                         // 用于后续把上游节点的原始杂乱历史从模型上下文裁剪掉，
-                                        // 仅保留原始用户目标 + 当前节点自身消息（含其交付总结）。
+                                        // 仅保留当前节点自身消息；根目标和交付总结由 overlay 注入。
                                         let boundary_id = uuid::Uuid::new_v4().to_string();
                                         let mut advanced_state = state;
                                         advanced_state.current_node_start_message_id =
@@ -1419,6 +1568,11 @@ impl AgentEngine {
                                                 advanced_state.clone(),
                                             )
                                             .await?;
+                                        emit_robot_progress_updated(
+                                            app_handle,
+                                            thread_id,
+                                            Some(&advanced_state),
+                                        );
                                         robot_progress = Some(advanced_state);
                                         let msg = ThreadMessage {
                                             id: boundary_id,
@@ -1431,10 +1585,28 @@ impl AgentEngine {
                                             attachments: Vec::new(),
                                         };
                                         self.thread_store.add_message(thread_id, msg).await?;
+                                        if let Some(state) = robot_progress.as_ref() {
+                                            checkpoint_robot_model_history(
+                                                &self.thread_store,
+                                                thread_id,
+                                                state,
+                                            )
+                                            .await?;
+                                            reset_robot_node_runtime_counters(
+                                                &mut iteration,
+                                                &mut last_prompt_tokens,
+                                                &mut last_mid_turn_compaction_call_count,
+                                            );
+                                        }
                                         continue;
                                     }
-                                    NodeProgressResult::Completed => {
+                                    NodeProgressResult::Completed { state } => {
                                         robot_progress = None;
+                                        emit_robot_progress_updated(
+                                            app_handle,
+                                            thread_id,
+                                            Some(&state),
+                                        );
                                         if let Some(goal) = self
                                             .thread_store
                                             .get_thread(thread_id)
@@ -1748,8 +1920,18 @@ impl AgentEngine {
                                                         state.current_node_index.saturating_add(1);
                                                     let total_nodes =
                                                         state.runtime_nodes.len().max(1);
+                                                    emit_robot_progress_updated(
+                                                        app_handle,
+                                                        thread_id,
+                                                        Some(&state),
+                                                    );
                                                     robot_progress = Some(state);
                                                     robot_node_advanced_now = true;
+                                                    reset_robot_node_runtime_counters(
+                                                        &mut iteration,
+                                                        &mut last_prompt_tokens,
+                                                        &mut last_mid_turn_compaction_call_count,
+                                                    );
                                                     (
                                                         format!(
                                                             "Current workflow node marked complete; advanced to node {next_node}/{total_nodes}."
@@ -1757,8 +1939,15 @@ impl AgentEngine {
                                                         true,
                                                     )
                                                 }
-                                                Ok(RobotGoalCompletionOutcome::Completed) => {
+                                                Ok(RobotGoalCompletionOutcome::Completed(
+                                                    state,
+                                                )) => {
                                                     robot_progress = None;
+                                                    emit_robot_progress_updated(
+                                                        app_handle,
+                                                        thread_id,
+                                                        Some(&state),
+                                                    );
                                                     if let Some(goal) = self
                                                         .thread_store
                                                         .get_thread(thread_id)
@@ -1829,7 +2018,7 @@ impl AgentEngine {
                                 } else if !stale_patch_paths.is_empty() {
                                     (
                                         format!(
-                                            "apply_patch was blocked because this turn already modified {}. Use read_file for the current content of every listed path before preparing a new patch.",
+                                            "apply_patch was blocked because a previous hunk failed against stale content in {}. Use read_file for every listed path before preparing a new, smaller patch.",
                                             stale_patch_paths.join(", ")
                                         ),
                                         false,
@@ -1877,17 +2066,20 @@ impl AgentEngine {
                                     }
                                 }
                                 if call.name == "apply_patch" {
-                                    if success {
-                                        patch_paths_requiring_refresh.extend(
-                                            requested_file_changes
-                                                .iter()
-                                                .map(|change| normalize_change_path(&change.path)),
-                                        );
-                                    } else if stale_patch_paths.is_empty()
+                                    if !success
+                                        && stale_patch_paths.is_empty()
                                         && !duplicate_failed_patch
-                                        && let Some(fingerprint) = apply_patch_fingerprint
                                     {
-                                        failed_apply_patch_fingerprints.insert(fingerprint);
+                                        if apply_patch_failure_requires_refresh(&result_content) {
+                                            patch_paths_requiring_refresh.extend(
+                                                requested_file_changes.iter().map(|change| {
+                                                    normalize_change_path(&change.path)
+                                                }),
+                                            );
+                                        }
+                                        if let Some(fingerprint) = apply_patch_fingerprint {
+                                            failed_apply_patch_fingerprints.insert(fingerprint);
+                                        }
                                     }
                                 }
                                 let mut has_subagent_stop_feedback = false;
@@ -2004,8 +2196,11 @@ impl AgentEngine {
                                 continue;
                             }
 
-                            if !mid_turn_compacted
-                                && crate::compaction::should_compact(last_prompt_tokens, config)
+                            if mid_turn_compaction_allowed(
+                                last_mid_turn_compaction_call_count,
+                                llm_call_count,
+                                robot_progress.is_some(),
+                            ) && crate::compaction::should_compact(last_prompt_tokens, config)
                             {
                                 info!(
                                     "Mid-turn compaction triggered: {last_prompt_tokens} prompt tokens (single API call)"
@@ -2034,12 +2229,19 @@ impl AgentEngine {
                                     warn!(
                                         "Mid-turn compaction failed; preserving original history and token count: {error}"
                                     );
+                                    last_mid_turn_compaction_call_count = Some(llm_call_count);
                                 } else {
                                     last_prompt_tokens = 0;
+                                    // Robot nodes may grow quickly after large file reads. A
+                                    // successful checkpoint is governed by the percentage trigger,
+                                    // so it does not need an additional call-count cooldown.
+                                    last_mid_turn_compaction_call_count =
+                                        if robot_progress.is_some() {
+                                            None
+                                        } else {
+                                            Some(llm_call_count)
+                                        };
                                 }
-                                // Avoid repeatedly pausing a long turn if the compaction provider
-                                // is unavailable. A failed attempt preserves the original history.
-                                mid_turn_compacted = true;
                             }
                         }
                         Err(e) => {
@@ -2253,7 +2455,7 @@ impl AgentEngine {
                         .add_message(thread_id, summary_nudge)
                         .await?;
 
-                    let history = self.thread_store.get_thread_messages(thread_id).await;
+                    let history = self.thread_store.get_model_history(thread_id).await;
                     let model_history = if let Some(state) = robot_progress.as_ref() {
                         build_robot_model_history(&history, state)
                     } else {
@@ -2765,7 +2967,7 @@ impl AgentEngine {
              FILE EDITING RULES:\n\
              1. Use `apply_patch` as the default for every edit to an existing text file, including single-file edits. It applies contextual diffs and avoids rewriting unrelated content.\n\
              2. Use `write_file` only to create a new file or when the user explicitly requests a complete file rewrite.\n\
-             3. `apply_patch` supports single-file and multi-file add/update/delete/move operations. Read the relevant file content before constructing an update hunk. Keep hunks small: include only changed lines plus a few exact current context lines. If a hunk fails to match, immediately re-read that file and retry `apply_patch` with refreshed, smaller context; do not stop at the first patch error.\n\
+             3. `apply_patch` supports single-file and multi-file add/update/delete/move operations. Read the relevant file content before constructing an update hunk. In every hunk body, prefix each removed line with `-`, each added line with `+`, and each unchanged context line with one space; never use `|-`, `+|`, `||`, or separate old/new blocks. Keep hunks small with about 3 exact context lines above and below each change. When text repeats, write an exact class/function/section source line after `@@` to anchor the search; use `*** End of File` when the hunk must target the file ending. If a hunk fails to match, immediately re-read that file and retry `apply_patch` with refreshed, smaller context; do not stop at the first patch error.\n\
              4. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
                 Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
              5. Do not use python/PowerShell scripts to read or write files, and do not use shell loops such as Get-Content + ForEach-Object to dump line ranges. Use `read_file` (with line_offset/max_lines/end_line when needed), `apply_patch`, or (for new files) `write_file` instead.\n\
@@ -3491,7 +3693,19 @@ impl AgentEngine {
     ) -> Vec<InternalMessage> {
         let mut messages = Vec::new();
         let mut sanitized_history = sanitize_history_for_model(history);
-        apply_tool_result_sliding_window(&mut sanitized_history, TOOL_RESULT_FULL_RETENTION);
+        let (full_retention, extended_retention) = if robot_id.is_some() {
+            (
+                ROBOT_TOOL_RESULT_FULL_RETENTION,
+                ROBOT_TOOL_RESULT_EXTENDED_RETENTION,
+            )
+        } else {
+            (TOOL_RESULT_FULL_RETENTION, TOOL_RESULT_EXTENDED_RETENTION)
+        };
+        apply_tool_result_sliding_window(
+            &mut sanitized_history,
+            full_retention,
+            extended_retention,
+        );
 
         // 主 system prompt：保持 chat/goal 原语义，不在这里嵌入机器人覆盖逻辑。
         messages.push(InternalMessage {
@@ -5178,12 +5392,19 @@ fn unique_history_tool_call_id(original_id: &str, seen_ids: &mut HashSet<String>
 const TOOL_RESULT_FULL_RETENTION: usize = 100;
 /// High-value tool results (reads/searches/failures) keep an additional window.
 const TOOL_RESULT_EXTENDED_RETENTION: usize = 150;
+/// Robot stages use checkpoints, so they can summarize raw command output sooner.
+const ROBOT_TOOL_RESULT_FULL_RETENTION: usize = 24;
+const ROBOT_TOOL_RESULT_EXTENDED_RETENTION: usize = 36;
 /// Older tool results are condensed to this many characters (head + tail).
 const TOOL_RESULT_SUMMARY_MAX_CHARS: usize = 800;
 /// Max critical lines injected into an older-tool summary for accuracy.
 const TOOL_RESULT_CRITICAL_LINES_MAX: usize = 8;
 
-fn apply_tool_result_sliding_window(history: &mut [ThreadMessage], keep_full: usize) {
+fn apply_tool_result_sliding_window(
+    history: &mut [ThreadMessage],
+    keep_full: usize,
+    keep_extended: usize,
+) {
     let tool_indices: Vec<usize> = history
         .iter()
         .enumerate()
@@ -5198,7 +5419,7 @@ fn apply_tool_result_sliding_window(history: &mut [ThreadMessage], keep_full: us
 
     // Default window is `keep_full` (usually 6). High-value results may retain
     // full content for a longer extended window so mid-chain evidence survives.
-    let max_window = keep_full.max(TOOL_RESULT_EXTENDED_RETENTION);
+    let max_window = keep_full.max(keep_extended);
     if total_tools <= keep_full {
         return;
     }
@@ -5211,7 +5432,8 @@ fn apply_tool_result_sliding_window(history: &mut [ThreadMessage], keep_full: us
 
         let age_from_end = total_tools.saturating_sub(tool_pos + 1);
         let tool_name = msg.tool_name.as_deref().unwrap_or("tool");
-        let retention = tool_result_retention_for(tool_name, &msg.content, keep_full);
+        let retention =
+            tool_result_retention_for(tool_name, &msg.content, keep_full, keep_extended);
         if age_from_end < retention.min(max_window) {
             continue;
         }
@@ -5225,9 +5447,14 @@ fn is_already_summarized_tool_result(content: &str) -> bool {
     content.starts_with("[older tool result summarized]")
 }
 
-fn tool_result_retention_for(tool_name: &str, content: &str, default_keep: usize) -> usize {
+fn tool_result_retention_for(
+    tool_name: &str,
+    content: &str,
+    default_keep: usize,
+    extended_keep: usize,
+) -> usize {
     if is_high_value_tool_result(tool_name, content) {
-        default_keep.max(TOOL_RESULT_EXTENDED_RETENTION)
+        default_keep.max(extended_keep)
     } else {
         default_keep
     }
@@ -5591,7 +5818,12 @@ fn append_post_tool_hook_feedback(output: String, feedback: Vec<String>) -> Stri
 }
 
 fn normalize_change_path(path: &str) -> String {
-    path.trim().replace('\\', "/")
+    let trimmed = path.trim();
+    trimmed
+        .strip_suffix(" ***")
+        .unwrap_or(trimmed)
+        .trim_end()
+        .replace('\\', "/")
 }
 
 fn upsert_file_snapshot_entry<'a>(
@@ -5781,25 +6013,25 @@ fn apply_patch_changes_from_args(arguments: &str) -> Vec<FileChange> {
     for line in patch.replace("\r\n", "\n").replace('\r', "\n").lines() {
         if let Some(path) = line.strip_prefix("*** Add File: ") {
             changes.push(FileChange {
-                path: path.trim().replace('\\', "/"),
+                path: normalize_change_path(path),
                 action: "created".to_string(),
             });
             pending_update = None;
         } else if let Some(path) = line.strip_prefix("*** Update File: ") {
             changes.push(FileChange {
-                path: path.trim().replace('\\', "/"),
+                path: normalize_change_path(path),
                 action: "modified".to_string(),
             });
             pending_update = Some(changes.len() - 1);
         } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
             changes.push(FileChange {
-                path: path.trim().replace('\\', "/"),
+                path: normalize_change_path(path),
                 action: "deleted".to_string(),
             });
             pending_update = None;
         } else if let Some(dest) = line.strip_prefix("*** Move to: ") {
             if let Some(idx) = pending_update {
-                changes[idx].path = dest.trim().replace('\\', "/");
+                changes[idx].path = normalize_change_path(dest);
                 changes[idx].action = "renamed".to_string();
             }
         }
@@ -6104,6 +6336,10 @@ fn apply_patch_fingerprint(arguments: &str) -> u64 {
     hasher.finish()
 }
 
+fn apply_patch_failure_requires_refresh(result: &str) -> bool {
+    result.contains("failed to match hunk")
+}
+
 fn tool_result_success(tool_name: &str, output: &str) -> bool {
     if tool_name == "apply_patch" {
         return output.starts_with("Success. Applied patch.");
@@ -6139,11 +6375,8 @@ fn read_file_path_from_tool_args(arguments: &str) -> Option<String> {
 }
 
 fn paths_match(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    let na = a.replace('\\', "/");
-    let nb = b.replace('\\', "/");
+    let na = normalize_change_path(a);
+    let nb = normalize_change_path(b);
     if na == nb {
         return true;
     }
@@ -6185,11 +6418,13 @@ fn is_internal_runtime_file(path: &str) -> bool {
         "codey/sessions/",
         "codey/config.toml",
         "codey/memories/",
+        ".cn-codex/robot-workflows.json",
     ];
     PATTERNS.iter().any(|pat| p.contains(pat))
 }
 
-fn push_file_change(changes: &mut Vec<FileChange>, change: FileChange) {
+fn push_file_change(changes: &mut Vec<FileChange>, mut change: FileChange) {
+    change.path = normalize_change_path(&change.path);
     if change.path.trim().is_empty() || is_internal_runtime_file(&change.path) {
         return;
     }
@@ -6563,6 +6798,31 @@ mod tests {
         assert_eq!(rate_limit_backoff_ms(5), 16_000);
         assert_eq!(rate_limit_backoff_ms(6), 30_000);
         assert_eq!(rate_limit_backoff_ms(10), 30_000);
+    }
+
+    #[test]
+    fn robot_mid_turn_compaction_repeats_only_after_cooldown() {
+        assert!(mid_turn_compaction_allowed(None, 1, false));
+        assert!(!mid_turn_compaction_allowed(Some(10), 18, false));
+        assert!(!mid_turn_compaction_allowed(Some(10), 17, true));
+        assert!(mid_turn_compaction_allowed(Some(10), 18, true));
+    }
+
+    #[test]
+    fn robot_node_advance_resets_node_scoped_runtime_counters() {
+        let mut iteration = 127;
+        let mut last_prompt_tokens = 160_000;
+        let mut last_compaction_call_count = Some(120);
+
+        reset_robot_node_runtime_counters(
+            &mut iteration,
+            &mut last_prompt_tokens,
+            &mut last_compaction_call_count,
+        );
+
+        assert_eq!(iteration, 0);
+        assert_eq!(last_prompt_tokens, 0);
+        assert_eq!(last_compaction_call_count, None);
     }
 
     #[test]
@@ -7389,7 +7649,7 @@ mod tests {
     }
 
     #[test]
-    fn patch_refresh_guard_requires_a_read_after_successful_edit() {
+    fn patch_refresh_guard_matches_a_path_marked_after_a_stale_hunk_failure() {
         let changes = vec![FileChange {
             path: "src/i18n/zh-CN/common.json".to_string(),
             action: "modified".to_string(),
@@ -7407,6 +7667,29 @@ mod tests {
     }
 
     #[test]
+    fn patch_refresh_guard_matches_provider_trailing_star_paths_after_read() {
+        let arguments = serde_json::json!({
+            "patch": "*** Begin Patch ***\n*** Update File: D:\\work\\BattleManager.gd ***\n@@\n-old\n+new\n*** End Patch ***"
+        })
+        .to_string();
+        let changes = apply_patch_changes_from_args(&arguments);
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "D:/work/BattleManager.gd");
+
+        let mut requiring_refresh = HashSet::from([changes[0].path.clone()]);
+        let read_path =
+            read_file_path_from_tool_args(r#"{"path":"D:\\work\\BattleManager.gd"}"#).unwrap();
+        requiring_refresh.retain(|changed_path| !paths_match(changed_path, &read_path));
+
+        assert!(requiring_refresh.is_empty());
+        assert!(paths_match(
+            "D:/work/BattleManager.gd ***",
+            "D:\\work\\BattleManager.gd"
+        ));
+    }
+
+    #[test]
     fn apply_patch_parse_errors_are_not_recorded_as_successful_edits() {
         assert!(!tool_result_success(
             "apply_patch",
@@ -7419,6 +7702,16 @@ mod tests {
         assert!(tool_result_success(
             "apply_patch",
             "Success. Applied patch.\n- modified src/i18n/zh-CN/common.json"
+        ));
+    }
+
+    #[test]
+    fn stale_hunk_failure_requires_a_file_refresh_before_retry() {
+        assert!(apply_patch_failure_requires_refresh(
+            "Error applying patch: failed to match hunk in DESIGN.md"
+        ));
+        assert!(!apply_patch_failure_requires_refresh(
+            "Error applying patch: patch must start with *** Begin Patch"
         ));
     }
 
@@ -7511,7 +7804,7 @@ mod tests {
             });
         }
 
-        apply_tool_result_sliding_window(&mut history, 6);
+        apply_tool_result_sliding_window(&mut history, 6, 10);
 
         let tool_messages: Vec<_> = history.iter().filter(|msg| msg.role == "tool").collect();
         assert_eq!(tool_messages.len(), 8);
@@ -7541,6 +7834,27 @@ mod tests {
     fn default_tool_result_window_covers_long_turns() {
         assert!(TOOL_RESULT_FULL_RETENTION >= 100);
         assert!(TOOL_RESULT_EXTENDED_RETENTION >= TOOL_RESULT_FULL_RETENTION);
+        assert!(ROBOT_TOOL_RESULT_FULL_RETENTION < TOOL_RESULT_FULL_RETENTION);
+        assert!(ROBOT_TOOL_RESULT_EXTENDED_RETENTION < TOOL_RESULT_EXTENDED_RETENTION);
+        assert!(ROBOT_TOOL_RESULT_EXTENDED_RETENTION >= ROBOT_TOOL_RESULT_FULL_RETENTION);
+        assert_eq!(
+            tool_result_retention_for(
+                "shell",
+                "ok",
+                ROBOT_TOOL_RESULT_FULL_RETENTION,
+                ROBOT_TOOL_RESULT_EXTENDED_RETENTION,
+            ),
+            24
+        );
+        assert_eq!(
+            tool_result_retention_for(
+                "read_file",
+                "source",
+                ROBOT_TOOL_RESULT_FULL_RETENTION,
+                ROBOT_TOOL_RESULT_EXTENDED_RETENTION,
+            ),
+            36
+        );
     }
 
     #[test]
@@ -7597,7 +7911,7 @@ mod tests {
             });
         }
 
-        apply_tool_result_sliding_window(&mut history, 6);
+        apply_tool_result_sliding_window(&mut history, 6, 10);
 
         let tool_messages: Vec<_> = history.iter().filter(|msg| msg.role == "tool").collect();
         assert_eq!(tool_messages.len(), 12);
@@ -7976,6 +8290,107 @@ mod tests {
     }
 
     #[test]
+    fn active_thread_guard_rejects_overlapping_turns_and_releases_on_drop() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_dir = temp_dir.path().to_path_buf();
+        let thread_store = Arc::new(ThreadStore::new(&workspace_dir.join("codey")));
+        let tool_executor = ToolExecutor::new(workspace_dir.clone());
+        let engine = AgentEngine::new(thread_store, tool_executor, workspace_dir).unwrap();
+
+        let first = engine.claim_thread_turn("thread-1").unwrap();
+        let overlapping = engine.claim_thread_turn("thread-1").unwrap_err();
+        assert!(overlapping.to_string().contains("already running"));
+
+        drop(first);
+        assert!(engine.claim_thread_turn("thread-1").is_ok());
+    }
+
+    #[test]
+    fn robot_history_keeps_current_stage_only() {
+        let history = vec![
+            test_thread_message("seed", "user", "root objective"),
+            test_thread_message(
+                "old-output",
+                "assistant",
+                &"old stage details ".repeat(1000),
+            ),
+            test_thread_message("boundary", "system", "stage 2 started"),
+            test_thread_message("current", "assistant", "current stage work"),
+        ];
+        let state = ThreadRobotState {
+            robot_id: "bot".to_string(),
+            current_node_index: 1,
+            root_objective: "root objective".to_string(),
+            runtime_nodes: vec!["stage 1".to_string(), "stage 2".to_string()],
+            node_deliveries: vec![
+                "Artifacts: notes.md\nDecisions: complete\nValidation: checked\nOpen items: none"
+                    .to_string(),
+            ],
+            completed: false,
+            current_node_start_message_id: Some("boundary".to_string()),
+        };
+
+        let focused = build_robot_model_history(&history, &state);
+        let ids = focused
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["boundary", "current"]);
+        assert!(
+            estimate_robot_checkpoint_tokens(&focused) < estimate_robot_checkpoint_tokens(&history)
+        );
+    }
+
+    #[tokio::test]
+    async fn robot_checkpoint_focuses_model_history_without_changing_transcript() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let thread_store = ThreadStore::new(&temp_dir.path().join("codey"));
+        let thread = thread_store.create_thread(None).await.unwrap();
+        thread_store
+            .start_turn(&thread.id, None, None)
+            .await
+            .unwrap();
+        for message in [
+            test_thread_message("seed", "user", "root objective"),
+            test_thread_message(
+                "old-output",
+                "assistant",
+                &"old stage details ".repeat(1000),
+            ),
+            test_thread_message("boundary", "system", "stage 2 started"),
+            test_thread_message("current", "assistant", "current stage work"),
+        ] {
+            thread_store.add_message(&thread.id, message).await.unwrap();
+        }
+        let state = ThreadRobotState {
+            robot_id: "bot".to_string(),
+            current_node_index: 1,
+            root_objective: "root objective".to_string(),
+            runtime_nodes: vec!["stage 1".to_string(), "stage 2".to_string()],
+            node_deliveries: vec![
+                "Artifacts: notes.md\nDecisions: complete\nValidation: checked\nOpen items: none"
+                    .to_string(),
+            ],
+            completed: false,
+            current_node_start_message_id: Some("boundary".to_string()),
+        };
+
+        let estimated_tokens = checkpoint_robot_model_history(&thread_store, &thread.id, &state)
+            .await
+            .unwrap();
+        let transcript = thread_store.get_thread_messages(&thread.id).await;
+        let model_history = thread_store.get_model_history(&thread.id).await;
+
+        assert_eq!(transcript.len(), 4);
+        assert_eq!(model_history.len(), 2);
+        assert_eq!(model_history[0].id, "boundary");
+        assert_eq!(
+            thread_store.get_thread_total_tokens(&thread.id).await,
+            estimated_tokens
+        );
+    }
+
+    #[test]
     fn file_changes_from_apply_patch_tool_call_marks_move_destination() {
         let call = ToolCallRequest {
             id: "call-1".to_string(),
@@ -8023,6 +8438,7 @@ mod tests {
                 "阶段 2：架构设计".to_string(),
             ],
             node_deliveries: Vec::new(),
+            completed: false,
             current_node_start_message_id: None,
         };
         thread_store
@@ -8042,7 +8458,7 @@ mod tests {
 
         let advanced_state = match outcome {
             RobotGoalCompletionOutcome::Advanced(state) => state,
-            RobotGoalCompletionOutcome::Completed => panic!("expected workflow to advance"),
+            RobotGoalCompletionOutcome::Completed(_) => panic!("expected workflow to advance"),
         };
         assert_eq!(advanced_state.current_node_index, 1);
         assert!(advanced_state.current_node_start_message_id.is_some());
@@ -8094,6 +8510,7 @@ mod tests {
             root_objective: "完成整个工作流".to_string(),
             runtime_nodes: vec!["阶段 1：收尾".to_string()],
             node_deliveries: Vec::new(),
+            completed: false,
             current_node_start_message_id: None,
         };
         thread_store
@@ -8111,10 +8528,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(matches!(outcome, RobotGoalCompletionOutcome::Completed));
+        assert!(matches!(outcome, RobotGoalCompletionOutcome::Completed(_)));
         let stored_thread = thread_store.get_thread(&thread.id).await.unwrap();
         let stored_goal = stored_thread.goal.unwrap();
-        assert!(stored_thread.robot_state.is_none());
+        assert!(
+            stored_thread
+                .robot_state
+                .is_some_and(|state| state.completed)
+        );
         assert_eq!(stored_goal.status, ThreadGoalStatus::Complete);
     }
 

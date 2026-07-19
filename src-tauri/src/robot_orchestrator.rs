@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::agent::truncate_utf8_by_bytes;
@@ -17,10 +19,22 @@ pub const ROBOT_NODE_DONE_SENTINEL: &str = "<workflow_node_done/>";
 pub const ROBOT_NODE_SUMMARY_SENTINEL: &str = "<workflow_node_summary>";
 pub const ROBOT_NODE_SUMMARY_END_SENTINEL: &str = "</workflow_node_summary>";
 
+const PROJECT_ROBOT_STATE_DIR: &str = ".cn-codex";
+const PROJECT_ROBOT_STATE_FILE: &str = "robot-workflows.json";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectRobotWorkflowStates {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    robots: BTreeMap<String, ThreadRobotState>,
+}
+
 /// 节点推进结果：
 /// - ContinueCurrent: 当前节点未完成，继续留在本节点；
 /// - Advanced: 已推进到下一节点，并完成 goal 目标重绑定；
-/// - Completed: 全部节点完成，机器人运行态已清理。
+/// - Completed: 全部节点完成，并保留可供 UI/项目恢复读取的完成快照。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeProgressResult {
     ContinueCurrent {
@@ -31,7 +45,9 @@ pub enum NodeProgressResult {
         state: ThreadRobotState,
         nudge: String,
     },
-    Completed,
+    Completed {
+        state: ThreadRobotState,
+    },
 }
 
 /// 机器人编排器：
@@ -39,18 +55,80 @@ pub enum NodeProgressResult {
 /// - 不负责通用 goal/chat 主流程，降低与 agent 主链路耦合。
 pub struct RobotOrchestrator {
     workspace_config_dir: PathBuf,
+    project_root: PathBuf,
 }
 
 impl RobotOrchestrator {
     /// 以工作区根目录创建编排器，内部固定读取 `codey/` 配置目录。
     pub fn new(workspace_root: &Path) -> Self {
+        Self::with_project_root(workspace_root, workspace_root)
+    }
+
+    /// 机器人定义从应用工作区读取，运行进度按当前项目根目录持久化。
+    pub fn with_project_root(workspace_root: &Path, project_root: &Path) -> Self {
         Self {
             workspace_config_dir: workspace_root.join("codey"),
+            project_root: project_root.to_path_buf(),
         }
     }
 
+    fn project_state_path(&self) -> PathBuf {
+        self.project_root
+            .join(PROJECT_ROBOT_STATE_DIR)
+            .join(PROJECT_ROBOT_STATE_FILE)
+    }
+
+    fn load_project_state(&self, robot_id: &str) -> Option<ThreadRobotState> {
+        let path = self.project_state_path();
+        let content = std::fs::read_to_string(&path).ok()?;
+        match serde_json::from_str::<ProjectRobotWorkflowStates>(&content) {
+            Ok(states) => states.robots.get(robot_id).cloned(),
+            Err(error) => {
+                warn!(
+                    "Failed to parse project robot workflow state {}: {error}",
+                    path.display()
+                );
+                None
+            }
+        }
+    }
+
+    fn persist_project_state(&self, state: &ThreadRobotState) -> AppResult<()> {
+        let path = self.project_state_path();
+        let mut states = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<ProjectRobotWorkflowStates>(&content).ok())
+            .unwrap_or_default();
+        states.version = 1;
+
+        let mut persisted_state = state.clone();
+        persisted_state.current_node_start_message_id = None;
+        states
+            .robots
+            .insert(persisted_state.robot_id.clone(), persisted_state);
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                AppError::Custom(format!(
+                    "Failed to create project robot state directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+        let json = serde_json::to_string_pretty(&states).map_err(|error| {
+            AppError::Custom(format!("Failed to serialize project robot state: {error}"))
+        })?;
+        std::fs::write(&path, format!("{json}\n")).map_err(|error| {
+            AppError::Custom(format!(
+                "Failed to write project robot state {}: {error}",
+                path.display()
+            ))
+        })
+    }
+
     /// 准备机器人运行态：
-    /// - 若已有同机器人且有效状态，则复用；
+    /// - 若当前对话已有同机器人且有效状态，则复用并迁移到项目文件；
+    /// - 否则仅在机器人模式入口读取项目状态并恢复到新对话；
     /// - 否则按固定 workflowNodes 顺序编译 runtime_nodes；
     /// - 完成后将当前节点目标绑定到真实 thread goal objective。
     pub async fn prepare_state(
@@ -61,7 +139,10 @@ impl RobotOrchestrator {
         user_objective: &str,
     ) -> AppResult<ThreadRobotState> {
         if let Some(mut existing_state) = thread_store.get_thread_robot_state(thread_id).await {
-            if existing_state.robot_id == robot_id && !existing_state.runtime_nodes.is_empty() {
+            if existing_state.robot_id == robot_id
+                && !existing_state.completed
+                && !existing_state.runtime_nodes.is_empty()
+            {
                 // 防御式修正：兼容旧状态或异常状态导致的越界索引。
                 if existing_state.current_node_index >= existing_state.runtime_nodes.len() {
                     existing_state.current_node_index =
@@ -70,6 +151,8 @@ impl RobotOrchestrator {
                         .set_thread_robot_state(thread_id, existing_state.clone())
                         .await?;
                 }
+                // 兼容升级前只存在于 session JSONL 的进度：首次继续时迁移到项目文件。
+                self.persist_project_state(&existing_state)?;
                 self.bind_goal_to_current_node(thread_store, thread_id, &existing_state)
                     .await?;
                 return Ok(existing_state);
@@ -83,6 +166,23 @@ impl RobotOrchestrator {
             return Err(AppError::Custom(format!(
                 "Robot workflow is empty: {robot_id}. Please configure workflowNodes first."
             )));
+        }
+
+        if let Some(mut project_state) = self.load_project_state(robot_id)
+            && !project_state.completed
+            && project_state.runtime_nodes.len() == fixed_nodes.len()
+            && !project_state.runtime_nodes.is_empty()
+        {
+            project_state.current_node_index = project_state
+                .current_node_index
+                .min(project_state.runtime_nodes.len().saturating_sub(1));
+            project_state.current_node_start_message_id = None;
+            thread_store
+                .set_thread_robot_state(thread_id, project_state.clone())
+                .await?;
+            self.bind_goal_to_current_node(thread_store, thread_id, &project_state)
+                .await?;
+            return Ok(project_state);
         }
 
         let root_objective = normalize_root_objective(user_objective);
@@ -99,12 +199,14 @@ impl RobotOrchestrator {
             root_objective,
             runtime_nodes,
             node_deliveries: Vec::new(),
+            completed: false,
             current_node_start_message_id: None,
         };
 
         thread_store
             .set_thread_robot_state(thread_id, state.clone())
             .await?;
+        self.persist_project_state(&state)?;
         self.bind_goal_to_current_node(thread_store, thread_id, &state)
             .await?;
         Ok(state)
@@ -276,7 +378,7 @@ impl RobotOrchestrator {
     /// 应用当前轮“节点完成信号”的状态迁移：
     /// - 未完成：保持当前节点；
     /// - 完成且仍有后续节点：推进并重绑 goal objective，并累计当前节点交付总结；
-    /// - 完成且已到最后节点：清理机器人状态并将 goal 标记为 complete。
+    /// - 完成且已到最后节点：保留完成快照并将 goal 标记为 complete。
     ///
     /// `delivery_summary` 为模型在输出完成信号时附带的“交付总结”，会被累计进
     /// `node_deliveries`，作为下一节点的纯净交接上下文。为空时回退占位文本，避免链路断裂。
@@ -299,6 +401,7 @@ impl RobotOrchestrator {
             thread_store
                 .set_thread_robot_state(thread_id, state.clone())
                 .await?;
+            self.persist_project_state(&state)?;
         }
 
         if !node_done_signal {
@@ -324,12 +427,13 @@ impl RobotOrchestrator {
 
         let next_index = state.current_node_index.saturating_add(1);
         if next_index >= state.runtime_nodes.len() {
-            // 末节点完成：先累计交付总结，再清理运行态并将 goal 标记为 complete。
+            // 末节点完成：保留完成快照供 UI 展示，并将 goal 标记为 complete。
             state.node_deliveries.push(delivery);
+            state.completed = true;
             thread_store
                 .set_thread_robot_state(thread_id, state.clone())
                 .await?;
-            thread_store.clear_thread_robot_state(thread_id).await?;
+            self.persist_project_state(&state)?;
             // 结束全部节点后尝试把 goal 标记为 complete；失败仅记录日志，不阻断主流程。
             if let Err(err) = thread_store
                 .set_thread_goal_status(thread_id, ThreadGoalStatus::Complete)
@@ -337,7 +441,7 @@ impl RobotOrchestrator {
             {
                 warn!("Failed to mark goal complete after robot workflow finished: {err}");
             }
-            return Ok(NodeProgressResult::Completed);
+            return Ok(NodeProgressResult::Completed { state });
         }
 
         state.current_node_index = next_index;
@@ -345,6 +449,7 @@ impl RobotOrchestrator {
         thread_store
             .set_thread_robot_state(thread_id, state.clone())
             .await?;
+        self.persist_project_state(&state)?;
         self.bind_goal_to_current_node(thread_store, thread_id, &state)
             .await?;
 
@@ -389,10 +494,10 @@ impl RobotOrchestrator {
 }
 
 /// 构造喂给模型的“纯净上下文历史”：
-/// - 始终保留首个用户消息（原始目标，作为本轮需求种子）；
 /// - 仅保留 `current_node_start_message_id` 边界之后的消息（即“当前节点自身”的对话，
 ///   包含其多轮工具调用/结果），保证当前节点工作记忆不丢失；
 /// - 丢弃已完成上游节点的原始杂乱消息——那些信息已由 `node_deliveries` 以总结形式注入 overlay。
+/// - 根目标由 `ThreadRobotState.root_objective` 注入 overlay，不从旧对话重复携带。
 ///
 /// 注意：该函数只影响“喂给模型”的上下文，不修改 thread store 中的原始历史，
 /// 因此 UI 可观测性与断点续跑不受影响。
@@ -400,27 +505,15 @@ pub fn build_robot_model_history(
     history: &[ThreadMessage],
     state: &ThreadRobotState,
 ) -> Vec<ThreadMessage> {
-    let boundary_index = state
+    let Some(boundary_index) = state
         .current_node_start_message_id
         .as_ref()
-        .and_then(|bid| history.iter().position(|m| &m.id == bid));
+        .and_then(|bid| history.iter().position(|m| &m.id == bid))
+    else {
+        return history.to_vec();
+    };
 
-    let mut result = Vec::with_capacity(history.len());
-    for (index, message) in history.iter().enumerate() {
-        // 首个用户消息（原始目标种子）始终保留。
-        let is_seed_user =
-            message.role == "user" && history.iter().take(index).all(|prev| prev.role != "user");
-        // 边界之后（含边界）的当前节点自身消息保留。
-        let after_boundary = match boundary_index {
-            Some(boundary) => index >= boundary,
-            // 尚未设置边界（首个节点/未初始化）：保留全部，等同于不裁剪。
-            None => true,
-        };
-        if is_seed_user || after_boundary {
-            result.push(message.clone());
-        }
-    }
-    result
+    history[boundary_index..].to_vec()
 }
 
 /// 是否启用机器人外层编排：
@@ -648,6 +741,86 @@ mod tests {
         assert!(compiled[1].contains("再做结果整理"));
     }
 
+    #[tokio::test]
+    async fn project_robot_state_resumes_in_a_new_thread() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let workspace_root = temp_dir.path().join("app");
+        let project_root = temp_dir.path().join("project");
+        let robot_dir = workspace_root
+            .join("codey")
+            .join("robots")
+            .join("resume-bot");
+        std::fs::create_dir_all(&robot_dir).unwrap();
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(
+            robot_dir.join("robot.json"),
+            serde_json::json!({
+                "name": "Resume Bot",
+                "description": "test",
+                "icon": "robot",
+                "skills": [],
+                "pluginSkills": [],
+                "workflowNodes": [
+                    { "objective": "Analyze {{goal}}", "skills": [], "pluginSkills": [] },
+                    { "objective": "Implement {{goal}}", "skills": [], "pluginSkills": [] }
+                ],
+                "workflow": ["Analyze {{goal}}", "Implement {{goal}}"],
+                "createdAt": 0,
+                "updatedAt": 0
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let store = ThreadStore::new(&workspace_root.join("codey"));
+        let first_thread = store.create_thread(None).await.unwrap();
+        let orchestrator = RobotOrchestrator::with_project_root(&workspace_root, &project_root);
+        let initial = orchestrator
+            .prepare_state(&store, &first_thread.id, "resume-bot", "ship feature")
+            .await
+            .unwrap();
+        let advanced = orchestrator
+            .apply_node_progress(
+                &store,
+                &first_thread.id,
+                initial,
+                true,
+                Some(
+                    "Artifacts: analysis.md\nDecisions: reuse API\nValidation: reviewed\nOpen items: none"
+                        .to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(advanced, NodeProgressResult::Advanced { .. }));
+        assert!(
+            project_root
+                .join(PROJECT_ROBOT_STATE_DIR)
+                .join(PROJECT_ROBOT_STATE_FILE)
+                .is_file()
+        );
+
+        let second_thread = store.create_thread(None).await.unwrap();
+        let resumed = orchestrator
+            .prepare_state(&store, &second_thread.id, "resume-bot", "continue")
+            .await
+            .unwrap();
+
+        assert_eq!(resumed.current_node_index, 1);
+        assert_eq!(resumed.root_objective, "ship feature");
+        assert_eq!(resumed.node_deliveries.len(), 1);
+        assert!(resumed.node_deliveries[0].contains("Artifacts: analysis.md"));
+        assert!(resumed.current_node_start_message_id.is_none());
+        assert_eq!(
+            store
+                .get_thread_robot_state(&second_thread.id)
+                .await
+                .unwrap()
+                .current_node_index,
+            1
+        );
+    }
+
     #[test]
     fn overlay_prompt_does_not_include_robot_system_prompt() {
         let workspace_root = std::env::temp_dir().join(format!(
@@ -696,6 +869,7 @@ mod tests {
             root_objective: "修复目标".to_string(),
             runtime_nodes: vec!["阶段 1：执行当前节点".to_string()],
             node_deliveries: vec![],
+            completed: false,
             current_node_start_message_id: None,
         };
         let overlay = orchestrator.build_overlay_prompt(&state).unwrap();
@@ -748,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn build_robot_model_history_keeps_seed_and_current_node_only() {
+    fn build_robot_model_history_keeps_current_node_only() {
         let history = vec![
             make_message("m0", "user", "原始目标：修复登录"),
             make_message("m1", "assistant", "上游节点1的杂乱过程"),
@@ -763,19 +937,12 @@ mod tests {
             root_objective: "修复登录".to_string(),
             runtime_nodes: vec!["节点1".to_string(), "节点2".to_string()],
             node_deliveries: vec![],
+            completed: false,
             current_node_start_message_id: Some("m4".to_string()),
         };
         let trimmed = build_robot_model_history(&history, &state);
         let ids: Vec<&str> = trimmed.iter().map(|m| m.id.as_str()).collect();
-        // 种子用户消息（原始目标）必须保留，即使它排在边界之前。
-        assert!(ids.contains(&"m0"));
-        // 当前节点边界之后的消息保留。
-        assert!(ids.contains(&"m4"));
-        assert!(ids.contains(&"m5"));
-        // 已完成上游节点的原始消息被丢弃（被 node_deliveries 总结替代）。
-        assert!(!ids.contains(&"m1"));
-        assert!(!ids.contains(&"m2"));
-        assert!(!ids.contains(&"m3"));
+        assert_eq!(ids, vec!["m4", "m5"]);
     }
 
     #[test]
@@ -790,6 +957,7 @@ mod tests {
             root_objective: "原始目标".to_string(),
             runtime_nodes: vec!["节点1".to_string()],
             node_deliveries: vec![],
+            completed: false,
             current_node_start_message_id: None,
         };
         let trimmed = build_robot_model_history(&history, &state);
@@ -832,6 +1000,7 @@ mod tests {
             root_objective: "用户目标".to_string(),
             runtime_nodes: vec!["节点一".to_string(), "节点二".to_string()],
             node_deliveries: vec!["已完成需求分析与接口设计".to_string()],
+            completed: false,
             current_node_start_message_id: None,
         };
         let overlay = orchestrator.build_overlay_prompt(&state).unwrap();

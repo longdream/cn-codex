@@ -17,6 +17,11 @@ pub enum AppError {
     #[error("Request failed: {0}")]
     ServerRequest(String),
 
+    #[error(
+        "A turn is already running for task {thread_id}. Stop it or wait for it to finish before sending another message."
+    )]
+    TurnAlreadyRunning { thread_id: String },
+
     #[error("{0}")]
     Custom(String),
 }
@@ -52,6 +57,17 @@ mod tests {
     fn server_request_error_displays() {
         let err = AppError::ServerRequest("timeout".to_string());
         assert_eq!(err.to_string(), "Request failed: timeout");
+    }
+
+    #[test]
+    fn turn_already_running_error_includes_task_id() {
+        let err = AppError::TurnAlreadyRunning {
+            thread_id: "thread-1".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "A turn is already running for task thread-1. Stop it or wait for it to finish before sending another message."
+        );
     }
 
     #[test]

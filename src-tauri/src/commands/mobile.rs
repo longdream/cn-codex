@@ -8,11 +8,13 @@ use crate::state::AppState;
 use crate::{MOBILE_SERVER, MobileServerInfo};
 
 /// relay 模式的运行时信息
-static RELAY_INFO: std::sync::OnceLock<RelayInfo> = std::sync::OnceLock::new();
+static RELAY_INFO: std::sync::LazyLock<std::sync::Mutex<Option<RelayInfo>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 struct RelayInfo {
     relay_url: String,
     room_id: String,
+    relay_abort: tokio::task::AbortHandle,
 }
 
 /// 统一规范 relay 基础地址，避免配置里末尾 `/` 导致 `//m/...`、`//pc/...` 这类路径错误。
@@ -43,19 +45,23 @@ pub async fn start_mobile_server(
     tracing::info!("[mobile] start_mobile_server called");
 
     // 如果已经有 relay 信息，直接返回 relay URL
-    if let Some(relay_info) = RELAY_INFO.get() {
-        return Ok(build_relay_mobile_url(
-            &relay_info.relay_url,
-            &relay_info.room_id,
-        ));
+    if let Ok(guard) = RELAY_INFO.lock() {
+        if let Some(relay_info) = guard.as_ref() {
+            return Ok(build_relay_mobile_url(
+                &relay_info.relay_url,
+                &relay_info.room_id,
+            ));
+        }
     }
 
-    if MOBILE_SERVER.get().is_some() {
-        // 已启动本地服务
-        let ip = mobile_server::get_local_ip();
-        let port = MOBILE_SERVER.get().unwrap().port;
-        tracing::info!("[mobile] already running on port {port}");
-        return Ok(format!("http://{ip}:{port}"));
+    if let Ok(guard) = MOBILE_SERVER.lock() {
+        if let Some(info) = guard.as_ref() {
+            // 已启动本地服务
+            let ip = mobile_server::get_local_ip();
+            let port = info.port;
+            tracing::info!("[mobile] already running on port {port}");
+            return Ok(format!("http://{ip}:{port}"));
+        }
     }
 
     let (broadcast_tx, _) = broadcast::channel::<mobile_server::BroadcastEvent>(256);
@@ -89,7 +95,7 @@ pub async fn start_mobile_server(
     tracing::info!("[mobile] spawning server...");
     let tx_for_set = broadcast_tx.clone();
 
-    let result = tauri::async_runtime::spawn(async move {
+    let (result, server_abort) = tauri::async_runtime::spawn(async move {
         mobile_server::start(mobile_state.clone(), static_dir, 19527).await
     })
     .await
@@ -98,10 +104,13 @@ pub async fn start_mobile_server(
 
     tracing::info!("[mobile] server started on port {result}");
 
-    let _ = MOBILE_SERVER.set(MobileServerInfo {
-        port: result,
-        broadcast_tx: tx_for_set,
-    });
+    if let Ok(mut guard) = MOBILE_SERVER.lock() {
+        *guard = Some(MobileServerInfo {
+            port: result,
+            broadcast_tx: tx_for_set,
+            server_abort,
+        });
+    }
 
     // 检查是否配置了 relay server
     let relay_url = config_manager
@@ -115,7 +124,12 @@ pub async fn start_mobile_server(
         tracing::info!("[mobile] relay mode: url={relay_url}, room_id={room_id}");
 
         // 获取 mobile_state 再启动 relay client
-        let mobile_info = MOBILE_SERVER.get().unwrap();
+        let mobile_info = MOBILE_SERVER
+            .lock()
+            .map_err(|_| "Mobile server state lock poisoned".to_string())?;
+        let mobile_info = mobile_info
+            .as_ref()
+            .ok_or_else(|| "Mobile server not started".to_string())?;
         let relay_mobile_state = Arc::new(mobile_server::MobileServerState {
             broadcast_tx: mobile_info.broadcast_tx.clone(),
             thread_store: state.thread_store.clone(),
@@ -125,16 +139,19 @@ pub async fn start_mobile_server(
             config_manager,
         });
 
-        crate::relay_client::start_relay_client(
+        let relay_abort = crate::relay_client::start_relay_client(
             relay_url.clone(),
             room_id.clone(),
             relay_mobile_state,
         );
 
-        let _ = RELAY_INFO.set(RelayInfo {
-            relay_url: relay_url.clone(),
-            room_id: room_id.clone(),
-        });
+        if let Ok(mut guard) = RELAY_INFO.lock() {
+            *guard = Some(RelayInfo {
+                relay_url: relay_url.clone(),
+                room_id: room_id.clone(),
+                relay_abort,
+            });
+        }
 
         return Ok(build_relay_mobile_url(&relay_url, &room_id));
     }
@@ -145,25 +162,43 @@ pub async fn start_mobile_server(
 
 #[tauri::command]
 pub fn stop_mobile_server() -> Result<(), String> {
+    if let Ok(mut guard) = RELAY_INFO.lock() {
+        if let Some(relay_info) = guard.take() {
+            relay_info.relay_abort.abort();
+        }
+    }
+    if let Ok(mut guard) = MOBILE_SERVER.lock() {
+        if let Some(server_info) = guard.take() {
+            server_info.server_abort.abort();
+        }
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_mobile_server_status() -> Result<bool, String> {
-    Ok(MOBILE_SERVER.get().is_some())
+    Ok(MOBILE_SERVER
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false))
 }
 
 #[tauri::command]
 pub fn get_mobile_server_url() -> Result<String, String> {
     // 优先返回 relay URL
-    if let Some(relay_info) = RELAY_INFO.get() {
-        return Ok(build_relay_mobile_url(
-            &relay_info.relay_url,
-            &relay_info.room_id,
-        ));
+    if let Ok(guard) = RELAY_INFO.lock() {
+        if let Some(relay_info) = guard.as_ref() {
+            return Ok(build_relay_mobile_url(
+                &relay_info.relay_url,
+                &relay_info.room_id,
+            ));
+        }
     }
 
-    let info = MOBILE_SERVER.get().ok_or("Mobile server not started")?;
+    let guard = MOBILE_SERVER
+        .lock()
+        .map_err(|_| "Mobile server state lock poisoned")?;
+    let info = guard.as_ref().ok_or("Mobile server not started")?;
     let ip = mobile_server::get_local_ip();
     Ok(format!("http://{ip}:{}", info.port))
 }

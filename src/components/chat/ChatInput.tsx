@@ -308,11 +308,14 @@ export function ChatInput({
   const removeQueuedMessage = useAppStore((s) => s.removeQueuedMessage);
   // 目标模式运行态：只在 goal + active 时视为“整体执行中”。
   // 聊天模式不受该状态影响。
-  const goalRunning = mode === "goal" && currentGoal?.status === "active";
-  const composerBusy = isStreaming || goalRunning || isDispatching;
+  // Goal lifecycle state and transport state are separate: an active goal can
+  // be idle between turns. Only an actual dispatch/stream makes the composer busy.
+  const composerBusy = isStreaming || isDispatching;
+  const goalRunning =
+    mode === "goal" && currentGoal?.status === "active" && composerBusy;
   const planExecutionProgress = useMemo(
-    () => derivePlanExecutionProgress(messages, composerBusy),
-    [composerBusy, messages],
+    () => derivePlanExecutionProgress(messages, composerBusy, currentGoal?.workflowProgress),
+    [composerBusy, currentGoal?.workflowProgress, messages],
   );
 
   // 供应商相关
@@ -796,9 +799,7 @@ export function ChatInput({
 
     // 使用点击时的实时状态，避免 turn 边界时旧渲染闭包导致误判。
     const currentStoreState = useAppStore.getState();
-    const goalIsRunningNow =
-      currentStoreState.chatMode === "goal" && currentStoreState.currentGoal?.status === "active";
-    if (isDispatching || currentStoreState.isStreaming || goalIsRunningNow) {
+    if (isDispatching || currentStoreState.isStreaming) {
       const queuedPayload = prepareSendPayload(trimmed, filesToSend);
       const queuedMsg: QueuedMessage = {
         id: crypto.randomUUID(),
@@ -895,10 +896,15 @@ export function ChatInput({
       return intl.formatMessage({ id: "chat.mode.goalActive" });
     }
 
-    return intl.formatMessage({ id: `chat.goalStatus.${currentGoal.status}` });
-  }, [currentGoal, intl]);
+    const displayedStatus = currentGoal.status === "active" && !composerBusy
+      ? "paused"
+      : currentGoal.status;
+    return intl.formatMessage({ id: `chat.goalStatus.${displayedStatus}` });
+  }, [composerBusy, currentGoal, intl]);
 
-  const goalStatusClass = currentGoal?.status === "paused"
+  const goalStatusClass = currentGoal?.status === "paused" || (
+    currentGoal?.status === "active" && !composerBusy
+  )
     ? "border-[rgba(239,180,40,0.35)] bg-[rgba(239,180,40,0.12)] text-[var(--warning)]"
     : currentGoal?.status === "budgetLimited" || currentGoal?.status === "usageLimited"
       ? "border-[rgba(239,68,68,0.35)] bg-[var(--danger-soft)] text-[var(--danger)]"

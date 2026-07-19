@@ -43,4 +43,20 @@ describe("parsePatchDiffEntries", () => {
       afterContent: "",
     });
   });
+
+  it("strips provider-added trailing stars from directive paths", () => {
+    const patch = [
+      "*** Begin Patch ***",
+      "*** Update File: D:\\work\\old.ts ***",
+      "*** Move to: D:\\work\\new.ts ***",
+      "@@",
+      "-old",
+      "+new",
+      "*** End Patch ***",
+    ].join("\n");
+
+    const entries = parsePatchDiffEntries(patch);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].paths).toEqual(["D:\\work\\old.ts", "D:\\work\\new.ts"]);
+  });
 });

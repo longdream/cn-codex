@@ -1368,6 +1368,7 @@ pub async fn standalone_thread_read(
             "id": thread.id,
             "name": thread.name,
             "goal": thread.goal,
+            "robotState": thread.robot_state,
             "activePlan": active_plan_payload,
             "turns": turns,
         }
@@ -1482,6 +1483,11 @@ pub async fn standalone_chat(
     // 避免普通 chat 路径受到机器人编排逻辑影响。
     let robot_id_for_turn = resolve_robot_id_for_run_turn(mode, robot_id.as_deref());
     *state.current_thread_id.write().await = Some(thread_id.clone());
+    let active_turn_before = state
+        .thread_store
+        .get_active_turn(&thread_id)
+        .await
+        .map(|turn| turn.turn_id);
 
     let result = state
         .agent_engine
@@ -1500,7 +1506,19 @@ pub async fn standalone_chat(
         .await;
 
     if let Err(ref err) = result {
-        if let Some(active_turn) = state.thread_store.get_active_turn(&thread_id).await {
+        let overlapping_turn = matches!(err, AppError::TurnAlreadyRunning { .. });
+        let owned_active_turn = if overlapping_turn {
+            None
+        } else {
+            state
+                .thread_store
+                .get_active_turn(&thread_id)
+                .await
+                .filter(|active_turn| {
+                    active_turn_before.as_deref() != Some(active_turn.turn_id.as_str())
+                })
+        };
+        if let Some(active_turn) = owned_active_turn.as_ref() {
             let completed_at = chrono::Utc::now().timestamp();
             let duration_ms =
                 completed_at.saturating_sub(active_turn.started_at).max(0) as u64 * 1000;
@@ -1533,7 +1551,7 @@ pub async fn standalone_chat(
             );
         }
         // Goal 模式下出错时将 goal 回退为 paused，避免前端状态卡死
-        if is_goal_mode {
+        if is_goal_mode && owned_active_turn.is_some() {
             info!("standalone_chat error in goal mode, reverting goal to paused: {err}");
             if let Ok(goal) = state
                 .thread_store

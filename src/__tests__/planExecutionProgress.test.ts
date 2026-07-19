@@ -138,6 +138,85 @@ describe("plan execution progress", () => {
     expect(derivePlanExecutionProgress(messages, false)).toBeNull();
   });
 
+  it("uses robot workflow nodes when the model did not call update_plan", () => {
+    const messages = [userMessage()];
+
+    expect(derivePlanExecutionProgress(messages, true, {
+      robotId: "full-stack",
+      currentNodeIndex: 1,
+      rootObjective: "Ship the feature",
+      runtimeNodes: ["Analyze", "Implement", "Verify"],
+      nodeDeliveries: [
+        "Artifacts: analysis.md\nDecisions: use the existing API\nValidation: reviewed\nOpen items: none",
+      ],
+    })).toMatchObject({
+      currentStep: 2,
+      totalSteps: 3,
+      changedFileCount: 0,
+      running: true,
+      hasExplicitPlan: false,
+      steps: [
+        { step: "Analyze", status: "completed" },
+        { step: "Implement", status: "in_progress" },
+        { step: "Verify", status: "pending" },
+      ],
+      robotWorkflow: {
+        robotId: "full-stack",
+        rootObjective: "Ship the feature",
+        currentNodeIndex: 1,
+        summarizedCount: 1,
+        nodes: [
+          { step: "Analyze", status: "completed", deliverySummary: expect.stringContaining("Artifacts:") },
+          { step: "Implement", status: "in_progress" },
+          { step: "Verify", status: "pending" },
+        ],
+      },
+    });
+  });
+
+  it("keeps robot workflow nodes alongside an explicit update_plan", () => {
+    const messages = [
+      userMessage(),
+      toolMessage([planCall(["completed", "in_progress"])]),
+    ];
+
+    expect(derivePlanExecutionProgress(messages, true, {
+      currentNodeIndex: 0,
+      runtimeNodes: ["Robot step"],
+    })).toMatchObject({
+      currentStep: 2,
+      totalSteps: 2,
+      hasExplicitPlan: true,
+      steps: [
+        { step: "Step 1", status: "completed" },
+        { step: "Step 2", status: "in_progress" },
+      ],
+      robotWorkflow: {
+        currentNodeIndex: 0,
+        nodes: [{ step: "Robot step", status: "in_progress" }],
+      },
+    });
+  });
+
+  it("marks the final robot node completed when the workflow snapshot is complete", () => {
+    expect(derivePlanExecutionProgress([userMessage()], false, {
+      currentNodeIndex: 1,
+      runtimeNodes: ["Implement", "Verify"],
+      nodeDeliveries: ["Artifacts: code", "Validation: tests passed"],
+      completed: true,
+    })).toMatchObject({
+      currentStep: 2,
+      robotWorkflow: {
+        completed: true,
+        summarizedCount: 2,
+        nodes: [
+          { status: "completed" },
+          { status: "completed" },
+        ],
+      },
+    });
+  });
+
   it("does not report a patch before the backend confirms it was applied", () => {
     const messages = [
       userMessage(),

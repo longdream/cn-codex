@@ -491,6 +491,7 @@ interface RawThread {
   id: string;
   name?: string;
   goal?: ApiThreadGoal | null;
+  robotState?: ApiThreadGoal["workflowProgress"] | null;
   activePlan?: {
     path?: string;
     content?: string;
@@ -791,10 +792,53 @@ function normalizePendingFileReview(review: PendingFileReview): PendingFileRevie
   };
 }
 
-function normalizeThreadGoal(goal?: ApiThreadGoal | null): ThreadGoal | null {
+function normalizeWorkflowProgress(
+  progress?: ApiThreadGoal["workflowProgress"] | null,
+): ApiThreadGoal["workflowProgress"] | undefined {
+  if (!progress || !Array.isArray(progress.runtimeNodes) || progress.runtimeNodes.length === 0) {
+    return undefined;
+  }
+  const runtimeNodes = progress.runtimeNodes
+    .map((node) => typeof node === "string" ? node.trim() : "")
+    .filter(Boolean);
+  if (runtimeNodes.length === 0) {
+    return undefined;
+  }
+  const rawIndex = Number(progress.currentNodeIndex);
+  const nodeDeliveries = Array.isArray(progress.nodeDeliveries)
+    ? progress.nodeDeliveries
+        .slice(0, runtimeNodes.length)
+        .map((delivery) => typeof delivery === "string" ? delivery.trim() : "")
+    : [];
+  const robotId = typeof progress.robotId === "string" ? progress.robotId.trim() : "";
+  const rootObjective = typeof progress.rootObjective === "string"
+    ? progress.rootObjective.trim()
+    : "";
+  return {
+    currentNodeIndex: Math.min(
+      runtimeNodes.length - 1,
+      Math.max(0, Number.isFinite(rawIndex) ? Math.trunc(rawIndex) : 0),
+    ),
+    runtimeNodes,
+    ...(robotId ? { robotId } : {}),
+    ...(rootObjective ? { rootObjective } : {}),
+    ...(nodeDeliveries.length > 0 ? { nodeDeliveries } : {}),
+    ...(progress.completed ? { completed: true } : {}),
+  };
+}
+
+function normalizeThreadGoal(
+  goal?: ApiThreadGoal | null,
+  fallbackWorkflowProgress?: ApiThreadGoal["workflowProgress"],
+): ThreadGoal | null {
   if (!goal?.objective?.trim()) {
     return null;
   }
+
+  const hasWorkflowProgress = Object.prototype.hasOwnProperty.call(goal, "workflowProgress");
+  const workflowProgress = normalizeWorkflowProgress(
+    hasWorkflowProgress ? goal.workflowProgress : fallbackWorkflowProgress,
+  );
 
   return {
     objective: goal.objective,
@@ -803,6 +847,7 @@ function normalizeThreadGoal(goal?: ApiThreadGoal | null): ThreadGoal | null {
     tokensUsed: Math.max(0, Number(goal.tokensUsed ?? 0)),
     createdAt: goal.createdAt,
     updatedAt: goal.updatedAt,
+    ...(workflowProgress ? { workflowProgress } : {}),
   };
 }
 
@@ -3245,7 +3290,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         liveTurnUsage: null,
         latestPlanContent: hydratedActivePlan?.content ?? null,
         activePlan: hydratedActivePlan,
-        currentGoal: normalizeThreadGoal(rawThread?.goal),
+        currentGoal: normalizeThreadGoal(
+          rawThread?.goal
+            ? { ...rawThread.goal, workflowProgress: rawThread.robotState ?? undefined }
+            : null,
+        ),
         selectedRobotId: null,
         robotCreateMode: false,
         pendingMessageQueue: [],
@@ -3511,9 +3560,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setCurrentGoalForThread: (threadId, goal) => {
-    const normalized = goal ? normalizeThreadGoal(goal) : null;
-    get().applyToThread(threadId, () => ({
-      currentGoal: normalized,
+    get().applyToThread(threadId, (runtime) => ({
+      currentGoal: goal
+        ? normalizeThreadGoal(goal, runtime.currentGoal?.workflowProgress)
+        : null,
     }));
   },
 

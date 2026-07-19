@@ -73,6 +73,11 @@ interface ThreadGoalClearedPayload {
   threadId?: string;
 }
 
+interface RobotProgressUpdatedPayload {
+  threadId?: string;
+  robotState?: ThreadGoal["workflowProgress"] | null;
+}
+
 interface ThreadTokenUsageUpdatedPayload {
   threadId?: string;
   usage?: TokenUsage | null;
@@ -433,7 +438,7 @@ function firstPatchPath(value: unknown): string | null {
   for (const line of value.split(/\r?\n/)) {
     const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/);
     if (match) {
-      return match[1].trim();
+      return match[1].replace(/\s+\*{3}\s*$/, "").trim();
     }
   }
 
@@ -567,6 +572,23 @@ export function useTauriEvents() {
     const reasoningByThread = new Map<string, string>();
     const lastEventSeqByThread = new Map<string, number>();
     const turnPhaseByThread = new Map<string, "created" | "sampling" | "toolRunning" | "completed">();
+    const handledTerminalTurnIdsByThread = new Map<string, Set<string>>();
+
+    const claimTerminalTurn = (threadId: string, turnId: string | null): boolean => {
+      if (!turnId) {
+        return turnPhaseByThread.get(threadId) !== "completed";
+      }
+      const handled = handledTerminalTurnIdsByThread.get(threadId) ?? new Set<string>();
+      if (handled.has(turnId)) return false;
+      handled.add(turnId);
+      // Terminal IDs only protect against event replay; keep the cache bounded.
+      if (handled.size > 16) {
+        const oldest = handled.values().next().value;
+        if (oldest) handled.delete(oldest);
+      }
+      handledTerminalTurnIdsByThread.set(threadId, handled);
+      return true;
+    };
 
     const acceptSequencedEvent = (payload: SequencedEventPayload, threadId: string): boolean => {
       const sequence = Number(payload.eventSeq ?? 0);
@@ -742,8 +764,6 @@ export function useTauriEvents() {
             const threadId = e.payload.threadId ?? store.currentThreadId;
             if (!threadId) return;
             if (!acceptSequencedEvent(e.payload, threadId)) return;
-            if (turnPhaseByThread.get(threadId) === "completed") return;
-            turnPhaseByThread.set(threadId, "completed");
             const isActive = threadId === store.currentThreadId;
             const completedTurnId = e.payload.turn?.id ?? null;
             const runtimeBeforeComplete = store.getThreadRuntimeState(threadId);
@@ -759,6 +779,8 @@ export function useTauriEvents() {
               );
               return;
             }
+            if (!claimTerminalTurn(threadId, completedTurnId)) return;
+            turnPhaseByThread.set(threadId, "completed");
 
             // 推理过程消息
             const reasoningText = (reasoningByThread.get(threadId) ?? "").trim();
@@ -833,7 +855,10 @@ export function useTauriEvents() {
           const store = useAppStore.getState();
           const threadId = e.payload.threadId ?? store.currentThreadId;
           if (!threadId || !acceptSequencedEvent(e.payload, threadId)) return;
-          if (turnPhaseByThread.get(threadId) === "completed") return;
+          const terminalTurnId = e.payload.turn?.id ?? null;
+          const activeTurnId = store.getThreadRuntimeState(threadId)?.currentTurnId ?? null;
+          if (terminalTurnId && activeTurnId && terminalTurnId !== activeTurnId) return;
+          if (!claimTerminalTurn(threadId, terminalTurnId)) return;
           turnPhaseByThread.set(threadId, "completed");
           store.markRunningToolCallsInterruptedForThread(threadId, "Turn cancelled by user.");
           store.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
@@ -845,7 +870,10 @@ export function useTauriEvents() {
           const store = useAppStore.getState();
           const threadId = e.payload.threadId ?? store.currentThreadId;
           if (!threadId || !acceptSequencedEvent(e.payload, threadId)) return;
-          if (turnPhaseByThread.get(threadId) === "completed") return;
+          const terminalTurnId = e.payload.turn?.id ?? null;
+          const activeTurnId = store.getThreadRuntimeState(threadId)?.currentTurnId ?? null;
+          if (terminalTurnId && activeTurnId && terminalTurnId !== activeTurnId) return;
+          if (!claimTerminalTurn(threadId, terminalTurnId)) return;
           turnPhaseByThread.set(threadId, "completed");
           store.markRunningToolCallsInterruptedForThread(threadId, "Turn failed before completion.");
           store.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
@@ -875,6 +903,18 @@ export function useTauriEvents() {
           const threadId = e.payload.threadId ?? store.currentThreadId;
           if (!threadId) return;
           store.setCurrentGoalForThread(threadId, null);
+        }),
+
+        listen<RobotProgressUpdatedPayload>("robot-progress-updated", (e) => {
+          const store = useAppStore.getState();
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
+          const runtime = store.getThreadRuntimeState(threadId);
+          if (!runtime?.currentGoal) return;
+          store.setCurrentGoalForThread(threadId, {
+            ...runtime.currentGoal,
+            workflowProgress: e.payload.robotState ?? undefined,
+          });
         }),
 
         listen<BrowserNavigationChangedPayload>("browser-navigation-changed", (e) => {
@@ -1151,7 +1191,19 @@ export function useTauriEvents() {
           },
         ),
 
-        listen<{ threadId: string }>("compaction-started", () => {}),
+        listen<{ threadId: string }>("compaction-started", (e) => {
+          const store = useAppStore.getState();
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
+
+          // Pre-turn compaction happens before turn-started, so without this
+          // explicit busy state the composer spins while the message list looks idle.
+          store.setStreamingForThread(threadId, true);
+          store.setStreamingLabelForThread(
+            threadId,
+            intl.formatMessage({ id: "streaming.compacting" }),
+          );
+        }),
 
         listen<{
           threadId: string;

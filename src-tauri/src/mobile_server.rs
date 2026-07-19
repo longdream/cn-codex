@@ -46,7 +46,7 @@ pub async fn start(
     state: SharedMobileState,
     static_dir: PathBuf,
     port: u16,
-) -> Result<u16, String> {
+) -> Result<(u16, tokio::task::AbortHandle), String> {
     let serve_dir = ServeDir::new(&static_dir).append_index_html_on_directories(true);
 
     let api = Router::new()
@@ -84,13 +84,13 @@ pub async fn start(
     let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     info!("Mobile server listening on 0.0.0.0:{actual_port}");
 
-    tokio::spawn(async move {
+    let server_task = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             error!("Mobile server error: {e}");
         }
     });
 
-    Ok(actual_port)
+    Ok((actual_port, server_task.abort_handle()))
 }
 
 // --- Middleware ---
@@ -323,11 +323,13 @@ pub fn get_local_ip() -> String {
 }
 
 pub fn broadcast(event: &str, payload: serde_json::Value) {
-    if let Some(info) = crate::MOBILE_SERVER.get() {
-        let _ = info.broadcast_tx.send(BroadcastEvent {
-            event: event.to_string(),
-            payload,
-        });
+    if let Ok(guard) = crate::MOBILE_SERVER.lock() {
+        if let Some(info) = guard.as_ref() {
+            let _ = info.broadcast_tx.send(BroadcastEvent {
+                event: event.to_string(),
+                payload,
+            });
+        }
     }
 }
 

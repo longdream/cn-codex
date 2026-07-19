@@ -62,6 +62,40 @@ describe("appStore", () => {
       expect(useAppStore.getState().isStreaming).toBe(true);
     });
 
+    it("preserves workflow progress across ordinary goal updates", () => {
+      useAppStore.setState({
+        currentThreadId: "t-workflow",
+        currentGoal: {
+          objective: "implement",
+          status: "active",
+          workflowProgress: {
+            currentNodeIndex: 1,
+            runtimeNodes: ["Analyze", "Implement", "Verify"],
+          },
+        },
+      });
+
+      useAppStore.getState().setCurrentGoalForThread("t-workflow", {
+        objective: "implement",
+        status: "paused",
+      });
+
+      expect(useAppStore.getState().currentGoal).toMatchObject({
+        status: "paused",
+        workflowProgress: {
+          currentNodeIndex: 1,
+          runtimeNodes: ["Analyze", "Implement", "Verify"],
+        },
+      });
+
+      useAppStore.getState().setCurrentGoalForThread("t-workflow", {
+        objective: "implement",
+        status: "complete",
+        workflowProgress: undefined,
+      });
+      expect(useAppStore.getState().currentGoal?.workflowProgress).toBeUndefined();
+    });
+
     it("setShowSettings updates showSettings", () => {
       useAppStore.getState().setShowSettings(true);
       expect(useAppStore.getState().showSettings).toBe(true);
@@ -561,6 +595,41 @@ describe("appStore", () => {
         status: "paused",
         tokenBudget: 2000,
         tokensUsed: 750,
+      });
+    });
+
+    it("hydrates persisted robot workflow progress with the goal", async () => {
+      mockInvoke.mockImplementation(async (command) => {
+        if (command === "standalone_thread_read") {
+          return {
+            thread: {
+              id: "t-robot",
+              goal: {
+                objective: "build feature",
+                status: "active",
+              },
+              robotState: {
+                robotId: "full-stack",
+                currentNodeIndex: 1,
+                rootObjective: "build feature",
+                runtimeNodes: ["Analyze", "Implement", "Verify"],
+                nodeDeliveries: ["Artifacts: analysis.md"],
+              },
+              turns: [],
+            },
+          };
+        }
+        return {};
+      });
+
+      await useAppStore.getState().loadThread("t-robot");
+
+      expect(useAppStore.getState().currentGoal?.workflowProgress).toEqual({
+        robotId: "full-stack",
+        currentNodeIndex: 1,
+        rootObjective: "build feature",
+        runtimeNodes: ["Analyze", "Implement", "Verify"],
+        nodeDeliveries: ["Artifacts: analysis.md"],
       });
     });
 

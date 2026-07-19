@@ -501,6 +501,8 @@ mod tests {
                     },
                 ],
             }],
+            model_history: None,
+            model_history_prompt_tokens: None,
         }
     }
 

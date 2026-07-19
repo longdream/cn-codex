@@ -39,10 +39,15 @@ enum RelayToPc {
 }
 
 /// 启动 relay client，连接远程中转服务器
-pub fn start_relay_client(relay_url: String, room_id: String, mobile_state: SharedMobileState) {
-    tokio::spawn(async move {
+pub fn start_relay_client(
+    relay_url: String,
+    room_id: String,
+    mobile_state: SharedMobileState,
+) -> tokio::task::AbortHandle {
+    let task = tokio::spawn(async move {
         relay_loop(relay_url, room_id, mobile_state).await;
     });
+    task.abort_handle()
 }
 
 /// relay 地址规范化：

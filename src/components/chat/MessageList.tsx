@@ -72,6 +72,7 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   const scrollRafRef = useRef<number | null>(null);
   // 流式输出时不要每个 token 都完整重渲染 Markdown，否则段落/列表结构会反复重排导致抖动。
   const [stableStreamingText, setStableStreamingText] = useState(streamingText);
+  const stableStreamingTextRef = useRef(streamingText);
   const streamingFlushTimerRef = useRef<number | null>(null);
   const latestStreamingTextRef = useRef(streamingText);
   latestStreamingTextRef.current = streamingText;
@@ -101,29 +102,32 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   }, [scrollToBottom]);
 
   useEffect(() => {
-    if (!isStreaming) {
-      // 结束后直接清空稳定文本，避免和已落库消息短暂双渲染。
-      setStableStreamingText("");
+    if (!isStreaming || !streamingText) {
       if (streamingFlushTimerRef.current != null) {
         window.clearTimeout(streamingFlushTimerRef.current);
         streamingFlushTimerRef.current = null;
+      }
+      // 结束或工具调用切段后清空旧文本，避免下一段首包短暂显示上一段内容。
+      if (stableStreamingTextRef.current) {
+        stableStreamingTextRef.current = "";
+        setStableStreamingText("");
       }
       return;
     }
 
     // 首包立刻显示；后续合并到约 100ms 一帧，减少 Markdown 结构抖动。
-    if (!latestStreamingTextRef.current) return;
-    setStableStreamingText((prev) => {
-      if (!prev) {
-        return latestStreamingTextRef.current;
-      }
-      return prev;
-    });
+    if (!stableStreamingTextRef.current) {
+      stableStreamingTextRef.current = streamingText;
+      setStableStreamingText(streamingText);
+      return;
+    }
     if (streamingFlushTimerRef.current != null) return;
     streamingFlushTimerRef.current = window.setTimeout(() => {
       streamingFlushTimerRef.current = null;
       const next = latestStreamingTextRef.current;
-      setStableStreamingText((prev) => (prev === next ? prev : next));
+      if (stableStreamingTextRef.current === next) return;
+      stableStreamingTextRef.current = next;
+      setStableStreamingText(next);
     }, 100);
   }, [isStreaming, streamingText]);
 
@@ -131,9 +135,11 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
     return () => {
       if (scrollRafRef.current != null) {
         window.cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
       }
       if (streamingFlushTimerRef.current != null) {
         window.clearTimeout(streamingFlushTimerRef.current);
+        streamingFlushTimerRef.current = null;
       }
     };
   }, []);
@@ -821,6 +827,7 @@ function normalizePathForDiffMatch(path: string): string {
   // 统一路径格式，兼容 Windows 与 Unix 分隔符差异。
   return path
     .trim()
+    .replace(/\s+\*{3}\s*$/, "")
     .replace(/\\/g, "/")
     .replace(/^\.\/+/, "")
     .toLowerCase();
