@@ -1161,6 +1161,7 @@ impl AgentEngine {
                             internal_messages,
                             if tools.is_empty() { None } else { Some(tools) },
                             config.max_output_tokens,
+                            config.model_reasoning_effort.as_deref(),
                             iteration,
                             turn_mode == "plan",
                             provider.query_params.as_ref(),
@@ -2504,6 +2505,7 @@ impl AgentEngine {
                             internal_messages,
                             None,
                             config.max_output_tokens,
+                            config.model_reasoning_effort.as_deref(),
                             u32::MAX,
                             false,
                             provider.query_params.as_ref(),
@@ -2935,6 +2937,8 @@ impl AgentEngine {
              - view_image: Inspect and preview local image files, returning format, dimensions, size, and path.\n\
              - browser_run: Run a browser session for page navigation, UI interaction, screenshots, and web app testing. Runtime is CN-Codex built-in Tauri WebView controlled by Rust-side JS Injection + CDP. Keep action batches focused and rely on screenshots/html/snapshot for verification.\n\
              - smartbrain_search: Search Local Knowledge Base (本地知识库) knowledge. For SQL (`smartbrain_sql_query`) and other non-core helpers, discover them with `tool_search` first (never invent Python/shell DB scripts; never re-ask saved passwords).\n\
+             - build_entry_form: Build a schema-driven entry form for Local Knowledge Base databases, pre-fill known_values, open UI for missing fields, then save on confirm.\n\
+             - save_form_data: Validate and INSERT confirmed form values into a configured database table (requires writeData).\n\
              \n\
              Layered tool loading:\n\
              - Default exposed schemas are a small core set (shell, files, apply_patch, code_search, browser_run, tool_search, plan/permissions, etc.).\n\
@@ -3819,6 +3823,7 @@ impl AgentEngine {
         messages: Vec<InternalMessage>,
         tools: Option<Vec<serde_json::Value>>,
         max_tokens: Option<i64>,
+        reasoning_effort: Option<&str>,
         iteration: u32,
         plan_mode: bool,
         query_params: Option<&std::collections::HashMap<String, String>>,
@@ -3834,7 +3839,8 @@ impl AgentEngine {
                 .map_err(AppError::Custom)?;
         let tools_slice = tools.as_deref();
         let expects_structured_tool_calls = tools_slice.is_some_and(|items| !items.is_empty());
-        let body = adapter.build_body(model, &messages, tools_slice, max_tokens);
+        let mut body = adapter.build_body(model, &messages, tools_slice, max_tokens);
+        adapter::apply_reasoning_effort_to_body(&mut body, wire_api, model, reasoning_effort);
 
         info!("LLM request: wire_api={wire_api}, url={url}, model={model}");
         if let Some(ref logger) = self.conversation_logger {

@@ -21,7 +21,9 @@ import {
   gitCherryPick,
   gitCheckout,
   gitCommit,
+  gitCommitFiles,
   gitDiff,
+  gitFileDiffContents,
   gitLog,
   gitPull,
   gitPush,
@@ -31,10 +33,12 @@ import {
   gitStatus,
   gitUnstage,
   type GitActionResponse,
+  type GitCommitFileEntry,
   type GitLogEntry,
   type GitStatusEntry,
   type GitStatusResponse,
 } from "../../api/git";
+import { windowOpenRunSummaryDiff } from "../../api/window";
 
 type GitSection = "changes" | "branches" | "history" | "danger";
 type DiffMode = "working" | "staged";
@@ -100,6 +104,10 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   const [diffText, setDiffText] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
   const [commitMenuOpen, setCommitMenuOpen] = useState(false);
+  const [expandedHistoryHash, setExpandedHistoryHash] = useState<string | null>(null);
+  const [historyFilesByCommit, setHistoryFilesByCommit] = useState<Record<string, GitCommitFileEntry[]>>({});
+  const [historyFilesLoading, setHistoryFilesLoading] = useState<string | null>(null);
+  const [openingDiffPath, setOpeningDiffPath] = useState<string | null>(null);
   const [resetMode, setResetMode] = useState<"soft" | "mixed" | "hard">("mixed");
   const [resetTarget, setResetTarget] = useState("HEAD");
   const [revertCommit, setRevertCommit] = useState("");
@@ -128,6 +136,10 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
       setSelectedBranch("");
       setSelectedDiff(null);
       setDiffText("");
+      setExpandedHistoryHash(null);
+      setHistoryFilesByCommit({});
+      setHistoryFilesLoading(null);
+      setOpeningDiffPath(null);
       return;
     }
 
@@ -251,6 +263,102 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   const handleSelectDiff = useCallback((path: string, mode: DiffMode) => {
     setSelectedDiff({ path, mode });
   }, []);
+
+  const openDiffDetail = useCallback(
+    async (params: {
+      path: string;
+      mode: "working" | "staged" | "commit";
+      commit?: string;
+      oldPath?: string | null;
+      statusHint?: string;
+    }) => {
+      if (!workspaceCwd) {
+        return;
+      }
+      const openKey = `${params.mode}:${params.commit ?? ""}:${params.path}`;
+      setOpeningDiffPath(openKey);
+      setErrorText(null);
+      try {
+        const contents = await gitFileDiffContents({
+          path: params.path,
+          mode: params.mode,
+          commit: params.commit,
+          oldPath: params.oldPath,
+          cwd: workspaceCwd,
+        });
+        const emptyBecauseBinary = contents.isBinary;
+        const emptyBecauseMissing =
+          !contents.isBinary &&
+          contents.beforeContent.trim().length === 0 &&
+          contents.afterContent.trim().length === 0;
+        await windowOpenRunSummaryDiff({
+          path: contents.path || params.path,
+          beforeContent: contents.beforeContent,
+          afterContent: contents.afterContent,
+          fileAction: contents.fileAction || params.statusHint || "modified",
+          diffSource: emptyBecauseBinary || emptyBecauseMissing ? "empty" : "snapshot",
+          canPersist: false,
+          emptyHint: emptyBecauseBinary
+            ? intl.formatMessage({ id: "git.diffBinaryUnavailable" })
+            : emptyBecauseMissing
+              ? intl.formatMessage({ id: "git.noDiffContent" })
+              : undefined,
+        });
+      } catch (error) {
+        setErrorText(
+          intl.formatMessage({ id: "git.diffLoadFailed" }, { error: normalizeError(error) }),
+        );
+      } finally {
+        setOpeningDiffPath(null);
+      }
+    },
+    [intl, workspaceCwd],
+  );
+
+  const handleOpenWorkingDiff = useCallback(
+    (entry: GitStatusEntry, mode: DiffMode) => {
+      setSelectedDiff({ path: entry.path, mode });
+      void openDiffDetail({
+        path: entry.path,
+        mode,
+        oldPath: entry.oldPath,
+        statusHint: entry.status,
+      });
+    },
+    [openDiffDetail],
+  );
+
+  const handleToggleHistoryCommit = useCallback(
+    async (commitHash: string) => {
+      if (expandedHistoryHash === commitHash) {
+        setExpandedHistoryHash(null);
+        return;
+      }
+      setExpandedHistoryHash(commitHash);
+      if (historyFilesByCommit[commitHash] || !workspaceCwd) {
+        return;
+      }
+      setHistoryFilesLoading(commitHash);
+      setErrorText(null);
+      try {
+        const resp = await gitCommitFiles(commitHash, workspaceCwd);
+        setHistoryFilesByCommit((prev) => ({
+          ...prev,
+          [commitHash]: resp.files,
+        }));
+      } catch (error) {
+        setErrorText(
+          intl.formatMessage(
+            { id: "git.historyFilesLoadFailed" },
+            { error: normalizeError(error) },
+          ),
+        );
+      } finally {
+        setHistoryFilesLoading(null);
+      }
+    },
+    [expandedHistoryHash, historyFilesByCommit, intl, workspaceCwd],
+  );
 
   const handleStagePath = useCallback(
     async (path: string) => {
@@ -480,8 +588,9 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
         <div className="flex items-start gap-2">
           <button
             type="button"
-            onClick={() => handleSelectDiff(entry.path, diffMode)}
+            onClick={() => handleOpenWorkingDiff(entry, diffMode)}
             className="min-w-0 flex-1 text-left"
+            title={intl.formatMessage({ id: "git.openDiffDetail" })}
           >
             <div className="flex items-center gap-2">
               <span className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${statusColor(entry.status)}`}>
@@ -836,16 +945,75 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
               <div className="p-3 text-xs text-[var(--text-faint)]">{intl.formatMessage({ id: "git.noHistory" })}</div>
             ) : (
               history.map((entry) => (
-                <div key={entry.hash} className="border-b border-[var(--border-subtle)] px-3 py-2 last:border-b-0">
-                  <div className="flex items-center gap-2 text-[11px] text-[var(--text-faint)]">
-                    <span className="inline-flex items-center gap-1">
-                      <IconGitCommit size={12} stroke={1.8} />
-                      {entry.shortHash}
-                    </span>
-                    <span>{entry.author}</span>
-                  </div>
-                  <div className="mt-0.5 text-xs text-[var(--text-base)]">{entry.message}</div>
-                  <div className="mt-0.5 text-[11px] text-[var(--text-faint)]">{entry.date}</div>
+                <div key={entry.hash} className="border-b border-[var(--border-subtle)] last:border-b-0">
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleHistoryCommit(entry.hash)}
+                    className="w-full px-3 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+                    title={intl.formatMessage({ id: "git.historyExpandHint" })}
+                  >
+                    <div className="flex items-center gap-2 text-[11px] text-[var(--text-faint)]">
+                      <span className="inline-flex items-center gap-1">
+                        <IconGitCommit size={12} stroke={1.8} />
+                        {entry.shortHash}
+                      </span>
+                      <span className="truncate">{entry.author}</span>
+                      <IconChevronDown
+                        size={12}
+                        stroke={1.8}
+                        className={`ml-auto shrink-0 transition-transform ${
+                          expandedHistoryHash === entry.hash ? "rotate-180" : ""
+                        }`}
+                      />
+                    </div>
+                    <div className="mt-0.5 text-xs text-[var(--text-base)]">{entry.message}</div>
+                    <div className="mt-0.5 text-[11px] text-[var(--text-faint)]">{entry.date}</div>
+                  </button>
+                  {expandedHistoryHash === entry.hash && (
+                    <div className="border-t border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1.5">
+                      {historyFilesLoading === entry.hash ? (
+                        <div className="px-1 py-1 text-[11px] text-[var(--text-faint)]">
+                          {intl.formatMessage({ id: "git.historyFilesLoading" })}
+                        </div>
+                      ) : (historyFilesByCommit[entry.hash] ?? []).length === 0 ? (
+                        <div className="px-1 py-1 text-[11px] text-[var(--text-faint)]">
+                          {intl.formatMessage({ id: "git.historyNoFiles" })}
+                        </div>
+                      ) : (
+                        (historyFilesByCommit[entry.hash] ?? []).map((file) => {
+                          const openKey = `commit:${entry.hash}:${file.path}`;
+                          const isOpening = openingDiffPath === openKey;
+                          return (
+                            <button
+                              key={`${entry.hash}:${file.path}:${file.oldPath ?? ""}`}
+                              type="button"
+                              disabled={isOpening}
+                              onClick={() =>
+                                void openDiffDetail({
+                                  path: file.path,
+                                  mode: "commit",
+                                  commit: entry.hash,
+                                  oldPath: file.oldPath,
+                                  statusHint: file.status,
+                                })
+                              }
+                              className="flex w-full items-start gap-2 rounded-[var(--radius-sm)] px-1.5 py-1.5 text-left transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-60"
+                              title={intl.formatMessage({ id: "git.openDiffDetail" })}
+                            >
+                              <span
+                                className={`mt-0.5 shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] ${statusColor(file.status)}`}
+                              >
+                                {file.status}
+                              </span>
+                              <span className="min-w-0 flex-1 break-all text-[11px] text-[var(--text-base)]">
+                                {file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path}
+                              </span>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
                 </div>
               ))
             )}

@@ -638,6 +638,41 @@ export async function listSmartbrainDatabases(source: {
   return (result.databases ?? []).filter((item) => typeof item === "string" && item.trim().length > 0);
 }
 
+export async function testSmartbrainDatabaseConnection(source: {
+  dbType: SmartbrainDbType;
+  host?: string;
+  port?: number | null;
+  username?: string;
+  password?: string;
+  connectionUri?: string;
+  databaseName?: string;
+  filePath?: string;
+  timeoutSec?: number;
+}): Promise<{ ok: boolean; message: string; dbType?: string; timeoutSec?: number }> {
+  const result = await invoke<{
+    ok?: boolean;
+    message?: string;
+    dbType?: string;
+    timeoutSec?: number;
+  }>("smartbrain_test_database_connection", {
+    dbType: source.dbType,
+    host: source.host ?? "",
+    port: source.port ?? null,
+    username: source.username ?? "",
+    password: source.password ?? "",
+    connectionUri: source.connectionUri ?? "",
+    databaseName: source.databaseName ?? "",
+    filePath: source.filePath ?? "",
+    timeoutSec: source.timeoutSec ?? 10,
+  });
+  return {
+    ok: result.ok === true,
+    message: result.message ?? (result.ok ? "Connection OK" : "Connection failed"),
+    dbType: result.dbType,
+    timeoutSec: result.timeoutSec,
+  };
+}
+
 export async function loadSmartbrainDbSources(): Promise<SmartbrainDbSource[]> {
   const loaded = await loadJsonState<SmartbrainDbSource[]>(DB_SOURCES_KEY, []);
   return loaded.map((item) => ({

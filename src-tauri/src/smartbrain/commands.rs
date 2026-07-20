@@ -865,6 +865,143 @@ pub async fn smartbrain_list_databases(
 }
 
 #[tauri::command]
+pub async fn smartbrain_test_database_connection(
+    db_type: String,
+    host: Option<String>,
+    port: Option<u16>,
+    username: Option<String>,
+    password: Option<String>,
+    connection_uri: Option<String>,
+    database_name: Option<String>,
+    file_path: Option<String>,
+    timeout_sec: Option<u64>,
+) -> AppResult<serde_json::Value> {
+    let request = enrich_list_request_from_connection_uri(SmartbrainDatabaseListRequest {
+        db_type,
+        host: host.unwrap_or_default(),
+        port,
+        username: username.unwrap_or_default(),
+        password: password.unwrap_or_default(),
+        connection_uri: connection_uri.unwrap_or_default(),
+        database_name: database_name.unwrap_or_default(),
+        file_path: file_path.unwrap_or_default(),
+    });
+    let timeout = timeout_sec.unwrap_or(10).clamp(1, 60);
+    let db_type = request.db_type.trim().to_ascii_lowercase();
+
+    let message = match db_type.as_str() {
+        "mysql" => {
+            let host = first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
+            let port = request.port.unwrap_or(3306);
+            let username =
+                first_non_empty(&[&request.username]).unwrap_or_else(|| "root".to_string());
+            let database = first_non_empty(&[&request.database_name])
+                .ok_or_else(|| AppError::Custom("MySQL databaseName 未配置。".to_string()))?;
+            let result = tokio::task::spawn_blocking({
+                let password = request.password.clone();
+                let host = host.clone();
+                let username = username.clone();
+                let database = database.clone();
+                move || {
+                    crate::smartbrain::mysql_native::execute_mysql_query(
+                        &host,
+                        port,
+                        &username,
+                        &password,
+                        &database,
+                        "SELECT 1 AS ok",
+                        timeout,
+                        1,
+                    )
+                }
+            })
+            .await
+            .map_err(|error| AppError::Custom(format!("连接测试任务失败: {error}")))?
+            .map_err(AppError::Custom)?;
+            format!(
+                "连接成功（MySQL）· {host}:{port}/{database} · 探测返回 {} 行",
+                result.rows.len()
+            )
+        }
+        "sqlite" => {
+            let path = first_non_empty(&[
+                &request.file_path,
+                &request.database_name,
+                &request.connection_uri,
+            ])
+            .ok_or_else(|| AppError::Custom("SQLite file path is required".to_string()))?;
+            let path_for_task = path.clone();
+            let value = tokio::task::spawn_blocking(move || {
+                let conn = rusqlite::Connection::open(&path_for_task)
+                    .map_err(|error| format!("打开 SQLite 失败: {error}"))?;
+                conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                    .map_err(|error| format!("SQLite 探测失败: {error}"))
+            })
+            .await
+            .map_err(|error| AppError::Custom(format!("连接测试任务失败: {error}")))?
+            .map_err(AppError::Custom)?;
+            format!("连接成功（SQLite）· 文件 `{path}` · 探测结果={value}")
+        }
+        "postgresql" | "postgres" => {
+            let (mut args, env_vars) = parse_postgres_list_args(&request).map_err(AppError::Custom)?;
+            // Replace list SQL with SELECT 1
+            if let Some(pos) = args.iter().position(|item| item == "-c") {
+                if pos + 1 < args.len() {
+                    args[pos + 1] = "SELECT 1;".to_string();
+                }
+            }
+            let _stdout = run_process_capture("psql", &args, &env_vars)
+                .await
+                .map_err(|error| {
+                    AppError::Custom(format!(
+                        "PostgreSQL 连接测试失败（需要本机 psql CLI）: {error}"
+                    ))
+                })?;
+            format!(
+                "连接成功（PostgreSQL）· {}:{} / {}",
+                first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".into()),
+                request.port.unwrap_or(5432),
+                first_non_empty(&[&request.database_name]).unwrap_or_else(|| "postgres".into())
+            )
+        }
+        "sqlserver" | "mssql" => {
+            let (program, mut args) =
+                parse_sqlserver_list_command(&request).map_err(AppError::Custom)?;
+            if let Some(pos) = args.iter().position(|item| item == "-Q") {
+                if pos + 1 < args.len() {
+                    args[pos + 1] = "SET NOCOUNT ON; SELECT 1;".to_string();
+                }
+            }
+            let _stdout = run_process_capture(&program, &args, &[])
+                .await
+                .map_err(|error| {
+                    AppError::Custom(format!(
+                        "SQL Server 连接测试失败（需要本机 sqlcmd）: {error}"
+                    ))
+                })?;
+            format!(
+                "连接成功（SQL Server）· {}:{}",
+                first_non_empty(&[&request.host]).unwrap_or_default(),
+                request.port.unwrap_or(1433)
+            )
+        }
+        other => {
+            return Err(AppError::Custom(format!(
+                "暂不支持的数据库类型 `{other}`"
+            )));
+        }
+    };
+
+    info!("smartbrain test database connection ok: {message}");
+    Ok(serde_json::json!({
+        "ok": true,
+        "message": message,
+        "dbType": db_type,
+        "timeoutSec": timeout,
+    }))
+}
+
+#[tauri::command]
 pub async fn smartbrain_list_experiences(
     state: State<'_, AppState>,
     limit: Option<u32>,

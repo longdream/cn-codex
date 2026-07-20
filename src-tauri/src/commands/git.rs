@@ -43,6 +43,34 @@ pub struct GitDiffResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitCommitFileEntry {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitFilesResponse {
+    pub commit: String,
+    pub files: Vec<GitCommitFileEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileDiffContentsResponse {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub before_content: String,
+    pub after_content: String,
+    pub file_action: String,
+    pub is_binary: bool,
+    pub exists_before: bool,
+    pub exists_after: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitLogEntry {
     pub hash: String,
     pub short_hash: String,
@@ -128,6 +156,159 @@ pub async fn git_diff(
         is_empty: text.trim().is_empty(),
         text,
     })
+}
+
+#[tauri::command]
+pub async fn git_commit_files(
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+    commit: String,
+) -> AppResult<GitCommitFilesResponse> {
+    let service = git_service_from_state(&state, cwd).await?;
+    let commit = normalize_commit_ref(&commit)?;
+    let args = vec![
+        "-c".to_string(),
+        "core.quotePath=false".to_string(),
+        "show".to_string(),
+        "--pretty=format:".to_string(),
+        "--name-status".to_string(),
+        "--find-renames".to_string(),
+        commit.clone(),
+    ];
+    let output = run_git_vec(&service, &args, DEFAULT_MAX_OUTPUT_BYTES).await?;
+    Ok(GitCommitFilesResponse {
+        commit,
+        files: parse_git_name_status_output(&output.stdout),
+    })
+}
+
+#[tauri::command]
+pub async fn git_file_diff_contents(
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+    path: String,
+    mode: Option<String>,
+    commit: Option<String>,
+    old_path: Option<String>,
+) -> AppResult<GitFileDiffContentsResponse> {
+    let service = git_service_from_state(&state, cwd).await?;
+    let path = normalize_single_path(&path)?;
+    let old_path = old_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.replace('\\', "/"));
+    let mode = mode
+        .unwrap_or_else(|| "working".to_string())
+        .trim()
+        .to_ascii_lowercase();
+
+    match mode.as_str() {
+        "commit" => {
+            let commit = normalize_commit_ref(commit.as_deref().unwrap_or(""))?;
+            let before_ref = format!("{commit}^");
+            let before_path = old_path.clone().unwrap_or_else(|| path.clone());
+            let (before_content, exists_before, before_binary) =
+                show_blob_text(&service, &before_ref, &before_path).await?;
+            let (after_content, exists_after, after_binary) =
+                show_blob_text(&service, &commit, &path).await?;
+            let is_binary = before_binary || after_binary;
+            let file_action = infer_file_action(exists_before, exists_after, old_path.as_deref());
+            Ok(GitFileDiffContentsResponse {
+                path,
+                old_path,
+                before_content: if is_binary {
+                    String::new()
+                } else {
+                    before_content
+                },
+                after_content: if is_binary {
+                    String::new()
+                } else {
+                    after_content
+                },
+                file_action,
+                is_binary,
+                exists_before,
+                exists_after,
+            })
+        }
+        "staged" => {
+            let before_path = old_path.clone().unwrap_or_else(|| path.clone());
+            let (before_content, exists_before, before_binary) =
+                show_blob_text(&service, "HEAD", &before_path).await?;
+            let (after_content, exists_after, after_binary) =
+                show_blob_text(&service, ":0", &path).await?;
+            // Staged new files may not exist in HEAD; untracked never appears here.
+            let is_binary = before_binary || after_binary;
+            let file_action = infer_file_action(exists_before, exists_after, old_path.as_deref());
+            Ok(GitFileDiffContentsResponse {
+                path,
+                old_path,
+                before_content: if is_binary {
+                    String::new()
+                } else {
+                    before_content
+                },
+                after_content: if is_binary {
+                    String::new()
+                } else {
+                    after_content
+                },
+                file_action,
+                is_binary,
+                exists_before,
+                exists_after,
+            })
+        }
+        // working / untracked
+        _ => {
+            let before_path = old_path.clone().unwrap_or_else(|| path.clone());
+            // Prefer index (staged base) for unstaged changes; fall back to HEAD.
+            let (index_content, exists_in_index, index_binary) =
+                show_blob_text(&service, ":0", &before_path).await?;
+            let (head_content, exists_in_head, head_binary) =
+                show_blob_text(&service, "HEAD", &before_path).await?;
+            let (before_content, exists_before, before_binary) = if exists_in_index {
+                (index_content, true, index_binary)
+            } else {
+                (head_content, exists_in_head, head_binary)
+            };
+
+            let worktree_path = service.cwd().join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let (after_content, exists_after, after_binary) =
+                read_worktree_text(&worktree_path).await?;
+            let is_binary = before_binary || after_binary;
+            let file_action = if !exists_before && exists_after {
+                "added".to_string()
+            } else if exists_before && !exists_after {
+                "deleted".to_string()
+            } else if old_path.is_some() {
+                "renamed".to_string()
+            } else {
+                "modified".to_string()
+            };
+
+            Ok(GitFileDiffContentsResponse {
+                path,
+                old_path,
+                before_content: if is_binary {
+                    String::new()
+                } else {
+                    before_content
+                },
+                after_content: if is_binary {
+                    String::new()
+                } else {
+                    after_content
+                },
+                file_action,
+                is_binary,
+                exists_before,
+                exists_after,
+            })
+        }
+    }
 }
 
 #[tauri::command]
@@ -433,6 +614,148 @@ fn normalize_paths(paths: Vec<String>) -> AppResult<Vec<String>> {
     Ok(normalized)
 }
 
+fn normalize_single_path(path: &str) -> AppResult<String> {
+    let mut paths = normalize_paths(vec![path.to_string()])?;
+    Ok(paths.remove(0))
+}
+
+fn normalize_commit_ref(value: &str) -> AppResult<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Custom("Commit hash cannot be empty.".to_string()));
+    }
+    if trimmed.contains('\0') || trimmed.contains('\n') || trimmed.contains('\r') || trimmed.contains(' ') {
+        return Err(AppError::Custom(format!("Invalid commit ref: {trimmed}")));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn infer_file_action(exists_before: bool, exists_after: bool, old_path: Option<&str>) -> String {
+    if old_path.is_some() {
+        return "renamed".to_string();
+    }
+    if !exists_before && exists_after {
+        return "added".to_string();
+    }
+    if exists_before && !exists_after {
+        return "deleted".to_string();
+    }
+    "modified".to_string()
+}
+
+fn looks_like_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8192).any(|byte| *byte == 0)
+}
+
+async fn show_blob_text(
+    service: &GitService,
+    rev: &str,
+    path: &str,
+) -> AppResult<(String, bool, bool)> {
+    // Use --textconv=false and raw bytes via allow_failure to detect missing paths.
+    let object = format!("{rev}:{path}");
+    let args = ["show".to_string(), object];
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let output = service
+        .run_allow_failure(&refs, DEFAULT_MAX_OUTPUT_BYTES)
+        .await?;
+    if output.exit_code != 0 {
+        // Missing blob / path in that revision.
+        return Ok((String::new(), false, false));
+    }
+    let bytes = output.stdout.as_bytes();
+    if looks_like_binary(bytes) {
+        return Ok((String::new(), true, true));
+    }
+    Ok((output.stdout, true, false))
+}
+
+async fn read_worktree_text(path: &Path) -> AppResult<(String, bool, bool)> {
+    if !path.exists() {
+        return Ok((String::new(), false, false));
+    }
+    if path.is_dir() {
+        return Err(AppError::Custom(format!(
+            "Path is a directory, not a file: {}",
+            path.to_string_lossy()
+        )));
+    }
+    let bytes = tokio::fs::read(path).await.map_err(|err| {
+        AppError::Custom(format!(
+            "Failed to read worktree file {}: {err}",
+            path.to_string_lossy()
+        ))
+    })?;
+    if looks_like_binary(&bytes) {
+        return Ok((String::new(), true, true));
+    }
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), true, false))
+}
+
+fn parse_git_name_status_output(stdout: &str) -> Vec<GitCommitFileEntry> {
+    let mut files = Vec::new();
+    for line in stdout.lines() {
+        let raw = line.trim_end();
+        if raw.is_empty() {
+            continue;
+        }
+        let mut parts = raw.split('\t');
+        let status_code = parts.next().unwrap_or("").trim();
+        if status_code.is_empty() {
+            continue;
+        }
+        let status_char = status_code.chars().next().unwrap_or('M');
+        let status = match status_char {
+            'A' => "added",
+            'D' => "deleted",
+            'R' => "renamed",
+            'C' => "copied",
+            'T' => "typechange",
+            'U' => "conflicted",
+            _ => "modified",
+        }
+        .to_string();
+
+        if matches!(status_char, 'R' | 'C') {
+            let old = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(clean_git_path);
+            let new_path = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(clean_git_path)
+                .unwrap_or_default();
+            if new_path.is_empty() {
+                continue;
+            }
+            files.push(GitCommitFileEntry {
+                path: new_path,
+                old_path: old,
+                status,
+            });
+        } else {
+            let path = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(clean_git_path)
+                .unwrap_or_default();
+            if path.is_empty() {
+                continue;
+            }
+            files.push(GitCommitFileEntry {
+                path,
+                old_path: None,
+                status,
+            });
+        }
+    }
+    files
+}
+
 fn normalize_branch_name(value: &str) -> AppResult<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -440,21 +763,6 @@ fn normalize_branch_name(value: &str) -> AppResult<String> {
     }
     if trimmed.contains(' ') || trimmed.contains('\n') || trimmed.contains('\r') {
         return Err(AppError::Custom(format!("Invalid branch name: {trimmed}")));
-    }
-    Ok(trimmed.to_string())
-}
-
-fn normalize_commit_ref(value: &str) -> AppResult<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(AppError::Custom(
-            "Commit reference cannot be empty.".to_string(),
-        ));
-    }
-    if trimmed.contains(' ') || trimmed.contains('\n') || trimmed.contains('\r') {
-        return Err(AppError::Custom(format!(
-            "Invalid commit reference: {trimmed}"
-        )));
     }
     Ok(trimmed.to_string())
 }

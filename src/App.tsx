@@ -27,6 +27,7 @@ import {
   useAppStore,
   initStoreFromDb,
   normalizeImageGenerationSettings,
+  normalizeReasoningEffort,
   SIDEBAR_WIDTH_MIN,
   SIDEBAR_WIDTH_MAX,
   RIGHT_PANEL_WIDTH_MIN,
@@ -195,6 +196,12 @@ function App() {
               // 没有可用全局模型时，回退到启用供应商的默认模型。
               store.setCurrentModel(activeProvider.models[0].id);
             }
+          }
+          const reasoningEffortRaw = cfg?.config?.model_reasoning_effort;
+          if (typeof reasoningEffortRaw === "string" && isLatestRun()) {
+            useAppStore.setState({
+              reasoningEffort: normalizeReasoningEffort(reasoningEffortRaw),
+            });
           }
           const activeEpIdx = cfg?.config?.active_endpoint_index;
           if (typeof activeEpIdx === "number" && isLatestRun()) {

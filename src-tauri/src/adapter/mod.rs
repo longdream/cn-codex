@@ -83,6 +83,136 @@ pub fn build_non_stream_body(
     body
 }
 
+/// 规范化推理强度配置值。
+///
+/// 返回 `None` 表示不向供应商发送推理强度相关字段（关闭/空）。
+pub fn normalize_reasoning_effort(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "none" | "off" | "disable" | "disabled" | "false" | "0" => None,
+        "minimal" | "min" => Some("minimal".to_string()),
+        "low" => Some("low".to_string()),
+        "medium" | "med" | "default" | "normal" => Some("medium".to_string()),
+        "high" => Some("high".to_string()),
+        "xhigh" | "x-high" | "extra_high" | "extra-high" | "max" | "highest" => {
+            Some("xhigh".to_string())
+        }
+        other => Some(other.to_string()),
+    }
+}
+
+fn reasoning_budget_tokens(effort: &str) -> i64 {
+    match effort {
+        "minimal" => 1_024,
+        "low" => 2_048,
+        "medium" => 8_192,
+        "high" => 16_384,
+        "xhigh" => 32_768,
+        _ => 8_192,
+    }
+}
+
+/// chat 协议下是否适合发送 `reasoning_effort`。
+///
+/// 多数普通 chat 模型不认识该字段，部分网关会直接 400；
+/// 因此只对明显的推理模型/系列做 best-effort 注入。
+fn chat_model_supports_reasoning_effort(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    const KEYS: &[&str] = &[
+        "o1",
+        "o3",
+        "o4",
+        "gpt-5",
+        "gpt5",
+        "reason",
+        "r1",
+        "qwq",
+        "thinking",
+        "deepseek-r",
+        "deepseek-reasoner",
+        "gemini",
+        "grok-3-mini",
+        "grok-4",
+    ];
+    KEYS.iter().any(|key| m.contains(key))
+}
+
+fn anthropic_model_supports_thinking(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("claude")
+        || m.contains("sonnet")
+        || m.contains("opus")
+        || m.contains("haiku")
+        || m.contains("thinking")
+}
+
+/// 按 wire_api / 模型兼容性，把推理强度写入请求 body。
+///
+/// - responses: `reasoning.effort`
+/// - chat: `reasoning_effort`（仅推理类模型）
+/// - anthropic: `thinking.budget_tokens`
+/// - gemini: `generationConfig.thinkingConfig.thinkingBudget`
+pub fn apply_reasoning_effort_to_body(
+    body: &mut serde_json::Value,
+    wire_api: &str,
+    model: &str,
+    effort_raw: Option<&str>,
+) {
+    let Some(effort) = normalize_reasoning_effort(effort_raw) else {
+        return;
+    };
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    let wire = wire_api.trim().to_ascii_lowercase();
+
+    match wire.as_str() {
+        "responses" => {
+            obj.insert(
+                "reasoning".to_string(),
+                serde_json::json!({ "effort": effort }),
+            );
+        }
+        "anthropic" => {
+            if !anthropic_model_supports_thinking(model) {
+                return;
+            }
+            obj.insert(
+                "thinking".to_string(),
+                serde_json::json!({
+                    "type": "enabled",
+                    "budget_tokens": reasoning_budget_tokens(&effort),
+                }),
+            );
+        }
+        "gemini" => {
+            let budget = reasoning_budget_tokens(&effort);
+            let generation = obj
+                .entry("generationConfig".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(gen_obj) = generation.as_object_mut() {
+                gen_obj.insert(
+                    "thinkingConfig".to_string(),
+                    serde_json::json!({ "thinkingBudget": budget }),
+                );
+            }
+        }
+        // chat / OpenAI-compatible default
+        _ => {
+            if !chat_model_supports_reasoning_effort(model) {
+                return;
+            }
+            obj.insert(
+                "reasoning_effort".to_string(),
+                serde_json::Value::String(effort),
+            );
+        }
+    }
+}
+
 /// 合并 provider 级别的 query/header 覆盖项（用于网关白名单、反抓取 header 等场景）
 pub fn apply_request_overrides(
     url: String,
@@ -145,6 +275,57 @@ mod tests {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or(""),
             "yes"
+        );
+    }
+
+    #[test]
+    fn normalize_reasoning_effort_maps_aliases() {
+        assert_eq!(normalize_reasoning_effort(Some("MEDIUM")), Some("medium".into()));
+        assert_eq!(normalize_reasoning_effort(Some("off")), None);
+        assert_eq!(normalize_reasoning_effort(Some("x-high")), Some("xhigh".into()));
+    }
+
+    #[test]
+    fn apply_reasoning_effort_by_wire_api() {
+        let mut responses_body = serde_json::json!({"model":"gpt-5"});
+        apply_reasoning_effort_to_body(&mut responses_body, "responses", "gpt-5", Some("high"));
+        assert_eq!(
+            responses_body.pointer("/reasoning/effort").and_then(|v| v.as_str()),
+            Some("high")
+        );
+
+        let mut chat_body = serde_json::json!({"model":"deepseek-r1"});
+        apply_reasoning_effort_to_body(&mut chat_body, "chat", "deepseek-r1", Some("low"));
+        assert_eq!(
+            chat_body.get("reasoning_effort").and_then(|v| v.as_str()),
+            Some("low")
+        );
+
+        let mut plain_chat = serde_json::json!({"model":"gpt-4.1"});
+        apply_reasoning_effort_to_body(&mut plain_chat, "chat", "gpt-4.1", Some("medium"));
+        assert!(plain_chat.get("reasoning_effort").is_none());
+
+        let mut anthropic_body = serde_json::json!({"model":"claude-sonnet-4"});
+        apply_reasoning_effort_to_body(
+            &mut anthropic_body,
+            "anthropic",
+            "claude-sonnet-4",
+            Some("medium"),
+        );
+        assert_eq!(
+            anthropic_body
+                .pointer("/thinking/budget_tokens")
+                .and_then(|v| v.as_i64()),
+            Some(8192)
+        );
+
+        let mut gemini_body = serde_json::json!({"generationConfig":{"maxOutputTokens":1024}});
+        apply_reasoning_effort_to_body(&mut gemini_body, "gemini", "gemini-2.5-pro", Some("high"));
+        assert_eq!(
+            gemini_body
+                .pointer("/generationConfig/thinkingConfig/thinkingBudget")
+                .and_then(|v| v.as_i64()),
+            Some(16384)
         );
     }
 }

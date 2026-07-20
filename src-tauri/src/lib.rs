@@ -554,6 +554,8 @@ pub fn run() {
             // Git panel commands
             commands::git_status,
             commands::git_diff,
+            commands::git_commit_files,
+            commands::git_file_diff_contents,
             commands::git_log,
             commands::git_branch_list,
             commands::git_stage,
@@ -639,6 +641,7 @@ pub fn run() {
             smartbrain::commands::smartbrain_search,
             smartbrain::commands::smartbrain_parse_database_connection,
             smartbrain::commands::smartbrain_list_databases,
+            smartbrain::commands::smartbrain_test_database_connection,
             smartbrain::commands::smartbrain_rebuild_index,
             smartbrain::commands::smartbrain_migrate_to_okf,
             // Workflow

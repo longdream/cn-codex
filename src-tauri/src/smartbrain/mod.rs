@@ -3,6 +3,7 @@ pub mod commands;
 pub mod consolidator;
 pub mod db_query;
 pub mod extractor;
+pub mod form_entry;
 pub mod index;
 pub mod knowledge;
 pub mod mysql_native;

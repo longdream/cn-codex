@@ -830,6 +830,8 @@ impl ToolExecutor {
                 | "view_image"
                 | "code_review"
                 | "smartbrain_search"
+                | "build_entry_form"
+                | "save_form_data"
                 | "browser_run"
                 // Optional web tools are only present in `tool_specs` when enabled.
                 | "web_search"
@@ -2648,6 +2650,62 @@ impl ToolExecutor {
                     }
                 }
             }));
+            tools.push(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "build_entry_form",
+                    "description": "Build a database entry form from Local Knowledge Base schema. Reads table/column metadata, picks the best target table, maps field types to form inputs, and pre-fills known_values. The UI will open a form for the user to complete missing fields and save.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "database": {
+                                "type": "string",
+                                "description": "Database display name, physical name, or alias. Optional when only one DB is configured."
+                            },
+                            "table": {
+                                "type": "string",
+                                "description": "Optional explicit target table. If omitted, the tool matches by intent and known_values."
+                            },
+                            "intent": {
+                                "type": "string",
+                                "description": "Natural language intent, for example “采购合同入库” or “今天和华为签了12000元采购合同”."
+                            },
+                            "known_values": {
+                                "type": "object",
+                                "description": "Fields already extracted from user text, such as {\"supplier\":\"华为\",\"amount\":12000}. Values are auto-filled into the form.",
+                                "additionalProperties": true
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }));
+            tools.push(serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "save_form_data",
+                    "description": "Save user-confirmed form values into a Local Knowledge Base database table. Validates required fields, checks writeData permission, and executes a parameterized-safe INSERT. Prefer calling this only after build_entry_form and user confirmation.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "database": {
+                                "type": "string",
+                                "description": "Database display name, physical name, or alias."
+                            },
+                            "table": {
+                                "type": "string",
+                                "description": "Target table name."
+                            },
+                            "values": {
+                                "type": "object",
+                                "description": "Final field values from the form, keyed by column name.",
+                                "additionalProperties": true
+                            }
+                        },
+                        "required": ["table", "values"]
+                    }
+                }
+            }));
         }
 
         // Recording tools
@@ -2995,6 +3053,14 @@ impl ToolExecutor {
             }
             "smartbrain_sql_query" => {
                 self.exec_smartbrain_sql_query(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "build_entry_form" => {
+                self.exec_build_entry_form(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "save_form_data" => {
+                self.exec_save_form_data(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "memory_write" => {
@@ -6872,6 +6938,277 @@ impl ToolExecutor {
                     -1,
                     &msg,
                 );
+                Ok(msg)
+            }
+        }
+    }
+
+    async fn exec_build_entry_form(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            database: Option<String>,
+            #[serde(default)]
+            table: Option<String>,
+            #[serde(default)]
+            intent: Option<String>,
+            #[serde(default)]
+            known_values: Option<serde_json::Map<String, serde_json::Value>>,
+        }
+
+        let args: Args = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid build_entry_form args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "build_entry_form", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "build_entry_form", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let database = args
+            .database
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let table = args
+            .table
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let intent = args
+            .intent
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let known_values = args.known_values.unwrap_or_default();
+
+        let display = match (database, table) {
+            (Some(db), Some(tb)) => format!("{db}.{tb}"),
+            (Some(db), None) => db.to_string(),
+            (None, Some(tb)) => tb.to_string(),
+            (None, None) => intent.unwrap_or("entry form").to_string(),
+        };
+        self.emit_tool_start(app_handle, thread_id, call_id, "build_entry_form", &display);
+
+        if !self.smartbrain_is_active() {
+            let msg = "Local Knowledge Base is disabled. Enable it in Settings to use build_entry_form."
+                .to_string();
+            self.emit_tool_end(app_handle, thread_id, call_id, "build_entry_form", -1, &msg);
+            return Ok(msg);
+        }
+
+        let form = match crate::smartbrain::form_entry::build_entry_form(
+            &self.workspace_config_dir,
+            database,
+            known_values,
+            table,
+            intent,
+        )
+        .await
+        {
+            Ok(form) => form,
+            Err(error) => {
+                let msg = format!("build_entry_form failed: {error}");
+                self.emit_tool_end(app_handle, thread_id, call_id, "build_entry_form", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        // Open interactive form UI and wait for user save/cancel.
+        let request_id = RequestId::String(call_id.to_string());
+        app_handle
+            .emit(
+                "server-request",
+                serde_json::json!({
+                    "requestId": call_id,
+                    "id": call_id,
+                    "method": "build_entry_form",
+                    "params": {
+                        "threadId": thread_id,
+                        "callId": call_id,
+                        "form": form,
+                    },
+                }),
+            )
+            .ok();
+
+        let output = match wait_for_approval_result(app_handle, &request_id, 600_000).await {
+            Ok(result) => {
+                // If the UI already saved, just return that result.
+                if result.get("saved").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    let pretty = serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| result.to_string());
+                    self.emit_tool_end(
+                        app_handle,
+                        thread_id,
+                        call_id,
+                        "build_entry_form",
+                        0,
+                        &pretty,
+                    );
+                    return Ok(pretty);
+                }
+
+                // Otherwise treat as form values submission and insert here.
+                let values = result
+                    .get("values")
+                    .and_then(|value| value.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                let cancelled = result
+                    .get("cancelled")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+                    || result
+                        .get("decision")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|decision| {
+                            decision.eq_ignore_ascii_case("cancel")
+                                || decision.eq_ignore_ascii_case("cancelled")
+                        });
+                if cancelled {
+                    let msg = "用户取消了入库表单".to_string();
+                    self.emit_tool_end(
+                        app_handle,
+                        thread_id,
+                        call_id,
+                        "build_entry_form",
+                        -1,
+                        &msg,
+                    );
+                    return Ok(msg);
+                }
+
+                match crate::smartbrain::form_entry::save_form_data(
+                    &self.workspace_config_dir,
+                    Some(&form.database),
+                    &form.table,
+                    values,
+                )
+                .await
+                {
+                    Ok(save_result) => {
+                        let pretty = serde_json::to_string_pretty(&save_result)
+                            .unwrap_or_else(|_| format!("{save_result:?}"));
+                        let code = if save_result.ok { 0 } else { -1 };
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "build_entry_form",
+                            code,
+                            &pretty,
+                        );
+                        pretty
+                    }
+                    Err(error) => {
+                        let msg = format!("save after form failed: {error}");
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "build_entry_form",
+                            -1,
+                            &msg,
+                        );
+                        msg
+                    }
+                }
+            }
+            Err(msg) => {
+                let output = format!("build_entry_form cancelled/failed: {msg}");
+                self.emit_tool_end(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "build_entry_form",
+                    -1,
+                    &output,
+                );
+                output
+            }
+        };
+
+        Ok(output)
+    }
+
+    async fn exec_save_form_data(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            database: Option<String>,
+            table: String,
+            #[serde(default)]
+            values: serde_json::Map<String, serde_json::Value>,
+        }
+
+        let args: Args = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid save_form_data args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "save_form_data", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "save_form_data", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let database = args
+            .database
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let display = match database {
+            Some(db) => format!("{db}.{}", args.table),
+            None => args.table.clone(),
+        };
+        self.emit_tool_start(app_handle, thread_id, call_id, "save_form_data", &display);
+
+        if !self.smartbrain_is_active() {
+            let msg =
+                "Local Knowledge Base is disabled. Enable it in Settings to use save_form_data."
+                    .to_string();
+            self.emit_tool_end(app_handle, thread_id, call_id, "save_form_data", -1, &msg);
+            return Ok(msg);
+        }
+
+        match crate::smartbrain::form_entry::save_form_data(
+            &self.workspace_config_dir,
+            database,
+            &args.table,
+            args.values,
+        )
+        .await
+        {
+            Ok(result) => {
+                let pretty = serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| format!("{result:?}"));
+                let code = if result.ok { 0 } else { -1 };
+                self.emit_tool_end(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "save_form_data",
+                    code,
+                    &pretty,
+                );
+                Ok(pretty)
+            }
+            Err(error) => {
+                let msg = format!("save_form_data failed: {error}");
+                self.emit_tool_end(app_handle, thread_id, call_id, "save_form_data", -1, &msg);
                 Ok(msg)
             }
         }
@@ -13367,6 +13704,14 @@ mod tests {
             enabled_names.contains(&"smartbrain_sql_query"),
             "smartbrain_sql_query must be exposed when Local Knowledge Base is enabled"
         );
+        assert!(
+            enabled_names.contains(&"build_entry_form"),
+            "build_entry_form must be exposed when Local Knowledge Base is enabled"
+        );
+        assert!(
+            enabled_names.contains(&"save_form_data"),
+            "save_form_data must be exposed when Local Knowledge Base is enabled"
+        );
 
         executor.set_smartbrain_enabled_override(Some(false));
         let overridden_specs = executor.tool_specs(false);
@@ -13376,6 +13721,8 @@ mod tests {
             .collect();
         assert!(!overridden_names.contains(&"smartbrain_search"));
         assert!(!overridden_names.contains(&"smartbrain_sql_query"));
+        assert!(!overridden_names.contains(&"build_entry_form"));
+        assert!(!overridden_names.contains(&"save_form_data"));
     }
 
     #[test]

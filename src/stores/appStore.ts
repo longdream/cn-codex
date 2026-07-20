@@ -26,6 +26,57 @@ export type ChatMode = "chat" | "plan" | "goal";
 export type GoalStatus = ThreadGoalStatus;
 export type ThreadGoal = ApiThreadGoal;
 
+/** 对话框可选的推理强度级别（写入 config.toml model_reasoning_effort） */
+export const REASONING_EFFORT_OPTIONS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const;
+export type ReasoningEffortLevel = (typeof REASONING_EFFORT_OPTIONS)[number];
+
+export function normalizeReasoningEffort(value: unknown): ReasoningEffortLevel {
+  if (typeof value !== "string") {
+    return "medium";
+  }
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) {
+    return "medium";
+  }
+  switch (trimmed) {
+    case "none":
+    case "off":
+    case "disable":
+    case "disabled":
+    case "false":
+    case "0":
+      return "none";
+    case "minimal":
+    case "min":
+      return "minimal";
+    case "low":
+      return "low";
+    case "medium":
+    case "med":
+    case "default":
+    case "normal":
+      return "medium";
+    case "high":
+      return "high";
+    case "xhigh":
+    case "x-high":
+    case "extra_high":
+    case "extra-high":
+    case "max":
+    case "highest":
+      return "xhigh";
+    default:
+      return "medium";
+  }
+}
+
 /** 机器人提问倒计时等待状态 */
 export interface RobotWaitCountdown {
   /** 等待的唯一标识，对应后端 callId */
@@ -548,6 +599,18 @@ function toolDisplayLabelFromArgs(name: string, args: string): string {
         return parsed.path ?? ".";
       case "update_plan":
         return Array.isArray(parsed.plan) ? `${parsed.plan.length} steps` : "update_plan";
+      case "build_entry_form": {
+        const database = typeof parsed.database === "string" ? parsed.database : "";
+        const table = typeof parsed.table === "string" ? parsed.table : "";
+        if (database && table) return `${database}.${table}`;
+        return database || table || "entry form";
+      }
+      case "save_form_data": {
+        const database = typeof parsed.database === "string" ? parsed.database : "";
+        const table = typeof parsed.table === "string" ? parsed.table : "";
+        if (database && table) return `${database}.${table}`;
+        return table || "save_form_data";
+      }
       case "request_user_input":
         return Array.isArray(parsed.questions) ? `${parsed.questions.length} question(s)` : "request_user_input";
       case "request_permissions":
@@ -1730,6 +1793,8 @@ interface AppState {
   currentThreadId: string | null;
   currentTurnId: string | null;
   currentModel: string | null;
+  /** 全局模型推理强度（写入 config.toml model_reasoning_effort） */
+  reasoningEffort: string;
   workspaceCwd: string | null;
   configDir: string | null;
   configPath: string | null;
@@ -1817,6 +1882,7 @@ interface AppState {
   startNewThreadWithMessage: (threadId: string, message: ChatMessage) => void;
   setCurrentTurnId: (id: string | null) => void;
   setCurrentModel: (model: string | null) => void;
+  setReasoningEffort: (effort: string) => void;
   setConfiguredModels: (models: ModelEntry[]) => void;
   setActiveModelId: (id: string | null) => void;
   getActiveModel: () => ModelEntry | null;
@@ -2086,6 +2152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentThreadId: null,
   currentTurnId: null,
   currentModel: null,
+  reasoningEffort: "medium",
   configuredModels: [],
   activeModelId: null,
   providers: [],
@@ -2244,6 +2311,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setCurrentTurnId: (id) => set({ currentTurnId: id }),
   setCurrentModel: (model) => set({ currentModel: model }),
+  setReasoningEffort: (effort) => {
+    const normalized = normalizeReasoningEffort(effort);
+    set({ reasoningEffort: normalized });
+    standaloneConfigWrite([
+      { keyPath: "model_reasoning_effort", value: normalized, mergeStrategy: "replace" },
+    ]).catch((err) => console.error("Failed to sync reasoning effort to config:", err));
+  },
   setConfiguredModels: (models) => {
     saveConfiguredModels(models);
     set({ configuredModels: models });

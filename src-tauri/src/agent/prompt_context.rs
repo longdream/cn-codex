@@ -258,6 +258,12 @@ fn render_smartbrain_database_prompt_for_config_dir(workspace_config_dir: &Path)
             .to_string(),
     );
     sections.push(
+        "结构化入库请使用 `build_entry_form`：根据用户语义匹配数据库/表，生成表单并自动填充 known_values；\
+         用户在弹窗中补充缺失字段后保存。也可直接调用 `save_form_data` 写入已确认的字段值。\
+         写操作需要 writeData 权限。"
+            .to_string(),
+    );
+    sections.push(
         "如果用户要求查库、看表、统计行数或验证数据，应直接调用 `smartbrain_sql_query` 并输出查询结果；\
          不要改写为编写 Python 脚本、安装驱动或索要连接密码。"
             .to_string(),

@@ -282,6 +282,8 @@ function toolActivityLabel(
     view_image: intl.formatMessage({ id: "tool.viewImage" }),
     spawn_agent: intl.formatMessage({ id: "tool.spawnAgent" }),
     update_plan: intl.formatMessage({ id: "tool.updatePlan" }),
+    build_entry_form: intl.formatMessage({ id: "tool.buildEntryForm" }),
+    save_form_data: intl.formatMessage({ id: "tool.saveFormData" }),
   };
   const desc = base.startsWith("mcp__")
     ? intl.formatMessage({ id: "tool.mcpCall" })
@@ -334,6 +336,18 @@ function toolDisplayLabel(name: string, args: string): string {
         return parsed.path ?? ".";
       case "update_plan":
         return Array.isArray(parsed.plan) ? `${parsed.plan.length} steps` : "update_plan";
+      case "build_entry_form": {
+        const database = typeof parsed.database === "string" ? parsed.database : "";
+        const table = typeof parsed.table === "string" ? parsed.table : "";
+        if (database && table) return `${database}.${table}`;
+        return database || table || "entry form";
+      }
+      case "save_form_data": {
+        const database = typeof parsed.database === "string" ? parsed.database : "";
+        const table = typeof parsed.table === "string" ? parsed.table : "";
+        if (database && table) return `${database}.${table}`;
+        return table || "save_form_data";
+      }
       case "request_user_input":
         return Array.isArray(parsed.questions) ? `${parsed.questions.length} question(s)` : "request_user_input";
       case "request_permissions":

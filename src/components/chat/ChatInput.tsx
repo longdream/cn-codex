@@ -2,6 +2,7 @@ import {
   IconArrowUp,
   IconBrowser,
   IconBrain,
+  IconBulb,
   IconChevronDown,
   IconClipboardList,
   IconCpu,
@@ -26,6 +27,7 @@ import {
   DEFAULT_MODEL_CONTEXT_LENGTH,
   VISION_FALLBACK_KIND_LOCAL_OCR,
   useAppStore,
+  REASONING_EFFORT_OPTIONS,
   type ChatMode,
   type ChatSendOptions,
   type QueuedMessage,
@@ -275,6 +277,7 @@ export function ChatInput({
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [modelPickerProviderId, setModelPickerProviderId] = useState<string | null>(null);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
+  const [showReasoningMenu, setShowReasoningMenu] = useState(false);
   const [showRobotMenu, setShowRobotMenu] = useState(false);
   const [robots, setRobots] = useState<RobotSummary[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
@@ -288,6 +291,7 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const reasoningMenuRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
 
   const initialized = useAppStore((s) => s.initialized);
@@ -298,6 +302,8 @@ export function ChatInput({
   const currentGoal = useAppStore((s) => s.currentGoal);
   const autoApprove = useAppStore((s) => s.autoApprove);
   const setAutoApprove = useAppStore((s) => s.setAutoApprove);
+  const reasoningEffort = useAppStore((s) => s.reasoningEffort);
+  const setReasoningEffort = useAppStore((s) => s.setReasoningEffort);
   const consumeComposerInsert = useAppStore((s) => s.consumeComposerInsert);
   const selectedRobotId = useAppStore((s) => s.selectedRobotId);
   const robotCreateMode = useAppStore((s) => s.robotCreateMode);
@@ -1249,6 +1255,24 @@ export function ChatInput({
     };
   }, [showModelMenu]);
 
+  // 点击菜单外任意区域关闭推理强度选择弹层。
+  useEffect(() => {
+    if (!showReasoningMenu) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target || reasoningMenuRef.current?.contains(target)) {
+        return;
+      }
+      setShowReasoningMenu(false);
+    };
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [showReasoningMenu]);
+
   // 点击菜单外任意区域关闭附件菜单。
   useEffect(() => {
     if (!showAttachMenu) {
@@ -1940,6 +1964,67 @@ export function ChatInput({
                       {intl.formatMessage({ id: "chat.modelEmpty" })}
                     </div>
                   )}
+                </div>
+              )}
+            </div>
+
+            {/* 推理强度选择器 */}
+            <div ref={reasoningMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowModelMenu(false);
+                  setShowReasoningMenu((open) => !open);
+                }}
+                className={`flex items-center gap-1 rounded-full px-2 py-1 transition-colors ${
+                  reasoningEffort !== "none"
+                    ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                    : "hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+                }`}
+                title={intl.formatMessage({ id: "chat.reasoningEffortHint" })}
+              >
+                <IconBulb size={12} stroke={1.8} className="flex-shrink-0" />
+                <span className="truncate">
+                  {intl.formatMessage({ id: "chat.reasoningEffort" })}
+                  <span className="ml-1 opacity-80">
+                    {intl.formatMessage({ id: `chat.reasoningEffort.${reasoningEffort}` })}
+                  </span>
+                </span>
+                <IconChevronDown size={10} stroke={2} className="flex-shrink-0 opacity-60" />
+              </button>
+
+              {showReasoningMenu && (
+                <div className="absolute bottom-full left-0 z-30 mb-1 w-[min(220px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-md)] border border-[var(--chat-line)] bg-[var(--chat-card-solid)] shadow-lg">
+                  <div className="border-b border-[var(--chat-line)] px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "chat.reasoningEffortHint" })}
+                  </div>
+                  <div className="max-h-56 overflow-auto py-1">
+                    {REASONING_EFFORT_OPTIONS.map((level) => {
+                      const selected = reasoningEffort === level;
+                      return (
+                        <button
+                          key={level}
+                          type="button"
+                          onClick={() => {
+                            setReasoningEffort(level);
+                            setShowReasoningMenu(false);
+                          }}
+                          className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--chat-chip)] ${
+                            selected
+                              ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                              : "text-[var(--text-base)]"
+                          }`}
+                        >
+                          <span className="min-w-0 flex-1 truncate">
+                            {intl.formatMessage({ id: `chat.reasoningEffort.${level}` })}
+                          </span>
+                          {selected && (
+                            <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--accent)]" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

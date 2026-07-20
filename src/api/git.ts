@@ -26,6 +26,28 @@ export interface GitDiffResponse {
   isEmpty: boolean;
 }
 
+export interface GitCommitFileEntry {
+  path: string;
+  oldPath?: string | null;
+  status: string;
+}
+
+export interface GitCommitFilesResponse {
+  commit: string;
+  files: GitCommitFileEntry[];
+}
+
+export interface GitFileDiffContentsResponse {
+  path: string;
+  oldPath?: string | null;
+  beforeContent: string;
+  afterContent: string;
+  fileAction: string;
+  isBinary: boolean;
+  existsBefore: boolean;
+  existsAfter: boolean;
+}
+
 export interface GitLogEntry {
   hash: string;
   shortHash: string;
@@ -66,6 +88,29 @@ export async function gitDiff(
   staged?: boolean,
 ): Promise<GitDiffResponse> {
   return invoke("git_diff", { cwd, path, staged });
+}
+
+export async function gitCommitFiles(
+  commit: string,
+  cwd?: string,
+): Promise<GitCommitFilesResponse> {
+  return invoke("git_commit_files", { cwd, commit });
+}
+
+export async function gitFileDiffContents(params: {
+  path: string;
+  mode?: "working" | "staged" | "commit";
+  commit?: string;
+  oldPath?: string | null;
+  cwd?: string;
+}): Promise<GitFileDiffContentsResponse> {
+  return invoke("git_file_diff_contents", {
+    cwd: params.cwd,
+    path: params.path,
+    mode: params.mode,
+    commit: params.commit,
+    oldPath: params.oldPath ?? undefined,
+  });
 }
 
 export async function gitLog(cwd?: string, limit?: number): Promise<GitLogResponse> {

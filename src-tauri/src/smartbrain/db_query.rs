@@ -618,7 +618,7 @@ fn parse_connection_uri_fields(
     Some((host, port, database_name, username, password, String::new()))
 }
 
-fn enrich_source_from_connection_uri(mut source: SmartbrainDbSource) -> SmartbrainDbSource {
+pub fn enrich_source_from_connection_uri(mut source: SmartbrainDbSource) -> SmartbrainDbSource {
     if source.connection_uri.trim().is_empty() {
         return source;
     }

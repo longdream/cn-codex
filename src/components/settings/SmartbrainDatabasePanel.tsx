@@ -18,6 +18,7 @@ import {
   inferDefaultPort,
   isSourceEffectivelyEnabled,
   listSmartbrainDatabases,
+  testSmartbrainDatabaseConnection,
   loadSmartbrainDbSettings,
   loadSmartbrainDbSources,
   mergeSmartbrainDbParsedFields,
@@ -52,6 +53,7 @@ export function SmartbrainDatabasePanel() {
   const [skipWhenNoPermission, setSkipWhenNoPermission] = useState(true);
   const [databaseOptions, setDatabaseOptions] = useState<string[]>([]);
   const [refreshingDatabases, setRefreshingDatabases] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -334,6 +336,87 @@ export function SmartbrainDatabasePanel() {
       });
     } finally {
       setRefreshingDatabases(false);
+    }
+  }, [draft, intl]);
+
+  const handleTestConnection = useCallback(async () => {
+    let working = { ...draft };
+
+    if (working.connectionUri.trim()) {
+      try {
+        const parsed = parseSmartbrainConnectionUriLocally(working.dbType, working.connectionUri);
+        working = {
+          ...working,
+          ...mergeSmartbrainDbParsedFields(working, parsed),
+        };
+        setDraft((prev) => ({
+          ...prev,
+          ...mergeSmartbrainDbParsedFields(prev, parsed),
+        }));
+      } catch {
+        // Keep manual fields when the connection string cannot be parsed locally.
+      }
+    }
+
+    if (working.dbType === "sqlite") {
+      const path =
+        working.filePath.trim() || working.databaseName.trim() || working.connectionUri.trim();
+      if (!path) {
+        setNotice({
+          kind: "error",
+          text: intl.formatMessage({ id: "settings.smartbrain.database.testNeedConnection" }),
+        });
+        return;
+      }
+    } else if (!working.host.trim() && !working.connectionUri.trim()) {
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage({ id: "settings.smartbrain.database.testNeedConnection" }),
+      });
+      return;
+    } else if (!working.databaseName.trim() && !working.connectionUri.trim()) {
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage({ id: "settings.smartbrain.database.testNeedDatabase" }),
+      });
+      return;
+    }
+
+    setTestingConnection(true);
+    try {
+      const result = await testSmartbrainDatabaseConnection({
+        dbType: working.dbType,
+        host: working.host,
+        port: working.port,
+        username: working.username,
+        password: working.password,
+        connectionUri: working.connectionUri,
+        databaseName: working.databaseName,
+        filePath: working.filePath,
+        timeoutSec: 10,
+      });
+      setNotice({
+        kind: result.ok ? "success" : "error",
+        text: result.ok
+          ? intl.formatMessage(
+              { id: "settings.smartbrain.database.testSuccess" },
+              { message: result.message },
+            )
+          : intl.formatMessage(
+              { id: "settings.smartbrain.database.testFailed" },
+              { error: result.message },
+            ),
+      });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        text: intl.formatMessage(
+          { id: "settings.smartbrain.database.testFailed" },
+          { error: typeof error === "string" ? error : (error as Error).message },
+        ),
+      });
+    } finally {
+      setTestingConnection(false);
     }
   }, [draft, intl]);
 
@@ -751,12 +834,23 @@ export function SmartbrainDatabasePanel() {
               <button
                 type="button"
                 onClick={() => void handleSave()}
-                disabled={saving || parsing || refreshingDatabases}
+                disabled={saving || parsing || refreshingDatabases || testingConnection}
                 className="rounded-lg bg-[var(--accent-strong)] px-4 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
               >
                 {saving
                   ? intl.formatMessage({ id: "settings.smartbrain.database.saving" })
                   : intl.formatMessage({ id: "settings.smartbrain.database.save" })}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleTestConnection()}
+                disabled={saving || parsing || refreshingDatabases || testingConnection}
+                className="app-button-secondary flex items-center gap-1.5 text-xs disabled:opacity-50"
+              >
+                <IconDatabase size={13} stroke={1.8} />
+                {testingConnection
+                  ? intl.formatMessage({ id: "settings.smartbrain.database.testing" })
+                  : intl.formatMessage({ id: "settings.smartbrain.database.testConnection" })}
               </button>
               <button type="button" onClick={handleCreateNew} className="app-button-secondary text-xs">
                 {intl.formatMessage({ id: "settings.smartbrain.database.resetDraft" })}
