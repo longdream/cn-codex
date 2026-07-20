@@ -101,6 +101,15 @@ describe("appStore", () => {
       expect(useAppStore.getState().showSettings).toBe(true);
     });
 
+    it("setShowSettings can open a specific settings tab", () => {
+      useAppStore.getState().setShowSettings(true, { tab: "general" });
+      expect(useAppStore.getState().showSettings).toBe(true);
+      expect(useAppStore.getState().settingsInitialTab).toBe("general");
+
+      useAppStore.getState().setShowSettings(false);
+      expect(useAppStore.getState().settingsInitialTab).toBeNull();
+    });
+
     it("setShowSettings(true) hides right panel and does not auto-restore", () => {
       useAppStore.setState({ rightPanelVisible: true });
 

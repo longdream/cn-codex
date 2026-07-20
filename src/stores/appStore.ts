@@ -1772,6 +1772,7 @@ interface AppState {
   activePlan: PlanFile | null;
   currentGoal: ThreadGoal | null;
   showSettings: boolean;
+  settingsInitialTab: string | null;
   rightPanelVisible: boolean;
   rightPanelTab: RightPanelTab;
   sidebarWidth: number;
@@ -1902,7 +1903,7 @@ interface AppState {
   setLatestPlanContent: (content: string | null) => void;
   setActivePlan: (plan: PlanFile | null) => void;
   setCurrentGoal: (goal: ThreadGoal | null) => void;
-  setShowSettings: (v: boolean) => void;
+  setShowSettings: (v: boolean, options?: { tab?: string }) => void;
   setRightPanelVisible: (v: boolean) => void;
   toggleRightPanel: () => void;
   setRightPanelTab: (tab: RightPanelTab) => void;
@@ -2118,6 +2119,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activePlan: null,
   currentGoal: null,
   showSettings: false,
+  settingsInitialTab: null,
   autoApprove: false,
   sidebarTab: "chats",
   selectedRobotId: null,
@@ -3030,16 +3032,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   setLatestPlanContent: (content) => set({ latestPlanContent: content }),
   setActivePlan: (plan) => set({ activePlan: plan }),
   setCurrentGoal: (goal) => set({ currentGoal: normalizeThreadGoal(goal) }),
-  setShowSettings: (v) =>
+  setShowSettings: (v, options) =>
     set((state) =>
       v
         ? {
           showSettings: true,
+          settingsInitialTab: options?.tab?.trim() || null,
           // 设置弹层打开时强制隐藏右侧区域，避免内置浏览器覆盖在最上层。
           rightPanelVisible: false,
         }
         : {
           showSettings: false,
+          settingsInitialTab: null,
           // 关闭设置时保持当前右侧状态（不自动恢复）。
           rightPanelVisible: state.rightPanelVisible,
         }),

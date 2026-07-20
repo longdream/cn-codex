@@ -949,8 +949,8 @@ textarea:focus {
 }
 
 .detail-code-highlight-layer {
-  position: absolute;
-  inset: 0;
+  /* 高亮层参与文档流，撑开可滚动高度；textarea 绝对覆盖其上。 */
+  position: relative;
   z-index: 1;
   pointer-events: none;
 }
@@ -1019,6 +1019,9 @@ textarea:focus {
   resize: none;
   outline: none;
   overflow: hidden;
+  /* 允许在透明文字上正常选中与输入 */
+  user-select: text;
+  -webkit-user-select: text;
   background: transparent;
   /* 文字透明，仅保留光标；可见内容由底层高亮层绘制。 */
   color: transparent;

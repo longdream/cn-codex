@@ -1,6 +1,7 @@
 import { IconCpu, IconFolder, IconLoader2, IconPlugConnected, IconRefresh } from "@tabler/icons-react";
 import { useIntl } from "react-intl";
 import { useAppStore } from "../../stores/appStore";
+import { useAppVersion } from "../../hooks/useAppVersion";
 
 function getLeafName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -9,6 +10,7 @@ function getLeafName(path: string): string {
 
 export function StatusBar() {
   const intl = useIntl();
+  const appVersion = useAppVersion();
   const initialized = useAppStore((state) => state.initialized);
   const initError = useAppStore((state) => state.initError);
   const retryInit = useAppStore((state) => state.retryInit);
@@ -94,9 +96,14 @@ export function StatusBar() {
             <span className="max-w-[16rem] truncate">{workspaceName}</span>
           </span>
         )}
-        <span className="text-[var(--text-faint)]">
-          v0.1.0
-        </span>
+        <button
+          type="button"
+          onClick={() => useAppStore.getState().setShowSettings(true, { tab: "general" })}
+          className="rounded px-1.5 py-0.5 text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+          title={intl.formatMessage({ id: "status.version" })}
+        >
+          {appVersion === "—" ? "—" : `v${appVersion}`}
+        </button>
       </div>
     </div>
   );

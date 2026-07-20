@@ -1,10 +1,11 @@
 import { IconExternalLink, IconX } from "@tabler/icons-react";
 import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
-import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettingsStore, type BaziProfile } from "../../stores/settingsStore";
+import { useAppVersion } from "../../hooks/useAppVersion";
+import { useAppStore } from "../../stores/appStore";
 import { ProviderPanel } from "./ProviderPanel";
 import { IntegrationPanel } from "./IntegrationPanel";
 import { PluginsPanel } from "./PluginsPanel";
@@ -29,6 +30,7 @@ function displayFileName(path: string): string {
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const intl = useIntl();
+  const settingsInitialTab = useAppStore((state) => state.settingsInitialTab);
   const locale = useSettingsStore((state) => state.locale);
   const theme = useSettingsStore((state) => state.theme);
   const setLocale = useSettingsStore((state) => state.setLocale);
@@ -43,7 +45,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [rulesLoaded, setRulesLoaded] = useState(false);
   const [rulesSaving, setRulesSaving] = useState(false);
   const [rulesSaved, setRulesSaved] = useState(false);
-  const [appVersion, setAppVersion] = useState("—");
+  const appVersion = useAppVersion();
 
   const fortuneEnabled = useSettingsStore((state) => state.fortuneEnabled);
   const setFortuneEnabled = useSettingsStore((state) => state.setFortuneEnabled);
@@ -70,20 +72,27 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   }, [baziProfile]);
 
   useEffect(() => {
-    let cancelled = false;
-    getVersion()
-      .then((version) => {
-        if (!cancelled && version.trim()) {
-          setAppVersion(version.trim());
-        }
-      })
-      .catch(() => {
-        // Keep the fallback when running outside Tauri runtime.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (!settingsInitialTab) {
+      return;
+    }
+    const allowed: SettingsTab[] = [
+      "provider",
+      "image",
+      "usage",
+      "integration",
+      "plugins",
+      "skills",
+      "skill-lab",
+      "robots",
+      "workflows",
+      "smartbrain",
+      "rules",
+      "general",
+    ];
+    if (allowed.includes(settingsInitialTab as SettingsTab)) {
+      setTab(settingsInitialTab as SettingsTab);
+    }
+  }, [settingsInitialTab]);
 
   const shichenOptions = [
     "zi", "chou", "yin", "mao", "chen", "si",
