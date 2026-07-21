@@ -2,10 +2,38 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type SmartbrainDbType = "postgresql" | "mysql" | "sqlite" | "sqlserver";
 
-export interface SmartbrainDbPermissions {
+export interface SmartbrainDbPermissionDefaults {
   readSchema: boolean;
   readData: boolean;
-  writeData: boolean;
+  allowInsert: boolean;
+  allowUpdate: boolean;
+  allowDelete: boolean;
+  allowDdl: boolean;
+}
+
+export interface SmartbrainDbTablePermission {
+  read: boolean;
+  insert: boolean;
+  update: boolean;
+  delete: boolean;
+}
+
+export interface SmartbrainDbPermissionRule {
+  id: string;
+  effect: "allow" | "deny";
+  match: {
+    sqlKinds: string[];
+    tables: string[];
+  };
+  message: string;
+}
+
+export interface SmartbrainDbPermissionPolicy {
+  version: 2;
+  defaults: SmartbrainDbPermissionDefaults;
+  tables: Record<string, SmartbrainDbTablePermission>;
+  rules: SmartbrainDbPermissionRule[];
+  aiNotes: string;
 }
 
 export interface SmartbrainDbSource {
@@ -22,7 +50,7 @@ export interface SmartbrainDbSource {
   filePath: string;
   schema: string;
   queryParams: Record<string, string>;
-  permissions: SmartbrainDbPermissions;
+  permissions: SmartbrainDbPermissionPolicy;
   updatedAt: number;
 }
 
@@ -65,12 +93,152 @@ function generateId(): string {
 export function defaultSmartbrainDbRules(): string {
   return `# 数据库安全规则
 - 优先使用只读账号连接数据库。
-- 未勾选任何权限的数据库自动跳过，不参与 AI 查询和操作。
-- 未开启写权限前，只允许读取库结构与数据。
+- 未配置任何能力的数据库自动跳过，不参与 AI 查询和操作。
+- 默认只读；插入/更新/删除需在策略中显式开启。
 - 禁止 DROP / TRUNCATE / ALTER / CREATE DATABASE / DROP DATABASE / DROP TABLE / DROP SCHEMA。
 - 禁止删库、删表、清空表、修改高危权限、创建危险触发器。
-- 即使开启写权限，也只允许经过用户明确授权的 INSERT / UPDATE / DELETE。
 - 执行 SQL 前必须先检查该库的权限配置，越权请求应直接拒绝。`;
+}
+
+export function createDefaultPermissionPolicy(): SmartbrainDbPermissionPolicy {
+  return {
+    version: 2,
+    defaults: {
+      readSchema: true,
+      readData: true,
+      allowInsert: false,
+      allowUpdate: false,
+      allowDelete: false,
+      allowDdl: false,
+    },
+    tables: {},
+    rules: [
+      {
+        id: "no-drop",
+        effect: "deny",
+        match: { sqlKinds: ["ddl", "drop"], tables: [] },
+        message: "禁止 DDL/删库删表",
+      },
+    ],
+    aiNotes: "",
+  };
+}
+
+export function createDefaultTablePermission(): SmartbrainDbTablePermission {
+  return {
+    read: true,
+    insert: false,
+    update: false,
+    delete: false,
+  };
+}
+
+export function createEmptyPermissionRule(): SmartbrainDbPermissionRule {
+  return {
+    id: `rule-${Date.now().toString(36)}`,
+    effect: "deny",
+    match: { sqlKinds: ["ddl"], tables: [] },
+    message: "",
+  };
+}
+
+function normalizeTablePermission(raw: unknown): SmartbrainDbTablePermission {
+  const fallback = createDefaultTablePermission();
+  if (!raw || typeof raw !== "object") {
+    return fallback;
+  }
+  const obj = raw as Record<string, unknown>;
+  return {
+    read: obj.read !== false,
+    insert: obj.insert === true,
+    update: obj.update === true,
+    delete: obj.delete === true,
+  };
+}
+
+function normalizePermissionRules(raw: unknown, fallback: SmartbrainDbPermissionRule[]): SmartbrainDbPermissionRule[] {
+  if (!Array.isArray(raw)) {
+    return fallback;
+  }
+  return raw.map((item, index) => {
+    const obj = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+    const matchObj =
+      obj.match && typeof obj.match === "object"
+        ? (obj.match as Record<string, unknown>)
+        : {};
+    const effect = obj.effect === "allow" ? "allow" : "deny";
+    return {
+      id: typeof obj.id === "string" && obj.id.trim() ? obj.id : `rule-${index + 1}`,
+      effect,
+      match: {
+        sqlKinds: Array.isArray(matchObj.sqlKinds)
+          ? matchObj.sqlKinds.map((value) => String(value)).filter(Boolean)
+          : [],
+        tables: Array.isArray(matchObj.tables)
+          ? matchObj.tables.map((value) => String(value)).filter(Boolean)
+          : [],
+      },
+      message: typeof obj.message === "string" ? obj.message : "",
+    };
+  });
+}
+
+export function migrateLegacyPermissions(raw: unknown): SmartbrainDbPermissionPolicy {
+  const fallback = createDefaultPermissionPolicy();
+  if (!raw || typeof raw !== "object") {
+    return fallback;
+  }
+  const obj = raw as Record<string, unknown>;
+  if (
+    obj.version != null ||
+    obj.defaults != null ||
+    obj.tables != null ||
+    obj.rules != null ||
+    obj.aiNotes != null
+  ) {
+    const defaults = (obj.defaults ?? {}) as Record<string, unknown>;
+    const writeData = defaults.writeData === true;
+    const tablesRaw =
+      obj.tables && typeof obj.tables === "object"
+        ? (obj.tables as Record<string, unknown>)
+        : {};
+    const tables: Record<string, SmartbrainDbTablePermission> = {};
+    for (const [name, value] of Object.entries(tablesRaw)) {
+      const trimmed = name.trim();
+      if (!trimmed) continue;
+      tables[trimmed] = normalizeTablePermission(value);
+    }
+    return {
+      version: 2,
+      defaults: {
+        readSchema: defaults.readSchema !== false,
+        readData: defaults.readData !== false,
+        allowInsert: defaults.allowInsert === true || writeData,
+        allowUpdate: defaults.allowUpdate === true || writeData,
+        allowDelete: defaults.allowDelete === true || writeData,
+        allowDdl: defaults.allowDdl === true,
+      },
+      tables,
+      rules: normalizePermissionRules(obj.rules, fallback.rules),
+      aiNotes: typeof obj.aiNotes === "string" ? obj.aiNotes : "",
+    };
+  }
+  // Legacy three-boolean shape.
+  const writeData = obj.writeData === true;
+  return {
+    version: 2,
+    defaults: {
+      readSchema: obj.readSchema !== false && obj.readSchema !== undefined ? !!obj.readSchema : true,
+      readData: obj.readData !== false && obj.readData !== undefined ? !!obj.readData : true,
+      allowInsert: writeData,
+      allowUpdate: writeData,
+      allowDelete: writeData,
+      allowDdl: false,
+    },
+    tables: {},
+    rules: fallback.rules,
+    aiNotes: "",
+  };
 }
 
 export function defaultSmartbrainDbSettings(): SmartbrainDbSettings {
@@ -101,17 +269,20 @@ export function createEmptySmartbrainDbSource(): SmartbrainDbSource {
     filePath: "",
     schema: "",
     queryParams: {},
-    permissions: {
-      readSchema: true,
-      readData: true,
-      writeData: false,
-    },
+    permissions: createDefaultPermissionPolicy(),
     updatedAt: nowSeconds(),
   };
 }
 
 export function sourceHasAnyPermission(source: SmartbrainDbSource): boolean {
-  return source.permissions.readSchema || source.permissions.readData || source.permissions.writeData;
+  const d = source.permissions?.defaults;
+  if (!d) return false;
+  if (d.readSchema || d.readData || d.allowInsert || d.allowUpdate || d.allowDelete || d.allowDdl) {
+    return true;
+  }
+  return Object.values(source.permissions.tables ?? {}).some(
+    (table) => table.read || table.insert || table.update || table.delete,
+  );
 }
 
 export function isSourceEffectivelyEnabled(
@@ -678,10 +849,7 @@ export async function loadSmartbrainDbSources(): Promise<SmartbrainDbSource[]> {
   return loaded.map((item) => ({
     ...createEmptySmartbrainDbSource(),
     ...item,
-    permissions: {
-      ...createEmptySmartbrainDbSource().permissions,
-      ...(item.permissions ?? {}),
-    },
+    permissions: migrateLegacyPermissions(item.permissions),
     queryParams: item.queryParams ?? {},
   }));
 }

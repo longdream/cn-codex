@@ -1748,6 +1748,8 @@ fn apply_thread_chat_overrides(
     if let Some(enabled) = smartbrain_enabled {
         let mut smartbrain = config.smartbrain_config();
         smartbrain.enabled = enabled;
+        // 对话级开关完整控制本轮知识能力，不受全局 knowledge_enabled 残留值拦截。
+        smartbrain.knowledge_enabled = enabled;
         config.smartbrain = Some(smartbrain);
     }
 }
@@ -2135,6 +2137,27 @@ mod tests {
         parse_remote_models_response, playwright_mcp_config_value, probe_tool_count,
         resolve_robot_id_for_run_turn,
     };
+
+    #[test]
+    fn apply_thread_chat_overrides_drives_knowledge_enabled_with_dialog_switch() {
+        let mut config = crate::config_system::ConfigToml::default();
+        let mut smartbrain = config.smartbrain_config();
+        smartbrain.enabled = false;
+        smartbrain.knowledge_enabled = false;
+        config.smartbrain = Some(smartbrain);
+
+        super::apply_thread_chat_overrides(&mut config, None, Some(true));
+        let active = config.smartbrain_config();
+        assert!(active.enabled);
+        assert!(active.knowledge_enabled);
+        assert!(active.knowledge_is_active());
+
+        super::apply_thread_chat_overrides(&mut config, None, Some(false));
+        let inactive = config.smartbrain_config();
+        assert!(!inactive.enabled);
+        assert!(!inactive.knowledge_enabled);
+        assert!(!inactive.knowledge_is_active());
+    }
 
     #[test]
     fn resolve_robot_id_for_run_turn_enables_in_goal_and_robot_modify_modes() {

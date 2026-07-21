@@ -80,7 +80,6 @@ function formatDate(ts: number): string {
 export function KnowledgePanel() {
   const intl = useIntl();
 
-  const [enabled, setEnabled] = useState(true);
   const [knowledge, setKnowledge] = useState<KnowledgeEntry[]>([]);
   const [knowExpanded, setKnowExpanded] = useState(true);
   const [expandedKnow, setExpandedKnow] = useState<string | null>(null);
@@ -110,14 +109,6 @@ export function KnowledgePanel() {
     totalPages: totalKnowledgePages,
     pagedItems: pagedKnowledge,
   } = usePagedItems(knowledge);
-
-  useEffect(() => {
-    invoke<{ config?: { smartbrain?: { enabled?: boolean } } }>("standalone_config_read")
-      .then((result) => {
-        setEnabled(result?.config?.smartbrain?.enabled ?? false);
-      })
-      .catch(() => {});
-  }, []);
 
   const loadKnowledge = useCallback(async () => {
     try {
@@ -361,22 +352,12 @@ export function KnowledgePanel() {
 
   return (
     <div className="space-y-5">
-      {!enabled && (
-        <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
-          <IconAlertCircle size={15} stroke={1.8} className="shrink-0 text-amber-500" />
-          <p className="text-xs text-[var(--text-muted)]">
-            {intl.formatMessage({ id: "settings.smartbrain.enableHint" })}
-          </p>
-        </div>
-      )}
-      {enabled && (
-        <div className="flex items-center gap-2 rounded-md border border-[var(--border-muted)] bg-[var(--bg-subtle)] px-3 py-2">
-          <IconAlertCircle size={14} stroke={1.5} className="shrink-0 text-[var(--text-faint)]" />
-          <p className="text-xs text-[var(--text-faint)]">
-            {intl.formatMessage({ id: "settings.smartbrain.enabledNote" })}
-          </p>
-        </div>
-      )}
+      <div className="flex items-center gap-2 rounded-md border border-[var(--border-muted)] bg-[var(--bg-subtle)] px-3 py-2">
+        <IconAlertCircle size={14} stroke={1.5} className="shrink-0 text-[var(--text-faint)]" />
+        <p className="text-xs text-[var(--text-faint)]">
+          {intl.formatMessage({ id: "settings.smartbrain.toggle.dialogOnly" })}
+        </p>
+      </div>
       <section className="settings-card space-y-3">
         <button
           onClick={() => setKnowExpanded(!knowExpanded)}

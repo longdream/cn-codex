@@ -1,0 +1,1 @@
+{"mcpServers":{"miniapp":{"args":["\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\miniapps\\test-app\\server\\index.mjs"],"command":"\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\node\\node.exe","cwd":"\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\miniapps\\test-app","env":{"MINIAPP_DATABASE_ID":"52207d89-cb58-4d6e-bc03-0f8f4aec1ea7"}}}}

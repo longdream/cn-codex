@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>供应商录入 - 测试小程序</title>
+    <link rel="stylesheet" href="/common.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <h1>📝 供应商录入</h1>
+        <p class="subtitle">新增供应商合同记录</p>
+      </header>
+
+      <nav class="nav-bar">
+        <a href="/">🏠 首页</a>
+        <a href="/entry.html" class="active">📝 录入</a>
+        <a href="/query.html">🔍 查询</a>
+        <a href="/stats.html">📊 统计</a>
+      </nav>
+
+      <div id="message"></div>
+
+      <div class="form-card">
+        <h2>📋 合同基本信息</h2>
+        <form id="entryForm" onsubmit="return submitForm(event)">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="supplier_name">供应商名称 *</label>
+              <input type="text" id="supplier_name" name="supplier_name" required placeholder="如：华为、腾讯" />
+            </div>
+            <div class="form-group">
+              <label for="contract_no">合同编号</label>
+              <input type="text" id="contract_no" name="contract_no" placeholder="如：HT-2026-XXXX" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="amount">合同金额 *</label>
+              <input type="number" id="amount" name="amount" required min="0" step="0.01" placeholder="0.00" />
+            </div>
+            <div class="form-group">
+              <label for="quantity">数量</label>
+              <input type="number" id="quantity" name="quantity" min="0" step="1" value="1" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="unit_price">单价</label>
+              <input type="number" id="unit_price" name="unit_price" min="0" step="0.01" placeholder="0.00" />
+            </div>
+            <div class="form-group">
+              <label for="status">合同状态</label>
+              <select id="status" name="status">
+                <option value="draft">草稿 (draft)</option>
+                <option value="signed">已签署 (signed)</option>
+                <option value="closed">已关闭 (closed)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="is_paid">付款状态</label>
+              <select id="is_paid" name="is_paid">
+                <option value="false">未付款</option>
+                <option value="true">已付款</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="signed_date">签署日期</label>
+              <input type="date" id="signed_date" name="signed_date" />
+            </div>
+          </div>
+          <div class="form-row full">
+            <div class="form-group">
+              <label for="signed_time">签署时间</label>
+              <input type="time" id="signed_time" name="signed_time" />
+            </div>
+          </div>
+          <div class="form-row full">
+            <div class="form-group">
+              <label for="remark">备注</label>
+              <textarea id="remark" name="remark" placeholder="可填写补充说明..."></textarea>
+            </div>
+          </div>
+          <div style="display:flex;gap:12px;margin-top:16px;">
+            <button type="submit" class="btn btn-success" id="submitBtn">✅ 提交</button>
+            <button type="reset" class="btn btn-outline">🔄 重置</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script>
+      async function submitForm(e) {
+        e.preventDefault();
+        const form = document.getElementById("entryForm");
+        const btn = document.getElementById("submitBtn");
+        const msg = document.getElementById("message");
+
+        const formData = new FormData(form);
+        const payload = {
+          supplier_name: formData.get("supplier_name"),
+          contract_no: formData.get("contract_no") || null,
+          amount: Number(formData.get("amount")),
+          quantity: formData.get("quantity") ? Number(formData.get("quantity")) : 1,
+          unit_price: formData.get("unit_price") ? Number(formData.get("unit_price")) : null,
+          status: formData.get("status") || "draft",
+          is_paid: formData.get("is_paid") === "true",
+          signed_date: formData.get("signed_date") || null,
+          signed_time: formData.get("signed_time") || null,
+          remark: formData.get("remark") || null,
+        };
+
+        if (!payload.supplier_name || !payload.supplier_name.trim()) {
+          msg.innerHTML = '<div class="alert alert-error">⚠️ 供应商名称不能为空</div>';
+          return false;
+        }
+        if (isNaN(payload.amount) || payload.amount < 0) {
+          msg.innerHTML = '<div class="alert alert-error">⚠️ 请输入有效的合同金额</div>';
+          return false;
+        }
+
+        btn.disabled = true;
+        btn.textContent = "⏳ 提交中...";
+
+        try {
+          const res = await fetch("/api/supplier/insert", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (data.ok) {
+            msg.innerHTML = `<div class="alert alert-success">✅ 提交成功！记录 ID: ${data.data.record.id}，供应商：${data.data.record.supplier_name}</div>`;
+            form.reset();
+            document.getElementById("quantity").value = "1";
+            document.getElementById("status").value = "draft";
+            document.getElementById("is_paid").value = "false";
+          } else {
+            msg.innerHTML = `<div class="alert alert-error">❌ ${data.message || "提交失败"}</div>`;
+          }
+        } catch (err) {
+          msg.innerHTML = `<div class="alert alert-error">❌ 网络错误：${err.message}</div>`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "✅ 提交";
+        }
+        return false;
+      }
+    </script>
+  </body>
+</html>

@@ -3,22 +3,14 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::config_system::SmartBrainConfig;
+use crate::smartbrain::permissions::{
+    deserialize_permissions_value, DbPermissionPolicy,
+};
 
 use super::truncate_utf8_by_bytes;
 
 pub(super) const SMARTBRAIN_DB_SOURCES_STATE_KEY: &str = "smartbrain.db.sources";
 pub(super) const SMARTBRAIN_DB_SETTINGS_STATE_KEY: &str = "smartbrain.db.settings";
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct SmartbrainPromptDbPermissions {
-    #[serde(default)]
-    read_schema: bool,
-    #[serde(default)]
-    read_data: bool,
-    #[serde(default)]
-    write_data: bool,
-}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -39,8 +31,8 @@ struct SmartbrainPromptDbSource {
     username: String,
     #[serde(default)]
     file_path: String,
-    #[serde(default)]
-    permissions: SmartbrainPromptDbPermissions,
+    #[serde(default, deserialize_with = "deserialize_prompt_permissions_field")]
+    permissions: DbPermissionPolicy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -82,8 +74,18 @@ fn default_true() -> bool {
     true
 }
 
+fn deserialize_prompt_permissions_field<'de, D>(
+    deserializer: D,
+) -> Result<DbPermissionPolicy, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(deserialize_permissions_value(&value))
+}
+
 fn smartbrain_source_has_any_permission(source: &SmartbrainPromptDbSource) -> bool {
-    source.permissions.read_schema || source.permissions.read_data || source.permissions.write_data
+    source.permissions.has_any_capability()
 }
 
 fn smartbrain_source_is_effectively_enabled(
@@ -161,24 +163,6 @@ fn smartbrain_source_target(source: &SmartbrainPromptDbSource) -> String {
     }
 }
 
-fn smartbrain_permission_labels(permissions: &SmartbrainPromptDbPermissions) -> String {
-    let mut labels = Vec::new();
-    if permissions.read_schema {
-        labels.push("readSchema");
-    }
-    if permissions.read_data {
-        labels.push("readData");
-    }
-    if permissions.write_data {
-        labels.push("writeData");
-    }
-    if labels.is_empty() {
-        "none".to_string()
-    } else {
-        labels.join(", ")
-    }
-}
-
 fn render_smartbrain_database_prompt_for_config_dir(workspace_config_dir: &Path) -> String {
     let raw_sources =
         load_workspace_state_value(workspace_config_dir, SMARTBRAIN_DB_SOURCES_STATE_KEY);
@@ -208,7 +192,7 @@ fn render_smartbrain_database_prompt_for_config_dir(workspace_config_dir: &Path)
         } else {
             source.username.trim().to_string()
         };
-        let permissions = smartbrain_permission_labels(&source.permissions);
+        let permissions = source.permissions.summary_for_prompt();
         let alias = if !source.database_name.trim().is_empty()
             && source.database_name.trim() != display_name
         {
@@ -216,10 +200,15 @@ fn render_smartbrain_database_prompt_for_config_dir(workspace_config_dir: &Path)
         } else {
             String::new()
         };
-        let line = format!(
+        let mut line = format!(
             "- `{display_name}`: 类型=`{db_type}`；目标=`{target}`{alias}；用户=`{username}`；权限=`{permissions}`",
             db_type = source.db_type.trim(),
         );
+        let notes = source.permissions.ai_notes.trim();
+        if !notes.is_empty() {
+            let clipped = truncate_utf8_by_bytes(notes, 240);
+            line.push_str(&format!("；说明=`{clipped}`"));
+        }
         if smartbrain_source_is_effectively_enabled(source, &settings) {
             active_sources.push(line);
         } else {
@@ -258,9 +247,8 @@ fn render_smartbrain_database_prompt_for_config_dir(workspace_config_dir: &Path)
             .to_string(),
     );
     sections.push(
-        "结构化入库请使用 `build_entry_form`：根据用户语义匹配数据库/表，生成表单并自动填充 known_values；\
-         用户在弹窗中补充缺失字段后保存。也可直接调用 `save_form_data` 写入已确认的字段值。\
-         写操作需要 writeData 权限。"
+        "业务 UI/写入优先通过已挂载小程序完成；若直接使用 SQL，必须遵守数据库权限策略，\
+         且不要绕过权限或要求用户再次提供密码。"
             .to_string(),
     );
     sections.push(

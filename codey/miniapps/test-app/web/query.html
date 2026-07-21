@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>供应商查询 - 测试小程序</title>
+    <link rel="stylesheet" href="/common.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <h1>🔍 供应商查询</h1>
+        <p class="subtitle">多维度查询供应商合同记录</p>
+      </header>
+
+      <nav class="nav-bar">
+        <a href="/">🏠 首页</a>
+        <a href="/entry.html">📝 录入</a>
+        <a href="/query.html" class="active">🔍 查询</a>
+        <a href="/stats.html">📊 统计</a>
+      </nav>
+
+      <div class="form-card">
+        <h2>🔎 筛选条件</h2>
+        <form id="searchForm" onsubmit="return doSearch(event)">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="keyword">关键词</label>
+              <input type="text" id="keyword" name="keyword" placeholder="供应商名/合同号/备注..." />
+            </div>
+            <div class="form-group">
+              <label for="supplier_name">供应商名称（精确）</label>
+              <input type="text" id="supplier_name" name="supplier_name" placeholder="如：华为" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="status">合同状态</label>
+              <select id="status" name="status">
+                <option value="">全部</option>
+                <option value="draft">草稿 (draft)</option>
+                <option value="signed">已签署 (signed)</option>
+                <option value="closed">已关闭 (closed)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="is_paid">付款状态</label>
+              <select id="is_paid" name="is_paid">
+                <option value="">全部</option>
+                <option value="true">已付款</option>
+                <option value="false">未付款</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="date_from">签署日期起</label>
+              <input type="date" id="date_from" name="date_from" />
+            </div>
+            <div class="form-group">
+              <label for="date_to">签署日期止</label>
+              <input type="date" id="date_to" name="date_to" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="amount_min">金额下限</label>
+              <input type="number" id="amount_min" name="amount_min" min="0" step="0.01" placeholder="0.00" />
+            </div>
+            <div class="form-group">
+              <label for="amount_max">金额上限</label>
+              <input type="number" id="amount_max" name="amount_max" min="0" step="0.01" placeholder="999999.99" />
+            </div>
+          </div>
+          <div style="display:flex;gap:12px;">
+            <button type="submit" class="btn btn-primary">🔍 查询</button>
+            <button type="reset" class="btn btn-outline" onclick="resetSearch()">🔄 重置</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="result">
+        <div class="loading">请设置筛选条件后点击查询</div>
+      </div>
+    </div>
+
+    <script>
+      let currentPage = 1;
+      let currentParams = {};
+
+      function renderBadge(val, cls) {
+        return `<span class="badge ${cls}">${val}</span>`;
+      }
+
+      function renderStatus(status) {
+        const map = { draft: "草稿", signed: "已签署", closed: "已关闭" };
+        const cls = { draft: "badge-draft", signed: "badge-signed", closed: "badge-closed" };
+        return renderBadge(map[status] || status, cls[status] || "badge-draft");
+      }
+
+      function renderPaid(isPaid) {
+        return isPaid
+          ? renderBadge("已付款", "badge-paid")
+          : renderBadge("未付款", "badge-unpaid");
+      }
+
+      function renderTable(data) {
+        const el = document.getElementById("result");
+        if (!data.rows || data.rows.length === 0) {
+          el.innerHTML = '<div class="alert alert-info">📭 未找到匹配的记录</div>';
+          return;
+        }
+
+        let html = '<div class="form-card"><h2>📄 查询结果</h2>';
+        html += `<p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">共 ${data.total} 条记录，第 ${data.page}/${data.total_pages} 页</p>`;
+        html += '<div class="table-wrap"><table><thead><tr>';
+        html += '<th>ID</th><th>供应商</th><th>合同号</th><th>金额</th><th>数量</th><th>状态</th><th>付款</th><th>签署日期</th><th>备注</th>';
+        html += '</tr></thead><tbody>';
+
+        for (const r of data.rows) {
+          html += `<tr>
+            <td>${r.id}</td>
+            <td><strong>${escHtml(r.supplier_name)}</strong></td>
+            <td>${escHtml(r.contract_no || "-")}</td>
+            <td>¥${Number(r.amount).toFixed(2)}</td>
+            <td>${r.quantity ?? "-"}</td>
+            <td>${renderStatus(r.status)}</td>
+            <td>${renderPaid(r.is_paid)}</td>
+            <td>${r.signed_date || "-"}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${escHtml(r.remark || "-")}</td>
+          </tr>`;
+        }
+
+        html += '</tbody></table></div>';
+
+        // Pagination
+        if (data.total_pages > 1) {
+          html += '<div class="pagination">';
+          html += `<button class="btn btn-outline" onclick="goPage(${data.page - 1})" ${data.page <= 1 ? 'disabled' : ''}>⬅ 上一页</button>`;
+          html += `<span>第 ${data.page} / ${data.total_pages} 页</span>`;
+          html += `<button class="btn btn-outline" onclick="goPage(${data.page + 1})" ${data.page >= data.total_pages ? 'disabled' : ''}>下一页 ➡</button>`;
+          html += '</div>';
+        }
+
+        html += '</div>';
+        el.innerHTML = html;
+      }
+
+      function escHtml(s) {
+        if (!s) return "";
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+
+      async function doSearch(e) {
+        if (e) e.preventDefault();
+        const form = document.getElementById("searchForm");
+        const fd = new FormData(form);
+        const params = {
+          keyword: fd.get("keyword") || undefined,
+          supplier_name: fd.get("supplier_name") || undefined,
+          status: fd.get("status") || undefined,
+          is_paid: fd.get("is_paid") === "" ? undefined : fd.get("is_paid") === "true",
+          date_from: fd.get("date_from") || undefined,
+          date_to: fd.get("date_to") || undefined,
+          amount_min: fd.get("amount_min") ? Number(fd.get("amount_min")) : undefined,
+          amount_max: fd.get("amount_max") ? Number(fd.get("amount_max")) : undefined,
+          page: currentPage,
+          page_size: 20,
+        };
+        // Clean undefined
+        Object.keys(params).forEach(k => { if (params[k] === undefined) delete params[k]; });
+        currentParams = params;
+
+        const el = document.getElementById("result");
+        el.innerHTML = '<div class="loading">⏳ 查询中...</div>';
+
+        try {
+          const res = await fetch("/api/supplier/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(params),
+          });
+          const data = await res.json();
+          if (data.ok) {
+            renderTable(data.data);
+          } else {
+            el.innerHTML = `<div class="alert alert-error">❌ ${data.message || "查询失败"}</div>`;
+          }
+        } catch (err) {
+          el.innerHTML = `<div class="alert alert-error">❌ 网络错误：${err.message}</div>`;
+        }
+      }
+
+      function goPage(page) {
+        currentPage = page;
+        currentParams.page = page;
+        doSearch(null);
+      }
+
+      function resetSearch() {
+        currentPage = 1;
+        currentParams = {};
+        document.getElementById("result").innerHTML = '<div class="loading">请设置筛选条件后点击查询</div>';
+      }
+    </script>
+  </body>
+</html>

@@ -1,12 +1,13 @@
-import { IconBook2, IconBrain, IconDatabase, IconSettings2, IconSparkles } from "@tabler/icons-react";
+import { IconApps, IconBook2, IconBrain, IconDatabase, IconSettings2, IconSparkles } from "@tabler/icons-react";
 import { useState } from "react";
 import { useIntl } from "react-intl";
 import { ExperiencePanel } from "./ExperiencePanel";
 import { KnowledgePanel } from "./KnowledgePanel";
+import { MiniAppSettingsPanel } from "./MiniAppSettingsPanel";
 import { SmartbrainDatabasePanel } from "./SmartbrainDatabasePanel";
 import { SmartbrainDatabaseSettingsPanel } from "./SmartbrainDatabaseSettingsPanel";
 
-type SmartbrainTab = "knowledge" | "experience" | "database" | "databaseSettings";
+type SmartbrainTab = "knowledge" | "experience" | "database" | "databaseSettings" | "miniapp";
 
 export function SmartbrainPanel() {
   const intl = useIntl();
@@ -32,6 +33,11 @@ export function SmartbrainPanel() {
       id: "databaseSettings",
       icon: <IconSettings2 size={14} stroke={1.8} />,
       label: intl.formatMessage({ id: "settings.smartbrain.databaseSettings" }),
+    },
+    {
+      id: "miniapp",
+      icon: <IconApps size={14} stroke={1.8} />,
+      label: intl.formatMessage({ id: "settings.smartbrain.miniapp" }),
     },
   ];
 
@@ -80,6 +86,7 @@ export function SmartbrainPanel() {
       {tab === "experience" && <ExperiencePanel />}
       {tab === "database" && <SmartbrainDatabasePanel />}
       {tab === "databaseSettings" && <SmartbrainDatabaseSettingsPanel />}
+      {tab === "miniapp" && <MiniAppSettingsPanel />}
     </div>
   );
 }

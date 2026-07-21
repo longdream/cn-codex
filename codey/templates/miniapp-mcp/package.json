@@ -1,0 +1,11 @@
+{
+  "name": "miniapp-template",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CN-Codex MiniApp MCP template",
+  "main": "server/index.mjs",
+  "scripts": {
+    "start": "node server/index.mjs"
+  }
+}

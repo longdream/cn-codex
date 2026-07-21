@@ -15,6 +15,7 @@ pub mod hook_runtime;
 pub mod lan_collab;
 pub mod local_pool;
 pub mod mobile_server;
+pub mod miniapp;
 pub mod ocr;
 pub mod plugin_loader;
 pub mod protocol;
@@ -644,6 +645,13 @@ pub fn run() {
             smartbrain::commands::smartbrain_test_database_connection,
             smartbrain::commands::smartbrain_rebuild_index,
             smartbrain::commands::smartbrain_migrate_to_okf,
+            // MiniApp
+            miniapp::commands::miniapp_list,
+            miniapp::commands::miniapp_create,
+            miniapp::commands::miniapp_start,
+            miniapp::commands::miniapp_stop,
+            miniapp::commands::miniapp_delete,
+            miniapp::commands::miniapp_open_page,
             // Workflow
             workflow::commands::workflow_extract,
             workflow::commands::workflow_save,

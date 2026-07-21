@@ -203,6 +203,7 @@ body.computer-use-overlay-root {
   top: 22px;
   left: 50%;
   transform: translateX(-50%);
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -257,6 +258,26 @@ body.computer-use-overlay-root {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.computer-use-overlay-badge-close {
+  margin-left: 4px;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cu-accent) 16%, transparent);
+  color: color-mix(in srgb, var(--text-strong) 80%, var(--cu-accent-strong) 20%);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.computer-use-overlay-badge-close:hover {
+  background: color-mix(in srgb, var(--cu-accent) 28%, transparent);
+  color: var(--text-strong);
 }
 
 body.computer-use-controlling,

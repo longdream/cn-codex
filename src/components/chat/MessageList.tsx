@@ -12,7 +12,6 @@ import {
   IconFileDiff,
   IconFileText,
   IconFolderOpen,
-  IconDatabase,
   IconLoader2,
   IconMessage2,
   IconPencil,
@@ -1033,8 +1032,6 @@ function toolGroupIcon(type: string) {
     case "apply_patch": return <IconFileDiff size={13} stroke={1.8} />;
     case "list_directory": return <IconFolderOpen size={13} stroke={1.8} />;
     case "update_plan": return <IconCheck size={13} stroke={1.8} />;
-    case "build_entry_form": return <IconDatabase size={13} stroke={1.8} />;
-    case "save_form_data": return <IconDatabase size={13} stroke={1.8} />;
     case "request_user_input": return <IconMessage2 size={13} stroke={1.8} />;
     case "request_permissions": return <IconAlertTriangle size={13} stroke={1.8} />;
     case "view_image": return <IconPhoto size={13} stroke={1.8} />;

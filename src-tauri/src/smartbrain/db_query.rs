@@ -12,6 +12,11 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::permissions::{
+    deserialize_permissions_value, validate_sql_policy, DbPermissionPolicy, GlobalSqlGuards,
+    SqlOpKind,
+};
+
 pub const SMARTBRAIN_DB_SOURCES_STATE_KEY: &str = "smartbrain.db.sources";
 pub const SMARTBRAIN_DB_SETTINGS_STATE_KEY: &str = "smartbrain.db.settings";
 
@@ -19,17 +24,6 @@ const DEFAULT_ROW_LIMIT: usize = 200;
 const DEFAULT_TIMEOUT_SEC: u64 = 15;
 const MAX_CELL_CHARS: usize = 500;
 const MAX_OUTPUT_CHARS: usize = 60_000;
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct SmartbrainDbPermissions {
-    #[serde(default)]
-    pub read_schema: bool,
-    #[serde(default)]
-    pub read_data: bool,
-    #[serde(default)]
-    pub write_data: bool,
-}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -58,8 +52,8 @@ pub struct SmartbrainDbSource {
     pub file_path: String,
     #[serde(default)]
     pub schema: String,
-    #[serde(default)]
-    pub permissions: SmartbrainDbPermissions,
+    #[serde(default, deserialize_with = "deserialize_permissions_field")]
+    pub permissions: DbPermissionPolicy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -108,6 +102,14 @@ fn default_timeout_sec() -> u64 {
 
 fn default_true() -> bool {
     true
+}
+
+fn deserialize_permissions_field<'de, D>(deserializer: D) -> Result<DbPermissionPolicy, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(deserialize_permissions_value(&value))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +161,7 @@ pub fn load_db_settings(workspace_config_dir: &Path) -> SmartbrainDbSettings {
 }
 
 fn source_has_any_permission(source: &SmartbrainDbSource) -> bool {
-    source.permissions.read_schema || source.permissions.read_data || source.permissions.write_data
+    source.permissions.has_any_capability()
 }
 
 fn source_is_effectively_enabled(
@@ -390,6 +392,7 @@ fn first_sql_keyword(sql: &str) -> String {
         .to_ascii_lowercase()
 }
 
+#[cfg(test)]
 fn classify_sql(sql: &str) -> SqlKind {
     let keyword = first_sql_keyword(sql);
     match keyword.as_str() {
@@ -429,54 +432,20 @@ fn validate_sql_against_permissions(
     source: &SmartbrainDbSource,
     settings: &SmartbrainDbSettings,
 ) -> Result<SqlKind, String> {
-    let kind = classify_sql(sql);
-    match kind {
-        SqlKind::ReadSchema => {
-            if source.permissions.read_schema || source.permissions.read_data {
-                Ok(kind)
-            } else {
-                Err(format!(
-                    "数据库 `{}` 未开启 readSchema/readData 权限，拒绝执行结构查询。",
-                    source_display_name(source)
-                ))
-            }
-        }
-        SqlKind::ReadData => {
-            if source.permissions.read_data {
-                Ok(kind)
-            } else {
-                Err(format!(
-                    "数据库 `{}` 未开启 readData 权限，拒绝执行数据查询。",
-                    source_display_name(source)
-                ))
-            }
-        }
-        SqlKind::WriteData => {
-            if !source.permissions.write_data {
-                return Err(format!(
-                    "数据库 `{}` 未开启 writeData 权限，拒绝执行写操作。",
-                    source_display_name(source)
-                ));
-            }
-            let keyword = first_sql_keyword(sql);
-            if settings.deny_delete_without_write_permission && keyword == "delete" {
-                // write permission already checked; keep setting for future finer control.
-            }
-            Ok(kind)
-        }
-        SqlKind::DangerousDdl => {
-            if settings.deny_ddl || settings.deny_drop || !source.permissions.write_data {
-                return Err(format!(
-                    "数据库 `{}` 禁止执行 DDL/高危语句（DROP/TRUNCATE/ALTER/CREATE 等）。",
-                    source_display_name(source)
-                ));
-            }
-            Ok(kind)
-        }
-        SqlKind::Unknown => Err(
-            "无法识别 SQL 类型。仅支持明确的 SELECT/SHOW/DESCRIBE/INSERT/UPDATE/DELETE 等语句。"
-                .to_string(),
-        ),
+    let guards = GlobalSqlGuards {
+        deny_ddl: settings.deny_ddl,
+        deny_drop: settings.deny_drop,
+        deny_delete_without_write_permission: settings.deny_delete_without_write_permission,
+    };
+    match validate_sql_policy(sql, &source.permissions, &source_display_name(source), &guards) {
+        Ok(op) => Ok(match op {
+            SqlOpKind::ReadSchema => SqlKind::ReadSchema,
+            SqlOpKind::ReadData => SqlKind::ReadData,
+            SqlOpKind::Insert | SqlOpKind::Update | SqlOpKind::Delete => SqlKind::WriteData,
+            SqlOpKind::Ddl => SqlKind::DangerousDdl,
+            SqlOpKind::Unknown => SqlKind::Unknown,
+        }),
+        Err(denial) => Err(denial.format_error()),
     }
 }
 
@@ -1171,10 +1140,17 @@ mod tests {
             enabled: true,
             host: "10.0.0.1".to_string(),
             database_name: "psa_crm_pact_test".to_string(),
-            permissions: SmartbrainDbPermissions {
-                read_schema: true,
-                read_data: true,
-                write_data: false,
+            permissions: DbPermissionPolicy {
+                defaults: super::super::permissions::DbPermissionDefaults {
+                    read_schema: true,
+                    read_data: true,
+                    allow_insert: false,
+                    allow_update: false,
+                    allow_delete: false,
+                    allow_ddl: false,
+                    write_data: None,
+                },
+                ..Default::default()
             },
             ..Default::default()
         }];

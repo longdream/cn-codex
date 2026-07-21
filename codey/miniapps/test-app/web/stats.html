@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>供应商统计 - 测试小程序</title>
+    <link rel="stylesheet" href="/common.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <h1>📊 供应商统计</h1>
+        <p class="subtitle">数据汇总与分析</p>
+      </header>
+
+      <nav class="nav-bar">
+        <a href="/">🏠 首页</a>
+        <a href="/entry.html">📝 录入</a>
+        <a href="/query.html">🔍 查询</a>
+        <a href="/stats.html" class="active">📊 统计</a>
+      </nav>
+
+      <div class="form-card">
+        <h2>🔎 筛选</h2>
+        <div class="form-row" style="grid-template-columns:1fr auto;">
+          <div class="form-group">
+            <label for="filter_supplier">按供应商筛选</label>
+            <select id="filter_supplier">
+              <option value="">全部供应商</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" onclick="loadStats()" style="align-self:flex-end;">📊 刷新统计</button>
+        </div>
+      </div>
+
+      <div id="statsContent">
+        <div class="loading">⏳ 加载统计数据中...</div>
+      </div>
+    </div>
+
+    <script>
+      async function loadSupplierList() {
+        try {
+          const res = await fetch("/api/supplier/names");
+          const data = await res.json();
+          if (data.ok && data.data.suppliers) {
+            const sel = document.getElementById("filter_supplier");
+            for (const s of data.data.suppliers) {
+              const opt = document.createElement("option");
+              opt.value = s;
+              opt.textContent = s;
+              sel.appendChild(opt);
+            }
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      function escHtml(s) {
+        if (!s) return "";
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+
+      async function loadStats() {
+        const el = document.getElementById("statsContent");
+        el.innerHTML = '<div class="loading">⏳ 加载统计数据中...</div>';
+
+        const supplier = document.getElementById("filter_supplier").value;
+        const params = {};
+        if (supplier) params.supplier_name = supplier;
+
+        try {
+          const res = await fetch("/api/supplier/stats", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(params),
+          });
+          const data = await res.json();
+          if (!data.ok) {
+            el.innerHTML = `<div class="alert alert-error">❌ ${data.message || "加载失败"}</div>`;
+            return;
+          }
+
+          const d = data.data;
+          let html = "";
+
+          // ── 汇总卡片 ──
+          html += '<div class="stats-grid">';
+          html += `<div class="stat-card"><div class="stat-value">${d.total_records}</div><div class="stat-label">总记录数</div></div>`;
+          html += `<div class="stat-card"><div class="stat-value">¥${d.total_amount.toFixed(2)}</div><div class="stat-label">总金额</div></div>`;
+          html += `<div class="stat-card"><div class="stat-value">${d.total_quantity}</div><div class="stat-label">总数量</div></div>`;
+          html += `<div class="stat-card"><div class="stat-value">¥${d.avg_amount.toFixed(2)}</div><div class="stat-label">平均金额</div></div>`;
+          html += '</div>';
+
+          // ── 按状态分布 ──
+          html += '<div class="form-card"><h2>📌 按状态分布</h2>';
+          html += '<div class="stats-grid">';
+          const statusMap = { draft: "草稿", signed: "已签署", closed: "已关闭" };
+          const statusColors = { draft: "#9ca3af", signed: "#60a5fa", closed: "#4ade80" };
+          for (const [key, label] of Object.entries(statusMap)) {
+            const count = d.by_status[key] || 0;
+            const pct = d.total_records > 0 ? ((count / d.total_records) * 100).toFixed(1) : "0.0";
+            html += `<div class="stat-card"><div class="stat-value" style="color:${statusColors[key]}">${count}</div><div class="stat-label">${label} (${pct}%)</div></div>`;
+          }
+          html += '</div></div>';
+
+          // ── 按付款状态 ──
+          html += '<div class="form-card"><h2>💰 按付款状态</h2>';
+          html += '<div class="stats-grid">';
+          const paidPct = d.total_records > 0 ? ((d.by_paid.paid / d.total_records) * 100).toFixed(1) : "0.0";
+          const unpaidPct = d.total_records > 0 ? ((d.by_paid.unpaid / d.total_records) * 100).toFixed(1) : "0.0";
+          html += `<div class="stat-card"><div class="stat-value" style="color:#4ade80">${d.by_paid.paid}</div><div class="stat-label">已付款 (${paidPct}%)</div></div>`;
+          html += `<div class="stat-card"><div class="stat-value" style="color:#f87171">${d.by_paid.unpaid}</div><div class="stat-label">未付款 (${unpaidPct}%)</div></div>`;
+          html += '</div></div>';
+
+          // ── 按供应商汇总 ──
+          html += '<div class="form-card"><h2>🏢 按供应商汇总</h2>';
+          if (d.by_supplier && d.by_supplier.length > 0) {
+            html += '<div class="table-wrap"><table><thead><tr>';
+            html += '<th>排名</th><th>供应商</th><th>合同数</th><th>总金额</th><th>总数量</th><th>占比</th>';
+            html += '</tr></thead><tbody>';
+            const maxAmount = Math.max(...d.by_supplier.map(s => s.total_amount), 1);
+            for (let i = 0; i < d.by_supplier.length; i++) {
+              const s = d.by_supplier[i];
+              const pct = ((s.total_amount / d.total_amount) * 100).toFixed(1);
+              const barWidth = (s.total_amount / maxAmount) * 100;
+              html += `<tr>
+                <td>${i + 1}</td>
+                <td><strong>${escHtml(s.supplier_name)}</strong></td>
+                <td>${s.count}</td>
+                <td>¥${s.total_amount.toFixed(2)}</td>
+                <td>${s.total_quantity}</td>
+                <td>
+                  <div style="display:flex;align-items:center;gap:6px;">
+                    <div style="width:80px;height:8px;background:var(--border);border-radius:4px;overflow:hidden;">
+                      <div style="width:${barWidth}%;height:100%;background:var(--accent);border-radius:4px;"></div>
+                    </div>
+                    <span style="font-size:12px;color:var(--text-muted);">${pct}%</span>
+                  </div>
+                </td>
+              </tr>`;
+            }
+            html += '</tbody></table></div>';
+          } else {
+            html += '<p style="color:var(--text-muted);">暂无数据</p>';
+          }
+          html += '</div>';
+
+          el.innerHTML = html;
+        } catch (err) {
+          el.innerHTML = `<div class="alert alert-error">❌ 网络错误：${err.message}</div>`;
+        }
+      }
+
+      // Initialize
+      loadSupplierList();
+      loadStats();
+    </script>
+  </body>
+</html>

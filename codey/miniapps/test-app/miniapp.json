@@ -1,0 +1,43 @@
+{
+  "id": "miniapp-test-app",
+  "name": "测试小程序",
+  "slug": "test-app",
+  "description": "需要对供应商的相关信息来进行输入和查询还有统计",
+  "databaseId": "52207d89-cb58-4d6e-bc03-0f8f4aec1ea7",
+  "databaseName": "测试数据库",
+  "status": "running",
+  "port": 57317,
+  "rootPath": "\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\miniapps\\test-app",
+  "mcp": {
+    "command": "\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\node\\node.exe",
+    "args": [
+      "\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\miniapps\\test-app\\server\\index.mjs"
+    ],
+    "cwd": "\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\miniapps\\test-app"
+  },
+  "pages": [
+    {
+      "id": "home",
+      "title": "首页",
+      "path": "/",
+      "description": "默认示例页"
+    }
+  ],
+  "tools": [
+    {
+      "name": "list_pages",
+      "description": "列出页面"
+    },
+    {
+      "name": "get_status",
+      "description": "健康检查"
+    },
+    {
+      "name": "open_page",
+      "description": "打开页面"
+    }
+  ],
+  "lastError": "",
+  "createdAt": 1784624215,
+  "updatedAt": 1784626218
+}

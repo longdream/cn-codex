@@ -1,4 +1,5 @@
 import {
+  IconApps,
   IconArrowUp,
   IconBrowser,
   IconBrain,
@@ -53,6 +54,7 @@ import { skillList } from "../../api/skill";
 import type { SkillSummary } from "../../types/skill";
 import type { PluginSummary } from "../../types/plugin";
 import { standaloneConfigRead } from "../../api/standalone";
+import { miniappList, type MiniAppRecord } from "../../api/miniapp";
 import { formatWebSnippet } from "../../utils/formatWebSnippet";
 import { derivePlanExecutionProgress } from "../../utils/planExecutionProgress";
 import {
@@ -74,7 +76,7 @@ const IMAGE_ACCEPT = "image/*";
 const ALL_ACCEPT = `${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`;
 const COMPUTER_USE_PLUGIN_ID = "computer-use";
 
-type AttachMenuView = "root" | "skill" | "plugin" | "mcp";
+type AttachMenuView = "root" | "skill" | "plugin" | "mcp" | "miniapp";
 
 interface McpServerOption {
   name: string;
@@ -283,6 +285,7 @@ export function ChatInput({
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [plugins, setPlugins] = useState<PluginSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerOption[]>([]);
+  const [miniapps, setMiniapps] = useState<MiniAppRecord[]>([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [attachMenuView, setAttachMenuView] = useState<AttachMenuView>("root");
   const [attachSearchQuery, setAttachSearchQuery] = useState("");
@@ -497,6 +500,12 @@ export function ChatInput({
       }
     };
     void loadMcpServers();
+  }, []);
+
+  useEffect(() => {
+    miniappList()
+      .then(setMiniapps)
+      .catch(() => setMiniapps([]));
   }, []);
 
   const selectedRobotName = useMemo(
@@ -1004,6 +1013,15 @@ export function ChatInput({
     );
   }, [insertComposerText, intl]);
 
+  const handleSelectMiniapp = useCallback((app: MiniAppRecord) => {
+    insertComposerText(
+      intl.formatMessage(
+        { id: "chat.miniappPrompt" },
+        { miniappName: app.name, miniappSlug: app.slug },
+      ),
+    );
+  }, [insertComposerText, intl]);
+
   const filteredAttachSkills = useMemo(() => {
     const query = attachSearchQuery.trim().toLowerCase();
     if (!query) return skills;
@@ -1034,6 +1052,16 @@ export function ChatInput({
       return `${server.name} ${commandText}`.includes(query);
     });
   }, [attachSearchQuery, mcpServers]);
+
+  const filteredAttachMiniapps = useMemo(() => {
+    const query = attachSearchQuery.trim().toLowerCase();
+    if (!query) return miniapps;
+    return miniapps.filter((app) => {
+      return `${app.slug} ${app.name} ${app.description} ${app.databaseName} ${app.databaseId}`
+        .toLowerCase()
+        .includes(query);
+    });
+  }, [attachSearchQuery, miniapps]);
 
   const handleAttachClick = useCallback(() => {
     setShowAttachMenu((prev) => {
@@ -1663,6 +1691,21 @@ export function ChatInput({
                       <IconServer size={14} stroke={1.8} className="shrink-0 text-[var(--chat-muted)]" />
                       <span>{intl.formatMessage({ id: "chat.attachMcp" })}</span>
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttachMenuView("miniapp");
+                        setAttachSearchQuery("");
+                        // Refresh list when opening so newly generated apps show up.
+                        miniappList()
+                          .then(setMiniapps)
+                          .catch(() => setMiniapps([]));
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-[var(--chat-prose)] transition-colors hover:bg-[var(--surface-elevated)]"
+                    >
+                      <IconApps size={14} stroke={1.8} className="shrink-0 text-[var(--chat-muted)]" />
+                      <span>{intl.formatMessage({ id: "chat.attachMiniapp" })}</span>
+                    </button>
                   </div>
                 ) : (
                   <div className="flex max-h-[280px] flex-col">
@@ -1684,7 +1727,9 @@ export function ChatInput({
                               ? "chat.attachSkill"
                               : attachMenuView === "plugin"
                                 ? "chat.attachPlugin"
-                                : "chat.attachMcp",
+                                : attachMenuView === "miniapp"
+                                  ? "chat.attachMiniapp"
+                                  : "chat.attachMcp",
                         })}
                       </span>
                     </div>
@@ -1767,6 +1812,33 @@ export function ChatInput({
                                 {server.name === COMPUTER_USE_PLUGIN_ID
                                   ? intl.formatMessage({ id: "chat.mcp.computerUseHint" })
                                   : `${server.command ?? ""} ${(server.args ?? []).join(" ")}`.trim() || "MCP"}
+                              </span>
+                            </button>
+                          ))
+                        )
+                      )}
+
+                      {attachMenuView === "miniapp" && (
+                        filteredAttachMiniapps.length === 0 ? (
+                          <p className="px-3 py-3 text-[12px] text-[var(--chat-faint)]">
+                            {intl.formatMessage({ id: "chat.miniapp.noneAvailable" })}
+                          </p>
+                        ) : (
+                          filteredAttachMiniapps.map((app) => (
+                            <button
+                              key={app.slug}
+                              type="button"
+                              onClick={() => handleSelectMiniapp(app)}
+                              className="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+                            >
+                              <span className="truncate text-[12px] font-medium text-[var(--chat-prose)]">
+                                {app.name}
+                                <span className="ml-1 font-mono text-[10px] text-[var(--chat-faint)]">
+                                  {app.slug}
+                                </span>
+                              </span>
+                              <span className="truncate text-[11px] text-[var(--chat-faint)]">
+                                {app.databaseName || app.databaseId || app.description || app.slug}
                               </span>
                             </button>
                           ))

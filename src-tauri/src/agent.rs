@@ -743,6 +743,10 @@ impl AgentEngine {
             }
             mcp_servers.insert(name, server);
         }
+        // MiniApps: register as MCP servers (do not overwrite plugin/config names).
+        for (name, server) in crate::miniapp::list_miniapp_mcp_servers(&self.cwd.join("codey")) {
+            mcp_servers.entry(name).or_insert(server);
+        }
         self.tool_executor
             .write()
             .await
@@ -2900,6 +2904,8 @@ impl AgentEngine {
             render_smartbrain_runtime_prompt(&workspace_config_dir, &config.smartbrain_config());
         let robot_runtime_instructions =
             render_robot_runtime_prompt(&workspace_config_dir, robot_id);
+        let miniapp_instructions =
+            crate::miniapp::render_miniapp_runtime_prompt(&workspace_config_dir);
 
         let is_project_mode = effective_cwd != self.cwd;
         let file_creation_policy = if is_project_mode {
@@ -2937,8 +2943,6 @@ impl AgentEngine {
              - view_image: Inspect and preview local image files, returning format, dimensions, size, and path.\n\
              - browser_run: Run a browser session for page navigation, UI interaction, screenshots, and web app testing. Runtime is CN-Codex built-in Tauri WebView controlled by Rust-side JS Injection + CDP. Keep action batches focused and rely on screenshots/html/snapshot for verification.\n\
              - smartbrain_search: Search Local Knowledge Base (本地知识库) knowledge. For SQL (`smartbrain_sql_query`) and other non-core helpers, discover them with `tool_search` first (never invent Python/shell DB scripts; never re-ask saved passwords).\n\
-             - build_entry_form: Build a schema-driven entry form for Local Knowledge Base databases, pre-fill known_values, open UI for missing fields, then save on confirm.\n\
-             - save_form_data: Validate and INSERT confirmed form values into a configured database table (requires writeData).\n\
              \n\
              Layered tool loading:\n\
              - Default exposed schemas are a small core set (shell, files, apply_patch, code_search, browser_run, tool_search, plan/permissions, etc.).\n\
@@ -2988,7 +2992,7 @@ impl AgentEngine {
              WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
              use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \
              directories. Alternatively, set the 'workdir' parameter in the shell tool call.\n\
-             {skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{robot_runtime_instructions}{smartbrain_instructions}"
+             {skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{robot_runtime_instructions}{smartbrain_instructions}{miniapp_instructions}"
         )
     }
 

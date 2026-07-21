@@ -232,6 +232,7 @@ pub async fn window_set_computer_use_overlay(
             window.show()?;
         }
         let _ = window.set_always_on_top(true);
+        // 整屏层必须 click-through，否则会挡住桌面操控；关闭请用主窗 Esc 或自动结束。
         let _ = window.set_ignore_cursor_events(true);
         let _ = app.emit(
             COMPUTER_USE_OVERLAY_STATE_EVENT,

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>测试小程序 - 首页</title>
+    <link rel="stylesheet" href="/common.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <h1>📋 供应商合同管理系统</h1>
+        <p class="subtitle">测试小程序 · 绑定数据库：测试数据库</p>
+      </header>
+
+      <div class="cards">
+        <a href="/entry.html" class="card">
+          <div class="card-icon">📝</div>
+          <h2>供应商录入</h2>
+          <p>新增供应商合同记录，填写供应商名称、合同金额、状态等信息</p>
+        </a>
+        <a href="/query.html" class="card">
+          <div class="card-icon">🔍</div>
+          <h2>供应商查询</h2>
+          <p>按关键词、供应商、状态、日期范围等多维度查询合同记录</p>
+        </a>
+        <a href="/stats.html" class="card">
+          <div class="card-icon">📊</div>
+          <h2>供应商统计</h2>
+          <p>按供应商汇总、状态分布、付款统计等数据分析</p>
+        </a>
+      </div>
+
+      <div class="status-bar">
+        <span id="statusText">正在加载...</span>
+      </div>
+    </div>
+
+    <script>
+      fetch("/api/status")
+        .then((r) => r.json())
+        .then((d) => {
+          const el = document.getElementById("statusText");
+          if (d.ok) {
+            el.innerHTML = `✅ 服务器运行中 · 端口 ${d.data.port} · 记录数 <strong>${d.data.record_count}</strong>`;
+          } else {
+            el.textContent = "❌ 服务异常";
+          }
+        })
+        .catch(() => {
+          document.getElementById("statusText").textContent = "❌ 无法连接服务器";
+        });
+    </script>
+  </body>
+</html>

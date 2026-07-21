@@ -3,6 +3,7 @@ import { useIntl, type IntlShape } from "react-intl";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fileReviewGet } from "../api/fileReview";
 import { standaloneConfigWrite, standaloneChat } from "../api";
+import { windowOpenBrowser } from "../api/window";
 import {
   createRunSummaryMessage,
   useAppStore,
@@ -282,8 +283,6 @@ function toolActivityLabel(
     view_image: intl.formatMessage({ id: "tool.viewImage" }),
     spawn_agent: intl.formatMessage({ id: "tool.spawnAgent" }),
     update_plan: intl.formatMessage({ id: "tool.updatePlan" }),
-    build_entry_form: intl.formatMessage({ id: "tool.buildEntryForm" }),
-    save_form_data: intl.formatMessage({ id: "tool.saveFormData" }),
   };
   const desc = base.startsWith("mcp__")
     ? intl.formatMessage({ id: "tool.mcpCall" })
@@ -336,18 +335,6 @@ function toolDisplayLabel(name: string, args: string): string {
         return parsed.path ?? ".";
       case "update_plan":
         return Array.isArray(parsed.plan) ? `${parsed.plan.length} steps` : "update_plan";
-      case "build_entry_form": {
-        const database = typeof parsed.database === "string" ? parsed.database : "";
-        const table = typeof parsed.table === "string" ? parsed.table : "";
-        if (database && table) return `${database}.${table}`;
-        return database || table || "entry form";
-      }
-      case "save_form_data": {
-        const database = typeof parsed.database === "string" ? parsed.database : "";
-        const table = typeof parsed.table === "string" ? parsed.table : "";
-        if (database && table) return `${database}.${table}`;
-        return table || "save_form_data";
-      }
       case "request_user_input":
         return Array.isArray(parsed.questions) ? `${parsed.questions.length} question(s)` : "request_user_input";
       case "request_permissions":
@@ -943,6 +930,27 @@ export function useTauriEvents() {
             ...(typeof e.payload.canGoForward === "boolean"
               ? { canGoForward: e.payload.canGoForward }
               : {}),
+          });
+        }),
+
+        listen<{
+          server?: string;
+          slug?: string;
+          url?: string;
+          pageId?: string;
+        }>("miniapp-open-page", (e) => {
+          const url = typeof e.payload.url === "string" ? e.payload.url.trim() : "";
+          if (!url) return;
+          const store = useAppStore.getState();
+          store.setRightPanelVisible(true);
+          store.setRightPanelTab("browser");
+          store.setBrowserPanelState({
+            url,
+            title: e.payload.pageId || e.payload.slug || e.payload.server || "MiniApp",
+            status: "running",
+          });
+          void windowOpenBrowser(url).catch((err) => {
+            console.error("Failed to open miniapp page:", err);
           });
         }),
 

@@ -33,6 +33,8 @@ interface ComputerUseOverlayFrameProps {
   /** screen = 整屏覆盖窗；app = 主窗内本地回退。 */
   variant?: "screen" | "app";
   applyCursor?: boolean;
+  /** 用户手动关闭「控制中」标记。 */
+  onDismiss?: () => void;
 }
 
 /**
@@ -43,6 +45,7 @@ export function ComputerUseOverlayFrame({
   active,
   variant = "screen",
   applyCursor = true,
+  onDismiss,
 }: ComputerUseOverlayFrameProps) {
   const intl = useIntl();
   const [entered, setEntered] = useState(false);
@@ -78,6 +81,7 @@ export function ComputerUseOverlayFrame({
 
   const title = intl.formatMessage({ id: "computerUse.overlay.title" });
   const subtitle = intl.formatMessage({ id: "computerUse.overlay.subtitle" });
+  const dismissLabel = intl.formatMessage({ id: "computerUse.overlay.dismiss" });
 
   return (
     <div
@@ -105,6 +109,20 @@ export function ComputerUseOverlayFrame({
           <strong>{title}</strong>
           <span>{subtitle}</span>
         </div>
+        {onDismiss ? (
+          <button
+            type="button"
+            className="computer-use-overlay-badge-close"
+            aria-label={dismissLabel}
+            title={dismissLabel}
+            onClick={(event) => {
+              event.stopPropagation();
+              onDismiss();
+            }}
+          >
+            ×
+          </button>
+        ) : null}
       </div>
     </div>
   );

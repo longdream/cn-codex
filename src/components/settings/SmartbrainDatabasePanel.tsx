@@ -14,6 +14,9 @@ import { useCallback, useEffect, useState } from "react";
 import { useIntl } from "react-intl";
 import {
   applyDatabaseNameToConnectionUri,
+  createDefaultPermissionPolicy,
+  createDefaultTablePermission,
+  createEmptyPermissionRule,
   createEmptySmartbrainDbSource,
   inferDefaultPort,
   isSourceEffectivelyEnabled,
@@ -26,7 +29,10 @@ import {
   parseSmartbrainConnectionUriLocally,
   saveSmartbrainDbSources,
   sourceHasAnyPermission,
+  type SmartbrainDbPermissionPolicy,
+  type SmartbrainDbPermissionRule,
   type SmartbrainDbSource,
+  type SmartbrainDbTablePermission,
   type SmartbrainDbType,
 } from "./smartbrainDatabaseState";
 
@@ -38,6 +44,31 @@ function formatSourceSummary(source: SmartbrainDbSource): string {
   const port = source.port ? `:${source.port}` : "";
   const databaseName = source.databaseName ? `/${source.databaseName}` : "";
   return `${host}${port}${databaseName}`;
+}
+
+function ensurePermissionPolicy(
+  permissions?: SmartbrainDbPermissionPolicy | null,
+): SmartbrainDbPermissionPolicy {
+  return permissions?.version === 2
+    ? {
+        ...createDefaultPermissionPolicy(),
+        ...permissions,
+        defaults: {
+          ...createDefaultPermissionPolicy().defaults,
+          ...(permissions.defaults ?? {}),
+        },
+        tables: permissions.tables ?? {},
+        rules: Array.isArray(permissions.rules) ? permissions.rules : createDefaultPermissionPolicy().rules,
+        aiNotes: permissions.aiNotes ?? "",
+      }
+    : createDefaultPermissionPolicy();
+}
+
+function parseCsvList(value: string): string[] {
+  return value
+    .split(/[,，\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 export function SmartbrainDatabasePanel() {
@@ -54,6 +85,7 @@ export function SmartbrainDatabasePanel() {
   const [databaseOptions, setDatabaseOptions] = useState<string[]>([]);
   const [refreshingDatabases, setRefreshingDatabases] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
+  const [newTableName, setNewTableName] = useState("");
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -87,7 +119,10 @@ export function SmartbrainDatabasePanel() {
     }
     const selected = sources.find((item) => item.id === selectedId);
     if (selected) {
-      setDraft(selected);
+      setDraft({
+        ...selected,
+        permissions: ensurePermissionPolicy(selected.permissions),
+      });
       setDatabaseOptions([]);
     }
   }, [selectedId, sources]);
@@ -141,6 +176,7 @@ export function SmartbrainDatabasePanel() {
       password: draft.password,
       filePath: draft.filePath.trim(),
       schema: draft.schema.trim(),
+      permissions: ensurePermissionPolicy(draft.permissions),
       updatedAt: Math.floor(Date.now() / 1000),
     };
 
@@ -419,6 +455,126 @@ export function SmartbrainDatabasePanel() {
       setTestingConnection(false);
     }
   }, [draft, intl]);
+
+  const updatePermissions = useCallback(
+    (updater: (prev: SmartbrainDbPermissionPolicy) => SmartbrainDbPermissionPolicy) => {
+      setDraft((prev) => {
+        const current = ensurePermissionPolicy(prev.permissions);
+        return {
+          ...prev,
+          permissions: updater(current),
+        };
+      });
+    },
+    [],
+  );
+
+  const updateDefaultPermission = useCallback(
+    (key: keyof SmartbrainDbPermissionPolicy["defaults"], checked: boolean) => {
+      updatePermissions((prev) => ({
+        ...prev,
+        defaults: {
+          ...prev.defaults,
+          [key]: checked,
+        },
+      }));
+    },
+    [updatePermissions],
+  );
+
+  const handleAddTablePermission = useCallback(() => {
+    const name = newTableName.trim();
+    if (!name) {
+      return;
+    }
+    updatePermissions((prev) => {
+      if (prev.tables[name]) {
+        return prev;
+      }
+      return {
+        ...prev,
+        tables: {
+          ...prev.tables,
+          [name]: createDefaultTablePermission(),
+        },
+      };
+    });
+    setNewTableName("");
+  }, [newTableName, updatePermissions]);
+
+  const updateTablePermission = useCallback(
+    (tableName: string, key: keyof SmartbrainDbTablePermission, checked: boolean) => {
+      updatePermissions((prev) => {
+        const current = prev.tables[tableName] ?? createDefaultTablePermission();
+        return {
+          ...prev,
+          tables: {
+            ...prev.tables,
+            [tableName]: {
+              ...current,
+              [key]: checked,
+            },
+          },
+        };
+      });
+    },
+    [updatePermissions],
+  );
+
+  const removeTablePermission = useCallback(
+    (tableName: string) => {
+      updatePermissions((prev) => {
+        const nextTables = { ...prev.tables };
+        delete nextTables[tableName];
+        return {
+          ...prev,
+          tables: nextTables,
+        };
+      });
+    },
+    [updatePermissions],
+  );
+
+  const updateRule = useCallback(
+    (index: number, patch: Partial<SmartbrainDbPermissionRule>) => {
+      updatePermissions((prev) => {
+        const rules = prev.rules.map((rule, ruleIndex) =>
+          ruleIndex === index
+            ? {
+                ...rule,
+                ...patch,
+                match: {
+                  ...rule.match,
+                  ...(patch.match ?? {}),
+                },
+              }
+            : rule,
+        );
+        return {
+          ...prev,
+          rules,
+        };
+      });
+    },
+    [updatePermissions],
+  );
+
+  const addRule = useCallback(() => {
+    updatePermissions((prev) => ({
+      ...prev,
+      rules: [...prev.rules, createEmptyPermissionRule()],
+    }));
+  }, [updatePermissions]);
+
+  const removeRule = useCallback(
+    (index: number) => {
+      updatePermissions((prev) => ({
+        ...prev,
+        rules: prev.rules.filter((_, ruleIndex) => ruleIndex !== index),
+      }));
+    },
+    [updatePermissions],
+  );
 
   const effectiveEnabled = isSourceEffectivelyEnabled(draft, {
     defaultRowLimit: 0,
@@ -761,52 +917,280 @@ export function SmartbrainDatabasePanel() {
               <div className="text-xs font-medium text-[var(--text-strong)]">
                 {intl.formatMessage({ id: "settings.smartbrain.database.permissions" })}
               </div>
-              <div className="grid gap-2 md:grid-cols-3">
-                <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-                  <input
-                    type="checkbox"
-                    checked={draft.permissions.readSchema}
-                    onChange={(event) =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        permissions: { ...prev.permissions, readSchema: event.target.checked },
-                      }))
-                    }
-                    className="accent-[var(--accent)]"
-                  />
-                  {intl.formatMessage({ id: "settings.smartbrain.database.permission.readSchema" })}
-                </label>
-                <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-                  <input
-                    type="checkbox"
-                    checked={draft.permissions.readData}
-                    onChange={(event) =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        permissions: { ...prev.permissions, readData: event.target.checked },
-                      }))
-                    }
-                    className="accent-[var(--accent)]"
-                  />
-                  {intl.formatMessage({ id: "settings.smartbrain.database.permission.readData" })}
-                </label>
-                <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-                  <input
-                    type="checkbox"
-                    checked={draft.permissions.writeData}
-                    onChange={(event) =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        permissions: { ...prev.permissions, writeData: event.target.checked },
-                      }))
-                    }
-                    className="accent-[var(--accent)]"
-                  />
-                  {intl.formatMessage({ id: "settings.smartbrain.database.permission.writeData" })}
-                </label>
-              </div>
               <div className="text-[11px] text-[var(--text-faint)]">
                 {intl.formatMessage({ id: "settings.smartbrain.database.permissionHint" })}
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-[11px] font-medium text-[var(--text-muted)]">
+                  {intl.formatMessage({ id: "settings.smartbrain.database.permission.defaults" })}
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {(
+                    [
+                      ["readSchema", "settings.smartbrain.database.permission.readSchema"],
+                      ["readData", "settings.smartbrain.database.permission.readData"],
+                      ["allowInsert", "settings.smartbrain.database.permission.allowInsert"],
+                      ["allowUpdate", "settings.smartbrain.database.permission.allowUpdate"],
+                      ["allowDelete", "settings.smartbrain.database.permission.allowDelete"],
+                      ["allowDdl", "settings.smartbrain.database.permission.allowDdl"],
+                    ] as const
+                  ).map(([key, labelId]) => (
+                    <label
+                      key={key}
+                      className="flex items-center gap-2 text-xs text-[var(--text-muted)]"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.permissions.defaults[key]}
+                        onChange={(event) => updateDefaultPermission(key, event.target.checked)}
+                        className="accent-[var(--accent)]"
+                      />
+                      {intl.formatMessage({ id: labelId })}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2 border-t border-[var(--border-subtle)] pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-[11px] font-medium text-[var(--text-muted)]">
+                    {intl.formatMessage({ id: "settings.smartbrain.database.permission.tables" })}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={newTableName}
+                      onChange={(event) => setNewTableName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          handleAddTablePermission();
+                        }
+                      }}
+                      placeholder={intl.formatMessage({
+                        id: "settings.smartbrain.database.permission.tableNamePlaceholder",
+                      })}
+                      className="app-input w-40 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddTablePermission}
+                      className="app-button-secondary text-xs"
+                    >
+                      {intl.formatMessage({ id: "settings.smartbrain.database.permission.addTable" })}
+                    </button>
+                  </div>
+                </div>
+                <div className="text-[11px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "settings.smartbrain.database.permission.tablesHint" })}
+                </div>
+                {Object.keys(draft.permissions.tables).length === 0 ? (
+                  <div className="text-[11px] text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "settings.smartbrain.database.permission.tablesEmpty" })}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {Object.entries(draft.permissions.tables).map(([tableName, tablePerm]) => (
+                      <div
+                        key={tableName}
+                        className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2.5 py-2"
+                      >
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <div className="text-xs font-medium text-[var(--text-strong)]">{tableName}</div>
+                          <button
+                            type="button"
+                            onClick={() => removeTablePermission(tableName)}
+                            className="text-[11px] text-red-400 hover:text-red-300"
+                          >
+                            {intl.formatMessage({
+                              id: "settings.smartbrain.database.permission.removeTable",
+                            })}
+                          </button>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-4">
+                          {(
+                            [
+                              ["read", "settings.smartbrain.database.permission.tableRead"],
+                              ["insert", "settings.smartbrain.database.permission.tableInsert"],
+                              ["update", "settings.smartbrain.database.permission.tableUpdate"],
+                              ["delete", "settings.smartbrain.database.permission.tableDelete"],
+                            ] as const
+                          ).map(([key, labelId]) => (
+                            <label
+                              key={key}
+                              className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={tablePerm[key]}
+                                onChange={(event) =>
+                                  updateTablePermission(tableName, key, event.target.checked)
+                                }
+                                className="accent-[var(--accent)]"
+                              />
+                              {intl.formatMessage({ id: labelId })}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2 border-t border-[var(--border-subtle)] pt-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-medium text-[var(--text-muted)]">
+                    {intl.formatMessage({ id: "settings.smartbrain.database.permission.rules" })}
+                  </div>
+                  <button type="button" onClick={addRule} className="app-button-secondary text-xs">
+                    {intl.formatMessage({ id: "settings.smartbrain.database.permission.addRule" })}
+                  </button>
+                </div>
+                <div className="text-[11px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "settings.smartbrain.database.permission.rulesHint" })}
+                </div>
+                {draft.permissions.rules.length === 0 ? (
+                  <div className="text-[11px] text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "settings.smartbrain.database.permission.rulesEmpty" })}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {draft.permissions.rules.map((rule, index) => (
+                      <div
+                        key={`${rule.id}-${index}`}
+                        className="space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2.5 py-2"
+                      >
+                        <div className="grid gap-2 md:grid-cols-3">
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-[var(--text-faint)]">
+                              {intl.formatMessage({
+                                id: "settings.smartbrain.database.permission.ruleId",
+                              })}
+                            </label>
+                            <input
+                              value={rule.id}
+                              onChange={(event) => updateRule(index, { id: event.target.value })}
+                              className="app-input w-full text-xs"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-[var(--text-faint)]">
+                              {intl.formatMessage({
+                                id: "settings.smartbrain.database.permission.ruleEffect",
+                              })}
+                            </label>
+                            <select
+                              value={rule.effect}
+                              onChange={(event) =>
+                                updateRule(index, {
+                                  effect: event.target.value === "allow" ? "allow" : "deny",
+                                })
+                              }
+                              className="app-input w-full text-xs"
+                            >
+                              <option value="deny">
+                                {intl.formatMessage({
+                                  id: "settings.smartbrain.database.permission.effectDeny",
+                                })}
+                              </option>
+                              <option value="allow">
+                                {intl.formatMessage({
+                                  id: "settings.smartbrain.database.permission.effectAllow",
+                                })}
+                              </option>
+                            </select>
+                          </div>
+                          <div className="flex items-end justify-end">
+                            <button
+                              type="button"
+                              onClick={() => removeRule(index)}
+                              className="text-[11px] text-red-400 hover:text-red-300"
+                            >
+                              {intl.formatMessage({
+                                id: "settings.smartbrain.database.permission.removeRule",
+                              })}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid gap-2 md:grid-cols-2">
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-[var(--text-faint)]">
+                              {intl.formatMessage({
+                                id: "settings.smartbrain.database.permission.ruleSqlKinds",
+                              })}
+                            </label>
+                            <input
+                              value={rule.match.sqlKinds.join(", ")}
+                              onChange={(event) =>
+                                updateRule(index, {
+                                  match: {
+                                    ...rule.match,
+                                    sqlKinds: parseCsvList(event.target.value),
+                                  },
+                                })
+                              }
+                              placeholder="select, insert, update, delete, ddl"
+                              className="app-input w-full text-xs"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-[var(--text-faint)]">
+                              {intl.formatMessage({
+                                id: "settings.smartbrain.database.permission.ruleTables",
+                              })}
+                            </label>
+                            <input
+                              value={rule.match.tables.join(", ")}
+                              onChange={(event) =>
+                                updateRule(index, {
+                                  match: {
+                                    ...rule.match,
+                                    tables: parseCsvList(event.target.value),
+                                  },
+                                })
+                              }
+                              placeholder="contract, party"
+                              className="app-input w-full text-xs"
+                            />
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] text-[var(--text-faint)]">
+                            {intl.formatMessage({
+                              id: "settings.smartbrain.database.permission.ruleMessage",
+                            })}
+                          </label>
+                          <input
+                            value={rule.message}
+                            onChange={(event) => updateRule(index, { message: event.target.value })}
+                            className="app-input w-full text-xs"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-1 border-t border-[var(--border-subtle)] pt-3">
+                <label className="text-[11px] font-medium text-[var(--text-muted)]">
+                  {intl.formatMessage({ id: "settings.smartbrain.database.permission.aiNotes" })}
+                </label>
+                <textarea
+                  value={draft.permissions.aiNotes}
+                  onChange={(event) =>
+                    updatePermissions((prev) => ({
+                      ...prev,
+                      aiNotes: event.target.value,
+                    }))
+                  }
+                  rows={3}
+                  placeholder={intl.formatMessage({
+                    id: "settings.smartbrain.database.permission.aiNotesPlaceholder",
+                  })}
+                  className="app-input w-full resize-y text-xs"
+                />
               </div>
             </div>
 

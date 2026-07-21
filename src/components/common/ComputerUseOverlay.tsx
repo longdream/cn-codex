@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { windowSetComputerUseOverlay } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
-import { resolveComputerUseActive } from "../../utils/computerUse";
+import { isComputerUseToolCall, resolveComputerUseActive } from "../../utils/computerUse";
 import { ComputerUseOverlayFrame, COMPUTER_USE_CURSOR_CSS } from "./ComputerUseOverlayFrame";
 
 /**
@@ -16,9 +16,13 @@ export function ComputerUseOverlay() {
   const threadRuntimeStates = useAppStore((s) => s.threadRuntimeStates);
   const lastActiveRef = useRef<boolean | null>(null);
   const syncSeqRef = useRef(0);
+  const desiredActiveRef = useRef(false);
+  const prevHadRunningRef = useRef(false);
+  /** 用户手动关闭后，在本轮「无 running 工具」期间抑制遮罩，避免粘滞。 */
+  const [userDismissed, setUserDismissed] = useState(false);
   const [useScreenOverlay, setUseScreenOverlay] = useState(true);
 
-  const active = useMemo(
+  const systemActive = useMemo(
     () =>
       resolveComputerUseActive({
         messages,
@@ -27,6 +31,53 @@ export function ComputerUseOverlay() {
       }),
     [isStreaming, messages, threadRuntimeStates],
   );
+
+  // 仅当真正有 running 的 CU 工具时，取消用户 dismiss，允许再次显示。
+  const hasRunningComputerUse = useMemo(() => {
+    const allMessages = [
+      ...messages,
+      ...Object.values(threadRuntimeStates).flatMap((runtime) => runtime.messages ?? []),
+    ];
+    return allMessages.some((message) =>
+      message.toolCalls?.some(
+        (toolCall) =>
+          toolCall.status === "running" && isComputerUseToolCall(toolCall.name, toolCall.arguments),
+      ),
+    );
+  }, [messages, threadRuntimeStates]);
+
+  useEffect(() => {
+    // 仅在「新出现」running CU 工具时取消 dismiss；
+    // 避免用户 Esc 关闭后立刻被当前仍 running 的工具重新点亮。
+    if (hasRunningComputerUse && !prevHadRunningRef.current) {
+      setUserDismissed(false);
+    }
+    prevHadRunningRef.current = hasRunningComputerUse;
+  }, [hasRunningComputerUse]);
+
+  // 系统判定已空闲时，清掉 dismiss 标记，避免影响后续会话。
+  useEffect(() => {
+    if (!systemActive && userDismissed) {
+      setUserDismissed(false);
+    }
+  }, [systemActive, userDismissed]);
+
+  const active = systemActive && !userDismissed;
+
+  useEffect(() => {
+    desiredActiveRef.current = active;
+  }, [active]);
+
+  const forceCloseOverlay = useCallback(async () => {
+    setUserDismissed(true);
+    desiredActiveRef.current = false;
+    lastActiveRef.current = false;
+    try {
+      await windowSetComputerUseOverlay(false);
+    } catch {
+      // ignore — 主窗内回退层会随 active=false 消失
+    }
+  }, []);
 
   useEffect(() => {
     // 主窗始终同步受控光标：整屏覆盖窗是 click-through，不会接管系统光标。
@@ -44,6 +95,19 @@ export function ComputerUseOverlay() {
     };
   }, [active]);
 
+  // Esc 强制关闭「控制中」标记（整屏层 click-through 时也能从主窗关掉）。
+  useEffect(() => {
+    if (!active) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void forceCloseOverlay();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [active, forceCloseOverlay]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -54,15 +118,27 @@ export function ComputerUseOverlay() {
       const seq = ++syncSeqRef.current;
       const nextActive = active;
 
-      // 已是激活态时跳过重复 show；关闭路径始终下发，避免残留外框。
+      // 已是激活态时跳过重复 show；关闭路径始终下发，避免残留外框 / 竞态重开。
       if (lastActiveRef.current === nextActive && nextActive) {
         return;
       }
 
       try {
         await windowSetComputerUseOverlay(nextActive);
-        // 忽略过期的异步结果，避免后到的 show 把已结束的 hide 覆盖掉。
-        if (!cancelled && seq === syncSeqRef.current) {
+        // 异步竞态：晚到的 show 可能在 hide 之后完成，必须按最新意图纠正。
+        if (cancelled) {
+          return;
+        }
+        if (desiredActiveRef.current !== nextActive) {
+          if (nextActive && !desiredActiveRef.current) {
+            await windowSetComputerUseOverlay(false);
+            if (!cancelled && seq === syncSeqRef.current) {
+              lastActiveRef.current = false;
+            }
+          }
+          return;
+        }
+        if (seq === syncSeqRef.current) {
           lastActiveRef.current = nextActive;
         }
       } catch (error) {
@@ -105,5 +181,14 @@ export function ComputerUseOverlay() {
     return null;
   }
 
-  return <ComputerUseOverlayFrame active={active} variant="app" applyCursor={false} />;
+  return (
+    <ComputerUseOverlayFrame
+      active={active}
+      variant="app"
+      applyCursor={false}
+      onDismiss={() => {
+        void forceCloseOverlay();
+      }}
+    />
+  );
 }
