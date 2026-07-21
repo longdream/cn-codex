@@ -129,6 +129,22 @@ export async function gitUnstage(paths: string[], cwd?: string): Promise<GitActi
   return invoke("git_unstage", { cwd, paths });
 }
 
+export async function gitDiscard(
+  paths: string[],
+  options?: {
+    cwd?: string;
+    untracked?: boolean;
+    confirmDangerous?: boolean;
+  },
+): Promise<GitActionResponse> {
+  return invoke("git_discard", {
+    cwd: options?.cwd,
+    paths,
+    untracked: options?.untracked ?? false,
+    confirmDangerous: options?.confirmDangerous ?? true,
+  });
+}
+
 export async function gitCommit(message: string, cwd?: string): Promise<GitActionResponse> {
   return invoke("git_commit", { cwd, message });
 }

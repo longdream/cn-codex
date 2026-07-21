@@ -1,6 +1,7 @@
 import {
   IconAlertTriangle,
   IconExternalLink,
+  IconMessagePlus,
   IconPlayerPlay,
   IconPlayerStop,
   IconRefresh,
@@ -16,6 +17,7 @@ import {
   miniappStop,
   type MiniAppRecord,
 } from "../../api/miniapp";
+import { standaloneThreadCreate } from "../../api/standalone";
 import { windowOpenBrowser } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
 
@@ -31,6 +33,22 @@ function statusTone(status: MiniAppRecord["status"]): string {
     default:
       return "text-[var(--text-faint)]";
   }
+}
+
+function buildJoinConversationDraft(app: MiniAppRecord): string {
+  const rootPath = app.rootPath?.trim() || "(未配置 rootPath)";
+  const database = app.databaseName || app.databaseId || "-";
+  return [
+    `请基于当前小程序包进行修改。`,
+    `- 名称：${app.name}`,
+    `- slug：${app.slug}`,
+    `- MCP server 名：${app.slug}`,
+    `- 路径：${rootPath}`,
+    `- 绑定库：${database}`,
+    `当前工作目录已切换到该小程序根目录，请直接读取并修改包内文件。`,
+    `需要界面时调用 open_page；业务读写库优先走小程序 tools / 宿主 smartbrain_sql_query（受权限约束）。`,
+    `需求：`,
+  ].join("\n");
 }
 
 export function MiniAppSidePanel() {
@@ -72,6 +90,39 @@ export function MiniAppSidePanel() {
       }
     },
     [load],
+  );
+
+  const joinConversation = useCallback(
+    async (app: MiniAppRecord) => {
+      const workdir = app.rootPath?.trim();
+      if (!workdir) {
+        throw new Error(intl.formatMessage({ id: "miniapp.err.noRootPath" }));
+      }
+
+      const createResp = await standaloneThreadCreate();
+      const threadId = createResp?.thread?.id;
+      if (!threadId) {
+        throw new Error(intl.formatMessage({ id: "miniapp.err.threadFailed" }));
+      }
+
+      const store = useAppStore.getState();
+      store.setWorkspaceCwd(workdir);
+      // 先切到新线程，再打开本地知识库，确保 preference 绑定到新 threadId。
+      store.setCurrentThread(threadId);
+      store.setThreadSmartbrainEnabled(true);
+      store.addThread({
+        id: threadId,
+        preview: intl.formatMessage(
+          { id: "miniapp.joinPreview" },
+          { name: app.name, slug: app.slug },
+        ),
+        updatedAt: Date.now(),
+        projectId: store.currentProjectId ?? undefined,
+      });
+      store.setShowSettings(false);
+      store.queueComposerInsert(buildJoinConversationDraft(app));
+    },
+    [intl],
   );
 
   return (
@@ -179,6 +230,16 @@ export function MiniAppSidePanel() {
                   >
                     <IconExternalLink size={12} stroke={1.8} />
                     {intl.formatMessage({ id: "miniapp.openPage" })}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void runAction(app.slug, () => joinConversation(app))}
+                    className="app-button-secondary flex items-center gap-1 text-[11px] disabled:opacity-50"
+                    title={intl.formatMessage({ id: "miniapp.joinConversationHint" })}
+                  >
+                    <IconMessagePlus size={12} stroke={1.8} />
+                    {intl.formatMessage({ id: "miniapp.joinConversation" })}
                   </button>
                   <button
                     type="button"

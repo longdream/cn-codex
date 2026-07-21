@@ -245,7 +245,7 @@ async fn handle_local_request(
                 .and_then(|s| s.strip_suffix("/interrupt"))
                 .unwrap_or("");
             info!("[relay_client] interrupt requested for thread {thread_id}");
-            state.agent_engine.interrupt();
+            state.agent_engine.interrupt_thread(thread_id);
             let interrupted_tools = state
                 .agent_engine
                 .interrupt_active_tools(Some(thread_id))

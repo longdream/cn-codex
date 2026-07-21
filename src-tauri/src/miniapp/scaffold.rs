@@ -289,7 +289,32 @@ function listen(port) {
   });
 }
 
-const boundPort = await listen(Number.isFinite(preferredPort) ? preferredPort : 0);
+async function listenWithFallback(preferred) {
+  const reuseHttp =
+    process.env.MINIAPP_REUSE_HTTP === "1" ||
+    process.env.MINIAPP_REUSE_HTTP === "true";
+  const want = Number.isFinite(preferred) && preferred > 0 ? preferred : 0;
+  // Host already serves HTTP on this port; MCP process only needs stdio tools.
+  if (reuseHttp && want > 0) {
+    console.error(`[miniapp] reusing host HTTP on 127.0.0.1:${want}`);
+    return want;
+  }
+  try {
+    return await listen(want);
+  } catch (err) {
+    if (want > 0 && err && (err.code === "EADDRINUSE" || err.code === "EACCES")) {
+      console.error(
+        `[miniapp] port ${want} busy (${err.code}); falling back to free port`
+      );
+      return await listen(0);
+    }
+    throw err;
+  }
+}
+
+const boundPort = await listenWithFallback(
+  Number.isFinite(preferredPort) ? preferredPort : 0
+);
 process.env.MINIAPP_BOUND_PORT = String(boundPort);
 // Host runtime can scrape this line for the allocated port.
 console.error(`[miniapp] listening on 127.0.0.1:${boundPort}`);

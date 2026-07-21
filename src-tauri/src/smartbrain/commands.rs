@@ -626,153 +626,6 @@ fn enrich_list_request_from_connection_uri(
     request
 }
 
-fn parse_cli_database_names(stdout: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in stdout.lines() {
-        let trimmed = line
-            .trim()
-            .trim_matches(|c| c == '|' || c == '+' || c == '-' || c == '"');
-        if trimmed.is_empty() {
-            continue;
-        }
-        let lower = trimmed.to_ascii_lowercase();
-        if matches!(
-            lower.as_str(),
-            "name"
-                | "database"
-                | "datname"
-                | "database_name"
-                | "schema_name"
-                | "(1 row)"
-                | "(0 rows)"
-        ) || lower.starts_with("+")
-            || lower.starts_with("-")
-            || lower.starts_with("row")
-            || lower.contains("rows affected")
-        {
-            continue;
-        }
-        if !names
-            .iter()
-            .any(|existing: &String| existing.eq_ignore_ascii_case(trimmed))
-        {
-            names.push(trimmed.to_string());
-        }
-    }
-    names.sort();
-    names
-}
-
-async fn run_process_capture(
-    program: &str,
-    args: &[String],
-    env_vars: &[(&str, String)],
-) -> Result<String, String> {
-    use tokio::process::Command;
-
-    let mut command = Command::new(program);
-    command.args(args);
-    for (key, value) in env_vars {
-        command.env(key, value);
-    }
-
-    let output = command
-        .output()
-        .await
-        .map_err(|error| format!("Failed to execute {program}: {error}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("{program} exited with status {}", output.status)
-        };
-        return Err(detail);
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn parse_mysql_list_args(
-    request: &SmartbrainDatabaseListRequest,
-) -> Result<(Vec<String>, Vec<(&'static str, String)>), String> {
-    let host = first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
-    let port = request.port.unwrap_or(3306);
-    let username = first_non_empty(&[&request.username]).unwrap_or_else(|| "root".to_string());
-    let password = request.password.clone();
-
-    let args = vec![
-        format!("-h{host}"),
-        format!("-P{port}"),
-        format!("-u{username}"),
-        "-N".to_string(),
-        "-B".to_string(),
-        "-e".to_string(),
-        "SHOW DATABASES;".to_string(),
-    ];
-    let env_vars = vec![("MYSQL_PWD", password)];
-    Ok((args, env_vars))
-}
-
-fn parse_postgres_list_args(
-    request: &SmartbrainDatabaseListRequest,
-) -> Result<(Vec<String>, Vec<(&'static str, String)>), String> {
-    let host = first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
-    let port = request.port.unwrap_or(5432);
-    let username = first_non_empty(&[&request.username]).unwrap_or_else(|| "postgres".to_string());
-    let database =
-        first_non_empty(&[&request.database_name]).unwrap_or_else(|| "postgres".to_string());
-    let password = request.password.clone();
-
-    let args = vec![
-        "-h".to_string(),
-        host,
-        "-p".to_string(),
-        port.to_string(),
-        "-U".to_string(),
-        username,
-        "-d".to_string(),
-        database,
-        "-At".to_string(),
-        "-c".to_string(),
-        "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;".to_string(),
-    ];
-    let env_vars = vec![("PGPASSWORD", password)];
-    Ok((args, env_vars))
-}
-
-fn parse_sqlserver_list_command(
-    request: &SmartbrainDatabaseListRequest,
-) -> Result<(String, Vec<String>), String> {
-    let host = first_non_empty(&[&request.host])
-        .ok_or_else(|| "SQL Server host is required".to_string())?;
-    let port = request.port.unwrap_or(1433);
-    let username = first_non_empty(&[&request.username])
-        .ok_or_else(|| "SQL Server username is required".to_string())?;
-    let password = request.password.clone();
-    let server = format!("{host},{port}");
-
-    // Prefer sqlcmd when available.
-    let args = vec![
-        "-S".to_string(),
-        server,
-        "-U".to_string(),
-        username,
-        "-P".to_string(),
-        password,
-        "-h".to_string(),
-        "-1".to_string(),
-        "-W".to_string(),
-        "-Q".to_string(),
-        "SET NOCOUNT ON; SELECT name FROM sys.databases ORDER BY name;".to_string(),
-    ];
-    Ok(("sqlcmd".to_string(), args))
-}
-
 async fn list_sqlite_databases(
     request: &SmartbrainDatabaseListRequest,
 ) -> Result<Vec<String>, String> {
@@ -797,31 +650,67 @@ async fn list_databases_for_request(
     let db_type = request.db_type.trim().to_ascii_lowercase();
     match db_type.as_str() {
         "mysql" => {
-            let (args, env_vars) = parse_mysql_list_args(&request)?;
-            let stdout = run_process_capture("mysql", &args, &env_vars).await.map_err(|error| {
-                format!(
-                    "Failed to list MySQL databases via `mysql` CLI. Install MySQL client or ensure it is in PATH. Detail: {error}"
+            let host = first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
+            let port = request.port.unwrap_or(3306);
+            let username =
+                first_non_empty(&[&request.username]).unwrap_or_else(|| "root".to_string());
+            let password = request.password.clone();
+            let database = first_non_empty(&[&request.database_name]).unwrap_or_default();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::smartbrain::mysql_native::execute_mysql_query(
+                    &host,
+                    port,
+                    &username,
+                    &password,
+                    &database,
+                    "SHOW DATABASES;",
+                    15,
+                    1000,
                 )
-            })?;
-            Ok(parse_cli_database_names(&stdout))
+            })
+            .await
+            .map_err(|error| format!("MySQL 列表任务失败: {error}"))?
+            .map_err(|error| format!("列出 MySQL 数据库失败: {error}"))?;
+            Ok(result
+                .rows
+                .into_iter()
+                .filter_map(|row| row.into_iter().next())
+                .filter(|name| !name.trim().is_empty() && name != "NULL")
+                .collect())
         }
         "postgresql" | "postgres" => {
-            let (args, env_vars) = parse_postgres_list_args(&request)?;
-            let stdout = run_process_capture("psql", &args, &env_vars).await.map_err(|error| {
-                format!(
-                    "Failed to list PostgreSQL databases via `psql` CLI. Install PostgreSQL client or ensure it is in PATH. Detail: {error}"
-                )
-            })?;
-            Ok(parse_cli_database_names(&stdout))
+            let host = first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
+            let port = request.port.unwrap_or(5432);
+            let username =
+                first_non_empty(&[&request.username]).unwrap_or_else(|| "postgres".to_string());
+            let database =
+                first_non_empty(&[&request.database_name]).unwrap_or_else(|| "postgres".to_string());
+            crate::smartbrain::postgres_native::list_postgres_databases(
+                &host,
+                port,
+                &username,
+                &request.password,
+                &database,
+                15,
+            )
+            .await
+            .map_err(|error| format!("列出 PostgreSQL 数据库失败: {error}"))
         }
         "sqlserver" | "mssql" => {
-            let (program, args) = parse_sqlserver_list_command(&request)?;
-            let stdout = run_process_capture(&program, &args, &[]).await.map_err(|error| {
-                format!(
-                    "Failed to list SQL Server databases via `sqlcmd`. Install SQL Server tools or ensure sqlcmd is in PATH. Detail: {error}"
-                )
-            })?;
-            Ok(parse_cli_database_names(&stdout))
+            let host = first_non_empty(&[&request.host])
+                .ok_or_else(|| "SQL Server host is required".to_string())?;
+            let port = request.port.unwrap_or(1433);
+            let username = first_non_empty(&[&request.username])
+                .ok_or_else(|| "SQL Server username is required".to_string())?;
+            crate::smartbrain::sqlserver_native::list_sqlserver_databases(
+                &host,
+                port,
+                &username,
+                &request.password,
+                15,
+            )
+            .await
+            .map_err(|error| format!("列出 SQL Server 数据库失败: {error}"))
         }
         "sqlite" => list_sqlite_databases(&request).await,
         other => Err(format!("Unsupported database type for listing: {other}")),
@@ -943,46 +832,61 @@ pub async fn smartbrain_test_database_connection(
             format!("连接成功（SQLite）· 文件 `{path}` · 探测结果={value}")
         }
         "postgresql" | "postgres" => {
-            let (mut args, env_vars) = parse_postgres_list_args(&request).map_err(AppError::Custom)?;
-            // Replace list SQL with SELECT 1
-            if let Some(pos) = args.iter().position(|item| item == "-c") {
-                if pos + 1 < args.len() {
-                    args[pos + 1] = "SELECT 1;".to_string();
-                }
-            }
-            let _stdout = run_process_capture("psql", &args, &env_vars)
-                .await
-                .map_err(|error| {
-                    AppError::Custom(format!(
-                        "PostgreSQL 连接测试失败（需要本机 psql CLI）: {error}"
-                    ))
-                })?;
+            let host =
+                first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
+            let port = request.port.unwrap_or(5432);
+            let username =
+                first_non_empty(&[&request.username]).unwrap_or_else(|| "postgres".to_string());
+            let database =
+                first_non_empty(&[&request.database_name]).unwrap_or_else(|| "postgres".to_string());
+            let result = crate::smartbrain::postgres_native::execute_postgres_query(
+                &host,
+                port,
+                &username,
+                &request.password,
+                &database,
+                "SELECT 1 AS ok;",
+                timeout,
+                1,
+            )
+            .await
+            .map_err(|error| {
+                AppError::Custom(format!("PostgreSQL 连接测试失败: {error}"))
+            })?;
             format!(
-                "连接成功（PostgreSQL）· {}:{} / {}",
-                first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".into()),
-                request.port.unwrap_or(5432),
-                first_non_empty(&[&request.database_name]).unwrap_or_else(|| "postgres".into())
+                "连接成功（PostgreSQL）· {host}:{port}/{database} · 探测返回 {} 行",
+                result.rows.len()
             )
         }
         "sqlserver" | "mssql" => {
-            let (program, mut args) =
-                parse_sqlserver_list_command(&request).map_err(AppError::Custom)?;
-            if let Some(pos) = args.iter().position(|item| item == "-Q") {
-                if pos + 1 < args.len() {
-                    args[pos + 1] = "SET NOCOUNT ON; SELECT 1;".to_string();
-                }
-            }
-            let _stdout = run_process_capture(&program, &args, &[])
-                .await
-                .map_err(|error| {
-                    AppError::Custom(format!(
-                        "SQL Server 连接测试失败（需要本机 sqlcmd）: {error}"
-                    ))
-                })?;
+            let host = first_non_empty(&[&request.host])
+                .ok_or_else(|| AppError::Custom("SQL Server host is required".to_string()))?;
+            let port = request.port.unwrap_or(1433);
+            let username = first_non_empty(&[&request.username])
+                .ok_or_else(|| AppError::Custom("SQL Server username is required".to_string()))?;
+            let database = first_non_empty(&[&request.database_name]).unwrap_or_default();
+            let result = crate::smartbrain::sqlserver_native::execute_sqlserver_query(
+                &host,
+                port,
+                &username,
+                &request.password,
+                &database,
+                "SET NOCOUNT ON; SELECT 1 AS ok;",
+                timeout,
+                1,
+            )
+            .await
+            .map_err(|error| {
+                AppError::Custom(format!("SQL Server 连接测试失败: {error}"))
+            })?;
             format!(
-                "连接成功（SQL Server）· {}:{}",
-                first_non_empty(&[&request.host]).unwrap_or_default(),
-                request.port.unwrap_or(1433)
+                "连接成功（SQL Server）· {host}:{port}{} · 探测返回 {} 行",
+                if database.is_empty() {
+                    String::new()
+                } else {
+                    format!("/{database}")
+                },
+                result.rows.len()
             )
         }
         other => {

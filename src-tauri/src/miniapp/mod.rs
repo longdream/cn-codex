@@ -154,9 +154,11 @@ pub fn load_registry(workspace_config_dir: &Path) -> Result<Vec<MiniAppRecord>, 
     for app in &mut file.apps {
         if runtime::is_running(&app.slug) {
             app.status = MiniAppStatus::Running;
+            if let Some(port) = runtime::running_port(&app.slug) {
+                app.port = Some(port);
+            }
         } else if app.status == MiniAppStatus::Running {
             app.status = MiniAppStatus::Stopped;
-            app.port = None;
         }
     }
     Ok(file.apps)
@@ -306,7 +308,10 @@ pub fn open_page_url(app: &MiniAppRecord, page_id: Option<&str>) -> Option<Strin
 }
 
 /// Convert a MiniApp record into an MCP stdio server config for the main chain.
-pub fn app_to_mcp_server(app: &MiniAppRecord) -> Option<McpServerConfig> {
+pub fn app_to_mcp_server(
+    app: &MiniAppRecord,
+    workspace_config_dir: Option<&Path>,
+) -> Option<McpServerConfig> {
     if app.root_path.trim().is_empty() {
         return None;
     }
@@ -357,8 +362,34 @@ pub fn app_to_mcp_server(app: &MiniAppRecord) -> Option<McpServerConfig> {
         env.insert("MINIAPP_NAME".into(), app.name.clone());
     }
     env.insert("MINIAPP_SLUG".into(), app.slug.clone());
-    if let Some(port) = app.port {
+
+    // Port policy for MCP spawn (may run while host miniapp is already up):
+    // 1) Host process already running → reuse its HTTP port (skip re-bind in Node).
+    // 2) Preferred port free → bind it.
+    // 3) Preferred port busy → omit MINIAPP_PORT so Node picks a free port.
+    if let Some(port) = runtime::running_port(&app.slug).filter(|p| *p > 0) {
         env.insert("MINIAPP_PORT".into(), port.to_string());
+        env.insert("PORT".into(), port.to_string());
+        env.insert("MINIAPP_REUSE_HTTP".into(), "1".into());
+    } else if let Some(port) = app.port.filter(|p| *p > 0) {
+        if runtime::is_port_available(port) {
+            env.insert("MINIAPP_PORT".into(), port.to_string());
+            env.insert("PORT".into(), port.to_string());
+        }
+        // busy preferred port: leave MINIAPP_PORT unset → Node listen(0)
+    }
+
+    // Align MCP spawn env with host miniapp_start so DB-backed tools work.
+    if let Some(dir) = workspace_config_dir {
+        if let Some((host, db_port, user, password, name)) =
+            runtime::resolve_miniapp_db_env(dir, &app.database_id)
+        {
+            env.insert("MINIAPP_DB_HOST".into(), host);
+            env.insert("MINIAPP_DB_PORT".into(), db_port);
+            env.insert("MINIAPP_DB_USER".into(), user);
+            env.insert("MINIAPP_DB_PASSWORD".into(), password);
+            env.insert("MINIAPP_DB_NAME".into(), name);
+        }
     }
 
     // MCP server name uses slug so prompts can say mcp_call_tool(server=<slug>).
@@ -385,7 +416,7 @@ pub fn list_miniapp_mcp_servers(
     };
     let mut map = HashMap::new();
     for app in apps {
-        if let Some(server) = app_to_mcp_server(&app) {
+        if let Some(server) = app_to_mcp_server(&app, Some(workspace_config_dir)) {
             map.entry(server.name.clone()).or_insert(server);
         }
     }

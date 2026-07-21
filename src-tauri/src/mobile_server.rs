@@ -305,7 +305,7 @@ async fn interrupt_handler(
     AxumPath(thread_id): AxumPath<String>,
 ) -> Json<serde_json::Value> {
     info!("Mobile interrupt requested for thread {thread_id}");
-    state.agent_engine.interrupt();
+    state.agent_engine.interrupt_thread(&thread_id);
     let interrupted_tools = state
         .agent_engine
         .interrupt_active_tools(Some(&thread_id))

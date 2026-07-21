@@ -8,6 +8,8 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 use super::{resolve_bundled_node, write_manifest, MiniAppRecord, MiniAppStatus};
 
@@ -54,6 +56,10 @@ pub fn running_port(slug: &str) -> Option<u16> {
         .and_then(|g| g.get(slug).map(|p| p.port))
 }
 
+pub(crate) fn is_port_available(port: u16) -> bool {
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
 fn allocate_port() -> Result<u16, String> {
     let listener =
         TcpListener::bind("127.0.0.1:0").map_err(|e| format!("分配端口失败: {e}"))?;
@@ -65,9 +71,23 @@ fn allocate_port() -> Result<u16, String> {
     Ok(port)
 }
 
+/// Prefer the previously assigned port when free; otherwise allocate a new one.
+fn resolve_start_port(preferred: Option<u16>) -> Result<u16, String> {
+    if let Some(port) = preferred.filter(|p| *p > 0) {
+        if is_port_available(port) {
+            return Ok(port);
+        }
+        tracing::warn!(
+            target: "miniapp",
+            "preferred miniapp port {port} is busy; allocating a new free port"
+        );
+    }
+    allocate_port()
+}
+
 /// Resolve DB credentials for a MiniApp from Local Knowledge Base sources.
 /// Returns (host, port, user, password, database_name).
-fn resolve_miniapp_db_env(
+pub(crate) fn resolve_miniapp_db_env(
     workspace_config_dir: &std::path::Path,
     database_id: &str,
 ) -> Option<(String, String, String, String, String)> {
@@ -125,7 +145,8 @@ pub fn start_app(
     }
 
     let node = resolve_bundled_node(workspace_config_dir)?;
-    let port = allocate_port()?;
+    // 优先复用上次端口；若被占用再分配新端口。
+    let port = resolve_start_port(app.port)?;
     let db_env = resolve_miniapp_db_env(workspace_config_dir, &app.database_id);
 
     let mut command = Command::new(&node);
@@ -141,6 +162,12 @@ pub fn start_app(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // 隐藏 Windows 控制台窗口
+    #[cfg(target_os = "windows")]
+    {
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
 
     if let Some((host, db_port, user, password, name)) = db_env {
         command
@@ -180,7 +207,7 @@ pub fn start_app(
     thread::sleep(Duration::from_millis(250));
     if let Ok(Some(status)) = child.try_wait() {
         app.status = MiniAppStatus::Error;
-        app.port = None;
+        // 保留端口，方便下次继续尝试同一端口。
         app.last_error = format!("小程序进程立即退出，code={status}");
         let _ = write_manifest(app);
         return Err(app.last_error.clone());
@@ -218,7 +245,6 @@ pub fn stop_app(app: &mut MiniAppRecord) -> Result<(), String> {
         let _ = proc.child.wait();
     }
     app.status = MiniAppStatus::Stopped;
-    app.port = None;
     app.last_error.clear();
     app.updated_at = super::now_secs();
     write_manifest(app)?;
