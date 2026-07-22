@@ -14,7 +14,79 @@ interface McpServerInfo {
   name: string;
   command?: string;
   args?: string[];
+  url?: string;
+  type?: string;
   disabled?: boolean;
+}
+
+function extractMcpServerMap(raw: Record<string, unknown>): Record<string, Record<string, unknown>> {
+  const nested = raw.mcpServers ?? raw.mcp_servers;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return nested as Record<string, Record<string, unknown>>;
+  }
+  // Direct map form: { "name": { command/url... } }
+  return raw as Record<string, Record<string, unknown>>;
+}
+
+function normalizeImportedMcpServer(
+  name: string,
+  value: unknown,
+): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const source = value as Record<string, unknown>;
+  const next: Record<string, unknown> = { ...source };
+
+  // Cursor/Cline style active flag → CN-Codex disabled
+  if (typeof next.disabled !== "boolean") {
+    if (typeof next.isActive === "boolean") {
+      next.disabled = !next.isActive;
+    } else if (typeof next.is_active === "boolean") {
+      next.disabled = !next.is_active;
+    } else if (typeof next.enabled === "boolean") {
+      next.disabled = !next.enabled;
+    }
+  }
+  delete next.isActive;
+  delete next.is_active;
+  delete next.enabled;
+  delete next.name;
+  delete next.description;
+
+  const command = typeof next.command === "string" ? next.command.trim() : "";
+  const url =
+    (typeof next.url === "string" && next.url.trim()) ||
+    (typeof next.server_url === "string" && next.server_url.trim()) ||
+    "";
+  if (!command && !url) {
+    return null;
+  }
+
+  // Keep explicit transport/type when present.
+  if (typeof next.type === "string") {
+    next.type = next.type.trim().toLowerCase();
+  } else if (typeof next.transport === "string") {
+    next.type = String(next.transport).trim().toLowerCase();
+  } else if (url) {
+    const lower = url.toLowerCase();
+    next.type = lower.includes("/sse") ? "sse" : "http";
+  }
+
+  // Prefer canonical fields.
+  if (url && !next.url) {
+    next.url = url;
+  }
+  delete next.server_url;
+
+  // Avoid storing empty command for remote servers.
+  if (!command) {
+    delete next.command;
+    delete next.args;
+  }
+
+  void name;
+  return next;
 }
 
 interface WorkspacePathCard {
@@ -122,7 +194,32 @@ export function IntegrationPanel() {
           name,
           command: (val.command as string) ?? "",
           args: (val.args as string[]) ?? [],
-          disabled: Boolean(val.disabled),
+          url: typeof val.url === "string" ? val.url : undefined,
+          type: (() => {
+            const explicit =
+              typeof val.type === "string"
+                ? val.type
+                : typeof val.transport === "string"
+                  ? val.transport
+                  : "";
+            if (explicit) return explicit.toLowerCase();
+            const url = typeof val.url === "string" ? val.url : "";
+            if (url) {
+              const path = url.toLowerCase().split("?")[0] ?? "";
+              return path.endsWith("/sse") || path.includes("/sse/") ? "sse" : "http";
+            }
+            return "stdio";
+          })(),
+          disabled:
+            typeof val.disabled === "boolean"
+              ? val.disabled
+              : typeof val.isActive === "boolean"
+                ? !val.isActive
+                : typeof val.is_active === "boolean"
+                  ? !val.is_active
+                  : typeof val.enabled === "boolean"
+                    ? !val.enabled
+                    : false,
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
       setServers(parsed);
@@ -156,10 +253,24 @@ export function IntegrationPanel() {
 
     setMcpSaving(true);
     try {
-      const edits = Object.entries(parsed).map(([name, value]) => ({
-        keyPath: `mcp_servers.${name}`,
-        value,
-      }));
+      const serverMap = extractMcpServerMap(parsed);
+      const edits = Object.entries(serverMap)
+        .map(([name, value]) => {
+          const normalized = normalizeImportedMcpServer(name, value);
+          if (!normalized) return null;
+          return {
+            keyPath: `mcp_servers.${name}`,
+            value: normalized,
+          };
+        })
+        .filter((item): item is { keyPath: string; value: Record<string, unknown> } => item !== null);
+
+      if (edits.length === 0) {
+        setMcpJsonError(intl.formatMessage({ id: "settings.integration.mcpJsonInvalid" }));
+        setMcpSaving(false);
+        return;
+      }
+
       await standaloneConfigWrite(edits);
       setMcpJsonText("");
       setMcpJsonOpen(false);
@@ -340,7 +451,9 @@ export function IntegrationPanel() {
             <textarea
               value={mcpJsonText}
               onChange={(e) => { setMcpJsonText(e.target.value); setMcpJsonError(null); }}
-              placeholder={'{\n  "server-name": {\n    "command": "npx",\n    "args": ["-y", "@modelcontextprotocol/server-xxx"]\n  }\n}'}
+              placeholder={
+                '{\n  "mcpServers": {\n    "stdio-demo": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-xxx"]\n    },\n    "sse-demo": {\n      "type": "sse",\n      "url": "http://127.0.0.1:3000/sse",\n      "isActive": true\n    }\n  }\n}'
+              }
               className="app-input w-full min-h-[120px] resize-y font-mono text-xs"
               spellCheck={false}
             />
@@ -384,7 +497,7 @@ export function IntegrationPanel() {
                   </span>
                   <div className="flex items-center gap-2">
                     <span className="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[11px] text-[var(--accent-strong)]">
-                      MCP
+                      {(server.type || (server.url ? "http" : "stdio")).toUpperCase()}
                     </span>
                     {server.disabled && (
                       <span className="rounded-full bg-[var(--surface-soft)] px-2 py-1 text-[11px] text-[var(--text-faint)]">
@@ -402,7 +515,11 @@ export function IntegrationPanel() {
                   </div>
                 </div>
                 <p className="mt-2 break-all font-mono text-xs text-[var(--text-muted)]">
-                  {server.command ? `${server.command} ${server.args?.join(" ") ?? ""}`.trim() : "-"}
+                  {server.url
+                    ? server.url
+                    : server.command
+                      ? `${server.command} ${server.args?.join(" ") ?? ""}`.trim()
+                      : "-"}
                 </p>
               </div>
             ))}

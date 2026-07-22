@@ -287,6 +287,14 @@ impl McpServerConfig {
     pub fn is_http_transport(&self) -> bool {
         self.transport == "http"
     }
+
+    pub fn is_sse_transport(&self) -> bool {
+        self.transport == "sse"
+    }
+
+    pub fn is_remote_transport(&self) -> bool {
+        self.is_http_transport() || self.is_sse_transport()
+    }
 }
 
 fn builtin_providers() -> HashMap<String, ModelProviderInfo> {
@@ -740,7 +748,7 @@ impl ConfigToml {
         let toml_value = toml::Value::Table(table);
         if parse_mcp_server(server_name, &toml_value).is_none() {
             return Err(AppError::Custom(format!(
-                "Invalid MCP server '{server_name}' config: expected a valid stdio command or HTTP(S) url"
+                "Invalid MCP server '{server_name}' config: expected a valid stdio command or HTTP/SSE url"
             )));
         }
 
@@ -841,8 +849,10 @@ fn parse_mcp_server(name: &str, value: &toml::Value) -> Option<(String, McpServe
     if transport == "stdio" && command.is_empty() {
         return None;
     }
-    if transport == "http" && !is_supported_mcp_http_url(url.as_deref()) {
-        return None;
+    if transport == "http" || transport == "sse" {
+        if !is_supported_mcp_http_url(url.as_deref()) {
+            return None;
+        }
     }
 
     let args = table
@@ -890,6 +900,14 @@ fn parse_mcp_server(name: &str, value: &toml::Value) -> Option<(String, McpServe
     let disabled = table
         .get("disabled")
         .and_then(toml::Value::as_bool)
+        .or_else(|| {
+            table
+                .get("isActive")
+                .or_else(|| table.get("is_active"))
+                .or_else(|| table.get("enabled"))
+                .and_then(toml::Value::as_bool)
+                .map(|active| !active)
+        })
         .unwrap_or(false);
 
     Some((
@@ -914,9 +932,11 @@ pub fn normalize_mcp_transport(raw: Option<&str>, url: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .map(|value| value.to_ascii_lowercase().replace('-', "_"));
     match normalized.as_deref() {
-        Some("http" | "streamable_http" | "sse") => "http".to_string(),
+        Some("http" | "streamable_http" | "streamablehttp") => "http".to_string(),
+        Some("sse") => "sse".to_string(),
         Some("stdio" | "local") => "stdio".to_string(),
         Some(_) => "stdio".to_string(),
+        None if url.is_some_and(url_looks_like_mcp_sse) => "sse".to_string(),
         None if url.is_some_and(|value| !value.trim().is_empty()) => "http".to_string(),
         None => "stdio".to_string(),
     }
@@ -927,6 +947,18 @@ pub fn is_supported_mcp_http_url(url: Option<&str>) -> bool {
         let trimmed = value.trim().to_ascii_lowercase();
         trimmed.starts_with("http://") || trimmed.starts_with("https://")
     })
+}
+
+pub fn url_looks_like_mcp_sse(url: &str) -> bool {
+    let trimmed = url.trim().to_ascii_lowercase();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return false;
+    }
+    let path = trimmed
+        .split_once('?')
+        .map(|(path, _)| path)
+        .unwrap_or(trimmed.as_str());
+    path.ends_with("/sse") || path.contains("/sse/")
 }
 
 #[derive(Clone)]
@@ -999,6 +1031,11 @@ mod tests {
             url = "https://example.com/mcp"
             headers = { Authorization = "Bearer token" }
 
+            [mcp_servers.remote_sse]
+            type = "sse"
+            url = "http://10.136.128.2:30092/sse?id=cfb6552f-4d65-4192-8ebf-c5f58d386457"
+            isActive = true
+
             [mcp_servers.empty]
             args = ["missing-command"]
             "#,
@@ -1006,7 +1043,7 @@ mod tests {
         .unwrap();
 
         let servers = config.resolved_mcp_servers();
-        assert_eq!(servers.len(), 2);
+        assert_eq!(servers.len(), 3);
         let docs = servers.get("docs").unwrap();
         assert_eq!(docs.transport, "stdio");
         assert_eq!(docs.command, "node");
@@ -1021,6 +1058,13 @@ mod tests {
             remote.headers.get("Authorization").map(String::as_str),
             Some("Bearer token")
         );
+        let remote_sse = servers.get("remote_sse").unwrap();
+        assert_eq!(remote_sse.transport, "sse");
+        assert_eq!(
+            remote_sse.url.as_deref(),
+            Some("http://10.136.128.2:30092/sse?id=cfb6552f-4d65-4192-8ebf-c5f58d386457")
+        );
+        assert!(!remote_sse.disabled);
     }
 
     #[test]
@@ -1201,6 +1245,31 @@ mod tests {
             .apply_edit("mcp_servers.playwright", &serde_json::Value::Null)
             .expect("delete MCP server");
         assert!(!config.mcp_servers.contains_key("playwright"));
+    }
+
+    #[test]
+    fn apply_edit_mcp_server_supports_sse_and_is_active() {
+        let mut config = ConfigToml::default();
+        let server = serde_json::json!({
+            "type": "sse",
+            "url": "http://10.136.128.2:30092/sse?id=cfb6552f-4d65-4192-8ebf-c5f58d386457",
+            "isActive": true
+        });
+
+        config
+            .apply_edit("mcp_servers.ISS.IPSA.ContractProApi", &server)
+            .expect("upsert SSE MCP server");
+
+        let resolved = config.resolved_mcp_servers();
+        let remote = resolved
+            .get("ISS.IPSA.ContractProApi")
+            .expect("SSE server should resolve");
+        assert_eq!(remote.transport, "sse");
+        assert_eq!(
+            remote.url.as_deref(),
+            Some("http://10.136.128.2:30092/sse?id=cfb6552f-4d65-4192-8ebf-c5f58d386457")
+        );
+        assert!(!remote.disabled);
     }
 
     #[test]

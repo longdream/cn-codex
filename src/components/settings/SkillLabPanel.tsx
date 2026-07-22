@@ -41,6 +41,7 @@ interface SkillLabDetail {
   testPrompt: string;
   status: string;
   iterationCount: number;
+  maxIterations?: number;
   lastTestResult: string | null;
   lastEvaluation: string | null;
   bestScore: number | null;
@@ -142,8 +143,17 @@ const STATUS_COLORS: Record<LabStatus, string> = {
 };
 
 const FALLBACK_MAX_ITERATIONS = 3;
+const MIN_MAX_ITERATIONS = 1;
+const MAX_MAX_ITERATIONS = 20;
 const ACTIVE_RUN_LOG_LIMIT = 30;
 const SCORE_HISTORY_PAGE_SIZE = 10;
+
+function normalizeMaxIterations(value: number | null | undefined): number {
+  if (value == null || Number.isNaN(value) || value <= 0) {
+    return FALLBACK_MAX_ITERATIONS;
+  }
+  return Math.min(MAX_MAX_ITERATIONS, Math.max(MIN_MAX_ITERATIONS, Math.floor(value)));
+}
 
 function appendRunLog(logs: string[], snippet: string | null | undefined): string[] {
   const text = snippet?.trim();
@@ -220,6 +230,7 @@ export function SkillLabPanel() {
   const [goal, setGoal] = useState("");
   const [content, setContent] = useState("");
   const [testPrompt, setTestPrompt] = useState("");
+  const [maxIterations, setMaxIterations] = useState(FALLBACK_MAX_ITERATIONS);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [checkingPython, setCheckingPython] = useState(false);
@@ -250,6 +261,7 @@ export function SkillLabPanel() {
     goal: string;
     content: string;
     testPrompt: string;
+    maxIterations: number;
   } | null>(null);
 
   // 用于异步操作期间校验当前选中草稿是否仍为最初触发的那个，
@@ -369,9 +381,16 @@ export function SkillLabPanel() {
             goal,
             content,
             testPrompt,
+            maxIterations: normalizeMaxIterations(maxIterations),
           },
         });
-        setSavedSnapshot({ name: name.trim(), goal, content, testPrompt });
+        setSavedSnapshot({
+          name: name.trim(),
+          goal,
+          content,
+          testPrompt,
+          maxIterations: normalizeMaxIterations(maxIterations),
+        });
         if (showSaved) {
           setSaved(true);
           setTimeout(() => setSaved(false), 2000);
@@ -385,22 +404,29 @@ export function SkillLabPanel() {
         setSaving(false);
       }
     },
-    [selectedId, name, goal, content, testPrompt, loadList],
+    [selectedId, name, goal, content, testPrompt, maxIterations, loadList],
   );
 
   // 是否存在未保存改动：用于脏标记与切换前自动保存
   const dirty = useMemo(() => {
     if (!selectedId) return false;
     if (!savedSnapshot) {
-      return name.trim() !== "" || goal.trim() !== "" || content !== "" || testPrompt !== "";
+      return (
+        name.trim() !== "" ||
+        goal.trim() !== "" ||
+        content !== "" ||
+        testPrompt !== "" ||
+        normalizeMaxIterations(maxIterations) !== FALLBACK_MAX_ITERATIONS
+      );
     }
     return (
       savedSnapshot.name !== name.trim() ||
       savedSnapshot.goal !== goal.trim() ||
       savedSnapshot.content !== content ||
-      savedSnapshot.testPrompt !== testPrompt
+      savedSnapshot.testPrompt !== testPrompt ||
+      savedSnapshot.maxIterations !== normalizeMaxIterations(maxIterations)
     );
-  }, [selectedId, savedSnapshot, name, goal, content, testPrompt]);
+  }, [selectedId, savedSnapshot, name, goal, content, testPrompt, maxIterations]);
 
   // 选中一个草稿
   const handleSelect = useCallback(async (id: string) => {
@@ -434,7 +460,15 @@ export function SkillLabPanel() {
       setGoal(d.goal ?? "");
       setContent(d.content);
       setTestPrompt(d.testPrompt);
-      setSavedSnapshot({ name: d.name, goal: d.goal ?? "", content: d.content, testPrompt: d.testPrompt });
+      const nextMaxIterations = normalizeMaxIterations(d.maxIterations);
+      setMaxIterations(nextMaxIterations);
+      setSavedSnapshot({
+        name: d.name,
+        goal: d.goal ?? "",
+        content: d.content,
+        testPrompt: d.testPrompt,
+        maxIterations: nextMaxIterations,
+      });
       setGenerationError("");
       setPythonInfo("");
     } catch (err) {
@@ -453,6 +487,7 @@ export function SkillLabPanel() {
     setGoal("");
     setContent("");
     setTestPrompt("");
+    setMaxIterations(FALLBACK_MAX_ITERATIONS);
     setGenerationError("");
     setPythonInfo("");
     setSaved(false);
@@ -521,6 +556,7 @@ export function SkillLabPanel() {
           name: nextName,
           content: nextContent,
           testPrompt: nextTestPrompt,
+          maxIterations: normalizeMaxIterations(maxIterations),
         },
       });
 
@@ -530,7 +566,13 @@ export function SkillLabPanel() {
       setName(nextName);
       setContent(nextContent);
       setTestPrompt(nextTestPrompt);
-      setSavedSnapshot({ name: nextName, goal: goal.trim(), content: nextContent, testPrompt: nextTestPrompt });
+      setSavedSnapshot({
+        name: nextName,
+        goal: goal.trim(),
+        content: nextContent,
+        testPrompt: nextTestPrompt,
+        maxIterations: normalizeMaxIterations(maxIterations),
+      });
 
       await loadList();
       const refreshed = await invoke<SkillLabDetail>("skill_lab_read", {
@@ -547,7 +589,7 @@ export function SkillLabPanel() {
       setCheckingPython(false);
       setGenerating(false);
     }
-  }, [selectedId, goal, intl, name, loadList]);
+  }, [selectedId, goal, intl, name, maxIterations, loadList]);
 
   // 运行完整的测试闭环：测试 → 评估 → 改写 → 重复
   const handleRunTest = useCallback(async () => {
@@ -563,7 +605,7 @@ export function SkillLabPanel() {
         skillId: targetId,
         phase: "testing",
         iteration: 0,
-        maxIterations: FALLBACK_MAX_ITERATIONS,
+        maxIterations: normalizeMaxIterations(maxIterations),
         score: null,
         retryAttempt: null,
         retryMax: null,
@@ -582,9 +624,16 @@ export function SkillLabPanel() {
           goal,
           content,
           testPrompt,
+          maxIterations: normalizeMaxIterations(maxIterations),
         },
       });
-      setSavedSnapshot({ name: name.trim(), goal, content, testPrompt });
+      setSavedSnapshot({
+        name: name.trim(),
+        goal,
+        content,
+        testPrompt,
+        maxIterations: normalizeMaxIterations(maxIterations),
+      });
 
       await loadList();
 
@@ -622,7 +671,7 @@ export function SkillLabPanel() {
     } finally {
       setTesting(false);
     }
-  }, [selectedId, name, goal, content, testPrompt, loadList, intl]);
+  }, [selectedId, name, goal, content, testPrompt, maxIterations, loadList, intl]);
 
   // 部署为正式 Skill（写入 codey/skills/<id>/，之后 /skill 可用）
   const handleDeploy = useCallback(
@@ -663,11 +712,13 @@ export function SkillLabPanel() {
           setGoal(refreshed.goal ?? "");
           setContent(refreshed.content);
           setTestPrompt(refreshed.testPrompt);
+          setMaxIterations(normalizeMaxIterations(refreshed.maxIterations));
           setSavedSnapshot({
             name: refreshed.name,
             goal: refreshed.goal ?? "",
             content: refreshed.content,
             testPrompt: refreshed.testPrompt,
+            maxIterations: normalizeMaxIterations(refreshed.maxIterations),
           });
         }
         setDeployFeedback({
@@ -815,7 +866,7 @@ export function SkillLabPanel() {
   const hasActiveRuns = activeRuns.length > 0;
   const runRuleText = intl.formatMessage(
     { id: "settings.skillLab.ruleSummary" },
-    { max: FALLBACK_MAX_ITERATIONS },
+    { max: normalizeMaxIterations(maxIterations) },
   );
   const effectiveTestingPhase = testPhase ?? selectedActiveRun?.phase ?? null;
   const testingLabel = testing
@@ -1121,6 +1172,40 @@ export function SkillLabPanel() {
                              placeholder:text-[var(--text-faint)]
                              focus:border-[var(--accent-strong)] focus:outline-none resize-y"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-base)] mb-1">
+                  {intl.formatMessage({ id: "settings.skillLab.maxIterations" })}
+                </label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <input
+                    type="number"
+                    min={MIN_MAX_ITERATIONS}
+                    max={MAX_MAX_ITERATIONS}
+                    step={1}
+                    value={maxIterations}
+                    disabled={testing}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      setMaxIterations(
+                        Number.isFinite(next)
+                          ? normalizeMaxIterations(next)
+                          : FALLBACK_MAX_ITERATIONS,
+                      );
+                    }}
+                    className="w-28 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-main)]
+                               px-3 py-2 text-xs text-[var(--text-base)]
+                               focus:border-[var(--accent-strong)] focus:outline-none
+                               disabled:opacity-50"
+                  />
+                  <span className="text-[11px] text-[var(--text-muted)]">
+                    {intl.formatMessage(
+                      { id: "settings.skillLab.maxIterationsHint" },
+                      { min: MIN_MAX_ITERATIONS, max: MAX_MAX_ITERATIONS },
+                    )}
+                  </span>
+                </div>
               </div>
 
               {detail?.scoreHistory?.length ? (

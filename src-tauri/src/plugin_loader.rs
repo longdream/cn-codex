@@ -548,7 +548,7 @@ fn parse_plugin_mcp_server(
     if transport == "stdio" && command.is_empty() {
         return None;
     }
-    if transport == "http" && !is_supported_mcp_http_url(url.as_deref()) {
+    if (transport == "http" || transport == "sse") && !is_supported_mcp_http_url(url.as_deref()) {
         return None;
     }
 
@@ -601,9 +601,11 @@ fn parse_plugin_mcp_server(
         .and_then(JsonValue::as_bool)
         .or_else(|| {
             object
-                .get("enabled")
+                .get("isActive")
+                .or_else(|| object.get("is_active"))
+                .or_else(|| object.get("enabled"))
                 .and_then(JsonValue::as_bool)
-                .map(|enabled| !enabled)
+                .map(|active| !active)
         })
         .unwrap_or(false);
 
@@ -1246,6 +1248,11 @@ mod tests {
     "remote": {
       "type": "http",
       "url": "https://example.com/mcp"
+    },
+    "remote_sse": {
+      "type": "sse",
+      "url": "http://10.0.0.1:3000/sse?id=demo",
+      "isActive": true
     }
   }
 }"#,
@@ -1253,7 +1260,7 @@ mod tests {
 
         let servers = list_plugin_mcp_servers(&root);
 
-        assert_eq!(servers.len(), 2);
+        assert_eq!(servers.len(), 3);
         let docs = servers.get("docs").unwrap();
         assert_eq!(docs.transport, "stdio");
         assert_eq!(docs.command, "node");
@@ -1266,6 +1273,13 @@ mod tests {
         let remote = servers.get("remote").unwrap();
         assert_eq!(remote.transport, "http");
         assert_eq!(remote.url.as_deref(), Some("https://example.com/mcp"));
+        let remote_sse = servers.get("remote_sse").unwrap();
+        assert_eq!(remote_sse.transport, "sse");
+        assert_eq!(
+            remote_sse.url.as_deref(),
+            Some("http://10.0.0.1:3000/sse?id=demo")
+        );
+        assert!(!remote_sse.disabled);
 
         let _ = fs::remove_dir_all(root);
     }

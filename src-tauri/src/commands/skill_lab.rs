@@ -181,6 +181,8 @@ pub struct SkillLabDetail {
     pub test_prompt: String,
     pub status: String,
     pub iteration_count: u32,
+    /// 该草稿配置的最大自动迭代次数
+    pub max_iterations: u32,
     /// 最近一次测试结果（可能为空）
     pub last_test_result: Option<String>,
     /// 最近一次 AI 评估意见（可能为空）
@@ -216,6 +218,9 @@ struct SkillLabMeta {
     test_prompt: String,
     status: String,
     iteration_count: u32,
+    /// 最大自动改写迭代次数（按草稿配置，缺省走默认值）
+    #[serde(default = "default_max_iterations")]
+    max_iterations: u32,
     #[serde(default)]
     last_test_result: Option<String>,
     #[serde(default)]
@@ -343,6 +348,7 @@ pub async fn skill_lab_read(
         test_prompt: meta.test_prompt,
         status: meta.status,
         iteration_count: meta.iteration_count,
+        max_iterations: normalize_max_iterations(meta.max_iterations),
         last_test_result: meta.last_test_result,
         last_evaluation: meta.last_evaluation,
         best_score: meta.best_score,
@@ -362,6 +368,9 @@ pub struct SkillLabSaveParams {
     pub goal: String,
     pub content: String,
     pub test_prompt: String,
+    /// 可选：该草稿最大自动迭代次数
+    #[serde(default)]
+    pub max_iterations: Option<u32>,
 }
 
 #[tauri::command]
@@ -396,6 +405,12 @@ pub async fn skill_lab_save(
             .as_ref()
             .map(|m| m.iteration_count)
             .unwrap_or(0),
+        max_iterations: normalize_max_iterations(
+            params
+                .max_iterations
+                .or_else(|| existing_meta.as_ref().map(|m| m.max_iterations))
+                .unwrap_or_else(default_max_iterations),
+        ),
         last_test_result: existing_meta
             .as_ref()
             .and_then(|m| m.last_test_result.clone()),
@@ -827,8 +842,10 @@ pub async fn skill_lab_delete(state: State<'_, AppState>, skill_id: String) -> A
 
 // ── Skill Lab 自动测试闭环 ──────────────────────────────────
 
-/// 最大自动改写迭代次数
-const MAX_EVOLUTION_ITERATIONS: u32 = 3;
+/// 默认最大自动改写迭代次数（可按草稿配置覆盖）
+const DEFAULT_MAX_EVOLUTION_ITERATIONS: u32 = 3;
+/// 单草稿允许配置的最大迭代次数上限
+const MAX_ALLOWED_EVOLUTION_ITERATIONS: u32 = 20;
 const HIGH_SCORE_THRESHOLD: f64 = 90.0;
 const SCORE_PLATEAU_DELTA: f64 = 1.0;
 const SCORE_PLATEAU_ROUNDS: u32 = 2;
@@ -859,6 +876,18 @@ struct SkillEvaluation {
 
 fn clamp_score(score: f64) -> f64 {
     score.clamp(0.0, 100.0)
+}
+
+fn default_max_iterations() -> u32 {
+    DEFAULT_MAX_EVOLUTION_ITERATIONS
+}
+
+fn normalize_max_iterations(value: u32) -> u32 {
+    if value == 0 {
+        DEFAULT_MAX_EVOLUTION_ITERATIONS
+    } else {
+        value.clamp(1, MAX_ALLOWED_EVOLUTION_ITERATIONS)
+    }
 }
 
 fn parse_skill_evaluation(raw: &str) -> SkillEvaluation {
@@ -914,8 +943,177 @@ fn weakest_dimension(eval: &SkillEvaluation) -> &'static str {
     weakest.0
 }
 
-fn should_stop_evolution(_total_score: f64, _stable_rounds: u32, iteration: u32) -> bool {
-    iteration >= MAX_EVOLUTION_ITERATIONS
+fn should_stop_evolution(
+    _total_score: f64,
+    _stable_rounds: u32,
+    iteration: u32,
+    max_iterations: u32,
+) -> bool {
+    iteration >= normalize_max_iterations(max_iterations)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SkillLabClarifyAction {
+    ContinueWithGuidance,
+    Stop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillLabClarifyDecision {
+    action: SkillLabClarifyAction,
+    guidance: String,
+}
+
+fn preferred_option_labels() -> [&'static str; 3] {
+    [
+        "按建议自动改写并继续",
+        "我补充说明后再改写",
+        "停止本轮，保留当前最佳",
+    ]
+}
+
+fn parse_skill_lab_clarify_result(result: &serde_json::Value) -> SkillLabClarifyDecision {
+    let answer = result
+        .pointer("/answers/skill_lab_critical/answers/0")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            result
+                .get("answers")
+                .and_then(|answers| answers.get("skill_lab_critical"))
+                .and_then(|question| question.get("answers"))
+                .and_then(|answers| answers.as_array())
+                .and_then(|answers| answers.first())
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let labels = preferred_option_labels();
+    if answer == labels[2] || answer.contains("停止") {
+        return SkillLabClarifyDecision {
+            action: SkillLabClarifyAction::Stop,
+            guidance: String::new(),
+        };
+    }
+
+    if answer == labels[0] {
+        return SkillLabClarifyDecision {
+            action: SkillLabClarifyAction::ContinueWithGuidance,
+            guidance: String::new(),
+        };
+    }
+
+    // 选项2，或用户在「其他」中填写的自由文本，都视为补充说明后继续
+    let guidance = if answer == labels[1] {
+        String::new()
+    } else {
+        answer
+    };
+    SkillLabClarifyDecision {
+        action: SkillLabClarifyAction::ContinueWithGuidance,
+        guidance,
+    }
+}
+
+async fn ask_skill_lab_critical_clarification(
+    app_handle: &AppHandle,
+    skill_id: &str,
+    iteration: u32,
+    max_iterations: u32,
+    total_score: f64,
+    critical_issues: &[String],
+    improve_hints: &[String],
+) -> Result<SkillLabClarifyDecision, String> {
+    let issues_text = critical_issues
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let hints_text = if improve_hints.is_empty() {
+        "无".to_string()
+    } else {
+        improve_hints
+            .iter()
+            .map(|item| format!("- {item}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let labels = preferred_option_labels();
+    let question_text = format!(
+        "第 {iteration}/{max_iterations} 轮评估发现关键问题（当前总分 {total_score:.1}）：\n\
+         {issues_text}\n\n\
+         改进建议：\n{hints_text}\n\n\
+         请选择如何继续："
+    );
+
+    let call_id = format!(
+        "skill-lab-clarify-{}-{}-{}",
+        skill_id,
+        iteration,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let request_id = crate::protocol::RequestId::String(call_id.clone());
+
+    emit_skill_lab_progress(
+        app_handle,
+        skill_id,
+        "rewriting",
+        iteration,
+        max_iterations,
+        "clarify",
+        Some("发现关键问题，等待你的澄清与选择…".to_string()),
+        Some(total_score),
+        None,
+        None,
+        None,
+    );
+
+    app_handle
+        .emit(
+            "server-request",
+            serde_json::json!({
+                "requestId": &call_id,
+                "id": &call_id,
+                "method": "request_user_input",
+                "params": {
+                    "threadId": format!("skill-lab:{skill_id}"),
+                    "callId": &call_id,
+                    "questions": [{
+                        "id": "skill_lab_critical",
+                        "header": "Skill 实验室澄清",
+                        "question": question_text,
+                        "options": [
+                            {
+                                "label": labels[0],
+                                "description": "根据评估中的关键问题与改进建议自动改写，然后进入下一轮。",
+                                "recommended": true
+                            },
+                            {
+                                "label": labels[1],
+                                "description": "在下方「其他」输入你的补充要求，改写时会优先遵循。"
+                            },
+                            {
+                                "label": labels[2],
+                                "description": "结束本轮优化，保留当前最高分版本。"
+                            }
+                        ]
+                    }]
+                }
+            }),
+        )
+        .map_err(|e| format!("failed to emit clarification request: {e}"))?;
+
+    let result = crate::tool_executor::wait_for_approval_result_public(
+        app_handle,
+        &request_id,
+        600_000,
+    )
+    .await?;
+    Ok(parse_skill_lab_clarify_result(&result))
 }
 
 fn update_best_candidate(
@@ -1135,6 +1333,8 @@ pub async fn skill_lab_run_test(
 
     let mut skill_content = std::fs::read_to_string(&skill_md_path).unwrap_or_default();
     let test_prompt = meta.test_prompt.clone();
+    let max_iterations = normalize_max_iterations(meta.max_iterations);
+    meta.max_iterations = max_iterations;
 
     if skill_content.trim().is_empty() || test_prompt.trim().is_empty() {
         return Err(AppError::Custom(
@@ -1180,10 +1380,10 @@ pub async fn skill_lab_run_test(
     let mut previous_score: Option<f64> = None;
     let mut evolution_converged = false;
 
-    for iteration in 0..MAX_EVOLUTION_ITERATIONS {
+    for iteration in 0..max_iterations {
         iterations = iteration + 1;
         info!(
-            "Skill lab evolution iteration {iterations}/{MAX_EVOLUTION_ITERATIONS} for {skill_id}"
+            "Skill lab evolution iteration {iterations}/{max_iterations} for {skill_id}"
         );
 
         meta.status = "testing".to_string();
@@ -1195,10 +1395,10 @@ pub async fn skill_lab_run_test(
             &skill_id,
             "testing",
             iterations,
-            MAX_EVOLUTION_ITERATIONS,
+            max_iterations,
             "phase",
             Some(format!(
-                "开始第 {iterations}/{MAX_EVOLUTION_ITERATIONS} 轮测试。"
+                "开始第 {iterations}/{max_iterations} 轮测试。"
             )),
             None,
             None,
@@ -1237,7 +1437,7 @@ pub async fn skill_lab_run_test(
             &app_handle,
             &skill_id,
             iterations,
-            MAX_EVOLUTION_ITERATIONS,
+            max_iterations,
         )
         .await
         .map_err(|e| {
@@ -1250,7 +1450,7 @@ pub async fn skill_lab_run_test(
                     "phase": "done",
                     "status": "failed",
                     "iteration": iterations,
-                    "maxIterations": MAX_EVOLUTION_ITERATIONS,
+                    "maxIterations": max_iterations,
                     "logType": "error",
                     "logSnippet": format!("测试失败: {e}"),
                 }),
@@ -1266,7 +1466,7 @@ pub async fn skill_lab_run_test(
             &skill_id,
             "evaluating",
             iterations,
-            MAX_EVOLUTION_ITERATIONS,
+            max_iterations,
             "testOutput",
             compact_progress_snippet(&last_output),
             None,
@@ -1330,7 +1530,7 @@ pub async fn skill_lab_run_test(
                     "phase": "done",
                     "status": "failed",
                     "iteration": iterations,
-                    "maxIterations": MAX_EVOLUTION_ITERATIONS,
+                    "maxIterations": max_iterations,
                     "logType": "error",
                     "logSnippet": format!("评估失败: {e}"),
                 }),
@@ -1355,7 +1555,7 @@ pub async fn skill_lab_run_test(
             &skill_id,
             "evaluating",
             iterations,
-            MAX_EVOLUTION_ITERATIONS,
+            max_iterations,
             "score",
             Some(format!(
                 "第 {iterations} 轮评分 {:.1}，平台期轮次 {stable_rounds}。",
@@ -1385,7 +1585,7 @@ pub async fn skill_lab_run_test(
             &evaluation_raw,
         );
 
-        if should_stop_evolution(total_score, stable_rounds, iteration + 1) {
+        if should_stop_evolution(total_score, stable_rounds, iteration + 1, max_iterations) {
             evolution_converged =
                 total_score >= HIGH_SCORE_THRESHOLD && stable_rounds >= SCORE_PLATEAU_ROUNDS;
             break;
@@ -1399,7 +1599,7 @@ pub async fn skill_lab_run_test(
             &skill_id,
             "rewriting",
             iterations,
-            MAX_EVOLUTION_ITERATIONS,
+            max_iterations,
             "rewriteInput",
             compact_progress_snippet(&evaluation_raw),
             Some(total_score),
@@ -1407,6 +1607,78 @@ pub async fn skill_lab_run_test(
             None,
             None,
         );
+
+        // 仅在存在关键问题时，弹出与 ask 相同的澄清窗口，由用户决定如何继续
+        let mut user_clarification = String::new();
+        if !evaluation.critical_issues.is_empty() {
+            match ask_skill_lab_critical_clarification(
+                &app_handle,
+                &skill_id,
+                iterations,
+                max_iterations,
+                total_score,
+                &evaluation.critical_issues,
+                &evaluation.improve_hints,
+            )
+            .await
+            {
+                Ok(decision) => match decision.action {
+                    SkillLabClarifyAction::Stop => {
+                        emit_skill_lab_progress(
+                            &app_handle,
+                            &skill_id,
+                            "rewriting",
+                            iterations,
+                            max_iterations,
+                            "clarify",
+                            Some("用户选择停止本轮优化，保留当前最佳结果。".to_string()),
+                            Some(total_score),
+                            None,
+                            None,
+                            None,
+                        );
+                        break;
+                    }
+                    SkillLabClarifyAction::ContinueWithGuidance => {
+                        user_clarification = decision.guidance;
+                        emit_skill_lab_progress(
+                            &app_handle,
+                            &skill_id,
+                            "rewriting",
+                            iterations,
+                            max_iterations,
+                            "clarify",
+                            Some(if user_clarification.trim().is_empty() {
+                                "用户确认按建议继续自动改写。".to_string()
+                            } else {
+                                format!("用户补充说明后继续改写：{}", user_clarification.trim())
+                            }),
+                            Some(total_score),
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                },
+                Err(err) => {
+                    // 用户拒绝/超时：视为停止本轮，保留当前最佳
+                    emit_skill_lab_progress(
+                        &app_handle,
+                        &skill_id,
+                        "rewriting",
+                        iterations,
+                        max_iterations,
+                        "clarify",
+                        Some(format!("澄清未完成（{err}），停止本轮优化。")),
+                        Some(total_score),
+                        None,
+                        None,
+                        None,
+                    );
+                    break;
+                }
+            }
+        }
 
         let rewrite_system = "你是一个 Skill 指令优化专家。\
             根据评分与关键问题改进 Skill 指令内容，使其总分持续提高并更稳定。\
@@ -1432,6 +1704,14 @@ pub async fn skill_lab_run_test(
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        let user_guidance_block = if user_clarification.trim().is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\n## 用户补充说明（优先遵循）\n{}",
+                user_clarification.trim()
+            )
+        };
         let rewrite_user = format!(
             "## 原始 Skill 指令\n{skill_content}\n\n\
              ## 测试提示词\n{test_prompt}\n\n\
@@ -1444,7 +1724,7 @@ pub async fn skill_lab_run_test(
              - maintainability: {}\n\
              - weakestDimension: {weakest}\n\n\
              ## 关键问题\n{critical_issues}\n\n\
-             ## 改进建议\n{improve_hints}\n\n\
+             ## 改进建议\n{improve_hints}{user_guidance_block}\n\n\
              请输出改进后的完整 Skill 指令内容：",
             evaluation.clarity,
             evaluation.robustness,
@@ -1490,7 +1770,7 @@ pub async fn skill_lab_run_test(
                     "phase": "done",
                     "status": "failed",
                     "iteration": iterations,
-                    "maxIterations": MAX_EVOLUTION_ITERATIONS,
+                    "maxIterations": max_iterations,
                     "logType": "error",
                     "logSnippet": format!("改写失败: {e}"),
                 }),
@@ -1539,7 +1819,7 @@ pub async fn skill_lab_run_test(
             "phase": "done",
             "status": &final_status,
             "iteration": iterations,
-            "maxIterations": MAX_EVOLUTION_ITERATIONS,
+            "maxIterations": max_iterations,
             "bestScore": best_score,
             "stableRounds": stable_rounds,
             "converged": evolution_converged,
@@ -1682,6 +1962,7 @@ mod tests {
             test_prompt: "Say hello".to_string(),
             status: "idle".to_string(),
             iteration_count: 0,
+            max_iterations: DEFAULT_MAX_EVOLUTION_ITERATIONS,
             last_test_result: None,
             last_evaluation: None,
             best_score: None,
@@ -1694,6 +1975,7 @@ mod tests {
         assert_eq!(parsed.name, "Test Skill");
         assert_eq!(parsed.status, "idle");
         assert_eq!(parsed.iteration_count, 0);
+        assert_eq!(parsed.max_iterations, DEFAULT_MAX_EVOLUTION_ITERATIONS);
     }
 
     #[test]
@@ -1706,6 +1988,7 @@ mod tests {
         assert_eq!(meta.last_evaluation, Some("good".to_string()));
         assert!(meta.best_score.is_none());
         assert!(meta.score_history.is_empty());
+        assert_eq!(meta.max_iterations, DEFAULT_MAX_EVOLUTION_ITERATIONS);
     }
 
     #[test]
@@ -1757,18 +2040,76 @@ mod tests {
 
     #[test]
     fn should_stop_when_high_score_and_plateau() {
-        assert!(should_stop_evolution(92.0, 2, 6));
-        assert!(!should_stop_evolution(92.0, 1, 6));
+        // 当前策略仅按 max_iterations 停止；高分/平台期保留字段供后续策略扩展
+        assert!(should_stop_evolution(92.0, 2, 6, 6));
+        assert!(!should_stop_evolution(92.0, 1, 5, 6));
     }
 
     #[test]
     fn should_stop_when_reaching_max_iterations() {
-        assert!(should_stop_evolution(70.0, 0, MAX_EVOLUTION_ITERATIONS));
+        assert!(should_stop_evolution(
+            70.0,
+            0,
+            DEFAULT_MAX_EVOLUTION_ITERATIONS,
+            DEFAULT_MAX_EVOLUTION_ITERATIONS
+        ));
         assert!(!should_stop_evolution(
             70.0,
             0,
-            MAX_EVOLUTION_ITERATIONS - 1
+            DEFAULT_MAX_EVOLUTION_ITERATIONS - 1,
+            DEFAULT_MAX_EVOLUTION_ITERATIONS
         ));
+        assert!(should_stop_evolution(70.0, 0, 10, 10));
+        assert!(!should_stop_evolution(70.0, 0, 9, 10));
+    }
+
+    #[test]
+    fn normalize_max_iterations_clamps_range() {
+        assert_eq!(normalize_max_iterations(0), DEFAULT_MAX_EVOLUTION_ITERATIONS);
+        assert_eq!(normalize_max_iterations(1), 1);
+        assert_eq!(normalize_max_iterations(20), 20);
+        assert_eq!(normalize_max_iterations(99), MAX_ALLOWED_EVOLUTION_ITERATIONS);
+    }
+
+    #[test]
+    fn parse_skill_lab_clarify_result_handles_options() {
+        let labels = preferred_option_labels();
+        let stop = serde_json::json!({
+            "answers": {
+                "skill_lab_critical": {
+                    "answers": [labels[2]]
+                }
+            }
+        });
+        assert_eq!(
+            parse_skill_lab_clarify_result(&stop).action,
+            SkillLabClarifyAction::Stop
+        );
+
+        let auto = serde_json::json!({
+            "answers": {
+                "skill_lab_critical": {
+                    "answers": [labels[0]]
+                }
+            }
+        });
+        let auto_decision = parse_skill_lab_clarify_result(&auto);
+        assert_eq!(auto_decision.action, SkillLabClarifyAction::ContinueWithGuidance);
+        assert!(auto_decision.guidance.is_empty());
+
+        let custom = serde_json::json!({
+            "answers": {
+                "skill_lab_critical": {
+                    "answers": ["请强化错误处理示例"]
+                }
+            }
+        });
+        let custom_decision = parse_skill_lab_clarify_result(&custom);
+        assert_eq!(
+            custom_decision.action,
+            SkillLabClarifyAction::ContinueWithGuidance
+        );
+        assert_eq!(custom_decision.guidance, "请强化错误处理示例");
     }
 
     #[test]

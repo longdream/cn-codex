@@ -6,7 +6,7 @@
   "databaseId": "52207d89-cb58-4d6e-bc03-0f8f4aec1ea7",
   "databaseName": "测试数据库",
   "status": "running",
-  "port": 57317,
+  "port": 60172,
   "rootPath": "\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\miniapps\\test-app",
   "mcp": {
     "command": "\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\node\\node.exe",
@@ -39,5 +39,5 @@
   ],
   "lastError": "",
   "createdAt": 1784624215,
-  "updatedAt": 1784626218
+  "updatedAt": 1784626878
 }

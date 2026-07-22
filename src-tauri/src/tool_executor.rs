@@ -85,6 +85,7 @@ pub struct ToolExecutor {
     activated_tools_by_thread: Arc<Mutex<HashMap<String, BTreeSet<String>>>>,
     mcp_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpSession>>>>>,
     mcp_http_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpHttpSession>>>>>,
+    mcp_sse_sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpSseSession>>>>>,
     web_search_enabled: bool,
     /// Request-scoped SmartBrain override. `None` falls back to workspace config.
     smartbrain_enabled_override: Option<bool>,
@@ -126,6 +127,16 @@ struct McpSession {
 struct McpHttpSession {
     server: McpServerConfig,
     session_id: Option<String>,
+    next_request_id: i64,
+    request_count: u64,
+    initialized_at_ms: i64,
+}
+
+struct McpSseSession {
+    server: McpServerConfig,
+    endpoint_url: String,
+    event_rx: tokio::sync::mpsc::UnboundedReceiver<Result<serde_json::Value, String>>,
+    worker: tokio::task::JoinHandle<()>,
     next_request_id: i64,
     request_count: u64,
     initialized_at_ms: i64,
@@ -730,6 +741,7 @@ impl ToolExecutor {
             activated_tools_by_thread: Arc::new(Mutex::new(HashMap::new())),
             mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
             mcp_http_sessions: Arc::new(Mutex::new(HashMap::new())),
+            mcp_sse_sessions: Arc::new(Mutex::new(HashMap::new())),
             web_search_enabled: false,
             smartbrain_enabled_override: None,
             subagents: Arc::new(Mutex::new(subagents)),
@@ -848,6 +860,7 @@ impl ToolExecutor {
         self.mcp_discovery_retry_after = None;
         clear_mcp_sessions_async(self.mcp_sessions.clone());
         clear_mcp_http_sessions_async(self.mcp_http_sessions.clone());
+        clear_mcp_sse_sessions_async(self.mcp_sse_sessions.clone());
     }
 
     /// 仅用于“可中断工具”登记：key = thread_id::call_id。
@@ -7942,6 +7955,10 @@ impl ToolExecutor {
             self.mcp_http_request_with_session(server, method, params)
                 .await
                 .map_err(McpRequestError::message)
+        } else if server.is_sse_transport() {
+            self.mcp_sse_request_with_session(server, method, params)
+                .await
+                .map_err(McpRequestError::message)
         } else {
             self.mcp_request_with_session(server, method, params)
                 .await
@@ -8283,6 +8300,474 @@ impl ToolExecutor {
         Ok((parsed, response_session_id))
     }
 
+    async fn mcp_sse_request_with_session(
+        &self,
+        server: &McpServerConfig,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, McpRequestError> {
+        let (session, reused) = self.mcp_sse_session(server).await?;
+        let first = {
+            let mut session = session.lock().await;
+            self.request_mcp_sse_session(&mut session, method, params.clone())
+                .await
+        };
+
+        match first {
+            Ok(value) => Ok(value),
+            Err(error) if error.is_transport() && reused => {
+                self.remove_mcp_sse_session(&server.name).await;
+                let (session, _) = self.mcp_sse_session(server).await?;
+                let retry = {
+                    let mut session = session.lock().await;
+                    self.request_mcp_sse_session(&mut session, method, params)
+                        .await
+                };
+                if retry
+                    .as_ref()
+                    .err()
+                    .is_some_and(McpRequestError::is_transport)
+                {
+                    self.remove_mcp_sse_session(&server.name).await;
+                }
+                retry
+            }
+            Err(error) => {
+                if error.is_transport() {
+                    self.remove_mcp_sse_session(&server.name).await;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn request_mcp_sse_session(
+        &self,
+        session: &mut McpSseSession,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, McpRequestError> {
+        let request_id = session.next_request_id;
+        session.next_request_id += 1;
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        });
+        let (response, _) = self
+            .send_mcp_sse_jsonrpc(session, message, Some(request_id))
+            .await?;
+        let response = response.ok_or_else(|| {
+            McpRequestError::Transport(format!(
+                "MCP SSE server '{}' returned an empty response for {method}",
+                session.server.name
+            ))
+        })?;
+        if let Some(error) = response.get("error") {
+            return Err(McpRequestError::Rpc(format!(
+                "MCP SSE server '{}' error: {}",
+                session.server.name,
+                format_json_value(error)
+            )));
+        }
+        session.request_count = session.request_count.saturating_add(1);
+        Ok(response
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
+    }
+
+    async fn mcp_sse_session(
+        &self,
+        server: &McpServerConfig,
+    ) -> Result<(Arc<Mutex<McpSseSession>>, bool), McpRequestError> {
+        if let Some(existing) = self
+            .mcp_sse_sessions
+            .lock()
+            .await
+            .get(&server.name)
+            .cloned()
+        {
+            let matches_config = {
+                let session = existing.lock().await;
+                session.server == *server
+            };
+            if matches_config {
+                return Ok((existing, true));
+            }
+            self.remove_mcp_sse_session(&server.name).await;
+        }
+
+        let session = Arc::new(Mutex::new(self.start_mcp_sse_session(server).await?));
+        self.mcp_sse_sessions
+            .lock()
+            .await
+            .insert(server.name.clone(), session.clone());
+        Ok((session, false))
+    }
+
+    async fn start_mcp_sse_session(
+        &self,
+        server: &McpServerConfig,
+    ) -> Result<McpSseSession, McpRequestError> {
+        let mut session = self.open_mcp_sse_stream(server).await?;
+        let init_id = session.next_request_id;
+        session.next_request_id += 1;
+        let (response, _) = self
+            .send_mcp_sse_jsonrpc(
+                &mut session,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": init_id,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "CN-Codex",
+                            "version": "0.1.0"
+                        }
+                    }
+                }),
+                Some(init_id),
+            )
+            .await?;
+        let response = response.ok_or_else(|| {
+            McpRequestError::Transport(format!(
+                "MCP SSE server '{}' returned an empty initialize response",
+                server.name
+            ))
+        })?;
+        if let Some(error) = response.get("error") {
+            return Err(McpRequestError::Rpc(format!(
+                "MCP SSE server '{}' initialize failed: {}",
+                server.name,
+                format_json_value(error)
+            )));
+        }
+
+        let _ = self
+            .send_mcp_sse_jsonrpc(
+                &mut session,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                    "params": {}
+                }),
+                None,
+            )
+            .await?;
+
+        session.initialized_at_ms = now_millis();
+        Ok(session)
+    }
+
+    async fn open_mcp_sse_stream(
+        &self,
+        server: &McpServerConfig,
+    ) -> Result<McpSseSession, McpRequestError> {
+        let Some(url) = server
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        else {
+            return Err(McpRequestError::Transport(format!(
+                "MCP SSE server '{}' is missing url",
+                server.name
+            )));
+        };
+
+        let mut request = self
+            .http
+            .get(url)
+            .header(reqwest::header::ACCEPT, "text/event-stream");
+        for (key, value) in &server.headers {
+            let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) else {
+                return Err(McpRequestError::Transport(format!(
+                    "MCP SSE server '{}' has invalid header name '{}'",
+                    server.name, key
+                )));
+            };
+            let Ok(value) = reqwest::header::HeaderValue::from_str(value) else {
+                return Err(McpRequestError::Transport(format!(
+                    "MCP SSE server '{}' has invalid value for header '{}'",
+                    server.name, key
+                )));
+            };
+            request = request.header(name, value);
+        }
+
+        let response = request.send().await.map_err(|error| {
+            McpRequestError::Transport(format!(
+                "MCP SSE server '{}' connect failed: {error}",
+                server.name
+            ))
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(McpRequestError::Transport(format!(
+                "MCP SSE server '{}' returned HTTP {status}: {}",
+                server.name,
+                truncate_output(&body, 2000)
+            )));
+        }
+
+        let (event_tx, event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Result<serde_json::Value, String>>();
+        let (endpoint_tx, endpoint_rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+        let stream = response.bytes_stream();
+        let base_url = url.to_string();
+        let server_name = server.name.clone();
+        let worker = tokio::spawn(async move {
+            use futures_util::StreamExt;
+
+            let mut endpoint_tx = Some(endpoint_tx);
+            let mut buffer = String::new();
+            let mut event_name = String::new();
+            let mut data_lines: Vec<String> = Vec::new();
+            let mut stream = stream;
+
+            while let Some(chunk) = stream.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        let message = format!(
+                            "MCP SSE server '{server_name}' stream read failed: {error}"
+                        );
+                        if let Some(tx) = endpoint_tx.take() {
+                            let _ = tx.send(Err(message.clone()));
+                        }
+                        let _ = event_tx.send(Err(message));
+                        return;
+                    }
+                };
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+                loop {
+                    let Some(newline_at) = buffer.find('\n') else {
+                        break;
+                    };
+                    let mut line = buffer[..newline_at].to_string();
+                    buffer.drain(..=newline_at);
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+
+                    if line.is_empty() {
+                        let event = event_name.trim().to_ascii_lowercase();
+                        let data = data_lines.join("\n");
+                        event_name.clear();
+                        data_lines.clear();
+                        if data.trim().is_empty() {
+                            continue;
+                        }
+
+                        if event == "endpoint" || event.is_empty() && data.trim().starts_with('/') {
+                            if let Some(tx) = endpoint_tx.take() {
+                                let endpoint = match resolve_mcp_sse_endpoint_url(&base_url, data.trim())
+                                {
+                                    Ok(endpoint) => Ok(endpoint),
+                                    Err(error) => Err(error),
+                                };
+                                let _ = tx.send(endpoint);
+                            }
+                            continue;
+                        }
+
+                        if event == "message" || event.is_empty() {
+                            match serde_json::from_str::<serde_json::Value>(data.trim()) {
+                                Ok(value) => {
+                                    if event_tx.send(Ok(value)).is_err() {
+                                        return;
+                                    }
+                                }
+                                Err(error) => {
+                                    let message = format!(
+                                        "MCP SSE server '{server_name}' invalid message JSON: {error}"
+                                    );
+                                    let _ = event_tx.send(Err(message));
+                                    return;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    if let Some(rest) = line.strip_prefix("event:") {
+                        event_name = rest.trim().to_string();
+                        continue;
+                    }
+                    if let Some(rest) = line.strip_prefix("data:") {
+                        data_lines.push(rest.trim_start().to_string());
+                    }
+                }
+            }
+
+            if let Some(tx) = endpoint_tx.take() {
+                let _ = tx.send(Err(format!(
+                    "MCP SSE server '{server_name}' closed before endpoint event"
+                )));
+            }
+            let _ = event_tx.send(Err(format!(
+                "MCP SSE server '{server_name}' stream closed"
+            )));
+        });
+
+        let endpoint_url = match tokio::time::timeout(Duration::from_secs(10), endpoint_rx).await {
+            Ok(Ok(Ok(endpoint))) => endpoint,
+            Ok(Ok(Err(error))) => {
+                worker.abort();
+                return Err(McpRequestError::Transport(error));
+            }
+            Ok(Err(_)) => {
+                worker.abort();
+                return Err(McpRequestError::Transport(format!(
+                    "MCP SSE server '{}' endpoint channel closed",
+                    server.name
+                )));
+            }
+            Err(_) => {
+                worker.abort();
+                return Err(McpRequestError::Transport(format!(
+                    "MCP SSE server '{}' timed out waiting for endpoint event",
+                    server.name
+                )));
+            }
+        };
+
+        Ok(McpSseSession {
+            server: server.clone(),
+            endpoint_url,
+            event_rx,
+            worker,
+            next_request_id: 1,
+            request_count: 0,
+            initialized_at_ms: now_millis(),
+        })
+    }
+
+    async fn send_mcp_sse_jsonrpc(
+        &self,
+        session: &mut McpSseSession,
+        message: serde_json::Value,
+        expected_id: Option<i64>,
+    ) -> Result<(Option<serde_json::Value>, Option<String>), McpRequestError> {
+        let mut request = self
+            .http
+            .post(&session.endpoint_url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(
+                reqwest::header::ACCEPT,
+                "application/json, text/event-stream",
+            );
+        for (key, value) in &session.server.headers {
+            let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) else {
+                return Err(McpRequestError::Transport(format!(
+                    "MCP SSE server '{}' has invalid header name '{}'",
+                    session.server.name, key
+                )));
+            };
+            let Ok(value) = reqwest::header::HeaderValue::from_str(value) else {
+                return Err(McpRequestError::Transport(format!(
+                    "MCP SSE server '{}' has invalid value for header '{}'",
+                    session.server.name, key
+                )));
+            };
+            request = request.header(name, value);
+        }
+
+        let response = request.json(&message).send().await.map_err(|error| {
+            McpRequestError::Transport(format!(
+                "MCP SSE server '{}' request failed: {error}",
+                session.server.name
+            ))
+        })?;
+        let status = response.status();
+        let response_session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let body = response.text().await.map_err(|error| {
+            McpRequestError::Transport(format!(
+                "MCP SSE server '{}' response read failed: {error}",
+                session.server.name
+            ))
+        })?;
+
+        if !status.is_success() {
+            return Err(McpRequestError::Transport(format!(
+                "MCP SSE server '{}' returned HTTP {status}: {}",
+                session.server.name,
+                truncate_output(&body, 2000)
+            )));
+        }
+
+        // Notifications may have empty accepted responses.
+        if expected_id.is_none() {
+            if body.trim().is_empty() {
+                return Ok((None, response_session_id));
+            }
+            // Some servers still return a body; ignore it for notifications.
+            return Ok((None, response_session_id));
+        }
+
+        if let Ok(Some(parsed)) = parse_mcp_http_response_body(&body, &content_type) {
+            if response_matches_mcp_id(&parsed, expected_id) {
+                return Ok((Some(parsed), response_session_id));
+            }
+        }
+
+        // Classic SSE transport delivers JSON-RPC responses on the open GET stream.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(McpRequestError::Transport(format!(
+                    "MCP SSE server '{}' timed out waiting for response id {:?}",
+                    session.server.name, expected_id
+                )));
+            }
+
+            let event = {
+                match tokio::time::timeout(remaining, session.event_rx.recv()).await {
+                    Ok(Some(Ok(value))) => value,
+                    Ok(Some(Err(error))) => {
+                        return Err(McpRequestError::Transport(error));
+                    }
+                    Ok(None) => {
+                        return Err(McpRequestError::Transport(format!(
+                            "MCP SSE server '{}' stream closed while waiting for response",
+                            session.server.name
+                        )));
+                    }
+                    Err(_) => {
+                        return Err(McpRequestError::Transport(format!(
+                            "MCP SSE server '{}' timed out waiting for response id {:?}",
+                            session.server.name, expected_id
+                        )));
+                    }
+                }
+            };
+
+            if response_matches_mcp_id(&event, expected_id) {
+                return Ok((Some(event), response_session_id));
+            }
+            // Ignore unrelated notifications / server requests for now.
+        }
+    }
+
     async fn start_mcp_session(
         &self,
         server: &McpServerConfig,
@@ -8404,6 +8889,13 @@ impl ToolExecutor {
         self.mcp_http_sessions.lock().await.remove(server_name);
     }
 
+    async fn remove_mcp_sse_session(&self, server_name: &str) {
+        if let Some(session) = self.mcp_sse_sessions.lock().await.remove(server_name) {
+            let session = session.lock().await;
+            session.worker.abort();
+        }
+    }
+
     async fn mcp_session_status(&self, server_name: &str) -> serde_json::Value {
         let session = self.mcp_sessions.lock().await.get(server_name).cloned();
         if let Some(session) = session {
@@ -8429,6 +8921,22 @@ impl ToolExecutor {
                 "requestCount": session.request_count,
                 "initializedAtMs": session.initialized_at_ms,
                 "sessionIdPresent": session.session_id.is_some(),
+            });
+        }
+        let session = self
+            .mcp_sse_sessions
+            .lock()
+            .await
+            .get(server_name)
+            .cloned();
+        if let Some(session) = session {
+            let session = session.lock().await;
+            return serde_json::json!({
+                "connected": true,
+                "transport": "sse",
+                "requestCount": session.request_count,
+                "initializedAtMs": session.initialized_at_ms,
+                "endpoint": session.endpoint_url,
             });
         }
         serde_json::json!({ "connected": false })
@@ -11252,6 +11760,28 @@ fn clear_mcp_http_sessions_async(
     });
 }
 
+fn clear_mcp_sse_sessions_async(
+    sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpSseSession>>>>>,
+) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        if let Ok(mut sessions) = sessions.try_lock() {
+            for (_, session) in sessions.drain() {
+                if let Ok(session) = session.try_lock() {
+                    session.worker.abort();
+                }
+            }
+        }
+        return;
+    };
+    handle.spawn(async move {
+        let mut sessions = sessions.lock().await;
+        for (_, session) in sessions.drain() {
+            let session = session.lock().await;
+            session.worker.abort();
+        }
+    });
+}
+
 fn parse_mcp_http_response_body(
     body: &str,
     content_type: &str,
@@ -11310,6 +11840,50 @@ fn parse_mcp_sse_data_lines(lines: &[String]) -> Result<Option<serde_json::Value
     serde_json::from_str::<serde_json::Value>(trimmed)
         .map(Some)
         .map_err(|error| format!("invalid SSE JSON data: {error}"))
+}
+
+fn resolve_mcp_sse_endpoint_url(base_url: &str, endpoint: &str) -> Result<String, String> {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return Err("SSE endpoint event was empty".to_string());
+    }
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        return Ok(endpoint.to_string());
+    }
+
+    let base = reqwest::Url::parse(base_url)
+        .map_err(|error| format!("invalid SSE base url '{base_url}': {error}"))?;
+    if endpoint.starts_with('/') {
+        let mut resolved = base;
+        resolved.set_path(endpoint.split('?').next().unwrap_or(endpoint));
+        if let Some((_, query)) = endpoint.split_once('?') {
+            resolved.set_query(Some(query));
+        } else {
+            resolved.set_query(None);
+        }
+        return Ok(resolved.to_string());
+    }
+
+    base.join(endpoint)
+        .map(|url| url.to_string())
+        .map_err(|error| format!("invalid SSE endpoint '{endpoint}': {error}"))
+}
+
+fn response_matches_mcp_id(value: &serde_json::Value, expected_id: Option<i64>) -> bool {
+    let Some(expected_id) = expected_id else {
+        return false;
+    };
+    match value.get("id") {
+        Some(serde_json::Value::Number(number)) => number
+            .as_i64()
+            .or_else(|| number.as_u64().map(|v| v as i64))
+            .is_some_and(|id| id == expected_id),
+        Some(serde_json::Value::String(text)) => text
+            .parse::<i64>()
+            .ok()
+            .is_some_and(|id| id == expected_id),
+        _ => false,
+    }
 }
 
 async fn read_mcp_response<R>(
@@ -14594,6 +15168,181 @@ rl.on("line", (line) => {
         );
 
         server_task.await.expect("fake server task");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn mcp_request_supports_sse_servers() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake MCP SSE server");
+        let addr = listener.local_addr().expect("fake server addr");
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let server_seen = seen.clone();
+        let server_task = tokio::spawn(async move {
+            // GET /sse
+            let (mut stream, _) = listener.accept().await.expect("accept sse");
+            let mut buf = vec![0u8; 2048];
+            let n = stream.read(&mut buf).await.expect("read sse get");
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            assert!(req.starts_with("GET /sse"), "unexpected request: {req}");
+            server_seen.lock().await.push("GET /sse".to_string());
+
+            let endpoint = format!("/messages?sessionId=sse-session-1");
+            let body = format!("event: endpoint\ndata: {endpoint}\n\n");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write sse open");
+
+            // Keep connection open and later write initialize + tools/list responses.
+            let mut stream_sse = stream;
+
+            // POST initialize
+            let (mut stream_post, _) = listener.accept().await.expect("accept initialize");
+            let (request, _) = read_test_http_json_request(&mut stream_post).await;
+            assert_eq!(
+                request.get("method").and_then(serde_json::Value::as_str),
+                Some("initialize")
+            );
+            server_seen.lock().await.push("initialize".to_string());
+            stream_post
+                .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .expect("ack initialize");
+            let init_id = request.get("id").cloned().unwrap_or(serde_json::json!(1));
+            let init_event = format!(
+                "event: message\ndata: {}\n\n",
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": init_id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "serverInfo": { "name": "fake-sse", "version": "0.0.1" }
+                    }
+                })
+            );
+            stream_sse
+                .write_all(format!("{:x}\r\n{}\r\n", init_event.len(), init_event).as_bytes())
+                .await
+                .expect("write initialize event");
+
+            // POST notifications/initialized
+            let (mut stream_post, _) = listener.accept().await.expect("accept initialized");
+            let (request, _) = read_test_http_json_request(&mut stream_post).await;
+            assert_eq!(
+                request.get("method").and_then(serde_json::Value::as_str),
+                Some("notifications/initialized")
+            );
+            server_seen
+                .lock()
+                .await
+                .push("notifications/initialized".to_string());
+            stream_post
+                .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .expect("ack initialized");
+
+            // POST tools/list
+            let (mut stream_post, _) = listener.accept().await.expect("accept tools/list");
+            let (request, _) = read_test_http_json_request(&mut stream_post).await;
+            assert_eq!(
+                request.get("method").and_then(serde_json::Value::as_str),
+                Some("tools/list")
+            );
+            server_seen.lock().await.push("tools/list".to_string());
+            stream_post
+                .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .expect("ack tools/list");
+            let list_id = request.get("id").cloned().unwrap_or(serde_json::json!(2));
+            let list_event = format!(
+                "event: message\ndata: {}\n\n",
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": list_id,
+                    "result": {
+                        "tools": [{
+                            "name": "ping",
+                            "description": "ping",
+                            "inputSchema": { "type": "object", "properties": {} }
+                        }]
+                    }
+                })
+            );
+            stream_sse
+                .write_all(format!("{:x}\r\n{}\r\n", list_event.len(), list_event).as_bytes())
+                .await
+                .expect("write tools/list event");
+        });
+
+        let root =
+            std::env::temp_dir().join(format!("cn-codex-mcp-sse-test-{}", uuid::Uuid::new_v4()));
+        let config_dir = root.join("codey");
+        let executor = ToolExecutor::with_workspace_config_dir(root.clone(), config_dir);
+        let server = McpServerConfig {
+            name: "remote_sse".to_string(),
+            transport: "sse".to_string(),
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            cwd: None,
+            url: Some(format!("http://{addr}/sse")),
+            headers: HashMap::new(),
+            disabled: false,
+        };
+
+        let result = executor
+            .mcp_request(&server, "tools/list", serde_json::json!({}))
+            .await
+            .expect("SSE tools/list should succeed");
+        let status = executor.mcp_session_status("remote_sse").await;
+
+        assert_eq!(
+            result
+                .pointer("/tools/0/name")
+                .and_then(serde_json::Value::as_str),
+            Some("ping")
+        );
+        assert_eq!(
+            status.get("connected").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("transport").and_then(serde_json::Value::as_str),
+            Some("sse")
+        );
+        assert_eq!(
+            status
+                .get("requestCount")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            status.get("endpoint").and_then(serde_json::Value::as_str),
+            Some(format!("http://{addr}/messages?sessionId=sse-session-1").as_str())
+        );
+
+        let methods = seen.lock().await.clone();
+        assert_eq!(
+            methods,
+            vec![
+                "GET /sse".to_string(),
+                "initialize".to_string(),
+                "notifications/initialized".to_string(),
+                "tools/list".to_string()
+            ]
+        );
+
+        server_task.await.expect("fake sse server task");
         std::fs::remove_dir_all(root).ok();
     }
 
