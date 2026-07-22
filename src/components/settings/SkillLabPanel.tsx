@@ -62,6 +62,7 @@ interface SkillLabGeneratedScript {
 }
 
 interface SkillLabGenerateResult {
+  skillId: string;
   name: string;
   content: string;
   testPrompt: string;
@@ -362,7 +363,7 @@ export function SkillLabPanel() {
       if (!selectedId || !name.trim()) return false;
       setSaving(true);
       try {
-        await invoke("skill_lab_save", {
+        const savedId = await invoke<string>("skill_lab_save", {
           params: {
             skillId: selectedId,
             name: name.trim(),
@@ -371,6 +372,10 @@ export function SkillLabPanel() {
             testPrompt,
           },
         });
+        const finalId = savedId?.trim() || selectedId;
+        if (finalId !== selectedId) {
+          setSelectedId(finalId);
+        }
         setSavedSnapshot({ name: name.trim(), goal, content, testPrompt });
         if (showSaved) {
           setSaved(true);
@@ -510,22 +515,40 @@ export function SkillLabPanel() {
         },
       );
 
-      const nextName = generated.name?.trim() || name.trim() || targetId;
+      const finalId = generated.skillId?.trim() || targetId;
+      const nextName =
+        generated.skillId?.trim() ||
+        generated.name?.trim() ||
+        name.trim() ||
+        finalId;
       const nextContent = generated.content || "";
       const nextTestPrompt = generated.testPrompt || "";
 
       // 无论如何先落盘，避免生成结果丢失
-      await invoke("skill_lab_save", {
+      const savedId = await invoke<string>("skill_lab_save", {
         params: {
-          skillId: targetId,
+          skillId: finalId,
           name: nextName,
+          goal: goal.trim(),
           content: nextContent,
           testPrompt: nextTestPrompt,
         },
       });
+      const persistedId = savedId?.trim() || finalId;
 
       // 若生成期间已切换到其它草稿，则不覆盖当前编辑区，但仍保留后端内容
-      if (targetId !== selectedIdRef.current) return;
+      if (
+        targetId !== selectedIdRef.current &&
+        finalId !== selectedIdRef.current &&
+        persistedId !== selectedIdRef.current
+      ) {
+        return;
+      }
+
+      // 后端可能已把 lab-* 临时 id 重命名为标准 skill 名称
+      if (persistedId !== targetId) {
+        setSelectedId(persistedId);
+      }
 
       setName(nextName);
       setContent(nextContent);
@@ -534,9 +557,9 @@ export function SkillLabPanel() {
 
       await loadList();
       const refreshed = await invoke<SkillLabDetail>("skill_lab_read", {
-        skillId: targetId,
+        skillId: persistedId,
       });
-      if (targetId !== selectedIdRef.current) return;
+      if (persistedId !== selectedIdRef.current) return;
       setDetail(refreshed);
     } catch (err) {
       const errorText =
@@ -652,11 +675,15 @@ export function SkillLabPanel() {
       setDeployFeedback(null);
       setDeployingId(targetId);
       try {
-        await invoke("skill_lab_deploy", { skillId: targetId });
+        const deployedId = await invoke<string>("skill_lab_deploy", { skillId: targetId });
+        const finalId = deployedId?.trim() || targetId;
         await loadList();
-        if (targetId === selectedId) {
+        if (finalId !== targetId && targetId === selectedId) {
+          setSelectedId(finalId);
+        }
+        if (finalId === selectedIdRef.current || targetId === selectedId) {
           const refreshed = await invoke<SkillLabDetail>("skill_lab_read", {
-            skillId: targetId,
+            skillId: finalId,
           });
           setDetail(refreshed);
           setName(refreshed.name);
@@ -672,8 +699,12 @@ export function SkillLabPanel() {
         }
         setDeployFeedback({
           kind: "success",
-          text: intl.formatMessage({ id: "settings.skillLab.deploySuccess" }),
+          text: intl.formatMessage(
+            { id: "settings.skillLab.deploySuccessWithId" },
+            { skillId: finalId },
+          ),
         });
+        window.dispatchEvent(new CustomEvent("skills-changed"));
       } catch (err) {
         setDeployFeedback({
           kind: "error",

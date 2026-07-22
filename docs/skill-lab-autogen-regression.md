@@ -4,6 +4,7 @@
 - [ ] 无 Python 环境时，点击“自动生成”应提示安装引导，不发起生成。
 - [ ] 有 Python 环境时，输入目标后可自动生成 `SKILL.md` 与 `scripts/*.py`。
 - [ ] 生成完成后，草稿列表和详情页中的 `name/content/testPrompt` 自动刷新。
+- [ ] 生成后的 skill 名称应为标准英文 kebab-case（如 `stock-evaluation`），而不是 `lab-时间戳`。
 - [ ] 非法脚本路径（如 `../x.py`）或空脚本应被后端拒绝并返回可读错误。
 
 ## 自动进化链路
@@ -13,8 +14,11 @@
 - [ ] 最终落盘内容应使用最佳分版本，而非最后一轮版本。
 
 ## 推广链路
-- [ ] 推广后 `codey/skills/<id>/SKILL.md` 存在。
-- [ ] 推广后 `codey/skills/<id>/scripts/` 与实验室草稿目录保持同步。
+- [ ] 推广后 `codey/skills/<标准skill名>/SKILL.md` 存在，且目录名不是 `lab-*`。
+- [ ] 推广后 `codey/skills/<标准skill名>/scripts/` 与实验室草稿目录保持同步。
+- [ ] 推广后 `SKILL.md` 具备可用 frontmatter（至少 `name/description`）。
+- [ ] 推广后 frontmatter 的 `name` 与正式 skill 目录名一致（标准英文 kebab-case）。
+- [ ] 推广后无需重启应用，对话 `+ / 添加 Skill` 与 Skills 面板可立即看到新 skill。
 
 ## LLM 传输一致性
 - [ ] provider 的 `http_headers` 能注入到请求头。

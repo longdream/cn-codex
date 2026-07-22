@@ -1446,6 +1446,10 @@ export function useTauriEvents() {
           }
         }),
 
+        listen("skills-changed", () => {
+          window.dispatchEvent(new CustomEvent("skills-changed"));
+        }),
+
         // 机器人提问倒计时等待
         listen<{
           threadId: string;

@@ -257,6 +257,7 @@ pub struct SkillLabGeneratedScript {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillLabGenerateFromGoalResult {
+    pub skill_id: String,
     pub name: String,
     pub content: String,
     pub test_prompt: String,
@@ -368,8 +369,15 @@ pub struct SkillLabSaveParams {
 pub async fn skill_lab_save(
     state: State<'_, AppState>,
     params: SkillLabSaveParams,
-) -> AppResult<()> {
-    let dir = get_skill_lab_entry_dir(&state, &params.skill_id);
+) -> AppResult<String> {
+    let incoming_id = params.skill_id.trim();
+    if incoming_id.is_empty() {
+        return Err(AppError::Custom("skillId must not be empty".to_string()));
+    }
+
+    // 普通保存保持原 skill_id 不变；标准命名由自动生成/部署阶段负责。
+    let skill_id = incoming_id.to_string();
+    let dir = get_skill_lab_entry_dir(&state, &skill_id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| AppError::Custom(format!("Failed to create skill-lab dir: {e}")))?;
 
@@ -385,9 +393,9 @@ pub async fn skill_lab_save(
         .flatten();
 
     let meta = SkillLabMeta {
-        name: params.name,
-        goal: params.goal,
-        test_prompt: params.test_prompt,
+        name: params.name.trim().to_string(),
+        goal: params.goal.trim().to_string(),
+        test_prompt: params.test_prompt.clone(),
         status: existing_meta
             .as_ref()
             .map(|m| m.status.clone())
@@ -421,7 +429,7 @@ pub async fn skill_lab_save(
     std::fs::write(dir.join("SKILL.md"), &params.content)
         .map_err(|e| AppError::Custom(format!("Failed to write SKILL.md: {e}")))?;
 
-    Ok(())
+    Ok(skill_id)
 }
 
 #[tauri::command]
@@ -545,6 +553,249 @@ fn parse_skill_name_from_markdown(content: &str) -> Option<String> {
     None
 }
 
+fn is_standard_skill_id(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 64 {
+        return false;
+    }
+    if value.starts_with('-') || value.ends_with('-') || value.contains("--") {
+        return false;
+    }
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+}
+
+fn looks_like_temporary_lab_id(value: &str) -> bool {
+    let value = value.trim();
+    value
+        .strip_prefix("lab-")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn slugify_skill_id(value: &str) -> String {
+    let mut output = String::new();
+    let mut last_dash = false;
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            output.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash && !output.is_empty() {
+            output.push('-');
+            last_dash = true;
+        }
+    }
+    let trimmed = output.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        return "untitled-skill".to_string();
+    }
+    if trimmed.len() <= 64 {
+        return trimmed;
+    }
+    let mut truncated = trimmed.chars().take(64).collect::<String>();
+    while truncated.ends_with('-') {
+        truncated.pop();
+    }
+    if truncated.is_empty() {
+        "untitled-skill".to_string()
+    } else {
+        truncated
+    }
+}
+
+fn derive_preferred_skill_id(name: &str, name_hint: Option<&str>, goal: &str, current_id: &str) -> String {
+    for candidate in [name, name_hint.unwrap_or(""), goal, current_id] {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if is_standard_skill_id(trimmed) && !looks_like_temporary_lab_id(trimmed) {
+            return trimmed.to_string();
+        }
+        let slug = slugify_skill_id(trimmed);
+        if slug != "untitled-skill" && !looks_like_temporary_lab_id(&slug) {
+            return slug;
+        }
+    }
+    "generated-skill".to_string()
+}
+
+fn skill_id_conflicts(lab_root: &Path, prod_skills_root: &Path, skill_id: &str, current_id: &str) -> bool {
+    if skill_id == current_id {
+        return false;
+    }
+    lab_root.join(skill_id).exists() || prod_skills_root.join(skill_id).exists()
+}
+
+fn allocate_unique_skill_id(
+    lab_root: &Path,
+    prod_skills_root: &Path,
+    preferred: &str,
+    current_id: &str,
+) -> String {
+    let base = {
+        let slug = if is_standard_skill_id(preferred) {
+            preferred.trim().to_string()
+        } else {
+            slugify_skill_id(preferred)
+        };
+        if slug.is_empty() || looks_like_temporary_lab_id(&slug) {
+            "generated-skill".to_string()
+        } else {
+            slug
+        }
+    };
+
+    if !skill_id_conflicts(lab_root, prod_skills_root, &base, current_id) {
+        return base;
+    }
+
+    for index in 2..1000 {
+        let candidate = format!("{base}-{index}");
+        if !skill_id_conflicts(lab_root, prod_skills_root, &candidate, current_id) {
+            return candidate;
+        }
+    }
+
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("{base}-{millis}")
+}
+
+fn rename_skill_lab_entry(lab_root: &Path, from_id: &str, to_id: &str) -> AppResult<()> {
+    if from_id == to_id {
+        return Ok(());
+    }
+    let from_dir = lab_root.join(from_id);
+    let to_dir = lab_root.join(to_id);
+    if !from_dir.exists() {
+        return Err(AppError::Custom(format!(
+            "Skill lab entry not found: {from_id}"
+        )));
+    }
+    if to_dir.exists() {
+        return Err(AppError::Custom(format!(
+            "Skill lab entry already exists: {to_id}"
+        )));
+    }
+    std::fs::rename(&from_dir, &to_dir).map_err(|e| {
+        AppError::Custom(format!(
+            "Failed to rename skill lab entry from {from_id} to {to_id}: {e}"
+        ))
+    })?;
+    Ok(())
+}
+
+fn yaml_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn extract_skill_description_fallback(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "---" {
+            continue;
+        }
+        let cleaned = trimmed
+            .trim_start_matches(['*', '-', '>'])
+            .trim()
+            .to_string();
+        if !cleaned.is_empty() {
+            return Some(cleaned);
+        }
+    }
+    None
+}
+
+fn ensure_skill_frontmatter(content: &str, name: &str, description: &str) -> String {
+    let name = name.trim();
+    let description = description.trim();
+    let fallback_name = if name.is_empty() { "untitled-skill" } else { name };
+    let fallback_description = if description.is_empty() {
+        format!("Skill lab deployed skill: {fallback_name}")
+    } else {
+        description.to_string()
+    };
+
+    if content.starts_with("---") {
+        if let Some(end) = content[3..].find("---") {
+            let front = &content[3..3 + end];
+            let body = content[3 + end + 3..].trim_start_matches('\r');
+            let body = body.trim_start_matches('\n');
+
+            let mut has_name = false;
+            let mut has_description = false;
+            let mut lines = Vec::new();
+            for line in front.lines() {
+                let trimmed = line.trim();
+                if let Some(value) = trimmed.strip_prefix("name:") {
+                    has_name = true;
+                    // Skill 正式名称统一为标准 id（kebab-case），始终覆盖写入
+                    let _ = value;
+                    lines.push(format!("name: {}", yaml_quote(fallback_name)));
+                    continue;
+                }
+                if let Some(value) = trimmed.strip_prefix("description:") {
+                    has_description = true;
+                    let existing = value.trim().trim_matches('"').trim_matches('\'').trim();
+                    if existing.is_empty() {
+                        lines.push(format!(
+                            "description: {}",
+                            yaml_quote(&fallback_description)
+                        ));
+                    } else {
+                        lines.push(line.to_string());
+                    }
+                    continue;
+                }
+                lines.push(line.to_string());
+            }
+
+            if !has_name {
+                lines.insert(0, format!("name: {}", yaml_quote(fallback_name)));
+            }
+            if !has_description {
+                lines.insert(
+                    1.min(lines.len()),
+                    format!("description: {}", yaml_quote(&fallback_description)),
+                );
+            }
+
+            let mut out = String::from("---\n");
+            out.push_str(&lines.join("\n"));
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("---\n");
+            if !body.is_empty() {
+                out.push_str(body);
+                if !body.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            return out;
+        }
+    }
+
+    let mut out = String::from("---\n");
+    out.push_str(&format!("name: {}\n", yaml_quote(fallback_name)));
+    out.push_str(&format!(
+        "description: {}\n",
+        yaml_quote(&fallback_description)
+    ));
+    out.push_str("---\n");
+    let body = content.trim_start_matches('\u{feff}').trim_start();
+    if !body.is_empty() {
+        out.push_str(body);
+        if !body.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out
+}
+
 fn extract_json_object(raw: &str) -> Option<&str> {
     let start = raw.find('{')?;
     let end = raw.rfind('}')?;
@@ -645,7 +896,9 @@ pub async fn skill_lab_generate_from_goal(
          4) 不要写入其他目录，不要删除无关文件。\n\
          5) 最后一条助手回复仅输出一个 JSON 对象，格式为：\n\
             {{\"name\":\"...\",\"testPrompt\":\"...\",\"scripts\":[\"scripts/xxx.py\"]}}\n\
-         6) JSON 必须合法，不要加解释文字。"
+         6) JSON 中的 name 必须是标准英文 skill 名称（kebab-case，仅小写字母、数字、连字符），例如 stock-evaluation、code-review-helper。不要使用 lab- 前缀或中文。\n\
+         7) SKILL.md frontmatter 的 name 字段也必须使用同一个标准英文 skill 名称。\n\
+         8) JSON 必须合法，不要加解释文字。"
     );
 
     state
@@ -677,8 +930,74 @@ pub async fn skill_lab_generate_from_goal(
     let (name, test_prompt) =
         parse_generation_response(&thread_messages, &fallback_name, &fallback_test_prompt);
 
+    let preferred_id = derive_preferred_skill_id(
+        &name,
+        Some(name_hint.as_str()),
+        goal,
+        skill_id,
+    );
+    let lab_root = get_skill_lab_dir(&state);
+    let prod_skills_root = state.workspace_config_dir.join("skills");
+    let final_skill_id =
+        allocate_unique_skill_id(&lab_root, &prod_skills_root, &preferred_id, skill_id);
+    if final_skill_id != skill_id {
+        rename_skill_lab_entry(&lab_root, skill_id, &final_skill_id)?;
+    }
+
+    // 确保 frontmatter 与正式 skill 名一致（标准英文 kebab-case）
+    let content = ensure_skill_frontmatter(
+        &content,
+        &final_skill_id,
+        goal,
+    );
+    let final_dir = get_skill_lab_entry_dir(&state, &final_skill_id);
+    std::fs::write(final_dir.join("SKILL.md"), &content).map_err(|e| {
+        AppError::Custom(format!("Failed to write normalized SKILL.md: {e}"))
+    })?;
+
+    // 同步 meta，确保生成后立刻以标准 skill 名称出现在列表中
+    let existing_meta = final_dir
+        .join("meta.json")
+        .exists()
+        .then(|| {
+            std::fs::read_to_string(final_dir.join("meta.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str::<SkillLabMeta>(&s).ok())
+        })
+        .flatten();
+    let meta = SkillLabMeta {
+        name: final_skill_id.clone(),
+        goal: goal.to_string(),
+        test_prompt: test_prompt.clone(),
+        status: existing_meta
+            .as_ref()
+            .map(|m| m.status.clone())
+            .unwrap_or_else(|| "idle".to_string()),
+        iteration_count: existing_meta
+            .as_ref()
+            .map(|m| m.iteration_count)
+            .unwrap_or(0),
+        last_test_result: existing_meta
+            .as_ref()
+            .and_then(|m| m.last_test_result.clone()),
+        last_evaluation: existing_meta
+            .as_ref()
+            .and_then(|m| m.last_evaluation.clone()),
+        best_score: existing_meta.as_ref().and_then(|m| m.best_score),
+        score_history: existing_meta
+            .as_ref()
+            .map(|m| m.score_history.clone())
+            .unwrap_or_default(),
+        best_evaluation: existing_meta
+            .as_ref()
+            .and_then(|m| m.best_evaluation.clone()),
+        stable_rounds: existing_meta.as_ref().map(|m| m.stable_rounds).unwrap_or(0),
+    };
+    write_skill_lab_meta(&final_dir.join("meta.json"), &meta);
+
     Ok(SkillLabGenerateFromGoalResult {
-        name,
+        skill_id: final_skill_id.clone(),
+        name: final_skill_id,
         content,
         test_prompt,
         scripts,
@@ -771,7 +1090,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub async fn skill_lab_deploy(state: State<'_, AppState>, skill_id: String) -> AppResult<()> {
+pub async fn skill_lab_deploy(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    skill_id: String,
+) -> AppResult<String> {
     let lab_dir = get_skill_lab_entry_dir(&state, &skill_id);
     let skill_md_src = lab_dir.join("SKILL.md");
 
@@ -781,14 +1104,43 @@ pub async fn skill_lab_deploy(state: State<'_, AppState>, skill_id: String) -> A
         )));
     }
 
-    // 正式 Skill 存储在 codey/skills/<id>/SKILL.md
-    let prod_dir = state.workspace_config_dir.join("skills").join(&skill_id);
+    let content = std::fs::read_to_string(&skill_md_src)
+        .map_err(|e| AppError::Custom(format!("Failed to read lab SKILL.md: {e}")))?;
+    let meta_path = lab_dir.join("meta.json");
+    let meta = std::fs::read_to_string(&meta_path)
+        .ok()
+        .and_then(|meta_str| serde_json::from_str::<SkillLabMeta>(&meta_str).ok());
+    let display_name = meta
+        .as_ref()
+        .map(|item| item.name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(skill_id.as_str());
+    let frontmatter_name = parse_skill_name_from_markdown(&content);
+    let preferred_id = derive_preferred_skill_id(
+        frontmatter_name.as_deref().unwrap_or(""),
+        Some(display_name),
+        meta.as_ref().map(|item| item.goal.as_str()).unwrap_or(""),
+        &skill_id,
+    );
+    let lab_root = get_skill_lab_dir(&state);
+    let prod_skills_root = state.workspace_config_dir.join("skills");
+    let deploy_id =
+        allocate_unique_skill_id(&lab_root, &prod_skills_root, &preferred_id, &skill_id);
+
+    // 正式 Skill 存储在 codey/skills/<id>/SKILL.md，id 使用标准 skill 名称
+    let prod_dir = prod_skills_root.join(&deploy_id);
     std::fs::create_dir_all(&prod_dir)
         .map_err(|e| AppError::Custom(format!("Failed to create skills dir: {e}")))?;
 
-    let content = std::fs::read_to_string(&skill_md_src)
-        .map_err(|e| AppError::Custom(format!("Failed to read lab SKILL.md: {e}")))?;
-    std::fs::write(prod_dir.join("SKILL.md"), &content)
+    let description = meta
+        .as_ref()
+        .map(|item| item.goal.trim())
+        .filter(|goal| !goal.is_empty())
+        .map(str::to_string)
+        .or_else(|| extract_skill_description_fallback(&content))
+        .unwrap_or_else(|| format!("Skill lab deployed skill: {deploy_id}"));
+    let normalized_content = ensure_skill_frontmatter(&content, &deploy_id, &description);
+    std::fs::write(prod_dir.join("SKILL.md"), &normalized_content)
         .map_err(|e| AppError::Custom(format!("Failed to write prod SKILL.md: {e}")))?;
 
     let scripts_src = lab_dir.join("scripts");
@@ -801,17 +1153,35 @@ pub async fn skill_lab_deploy(state: State<'_, AppState>, skill_id: String) -> A
     }
 
     // 更新状态
-    let meta_path = lab_dir.join("meta.json");
-    if let Ok(meta_str) = std::fs::read_to_string(&meta_path) {
-        if let Ok(mut meta) = serde_json::from_str::<SkillLabMeta>(&meta_str) {
-            meta.status = "deployed".to_string();
-            if let Ok(json) = serde_json::to_string_pretty(&meta) {
-                let _ = std::fs::write(&meta_path, json);
-            }
+    if let Some(mut meta) = meta {
+        meta.status = "deployed".to_string();
+        // 同步展示名到标准 skill id，避免继续显示临时 lab-* 名称
+        if meta.name.trim().is_empty() || looks_like_temporary_lab_id(meta.name.trim()) {
+            meta.name = deploy_id.clone();
+        }
+        write_skill_lab_meta(&meta_path, &meta);
+    }
+
+    // 若实验室草稿仍是临时 lab-* id，则同步重命名到正式 skill 名
+    if looks_like_temporary_lab_id(&skill_id) && skill_id != deploy_id {
+        if let Err(err) = rename_skill_lab_entry(&lab_root, &skill_id, &deploy_id) {
+            // 部署本身已成功，重命名失败时仅记录日志，避免阻断
+            info!(
+                "Deployed skill {} but failed to rename lab draft {}: {}",
+                deploy_id, skill_id, err
+            );
         }
     }
 
-    Ok(())
+    let _ = app_handle.emit(
+        "skills-changed",
+        serde_json::json!({
+            "skillId": deploy_id,
+            "source": "skill-lab-deploy",
+        }),
+    );
+
+    Ok(deploy_id)
 }
 
 /// 删除实验室草稿
@@ -1820,5 +2190,85 @@ mod tests {
         let err = validate_generation_artifacts(&dir.path().join("SKILL.md"), &scripts)
             .expect_err("empty script should fail");
         assert!(format!("{err}").contains("empty"));
+    }
+
+    #[test]
+    fn ensure_skill_frontmatter_adds_missing_header() {
+        let content = "# 股票评价\n\n对输入股票做分析。\n";
+        let normalized = ensure_skill_frontmatter(content, "stock-evaluation", "多维度股票分析");
+        assert!(normalized.starts_with("---\n"));
+        assert!(normalized.contains("name: \"stock-evaluation\""));
+        assert!(normalized.contains("description: \"多维度股票分析\""));
+        assert!(normalized.contains("# 股票评价"));
+    }
+
+    #[test]
+    fn ensure_skill_frontmatter_fills_empty_fields() {
+        let content = "---\nname: \ndescription:\ntags: [lab]\n---\n# Body\n";
+        let normalized =
+            ensure_skill_frontmatter(content, "stock-evaluation", "多维度股票分析");
+        assert!(normalized.contains("name: \"stock-evaluation\""));
+        assert!(normalized.contains("description: \"多维度股票分析\""));
+        assert!(normalized.contains("tags: [lab]"));
+        assert!(normalized.contains("# Body"));
+    }
+
+    #[test]
+    fn extract_skill_description_fallback_skips_headings() {
+        let content = "# 股票评价\n\n对输入股票做分析。\n";
+        assert_eq!(
+            extract_skill_description_fallback(content),
+            Some("对输入股票做分析。".to_string())
+        );
+    }
+
+    #[test]
+    fn ensure_skill_frontmatter_overwrites_existing_name() {
+        let content = "---\nname: \"股票评价\"\ndescription: \"旧描述\"\n---\n# Body\n";
+        let normalized =
+            ensure_skill_frontmatter(content, "stock-evaluation", "多维度股票分析");
+        assert!(normalized.contains("name: \"stock-evaluation\""));
+        assert!(normalized.contains("description: \"旧描述\""));
+    }
+
+    #[test]
+    fn slugify_skill_id_from_english_and_mixed_text() {
+        assert_eq!(slugify_skill_id("Stock Evaluation"), "stock-evaluation");
+        assert_eq!(slugify_skill_id("code_review_helper"), "code-review-helper");
+        assert_eq!(slugify_skill_id("  Hello--World  "), "hello-world");
+        assert_eq!(slugify_skill_id("股票评价"), "untitled-skill");
+    }
+
+    #[test]
+    fn derive_preferred_skill_id_prefers_standard_english_name() {
+        assert_eq!(
+            derive_preferred_skill_id(
+                "stock-evaluation",
+                Some("股票评价"),
+                "对股票做分析",
+                "lab-123"
+            ),
+            "stock-evaluation"
+        );
+        assert_eq!(
+            derive_preferred_skill_id("股票评价", Some("股票评价"), "对股票做分析", "lab-123"),
+            "generated-skill"
+        );
+        assert!(!looks_like_temporary_lab_id("stock-evaluation"));
+        assert!(looks_like_temporary_lab_id("lab-1783428061706"));
+    }
+
+    #[test]
+    fn allocate_unique_skill_id_avoids_existing_names() {
+        let lab = tempfile::tempdir().unwrap();
+        let prod = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(lab.path().join("stock-evaluation")).unwrap();
+        let allocated = allocate_unique_skill_id(
+            lab.path(),
+            prod.path(),
+            "stock-evaluation",
+            "lab-1",
+        );
+        assert_eq!(allocated, "stock-evaluation-2");
     }
 }

@@ -302,6 +302,7 @@
   "settings.skillLab.deployDisabledAlready": "该 Skill 已部署，无需重复部署。",
   "settings.skillLab.deployDisabledRunning": "测试仍在进行中，请等待完成后再部署。",
   "settings.skillLab.deploySuccess": "部署成功，已同步到正式 Skills 列表。",
+  "settings.skillLab.deploySuccessWithId": "部署成功，已同步为正式 Skill：{skillId}",
   "settings.skillLab.deployError": "部署失败",
   "settings.skillLab.ruleSummary": "测试规则：固定测试 {max} 轮，取最高分作为最终结果。",
   "settings.skillLab.progressRound": "轮次 {current}/{max}",

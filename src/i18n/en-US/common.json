@@ -373,6 +373,7 @@
   "settings.skillLab.deployDisabledAlready": "This skill is already deployed.",
   "settings.skillLab.deployDisabledRunning": "A test run is still in progress. Deploy after it finishes.",
   "settings.skillLab.deploySuccess": "Deploy succeeded and synced to production skills.",
+  "settings.skillLab.deploySuccessWithId": "Deploy succeeded and synced as production skill: {skillId}",
   "settings.skillLab.deployError": "Deploy failed",
   "settings.skillLab.ruleSummary": "Test rule: run exactly {max} rounds and keep the highest score.",
   "settings.skillLab.progressRound": "Round {current}/{max}",

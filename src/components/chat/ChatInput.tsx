@@ -438,7 +438,15 @@ export function ChatInput({
   }, []);
 
   useEffect(() => {
-    skillList().then(setSkills).catch(() => setSkills([]));
+    const loadSkills = () => {
+      skillList().then(setSkills).catch(() => setSkills([]));
+    };
+    loadSkills();
+    const handler = () => {
+      loadSkills();
+    };
+    window.addEventListener("skills-changed", handler);
+    return () => window.removeEventListener("skills-changed", handler);
   }, []);
 
   useEffect(() => {
