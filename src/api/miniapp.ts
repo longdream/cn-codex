@@ -35,7 +35,7 @@ export interface MiniAppCreateArgs {
   name: string;
   slug: string;
   description?: string;
-  databaseId: string;
+  databaseId?: string;
   databaseName?: string;
 }
 

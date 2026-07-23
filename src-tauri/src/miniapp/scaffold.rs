@@ -4,8 +4,8 @@ use std::fs;
 use std::path::Path;
 
 use super::{
-    app_dir, ensure_miniapps_dir, now_secs, resolve_bundled_node, write_manifest, MiniAppMcpConfig,
-    MiniAppPage, MiniAppRecord, MiniAppStatus, MiniAppToolMeta,
+    MiniAppMcpConfig, MiniAppPage, MiniAppRecord, MiniAppStatus, MiniAppToolMeta, app_dir,
+    ensure_miniapps_dir, now_secs, resolve_bundled_node, write_manifest,
 };
 
 #[derive(Debug, Clone)]
@@ -40,21 +40,28 @@ pub fn scaffold_miniapp(
         .map_err(|e| format!("写入 package.json 失败: {e}"))?;
     fs::write(&server_entry, server_index_mjs())
         .map_err(|e| format!("写入 server/index.mjs 失败: {e}"))?;
-    fs::write(&web_index, web_index_html(&req.name, &req.slug, &req.database_name))
-        .map_err(|e| format!("写入 web/index.html 失败: {e}"))?;
+    fs::write(
+        &web_index,
+        web_index_html(&req.name, &req.slug, &req.database_id, &req.database_name),
+    )
+    .map_err(|e| format!("写入 web/index.html 失败: {e}"))?;
     fs::write(
         &mcp_json,
         mcp_json_content(&node, &server_entry, &root, &req.database_id),
     )
     .map_err(|e| format!("写入 .mcp.json 失败: {e}"))?;
+    let data_source = if req.database_id.trim().is_empty() {
+        "Database: not configured (standalone MiniApp)".to_string()
+    } else {
+        format!("Database: `{}` ({})", req.database_name, req.database_id)
+    };
     fs::write(
         &readme,
         format!(
-            "# {}\n\nSlug: `{}`\n\nDatabase: `{}` ({})\n\n## Run\n\n```bash\n{} server/index.mjs\n```\n\n{}",
+            "# {}\n\nSlug: `{}`\n\n{}\n\n## Run\n\n```bash\n{} server/index.mjs\n```\n\n{}",
             req.name,
             req.slug,
-            req.database_name,
-            req.database_id,
+            data_source,
             node.display(),
             req.description
         ),
@@ -122,28 +129,33 @@ fn package_json_content(slug: &str, name: &str) -> String {
     )
 }
 
-fn mcp_json_content(
-    node: &Path,
-    server_entry: &Path,
-    cwd: &Path,
-    database_id: &str,
-) -> String {
+fn mcp_json_content(node: &Path, server_entry: &Path, cwd: &Path, database_id: &str) -> String {
+    let mut env = serde_json::Map::new();
+    if !database_id.trim().is_empty() {
+        env.insert(
+            "MINIAPP_DATABASE_ID".to_string(),
+            serde_json::Value::String(database_id.to_string()),
+        );
+    }
     serde_json::json!({
         "mcpServers": {
             "miniapp": {
                 "command": node.to_string_lossy(),
                 "args": [server_entry.to_string_lossy()],
                 "cwd": cwd.to_string_lossy(),
-                "env": {
-                    "MINIAPP_DATABASE_ID": database_id
-                }
+                "env": env
             }
         }
     })
     .to_string()
 }
 
-fn web_index_html(name: &str, slug: &str, database_name: &str) -> String {
+fn web_index_html(name: &str, slug: &str, database_id: &str, database_name: &str) -> String {
+    let data_source = if database_id.trim().is_empty() {
+        "独立运行，不依赖数据库".to_string()
+    } else {
+        format!("已绑定数据库：{database_name}")
+    };
     format!(
         r#"<!doctype html>
 <html lang="zh-CN">
@@ -181,9 +193,9 @@ fn web_index_html(name: &str, slug: &str, database_name: &str) -> String {
   <body>
     <div class="card">
       <h1>{name}</h1>
-      <p>这是小程序 <code>{slug}</code> 的示例页面。</p>
-      <p class="meta">绑定数据库：{database_name}</p>
-      <p class="meta">后续可由主链路 Agent 在模板上生成业务录入/查询页。</p>
+      <p>这是小程序 <code>{slug}</code> 的可启动界面。</p>
+      <p class="meta">{data_source}</p>
+      <p class="meta">主链路 Agent 可以在此基础上生成任意交互功能。</p>
     </div>
   </body>
 </html>

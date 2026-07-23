@@ -1518,7 +1518,7 @@ export function ChatInput({
               <button
                 type="button"
                 onClick={() => setShowRobotMenu((v) => !v)}
-                className={`flex h-6 items-center gap-1 rounded-full border px-2.5 text-[11px] font-medium transition-colors ${
+                className={`flex h-8 items-center gap-1 rounded-full border px-2.5 text-[11px] font-medium transition-colors ${
                   selectedRobotId || robotCreateMode
                     ? "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
                     : "border-[var(--chat-line)] bg-[var(--chat-chip)] text-[var(--chat-muted)] hover:text-[var(--chat-prose)]"

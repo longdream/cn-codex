@@ -147,8 +147,19 @@ pub fn load_registry(workspace_config_dir: &Path) -> Result<Vec<MiniAppRecord>, 
     let raw = fs::read_to_string(&path).map_err(|e| format!("读取小程序注册表失败: {e}"))?;
     let mut file: MiniAppRegistryFile =
         serde_json::from_str(&raw).map_err(|e| format!("解析小程序注册表失败: {e}"))?;
-    if file.apps.is_empty() {
-        file.apps = scan_miniapps_from_disk(workspace_config_dir)?;
+    // The manifest is the main-chain Agent's output contract. Merge it on every
+    // load so packages created or updated directly in codey/miniapps are
+    // discoverable without a separate registry command.
+    for disk_app in scan_miniapps_from_disk(workspace_config_dir)? {
+        if let Some(registered) = file
+            .apps
+            .iter_mut()
+            .find(|app| app.id == disk_app.id || app.slug == disk_app.slug)
+        {
+            merge_generated_manifest(registered, disk_app);
+        } else {
+            file.apps.push(disk_app);
+        }
     }
     // Reconcile running flags against in-memory process table.
     for app in &mut file.apps {
@@ -161,21 +172,45 @@ pub fn load_registry(workspace_config_dir: &Path) -> Result<Vec<MiniAppRecord>, 
             app.status = MiniAppStatus::Stopped;
         }
     }
+    file.apps.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(file.apps)
 }
 
-pub fn save_registry(
-    workspace_config_dir: &Path,
-    apps: &[MiniAppRecord],
-) -> Result<(), String> {
+fn merge_generated_manifest(registered: &mut MiniAppRecord, generated: MiniAppRecord) {
+    if !generated.name.trim().is_empty() {
+        registered.name = generated.name;
+    }
+    if !generated.description.trim().is_empty() {
+        registered.description = generated.description;
+    }
+    if registered.database_id.trim().is_empty() && !generated.database_id.trim().is_empty() {
+        registered.database_id = generated.database_id;
+        registered.database_name = generated.database_name;
+    }
+    if !generated.root_path.trim().is_empty() {
+        registered.root_path = generated.root_path;
+    }
+    if !generated.mcp.command.trim().is_empty() || !generated.mcp.args.is_empty() {
+        registered.mcp = generated.mcp;
+    }
+    if !generated.pages.is_empty() {
+        registered.pages = generated.pages;
+    }
+    if !generated.tools.is_empty() {
+        registered.tools = generated.tools;
+    }
+    registered.updated_at = registered.updated_at.max(generated.updated_at);
+}
+
+pub fn save_registry(workspace_config_dir: &Path, apps: &[MiniAppRecord]) -> Result<(), String> {
     ensure_miniapps_dir(workspace_config_dir)?;
     let path = registry_path(workspace_config_dir);
     let file = MiniAppRegistryFile {
         version: 1,
         apps: apps.to_vec(),
     };
-    let raw = serde_json::to_string_pretty(&file)
-        .map_err(|e| format!("序列化小程序注册表失败: {e}"))?;
+    let raw =
+        serde_json::to_string_pretty(&file).map_err(|e| format!("序列化小程序注册表失败: {e}"))?;
     fs::write(&path, raw).map_err(|e| format!("写入小程序注册表失败: {e}"))
 }
 
@@ -197,14 +232,11 @@ pub fn validate_slug(slug: &str) -> Result<(), String> {
     if trimmed.is_empty() {
         return Err("英文名称不能为空".into());
     }
-    let valid = trimmed
-        .chars()
-        .enumerate()
-        .all(|(idx, ch)| match ch {
-            'a'..='z' => true,
-            '0'..='9' | '_' | '-' if idx > 0 => true,
-            _ => false,
-        });
+    let valid = trimmed.chars().enumerate().all(|(idx, ch)| match ch {
+        'a'..='z' => true,
+        '0'..='9' | '_' | '-' if idx > 0 => true,
+        _ => false,
+    });
     if !valid {
         return Err("英文名称需匹配 [a-z][a-z0-9_-]*".into());
     }
@@ -237,9 +269,9 @@ fn scan_miniapps_from_disk(workspace_config_dir: &Path) -> Result<Vec<MiniAppRec
         }
         if let Ok(raw) = fs::read_to_string(&manifest) {
             if let Ok(mut app) = serde_json::from_str::<MiniAppRecord>(&raw) {
-                if app.root_path.is_empty() {
-                    app.root_path = path.to_string_lossy().to_string();
-                }
+                // The containing directory is authoritative. Generated or
+                // copied manifests may contain an empty or stale absolute path.
+                app.root_path = path.to_string_lossy().to_string();
                 apps.push(app);
             }
         }
@@ -279,21 +311,25 @@ pub fn resolve_bundled_node(workspace_config_dir: &Path) -> Result<PathBuf, Stri
         }
     }
     // Fall back to PATH `node` so local development still works.
-    Ok(PathBuf::from(if cfg!(windows) { "node.exe" } else { "node" }))
-}
-
-fn node_bin_name() -> &'static str {
-    if cfg!(windows) {
+    Ok(PathBuf::from(if cfg!(windows) {
         "node.exe"
     } else {
         "node"
-    }
+    }))
+}
+
+fn node_bin_name() -> &'static str {
+    if cfg!(windows) { "node.exe" } else { "node" }
 }
 
 pub fn open_page_url(app: &MiniAppRecord, page_id: Option<&str>) -> Option<String> {
     let port = app.port?;
     let page = page_id
-        .and_then(|id| app.pages.iter().find(|p| p.id == id || p.path.trim_start_matches('/') == id))
+        .and_then(|id| {
+            app.pages
+                .iter()
+                .find(|p| p.id == id || p.path.trim_start_matches('/') == id)
+        })
         .or_else(|| app.pages.first());
     let path = page
         .map(|p| {
@@ -408,9 +444,7 @@ pub fn app_to_mcp_server(
 
 /// Register all MiniApps under `codey/miniapps` as MCP servers.
 /// Existing keys with the same name are not overwritten (plugins/config win).
-pub fn list_miniapp_mcp_servers(
-    workspace_config_dir: &Path,
-) -> HashMap<String, McpServerConfig> {
+pub fn list_miniapp_mcp_servers(workspace_config_dir: &Path) -> HashMap<String, McpServerConfig> {
     let Ok(apps) = load_registry(workspace_config_dir) else {
         return HashMap::new();
     };
@@ -428,21 +462,25 @@ pub fn render_miniapp_runtime_prompt(workspace_config_dir: &Path) -> String {
     let Ok(apps) = load_registry(workspace_config_dir) else {
         return String::new();
     };
-    if apps.is_empty() {
-        return String::new();
-    }
 
     let mut lines = Vec::new();
     lines.push(
         "## Local MiniApps (小程序)\n\
-         Business UI/entry flows should prefer mounted MiniApps instead of ad-hoc forms.\n\
+         MiniApps are general-purpose local Node.js applications with a Web UI and an MCP server.\n\
+         They may implement any user-requested function; a database is optional and must never be assumed.\n\
+         When the user asks to create or generate a MiniApp, build it under `codey/miniapps/<slug>`.\n\
+         Every generated MiniApp must include a usable `web/` interface, `server/index.mjs`, `miniapp.json`, `.mcp.json`, `package.json`, and at least one page in `pages`. API-only or CLI-only output is incomplete.\n\
+         Use database features only when a `databaseId` was explicitly selected. Never hardcode credentials.\n\
          Call via MCP: `mcp_call_tool` / `mcp_list_tools` with `server=<slug>`.\n\
          Required tools usually include: `list_pages`, `get_status`, `open_page` (+ business tools).\n\
          For `open_page`, host opens the returned URL in the browser panel when `ui.action=open_page`.\n\
-         Database access stays on host tools (`smartbrain_sql_query`) under permission policy; do not embed secrets."
+         The host discovers valid manifests from disk and can start them from the MiniApps panel."
             .to_string(),
     );
     lines.push("Available MiniApps:".to_string());
+    if apps.is_empty() {
+        lines.push("- None yet. You may generate one when requested.".to_string());
+    }
     for app in apps.iter().take(20) {
         let tools = if app.tools.is_empty() {
             "list_pages,get_status,open_page".to_string()
@@ -454,7 +492,9 @@ pub fn render_miniapp_runtime_prompt(workspace_config_dir: &Path) -> String {
                 .join(",")
         };
         let status = app.status.as_str();
-        let db = if app.database_name.is_empty() {
+        let db = if app.database_id.is_empty() {
+            "none"
+        } else if app.database_name.is_empty() {
             app.database_id.as_str()
         } else {
             app.database_name.as_str()
@@ -493,7 +533,7 @@ pub fn json_err(code: &str, message: impl Into<String>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::miniapp::scaffold::{scaffold_miniapp, ScaffoldRequest};
+    use crate::miniapp::scaffold::{ScaffoldRequest, scaffold_miniapp};
 
     #[test]
     fn slug_validation() {
@@ -521,8 +561,77 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.slug, "contract-app");
-        assert!(PathBuf::from(&app.root_path).join("server/index.mjs").exists());
-        assert!(PathBuf::from(&app.root_path).join("web/index.html").exists());
+        assert!(
+            PathBuf::from(&app.root_path)
+                .join("server/index.mjs")
+                .exists()
+        );
+        assert!(
+            PathBuf::from(&app.root_path)
+                .join("web/index.html")
+                .exists()
+        );
         assert!(PathBuf::from(&app.root_path).join("miniapp.json").exists());
+    }
+
+    #[test]
+    fn scaffold_supports_standalone_ui_without_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let codey = temp.path().join("codey");
+        std::fs::create_dir_all(&codey).unwrap();
+        let app = scaffold_miniapp(
+            &codey,
+            ScaffoldRequest {
+                name: "计时器".into(),
+                slug: "focus-timer".into(),
+                description: "带界面的专注计时器".into(),
+                database_id: String::new(),
+                database_name: String::new(),
+            },
+        )
+        .unwrap();
+
+        assert!(app.database_id.is_empty());
+        let root = PathBuf::from(&app.root_path);
+        let mcp = std::fs::read_to_string(root.join(".mcp.json")).unwrap();
+        let html = std::fs::read_to_string(root.join("web/index.html")).unwrap();
+        assert!(!mcp.contains("MINIAPP_DATABASE_ID"));
+        assert!(html.contains("独立运行，不依赖数据库"));
+    }
+
+    #[test]
+    fn registry_discovers_main_chain_generated_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let codey = temp.path().join("codey");
+        std::fs::create_dir_all(&codey).unwrap();
+
+        let registered = scaffold_miniapp(
+            &codey,
+            ScaffoldRequest {
+                name: "已登记应用".into(),
+                slug: "registered-app".into(),
+                description: "existing".into(),
+                database_id: String::new(),
+                database_name: String::new(),
+            },
+        )
+        .unwrap();
+        save_registry(&codey, &[registered]).unwrap();
+
+        scaffold_miniapp(
+            &codey,
+            ScaffoldRequest {
+                name: "主链路生成应用".into(),
+                slug: "agent-created-app".into(),
+                description: "created directly on disk".into(),
+                database_id: String::new(),
+                database_name: String::new(),
+            },
+        )
+        .unwrap();
+
+        let apps = load_registry(&codey).unwrap();
+        assert_eq!(apps.len(), 2);
+        assert!(apps.iter().any(|app| app.slug == "agent-created-app"));
     }
 }

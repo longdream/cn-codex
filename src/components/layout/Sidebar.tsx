@@ -40,7 +40,6 @@ export function Sidebar() {
   const currentThreadId = useAppStore((s) => s.currentThreadId);
   const isStreaming = useAppStore((s) => s.isStreaming);
   const threadRuntimeStates = useAppStore((s) => s.threadRuntimeStates);
-  const initialized = useAppStore((s) => s.initialized);
   const initError = useAppStore((s) => s.initError);
   const retryInit = useAppStore((s) => s.retryInit);
   const threadProjectMap = useAppStore((s) => s.threadProjectMap);
@@ -148,36 +147,40 @@ export function Sidebar() {
       className="thin-scrollbar flex h-full flex-shrink-0 flex-col overflow-hidden bg-[var(--surface-sidebar)]"
       style={{ width: `${sidebarWidth}px` }}
     >
-      {/* Header */}
-      <div className="flex flex-col gap-1.5 px-3 pt-3 pb-1">
+      {/* Navigation and actions */}
+      <div className="flex flex-col gap-1.5 px-3 pb-2 pt-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span
-              className={`h-2 w-2 flex-shrink-0 rounded-full ${
-                initialized
-                  ? "bg-[var(--accent)]"
-                  : initError
-                    ? "bg-[var(--danger)]"
-                    : "bg-[var(--warning)] animate-pulse"
-              }`}
+          <div className="flex items-center gap-0.5">
+            <SidebarTabButton
+              active={sidebarTab === "chats"}
+              label={intl.formatMessage({ id: "sidebar.tabChats" })}
+              icon={<IconMessage2 size={15} stroke={1.8} />}
+              onClick={() => setSidebarTab("chats")}
             />
-            <h1 className="text-[12px] font-semibold tracking-tight text-[var(--text-strong)]">
-              CN-Codex
-            </h1>
+            <SidebarTabButton
+              active={sidebarTab === "projects"}
+              label={intl.formatMessage({ id: "sidebar.tabProjects" })}
+              icon={<IconFolder size={15} stroke={1.8} />}
+              onClick={() => setSidebarTab("projects")}
+            />
           </div>
           <div className="flex items-center gap-0.5">
             <button
+              type="button"
               onClick={handleAddProject}
               className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
               title={intl.formatMessage({ id: "project.add" })}
+              aria-label={intl.formatMessage({ id: "project.add" })}
             >
               <IconFolderPlus size={15} stroke={1.8} />
             </button>
             <button
+              type="button"
               onClick={handleNewChat}
               disabled={creating || !currentProjectId}
               className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-40"
               title={intl.formatMessage({ id: "sidebar.newChat" })}
+              aria-label={intl.formatMessage({ id: "sidebar.newChat" })}
             >
               <IconMessagePlus size={15} stroke={1.8} />
             </button>
@@ -192,22 +195,6 @@ export function Sidebar() {
             {intl.formatMessage({ id: "status.retry" })}
           </button>
         )}
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 px-3 pb-2">
-        <SidebarTabButton
-          active={sidebarTab === "chats"}
-          label={intl.formatMessage({ id: "sidebar.tabChats" })}
-          icon={<IconMessage2 size={13} stroke={1.8} />}
-          onClick={() => setSidebarTab("chats")}
-        />
-        <SidebarTabButton
-          active={sidebarTab === "projects"}
-          label={intl.formatMessage({ id: "sidebar.tabProjects" })}
-          icon={<IconFolder size={13} stroke={1.8} />}
-          onClick={() => setSidebarTab("projects")}
-        />
       </div>
 
       {/* Search */}
@@ -514,15 +501,18 @@ function SidebarTabButton({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={`flex flex-1 items-center justify-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1.5 text-[11px] font-medium transition-colors ${
+      aria-label={label}
+      aria-pressed={active}
+      title={label}
+      className={`flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] transition-colors ${
         active
           ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
           : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
       }`}
     >
       {icon}
-      {label}
     </button>
   );
 }

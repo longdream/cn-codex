@@ -31,8 +31,6 @@ import {
 
 const SLUG_RE = /^[a-z][a-z0-9_-]*$/;
 
-type PageType = "entry" | "list" | "query";
-
 function statusLabelId(status: MiniAppRecord["status"]): string {
   switch (status) {
     case "running":
@@ -63,38 +61,35 @@ function statusTone(status: MiniAppRecord["status"]): string {
   }
 }
 
-function buildMiniAppGeneratePrompt(params: {
+export function buildMiniAppGeneratePrompt(params: {
   app: MiniAppRecord;
   requirement: string;
   allowWrite: boolean;
-  pageTypes: PageType[];
   mode: "generate" | "regenerate" | "patch";
 }): string {
-  const pageTypeLabels = params.pageTypes
-    .map((t) => {
-      if (t === "entry") return "录入页";
-      if (t === "list") return "列表页";
-      return "查询页";
-    })
-    .join("、");
-
   const modeHint =
     params.mode === "generate"
-      ? "这是首次生成：在现有脚手架上实现完整业务。"
+      ? "这是首次生成：在现有脚手架上实现完整、可操作的小程序。"
       : params.mode === "regenerate"
-        ? "这是重新生成：可大幅改写 server/web，但必须保持 Node.js MCP 包结构与 databaseId 绑定。"
+        ? "这是重新生成：可大幅改写 server/web，但必须保持 Node.js MCP 包结构和可启动界面。"
         : "这是增量修改：在现有实现上按需求改动，尽量少破坏已可用功能。";
+  const hasDatabase = Boolean(params.app.databaseId?.trim());
+  const databaseGuidance = hasDatabase
+    ? `本小程序已选择数据库 \`${params.app.databaseId}\`（${params.app.databaseName || "未命名"}）。数据库能力是本应用的一项可选依赖；禁止把密码或完整连接串写进代码。读写数据必须遵守宿主权限策略，${params.allowWrite ? "允许按需求执行授权范围内的写操作。" : "本次按只读方式实现，不要执行写操作。"}`
+    : "本小程序未选择数据库。不要假设存在数据库，不要生成数据库连接代码；按需求使用浏览器状态、内存、本地文件或无需数据库的实现方式。";
 
   return `你正在为 CN-Codex 生成本地小程序（MiniApp）。当前工作目录已经是小程序包根目录。
 
 ## 强制约束（不可违反）
 1. 技术栈必须是 **Node.js**（\`.mjs\`/\`.js\`）。MCP server、HTTP 页面服务、业务逻辑均用 Node；**禁止**以 Python 或其他语言作为运行主体。
-2. 保持/完善 MCP-like 包结构：
+2. **必须交付可用界面**：至少生成一个可通过浏览器打开的 Web UI，主功能必须能在界面中操作。只生成 API、MCP tools、命令行或说明文档均视为未完成。
+3. 功能类型不设限：可以是工具、游戏、可视化、编辑器、计算器、媒体应用、业务系统或用户描述的任何其他功能，不要默认套用表单、CRUD 或数据库后台。
+4. 保持/完善 MCP-like 包结构：
    - \`server/index.mjs\`：stdio MCP（tools/list + tools/call）+ 本地 HTTP 静态服务（\`web/\`）
-   - \`web/\`：页面
+   - \`web/\`：完整界面、样式和前端交互脚本
    - \`miniapp.json\`、\`.mcp.json\`、\`package.json\`、\`README.md\`
-3. MCP tools **至少**包含：\`list_pages\`、\`get_status\`、\`open_page\`，以及按需求生成的业务方法（如 \`submit_form\`、\`search\`）。
-4. 业务方法统一返回 envelope：
+5. \`miniapp.json.pages\` 至少包含一个真实可访问页面；默认页必须指向实际入口。MCP tools 至少包含 \`list_pages\`、\`get_status\`、\`open_page\`，并按需求增加应用方法。
+6. 业务方法统一返回 envelope：
 \`\`\`json
 {
   "ok": true,
@@ -104,19 +99,18 @@ function buildMiniAppGeneratePrompt(params: {
   "ui": { "action": "close_page", "pageId": "..." }
 }
 \`\`\`
-5. 数据库只能通过已配置的 \`databaseId\` 引用；**禁止**把密码、完整连接串写进代码。读/写库请使用宿主工具 \`smartbrain_sql_query\`（受权限策略约束），不要自建连接脚本。
-6. 运行时使用内置 \`codey/node\`（相对路径通常在 \`../../node/node.exe\` 或环境中的 node）。需要依赖时用该 node 对应的 npm 安装。
-7. 端口由运行时环境变量 \`MINIAPP_PORT\` 注入或自动分配；不要写死生产端口到配置外。
-8. 完成后更新 \`miniapp.json\` 的 \`pages\`/\`tools\`/\`description\`，保证可被宿主列表发现。
+7. 运行时使用内置 \`codey/node\`。需要依赖时用对应 npm 安装；优先使用少依赖、可离线启动的实现。
+8. 端口由运行时环境变量 \`MINIAPP_PORT\` 注入或自动分配；不要写死端口。
+9. 完成后更新 \`miniapp.json\` 的 \`pages\`、\`tools\`、\`description\`，并保持 name、slug、rootPath 等宿主识别字段有效。
+10. 做启动与界面自检：检查 Node 语法，短暂启动服务并请求默认页面，确认返回有效 HTML 且界面资源可加载。不要留下脱离宿主管理的常驻进程，任务完成后宿主会自动启动小程序。
 
 ## 小程序信息
-- 中文名称：${params.app.name}
+- 显示名称：${params.app.name}
 - slug：\`${params.app.slug}\`
-- databaseId：\`${params.app.databaseId}\`
-- databaseName：\`${params.app.databaseName || "(未填)"}\`
-- 是否需要写库能力：${params.allowWrite ? "是（INSERT/UPDATE 等需符合库权限）" : "否（尽量只读）"}
-- 预置页面类型：${pageTypeLabels || "由需求自行决定"}
 - 包路径：\`${params.app.rootPath}\`
+
+## 数据能力
+${databaseGuidance}
 
 ## 任务模式
 ${modeHint}
@@ -126,9 +120,10 @@ ${params.requirement.trim()}
 
 ## 建议步骤
 1. 阅读现有脚手架文件（\`server/index.mjs\`、\`web/index.html\`、\`miniapp.json\`）。
-2. 若需要表结构，用 \`smartbrain_sql_query\` 查询（database 参数填显示名或物理库名），先确认权限允许。
-3. 实现页面与业务 MCP tools，必要时 \`npm install\`。
-4. 尽量本地自检（语法/启动说明），最后用简短中文总结：已实现的页面、tools、如何启动。
+2. 根据需求设计界面结构和核心交互，不要把脚手架示例页当成最终结果。
+3. 实现页面、业务逻辑和 MCP tools；仅在确实需要时安装依赖。
+4. 完成语法、启动、HTTP 页面和关键交互自检。
+5. 最后用简短中文总结：实现了什么界面、核心功能、tools 和自检结果。
 
 现在开始。`;
 }
@@ -148,7 +143,6 @@ export function MiniAppSettingsPanel() {
   const [databaseId, setDatabaseId] = useState("");
   const [requirement, setRequirement] = useState("");
   const [allowWrite, setAllowWrite] = useState(false);
-  const [pageTypes, setPageTypes] = useState<PageType[]>(["entry"]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
 
   const enabledSources = useMemo(
@@ -179,12 +173,6 @@ export function MiniAppSettingsPanel() {
 
   const selectedDb = enabledSources.find((s) => s.id === databaseId) ?? null;
 
-  const togglePageType = (type: PageType) => {
-    setPageTypes((prev) =>
-      prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type],
-    );
-  };
-
   const fillFromApp = (app: MiniAppRecord) => {
     setSelectedSlug(app.slug);
     setName(app.name);
@@ -200,9 +188,6 @@ export function MiniAppSettingsPanel() {
     if (!SLUG_RE.test(slug.trim())) {
       return intl.formatMessage({ id: "settings.miniapp.err.slugInvalid" });
     }
-    if (!databaseId.trim()) {
-      return intl.formatMessage({ id: "settings.miniapp.err.databaseRequired" });
-    }
     if (!requirement.trim()) {
       return intl.formatMessage({ id: "settings.miniapp.err.requirementRequired" });
     }
@@ -215,7 +200,6 @@ export function MiniAppSettingsPanel() {
     options?: {
       requirementText?: string;
       allowWrite?: boolean;
-      pageTypes?: PageType[];
     },
   ) => {
     const cwd =
@@ -231,7 +215,7 @@ export function MiniAppSettingsPanel() {
       throw new Error(intl.formatMessage({ id: "settings.miniapp.err.requirementRequired" }));
     }
     const effectiveAllowWrite = options?.allowWrite ?? allowWrite;
-    const effectivePageTypes = options?.pageTypes ?? pageTypes;
+    const usesDatabase = Boolean(app.databaseId?.trim());
 
     const createResp = await standaloneThreadCreate();
     const threadId = createResp?.thread?.id;
@@ -243,7 +227,6 @@ export function MiniAppSettingsPanel() {
       app,
       requirement: requirementText,
       allowWrite: effectiveAllowWrite,
-      pageTypes: effectivePageTypes,
       mode,
     });
     const preview = `[小程序生成] ${app.name} (${app.slug})`.slice(0, 60);
@@ -255,8 +238,8 @@ export function MiniAppSettingsPanel() {
     };
 
     const store = useAppStore.getState();
-    // 先打开本地知识库，再切换线程，确保 threadPreferences 继承 smartbrain=true。
-    store.setThreadSmartbrainEnabled(true);
+    // 仅在小程序选择数据库时打开本地知识库能力。
+    store.setThreadSmartbrainEnabled(usesDatabase);
     store.startNewThreadWithMessage(threadId, userMessage);
     store.addThread({
       id: threadId,
@@ -269,19 +252,27 @@ export function MiniAppSettingsPanel() {
 
     // 工作目录用小程序根目录，便于 Agent 直接改包内文件
     const workdir = app.rootPath?.trim() || cwd;
-    await standaloneChat(
-      threadId,
-      prompt,
-      workdir,
-      "chat",
-      [],
-      undefined,
-      undefined,
-      {
-        smartbrainEnabled: true,
-      },
-      userMessage.id,
-    );
+    try {
+      if (app.status === "running") {
+        await miniappStop(app.slug);
+      }
+      await standaloneChat(
+        threadId,
+        prompt,
+        workdir,
+        "chat",
+        [],
+        undefined,
+        undefined,
+        {
+          smartbrainEnabled: usesDatabase,
+        },
+        userMessage.id,
+      );
+      await miniappStart(app.slug);
+    } finally {
+      window.dispatchEvent(new CustomEvent("cn-codex:miniapp-updated"));
+    }
   };
 
   const handleCreateScaffoldOnly = async () => {
@@ -349,7 +340,6 @@ export function MiniAppSettingsPanel() {
       await launchMainChainGenerate(app, effectiveMode, {
         requirementText: requirement.trim(),
         allowWrite,
-        pageTypes,
       });
       await refresh();
     } catch (err) {
@@ -412,7 +402,7 @@ export function MiniAppSettingsPanel() {
               value={slug}
               onChange={(e) => setSlug(e.target.value.toLowerCase().replace(/\s+/g, "-"))}
               className="app-input w-full font-mono text-xs"
-              placeholder="contract-app"
+              placeholder="focus-timer"
             />
             <p className="text-[10px] text-[var(--text-faint)]">
               {intl.formatMessage({ id: "settings.miniapp.field.slugHint" })}
@@ -422,11 +412,14 @@ export function MiniAppSettingsPanel() {
 
         <div className="space-y-1">
           <label className="text-[11px] text-[var(--text-faint)]">
-            {intl.formatMessage({ id: "settings.miniapp.field.database" })} *
+            {intl.formatMessage({ id: "settings.miniapp.field.database" })}
           </label>
           <select
             value={databaseId}
-            onChange={(e) => setDatabaseId(e.target.value)}
+            onChange={(e) => {
+              setDatabaseId(e.target.value);
+              if (!e.target.value) setAllowWrite(false);
+            }}
             className="app-input w-full"
           >
             <option value="">
@@ -439,7 +432,7 @@ export function MiniAppSettingsPanel() {
             ))}
           </select>
           {enabledSources.length === 0 && (
-            <p className="text-[11px] text-amber-300/90">
+            <p className="text-[11px] text-[var(--text-faint)]">
               {intl.formatMessage({ id: "settings.miniapp.field.noDatabase" })}
             </p>
           )}
@@ -460,7 +453,7 @@ export function MiniAppSettingsPanel() {
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        {databaseId && (
           <label className="inline-flex items-center gap-2 text-xs text-[var(--text-muted)]">
             <input
               type="checkbox"
@@ -469,20 +462,7 @@ export function MiniAppSettingsPanel() {
             />
             {intl.formatMessage({ id: "settings.miniapp.field.allowWrite" })}
           </label>
-          {(["entry", "list", "query"] as const).map((type) => (
-            <label
-              key={type}
-              className="inline-flex items-center gap-1.5 text-xs text-[var(--text-muted)]"
-            >
-              <input
-                type="checkbox"
-                checked={pageTypes.includes(type)}
-                onChange={() => togglePageType(type)}
-              />
-              {intl.formatMessage({ id: `settings.miniapp.pageType.${type}` })}
-            </label>
-          ))}
-        </div>
+        )}
 
         <div className="flex flex-wrap gap-2">
           <button
@@ -581,10 +561,12 @@ export function MiniAppSettingsPanel() {
                           </span>
                         </div>
                         <div className="mt-0.5 text-[11px] text-[var(--text-faint)]">
-                          {intl.formatMessage(
-                            { id: "miniapp.boundDatabase" },
-                            { name: app.databaseName || app.databaseId || "-" },
-                          )}
+                          {app.databaseId
+                            ? intl.formatMessage(
+                                { id: "miniapp.boundDatabase" },
+                                { name: app.databaseName || app.databaseId },
+                              )
+                            : intl.formatMessage({ id: "miniapp.noDatabase" })}
                           {app.port
                             ? ` · ${intl.formatMessage({ id: "miniapp.port" }, { port: app.port })}`
                             : ""}

@@ -37,16 +37,18 @@ function statusTone(status: MiniAppRecord["status"]): string {
 
 function buildJoinConversationDraft(app: MiniAppRecord): string {
   const rootPath = app.rootPath?.trim() || "(未配置 rootPath)";
-  const database = app.databaseName || app.databaseId || "-";
+  const dataSource = app.databaseId
+    ? `- 数据库：${app.databaseName || app.databaseId}`
+    : "- 数据：独立运行（未挂载数据库）";
   return [
     `请基于当前小程序包进行修改。`,
     `- 名称：${app.name}`,
     `- slug：${app.slug}`,
     `- MCP server 名：${app.slug}`,
     `- 路径：${rootPath}`,
-    `- 绑定库：${database}`,
+    dataSource,
     `当前工作目录已切换到该小程序根目录，请直接读取并修改包内文件。`,
-    `需要界面时调用 open_page；业务读写库优先走小程序 tools / 宿主 smartbrain_sql_query（受权限约束）。`,
+    `小程序必须保留可操作界面；需要查看时调用 open_page。只有已挂载数据库时才使用数据库能力。`,
     `需求：`,
   ].join("\n");
 }
@@ -74,6 +76,11 @@ export function MiniAppSidePanel() {
 
   useEffect(() => {
     void load();
+    const handleUpdated = () => void load();
+    window.addEventListener("cn-codex:miniapp-updated", handleUpdated);
+    return () => {
+      window.removeEventListener("cn-codex:miniapp-updated", handleUpdated);
+    };
   }, [load]);
 
   const runAction = useCallback(
@@ -178,10 +185,12 @@ export function MiniAppSidePanel() {
                   </div>
                 </div>
                 <div className="text-[11px] text-[var(--text-muted)]">
-                  {intl.formatMessage(
-                    { id: "miniapp.boundDatabase" },
-                    { name: app.databaseName || app.databaseId || "-" },
-                  )}
+                  {app.databaseId
+                    ? intl.formatMessage(
+                        { id: "miniapp.boundDatabase" },
+                        { name: app.databaseName || app.databaseId },
+                      )
+                    : intl.formatMessage({ id: "miniapp.noDatabase" })}
                 </div>
                 {app.port ? (
                   <div className="text-[11px] text-[var(--text-faint)]">

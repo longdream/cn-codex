@@ -20,6 +20,7 @@ pub struct MiniAppCreateArgs {
     pub slug: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub database_id: String,
     #[serde(default)]
     pub database_name: String,
@@ -44,9 +45,6 @@ pub async fn miniapp_create(
         return Err(AppError::Custom("小程序名称不能为空".into()));
     }
     validate_slug(&slug).map_err(AppError::Custom)?;
-    if args.database_id.trim().is_empty() {
-        return Err(AppError::Custom("必须挂载数据库".into()));
-    }
 
     let mut apps = load_registry(&dir).map_err(AppError::Custom)?;
     if apps.iter().any(|a| a.slug == slug) {

@@ -2,16 +2,16 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::net::TcpListener;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use std::time::{Duration, Instant};
 
-use super::{resolve_bundled_node, write_manifest, MiniAppRecord, MiniAppStatus};
+use super::{MiniAppRecord, MiniAppStatus, resolve_bundled_node, write_manifest};
 
 #[derive(Debug)]
 struct RunningProcess {
@@ -61,8 +61,7 @@ pub(crate) fn is_port_available(port: u16) -> bool {
 }
 
 fn allocate_port() -> Result<u16, String> {
-    let listener =
-        TcpListener::bind("127.0.0.1:0").map_err(|e| format!("分配端口失败: {e}"))?;
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("分配端口失败: {e}"))?;
     let port = listener
         .local_addr()
         .map_err(|e| format!("读取分配端口失败: {e}"))?
@@ -96,12 +95,9 @@ pub(crate) fn resolve_miniapp_db_env(
     }
     let sources = crate::smartbrain::db_query::load_db_sources(workspace_config_dir);
     let settings = crate::smartbrain::db_query::load_db_settings(workspace_config_dir);
-    let source = crate::smartbrain::db_query::resolve_db_source(
-        &sources,
-        &settings,
-        Some(database_id),
-    )
-    .ok()?;
+    let source =
+        crate::smartbrain::db_query::resolve_db_source(&sources, &settings, Some(database_id))
+            .ok()?;
     let source = crate::smartbrain::db_query::enrich_source_from_connection_uri(source.clone());
     let host = source.host.trim();
     let user = source.username.trim();
@@ -143,6 +139,10 @@ pub fn start_app(
     if !server_entry.exists() {
         return Err("缺少 server/index.mjs，请先生成脚手架".into());
     }
+    let web_index = root.join("web").join("index.html");
+    if !web_index.is_file() {
+        return Err("缺少 web/index.html，小程序必须包含可启动界面".into());
+    }
 
     let node = resolve_bundled_node(workspace_config_dir)?;
     // 优先复用上次端口；若被占用再分配新端口。
@@ -155,13 +155,16 @@ pub fn start_app(
         .current_dir(&root)
         .env("MINIAPP_PORT", port.to_string())
         .env("PORT", port.to_string())
-        .env("MINIAPP_DATABASE_ID", &app.database_id)
         .env("MINIAPP_SLUG", &app.slug)
         .env("MINIAPP_NAME", &app.name)
         // Keep stdin open. MiniApp MCP servers treat stdin EOF as shutdown.
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    if !app.database_id.trim().is_empty() {
+        command.env("MINIAPP_DATABASE_ID", &app.database_id);
+    }
 
     // 隐藏 Windows 控制台窗口
     #[cfg(target_os = "windows")]
@@ -204,11 +207,12 @@ pub fn start_app(
         });
     }
 
-    thread::sleep(Duration::from_millis(250));
-    if let Ok(Some(status)) = child.try_wait() {
+    if let Err(err) = wait_for_http_ready(&mut child, port) {
         app.status = MiniAppStatus::Error;
         // 保留端口，方便下次继续尝试同一端口。
-        app.last_error = format!("小程序进程立即退出，code={status}");
+        app.last_error = err;
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = write_manifest(app);
         return Err(app.last_error.clone());
     }
@@ -234,6 +238,23 @@ pub fn start_app(
     app.mcp.cwd = Some(root.to_string_lossy().to_string());
     write_manifest(app)?;
     Ok(port)
+}
+
+fn wait_for_http_ready(child: &mut Child, port: u16) -> Result<(), String> {
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("小程序进程在页面服务就绪前退出，code={status}"));
+        }
+        if TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("小程序启动超时，页面端口 {port} 未就绪"));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 pub fn stop_app(app: &mut MiniAppRecord) -> Result<(), String> {

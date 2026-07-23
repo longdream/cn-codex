@@ -143,21 +143,19 @@ def run_tests(url: str, headed: bool):
             return False
 
         # ============================================================
-        # Test 2: Sidebar Renders
+        # Test 2: Brand Renders Once
         # ============================================================
         try:
-            logger.log("Test 2: Sidebar Renders", "info")
+            logger.log("Test 2: Brand Renders Once", "info")
             sidebar = page.locator("aside")
             sidebar.wait_for(state="visible", timeout=5000)
 
-            brand = page.locator("h1")
-            brand_text = brand.first.text_content() or ""
-            has_brand = "CN-Codex" in brand_text
+            brand_count = page.get_by_text("CN-Codex", exact=True).count()
 
-            logger.log("Test 2: Sidebar Renders", "pass" if has_brand else "fail",
-                       f"Brand text: '{brand_text}'")
+            logger.log("Test 2: Brand Renders Once", "pass" if brand_count == 1 else "fail",
+                       f"Brand count: {brand_count}")
         except Exception as e:
-            logger.log("Test 2: Sidebar Renders", "fail", str(e))
+            logger.log("Test 2: Brand Renders Once", "fail", str(e))
 
         # ============================================================
         # Test 3: Connection Status
