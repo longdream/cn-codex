@@ -378,6 +378,51 @@ pub async fn git_unstage(
 }
 
 #[tauri::command]
+pub async fn git_discard(
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+    paths: Vec<String>,
+    untracked: Option<bool>,
+    confirm_dangerous: bool,
+) -> AppResult<GitActionResponse> {
+    if !confirm_dangerous {
+        return Err(AppError::Custom(
+            "Discard requires confirmDangerous=true.".to_string(),
+        ));
+    }
+
+    let service = git_service_from_state(&state, cwd).await?;
+    let normalized_paths = normalize_paths(paths)?;
+
+    // 未跟踪文件/目录用 clean 删除；已跟踪文件恢复到 HEAD（含暂存区与工作区）。
+    let (mut args, success_message) = if untracked.unwrap_or(false) {
+        (
+            vec![
+                "clean".to_string(),
+                "-f".to_string(),
+                "-d".to_string(),
+                "--".to_string(),
+            ],
+            "Untracked files discarded successfully.",
+        )
+    } else {
+        (
+            vec![
+                "restore".to_string(),
+                "--source=HEAD".to_string(),
+                "--staged".to_string(),
+                "--worktree".to_string(),
+                "--".to_string(),
+            ],
+            "File changes discarded successfully.",
+        )
+    };
+    args.extend(normalized_paths);
+    let output = run_git_vec(&service, &args, DEFAULT_MAX_OUTPUT_BYTES).await?;
+    Ok(action_ok(success_message, output))
+}
+
+#[tauri::command]
 pub async fn git_commit(
     state: State<'_, AppState>,
     cwd: Option<String>,

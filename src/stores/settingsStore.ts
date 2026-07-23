@@ -19,6 +19,10 @@ interface PersistedSettings {
   theme: string;
   fortuneEnabled: boolean;
   backgroundImagePath: string | null;
+  backgroundBlur: number;
+  backgroundBrightness: number;
+  backgroundOverlay: number;
+  backgroundScale: number;
   baziProfile: BaziProfile | null;
 }
 
@@ -70,6 +74,10 @@ function getPersistedSnapshot(s: SettingsState): PersistedSettings {
     theme: s.theme,
     fortuneEnabled: s.fortuneEnabled,
     backgroundImagePath: s.backgroundImagePath,
+    backgroundBlur: s.backgroundBlur,
+    backgroundBrightness: s.backgroundBrightness,
+    backgroundOverlay: s.backgroundOverlay,
+    backgroundScale: s.backgroundScale,
     baziProfile: s.baziProfile,
   };
 }
@@ -79,14 +87,33 @@ interface SettingsState {
   theme: "dark" | "light" | "system";
   fortuneEnabled: boolean;
   backgroundImagePath: string | null;
+  backgroundBlur: number;
+  backgroundBrightness: number;
+  backgroundOverlay: number;
+  backgroundScale: number;
   baziProfile: BaziProfile | null;
   fortuneRefreshTrigger: number;
   setLocale: (locale: string) => void;
   setTheme: (theme: "dark" | "light" | "system") => void;
   setFortuneEnabled: (enabled: boolean) => void;
   setBackgroundImagePath: (path: string | null) => void;
+  setBackgroundBlur: (value: number) => void;
+  setBackgroundBrightness: (value: number) => void;
+  setBackgroundOverlay: (value: number) => void;
+  setBackgroundScale: (value: number) => void;
   setBaziProfile: (profile: BaziProfile | null) => void;
   triggerFortuneRefresh: () => void;
+}
+
+export const DEFAULT_BACKGROUND_BLUR = 18;
+export const DEFAULT_BACKGROUND_BRIGHTNESS = 0.72;
+export const DEFAULT_BACKGROUND_OVERLAY = 0.45;
+export const DEFAULT_BACKGROUND_SCALE = 1.06;
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
 }
 
 const initialSettingsSnapshot = readSettingsSnapshotFromStorage();
@@ -102,6 +129,30 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     typeof initialSettingsSnapshot?.backgroundImagePath === "string"
       ? initialSettingsSnapshot.backgroundImagePath
       : null,
+  backgroundBlur: clampNumber(
+    initialSettingsSnapshot?.backgroundBlur,
+    0,
+    40,
+    DEFAULT_BACKGROUND_BLUR,
+  ),
+  backgroundBrightness: clampNumber(
+    initialSettingsSnapshot?.backgroundBrightness,
+    0.3,
+    1.4,
+    DEFAULT_BACKGROUND_BRIGHTNESS,
+  ),
+  backgroundOverlay: clampNumber(
+    initialSettingsSnapshot?.backgroundOverlay,
+    0,
+    0.9,
+    DEFAULT_BACKGROUND_OVERLAY,
+  ),
+  backgroundScale: clampNumber(
+    initialSettingsSnapshot?.backgroundScale,
+    1,
+    1.3,
+    DEFAULT_BACKGROUND_SCALE,
+  ),
   baziProfile: initialSettingsSnapshot?.baziProfile ?? null,
   fortuneRefreshTrigger: 0,
   setLocale: (locale) => {
@@ -119,6 +170,36 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setBackgroundImagePath: (backgroundImagePath) => {
     set({ backgroundImagePath });
     persist(getPersistedSnapshot({ ...get(), backgroundImagePath }));
+  },
+  setBackgroundBlur: (value) => {
+    const backgroundBlur = clampNumber(value, 0, 40, DEFAULT_BACKGROUND_BLUR);
+    set({ backgroundBlur });
+    persist(getPersistedSnapshot({ ...get(), backgroundBlur }));
+  },
+  setBackgroundBrightness: (value) => {
+    const backgroundBrightness = clampNumber(
+      value,
+      0.3,
+      1.4,
+      DEFAULT_BACKGROUND_BRIGHTNESS,
+    );
+    set({ backgroundBrightness });
+    persist(getPersistedSnapshot({ ...get(), backgroundBrightness }));
+  },
+  setBackgroundOverlay: (value) => {
+    const backgroundOverlay = clampNumber(
+      value,
+      0,
+      0.9,
+      DEFAULT_BACKGROUND_OVERLAY,
+    );
+    set({ backgroundOverlay });
+    persist(getPersistedSnapshot({ ...get(), backgroundOverlay }));
+  },
+  setBackgroundScale: (value) => {
+    const backgroundScale = clampNumber(value, 1, 1.3, DEFAULT_BACKGROUND_SCALE);
+    set({ backgroundScale });
+    persist(getPersistedSnapshot({ ...get(), backgroundScale }));
   },
   setBaziProfile: (baziProfile) => {
     set({ baziProfile });
@@ -146,6 +227,30 @@ export async function initSettingsFromDb(): Promise<void> {
           typeof parsed.backgroundImagePath === "string"
             ? parsed.backgroundImagePath
             : null,
+        backgroundBlur: clampNumber(
+          parsed.backgroundBlur,
+          0,
+          40,
+          DEFAULT_BACKGROUND_BLUR,
+        ),
+        backgroundBrightness: clampNumber(
+          parsed.backgroundBrightness,
+          0.3,
+          1.4,
+          DEFAULT_BACKGROUND_BRIGHTNESS,
+        ),
+        backgroundOverlay: clampNumber(
+          parsed.backgroundOverlay,
+          0,
+          0.9,
+          DEFAULT_BACKGROUND_OVERLAY,
+        ),
+        backgroundScale: clampNumber(
+          parsed.backgroundScale,
+          1,
+          1.3,
+          DEFAULT_BACKGROUND_SCALE,
+        ),
         baziProfile: parsed.baziProfile ?? null,
       });
       persist(getPersistedSnapshot(useSettingsStore.getState()));

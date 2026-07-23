@@ -51,6 +51,14 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const setFortuneEnabled = useSettingsStore((state) => state.setFortuneEnabled);
   const backgroundImagePath = useSettingsStore((state) => state.backgroundImagePath);
   const setBackgroundImagePath = useSettingsStore((state) => state.setBackgroundImagePath);
+  const backgroundBlur = useSettingsStore((state) => state.backgroundBlur);
+  const backgroundBrightness = useSettingsStore((state) => state.backgroundBrightness);
+  const backgroundOverlay = useSettingsStore((state) => state.backgroundOverlay);
+  const backgroundScale = useSettingsStore((state) => state.backgroundScale);
+  const setBackgroundBlur = useSettingsStore((state) => state.setBackgroundBlur);
+  const setBackgroundBrightness = useSettingsStore((state) => state.setBackgroundBrightness);
+  const setBackgroundOverlay = useSettingsStore((state) => state.setBackgroundOverlay);
+  const setBackgroundScale = useSettingsStore((state) => state.setBackgroundScale);
   const baziProfile = useSettingsStore((state) => state.baziProfile);
   const setBaziProfile = useSettingsStore((state) => state.setBaziProfile);
   const triggerFortuneRefresh = useSettingsStore((state) => state.triggerFortuneRefresh);
@@ -369,6 +377,79 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                       {intl.formatMessage({ id: "settings.background.clear" })}
                     </button>
                   </div>
+                  {backgroundImagePath ? (
+                    <div className="space-y-3 border-t border-[var(--border-subtle)] pt-3">
+                      <p className="text-xs text-[var(--text-faint)]">
+                        {intl.formatMessage({ id: "settings.background.adjust" })}
+                      </p>
+                      <label className="block space-y-1.5">
+                        <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                          <span>{intl.formatMessage({ id: "settings.background.blur" })}</span>
+                          <span className="font-mono text-[11px]">{Math.round(backgroundBlur)}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={40}
+                          step={1}
+                          value={backgroundBlur}
+                          onChange={(e) => setBackgroundBlur(Number(e.target.value))}
+                          className="w-full accent-[var(--accent)]"
+                        />
+                      </label>
+                      <label className="block space-y-1.5">
+                        <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                          <span>{intl.formatMessage({ id: "settings.background.brightness" })}</span>
+                          <span className="font-mono text-[11px]">
+                            {Math.round(backgroundBrightness * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={30}
+                          max={140}
+                          step={1}
+                          value={Math.round(backgroundBrightness * 100)}
+                          onChange={(e) => setBackgroundBrightness(Number(e.target.value) / 100)}
+                          className="w-full accent-[var(--accent)]"
+                        />
+                      </label>
+                      <label className="block space-y-1.5">
+                        <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                          <span>{intl.formatMessage({ id: "settings.background.overlay" })}</span>
+                          <span className="font-mono text-[11px]">
+                            {Math.round(backgroundOverlay * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={90}
+                          step={1}
+                          value={Math.round(backgroundOverlay * 100)}
+                          onChange={(e) => setBackgroundOverlay(Number(e.target.value) / 100)}
+                          className="w-full accent-[var(--accent)]"
+                        />
+                      </label>
+                      <label className="block space-y-1.5">
+                        <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                          <span>{intl.formatMessage({ id: "settings.background.scale" })}</span>
+                          <span className="font-mono text-[11px]">
+                            {Math.round(backgroundScale * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={100}
+                          max={130}
+                          step={1}
+                          value={Math.round(backgroundScale * 100)}
+                          onChange={(e) => setBackgroundScale(Number(e.target.value) / 100)}
+                          className="w-full accent-[var(--accent)]"
+                        />
+                      </label>
+                    </div>
+                  ) : null}
                 </section>
 
                 <section className="settings-card space-y-3">

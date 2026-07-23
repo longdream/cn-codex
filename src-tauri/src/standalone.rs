@@ -1564,7 +1564,7 @@ pub async fn standalone_chat(
     }
 
     if result.is_ok()
-        && state.agent_engine.is_cancelled()
+        && state.agent_engine.is_thread_cancelled(&thread_id)
         && state
             .thread_store
             .get_active_turn(&thread_id)
@@ -1755,17 +1755,36 @@ fn apply_thread_chat_overrides(
 }
 
 #[tauri::command]
-pub async fn standalone_turn_interrupt(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
-    info!("Turn interrupt requested by user");
-    state.agent_engine.interrupt();
+pub async fn standalone_turn_interrupt(
+    state: State<'_, AppState>,
+    thread_id: Option<String>,
+) -> AppResult<serde_json::Value> {
     let current_thread_id = state.current_thread_id.read().await.clone();
+    let target_thread_id = thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| id.to_string())
+        .or(current_thread_id.clone());
+
+    info!(
+        "Turn interrupt requested by user: thread={:?}",
+        target_thread_id
+    );
+
+    if let Some(ref id) = target_thread_id {
+        state.agent_engine.interrupt_thread(id);
+    } else {
+        // 无目标会话时保持旧行为：中断全部，避免丢停止请求。
+        state.agent_engine.interrupt();
+    }
     let interrupted_tools = state
         .agent_engine
-        .interrupt_active_tools(current_thread_id.as_deref())
+        .interrupt_active_tools(target_thread_id.as_deref())
         .await;
     info!(
         "Turn interrupt completed: thread={:?}, interrupted_tools={interrupted_tools}",
-        current_thread_id
+        target_thread_id
     );
     Ok(serde_json::json!({ "status": "interrupted" }))
 }

@@ -238,33 +238,55 @@ export function ChatPage() {
     setIsDispatching(false);
 
     // 先做前端状态收敛，保证点击“停止”后转圈立即结束。
-    store.markRunningToolCallsInterrupted(intl.formatMessage({ id: "chat.toolInterrupted" }));
+    if (threadId) {
+      store.markRunningToolCallsInterruptedForThread(
+        threadId,
+        intl.formatMessage({ id: "chat.toolInterrupted" }),
+      );
+    } else {
+      store.markRunningToolCallsInterrupted(intl.formatMessage({ id: "chat.toolInterrupted" }));
+    }
     const partialText = store.streamingText;
     if (partialText) {
-      store.addMessage({
+      const interruptedMessage = {
         id: crypto.randomUUID(),
-        role: "assistant",
+        role: "assistant" as const,
         content: `${partialText}\n\n_(${intl.formatMessage({ id: "chat.interrupted" })})_`,
         timestamp: Date.now(),
-      });
-      store.clearStreamingText();
+      };
+      if (threadId) {
+        store.addMessageToThread(threadId, interruptedMessage);
+        store.clearStreamingTextForThread(threadId);
+      } else {
+        store.addMessage(interruptedMessage);
+        store.clearStreamingText();
+      }
     }
-    store.setStreaming(false);
-    store.setCurrentTurnId(null);
+    if (threadId) {
+      store.setStreamingForThread(threadId, false);
+      store.setCurrentTurnIdForThread(threadId, null);
+    } else {
+      store.setStreaming(false);
+      store.setCurrentTurnId(null);
+    }
     if (shouldPauseGoal && currentGoal) {
       // 先乐观切到 paused，让目标模式按钮立即回到可发送（绿色）状态。
-      store.setCurrentGoal({ ...currentGoal, status: "paused" });
+      if (threadId) {
+        store.setCurrentGoalForThread(threadId, { ...currentGoal, status: "paused" });
+      } else {
+        store.setCurrentGoal({ ...currentGoal, status: "paused" });
+      }
     }
 
     // 对齐 Codex：停止=中断当前执行；目标 active 时额外切到 paused（不是 complete）。
-    const interruptPromise = standaloneTurnInterrupt().catch((err) => {
+    const interruptPromise = standaloneTurnInterrupt(threadId).catch((err) => {
       console.error("Failed to interrupt turn:", err);
     });
 
     if (shouldPauseGoal && threadId) {
       try {
         const resp = await standaloneThreadGoalStatus(threadId, "paused");
-        store.setCurrentGoal(resp.goal as ThreadGoal);
+        store.setCurrentGoalForThread(threadId, resp.goal as ThreadGoal);
       } catch (err) {
         console.error("Failed to pause active goal after interrupt:", err);
       }

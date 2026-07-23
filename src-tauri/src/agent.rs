@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet, VecDeque, hash_map::DefaultHasher};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -306,7 +306,8 @@ pub struct AgentEngine {
     cwd: PathBuf,
     usage_recorder: Option<Arc<UsageRecorder>>,
     conversation_logger: Option<Arc<crate::conversation_logger::ConversationLogger>>,
-    cancel_flag: Arc<AtomicBool>,
+    /// 每个会话独立的取消标志，避免停止一个对话时连带中断其他并行对话。
+    cancel_flags: Arc<StdMutex<HashMap<String, Arc<AtomicBool>>>>,
     active_threads: Arc<StdMutex<HashSet<String>>>,
 }
 
@@ -352,7 +353,7 @@ impl AgentEngine {
             cwd,
             usage_recorder: None,
             conversation_logger: None,
-            cancel_flag: Arc::new(AtomicBool::new(false)),
+            cancel_flags: Arc::new(StdMutex::new(HashMap::new())),
             active_threads: Arc::new(StdMutex::new(HashSet::new())),
         })
     }
@@ -386,9 +387,54 @@ impl AgentEngine {
         self.conversation_logger = Some(logger);
     }
 
-    /// 中断当前正在运行的 turn
+    /// 获取（或创建）指定会话的取消标志。
+    fn cancel_flag_for(&self, thread_id: &str) -> Arc<AtomicBool> {
+        let mut flags = self
+            .cancel_flags
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        flags
+            .entry(thread_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone()
+    }
+
+    /// 开始新 turn 前重置该会话取消标志，并返回供本轮使用的 Arc。
+    fn reset_cancel_flag(&self, thread_id: &str) -> Arc<AtomicBool> {
+        let flag = self.cancel_flag_for(thread_id);
+        flag.store(false, Ordering::SeqCst);
+        flag
+    }
+
+    /// 中断指定会话的 turn（不影响其他会话）。
+    pub fn interrupt_thread(&self, thread_id: &str) {
+        if thread_id.trim().is_empty() {
+            self.interrupt_all();
+            return;
+        }
+        let mut flags = self
+            .cancel_flags
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let flag = flags
+            .entry(thread_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)));
+        flag.store(true, Ordering::SeqCst);
+    }
+
+    /// 中断所有正在运行的 turn（兼容旧调用点）。
     pub fn interrupt(&self) {
-        self.cancel_flag.store(true, Ordering::SeqCst);
+        self.interrupt_all();
+    }
+
+    fn interrupt_all(&self) {
+        let flags = self
+            .cancel_flags
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for flag in flags.values() {
+            flag.store(true, Ordering::SeqCst);
+        }
     }
 
     /// 中断指定线程（或全部线程）的活跃工具子进程。
@@ -405,8 +451,15 @@ impl AgentEngine {
         }
     }
 
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancel_flag.load(Ordering::SeqCst)
+    pub(crate) fn is_thread_cancelled(&self, thread_id: &str) -> bool {
+        let flags = self
+            .cancel_flags
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        flags
+            .get(thread_id)
+            .map(|flag| flag.load(Ordering::SeqCst))
+            .unwrap_or(false)
     }
 
     fn http_for_url(&self, url: &str) -> &reqwest::Client {
@@ -431,7 +484,7 @@ impl AgentEngine {
         client_message_id: Option<String>,
     ) -> AppResult<()> {
         let _active_thread_guard = self.claim_thread_turn(thread_id)?;
-        self.cancel_flag.store(false, Ordering::SeqCst);
+        let cancel_flag = self.reset_cancel_flag(thread_id);
 
         if user_input.trim() == "/compact" {
             let (provider_id, provider) = config.resolve_provider();
@@ -454,7 +507,7 @@ impl AgentEngine {
                 &api_key,
                 &model,
                 &wire_api,
-                Some(&self.cancel_flag),
+                Some(&cancel_flag),
                 provider.query_params.as_ref(),
                 provider.http_headers.as_ref(),
             )
@@ -616,7 +669,7 @@ impl AgentEngine {
                 &api_key,
                 &model,
                 &wire_api,
-                Some(&self.cancel_flag),
+                Some(&cancel_flag),
                 provider.query_params.as_ref(),
                 provider.http_headers.as_ref(),
             )
@@ -624,7 +677,7 @@ impl AgentEngine {
             {
                 warn!("Pre-turn compaction failed; preserving original history: {error}");
             }
-            if self.is_cancelled() {
+            if cancel_flag.load(Ordering::SeqCst) {
                 return Ok(());
             }
         }
@@ -941,9 +994,10 @@ impl AgentEngine {
         const MAX_EMPTY_COMPLETION_RETRIES: u32 = 2;
         const MAX_RATE_LIMIT_RETRIES: u32 = 6;
         const MAX_STREAM_READ_RETRIES: u32 = 2;
-        // Long coding turns can legitimately run more than 60 commands. Keep a
-        // bounded loop guard, but align it with the 100-result context window.
-        const MAX_AGENT_ITERATIONS_PER_TURN: u32 = 128;
+        // Keep periodic diagnostics for unusually long turns, but do not treat an
+        // iteration count as proof of a loop. Browser automation and goal turns can
+        // legitimately need hundreds of distinct tool calls.
+        const AGENT_ITERATION_DIAGNOSTIC_INTERVAL: u32 = 128;
         // 502/503/504 通常是上游暂时不可用；给短暂故障最多 10 次恢复机会。
         const MAX_UPSTREAM_RETRIES: u32 = 10;
         let max_goal_continuations: usize = 10;
@@ -991,7 +1045,7 @@ impl AgentEngine {
                             &api_key,
                             &model,
                             &wire_api,
-                            Some(&self.cancel_flag),
+                            Some(&cancel_flag),
                             provider.query_params.as_ref(),
                             provider.http_headers.as_ref(),
                         )
@@ -1001,7 +1055,7 @@ impl AgentEngine {
                                 "Goal continuation compaction failed; preserving original history: {error}"
                             );
                         }
-                        if self.is_cancelled() {
+                        if cancel_flag.load(Ordering::SeqCst) {
                             break;
                         }
                     }
@@ -1009,34 +1063,17 @@ impl AgentEngine {
 
                 let mut iteration: u32 = 0;
                 loop {
-                    if self.is_cancelled() {
+                    if cancel_flag.load(Ordering::SeqCst) {
                         info!("Turn {turn_id} cancelled by user at iteration {iteration}");
                         break;
                     }
-                    if iteration >= MAX_AGENT_ITERATIONS_PER_TURN {
-                        let scope = if robot_progress.is_some() {
-                            "workflow node"
-                        } else {
-                            "turn"
-                        };
-                        let message = format!(
-                            "Agent stopped after {MAX_AGENT_ITERATIONS_PER_TURN} model iterations in one {scope}. This usually indicates a repeated tool-call or model protocol loop."
+                    if iteration > 0 && iteration % AGENT_ITERATION_DIAGNOSTIC_INTERVAL == 0 {
+                        warn!(
+                            "Turn {turn_id} reached {iteration} model iterations and remains active; iteration count alone is not treated as a loop"
                         );
-                        error!("Turn {turn_id}: {message}");
-                        emit_and_broadcast(
-                            app_handle,
-                            "server-error",
-                            serde_json::json!({
-                                "threadId": thread_id,
-                                "message": message,
-                                "retryable": false,
-                            }),
-                        );
-                        terminated_by_error = true;
-                        break;
                     }
                     info!("Agent loop iteration {iteration} for turn {turn_id}");
-                    iteration += 1;
+                    iteration = iteration.saturating_add(1);
 
                     let history = self.thread_store.get_model_history(thread_id).await;
                     // 机器人编排分支：把历史裁剪为“当前节点自身消息”，
@@ -1170,6 +1207,7 @@ impl AgentEngine {
                             turn_mode == "plan",
                             provider.query_params.as_ref(),
                             provider.http_headers.as_ref(),
+                            &cancel_flag,
                         )
                         .await;
 
@@ -1803,7 +1841,7 @@ impl AgentEngine {
                                 }
                                 // 若用户已点击停止，则跳过工具执行，并主动补发结束状态，
                                 // 防止前端工具卡片一直停留在 running。
-                                if self.is_cancelled() {
+                                if cancel_flag.load(Ordering::SeqCst) {
                                     let interrupted_call_id = call.id.clone();
                                     let interrupted_tool_name = call.name.clone();
                                     let interrupted_output =
@@ -2221,7 +2259,7 @@ impl AgentEngine {
                                     &api_key,
                                     &model,
                                     &wire_api,
-                                    Some(&self.cancel_flag),
+                                    Some(&cancel_flag),
                                     provider.query_params.as_ref(),
                                     provider.http_headers.as_ref(),
                                 )
@@ -2275,7 +2313,7 @@ impl AgentEngine {
                                 );
                                 if !sleep_or_cancel(
                                     Duration::from_millis(retry_in_ms),
-                                    self.cancel_flag.as_ref(),
+                                    cancel_flag.as_ref(),
                                 )
                                 .await
                                 {
@@ -2356,7 +2394,7 @@ impl AgentEngine {
                                 );
                                 if !sleep_or_cancel(
                                     Duration::from_millis(retry_in_ms),
-                                    self.cancel_flag.as_ref(),
+                                    cancel_flag.as_ref(),
                                 )
                                 .await
                                 {
@@ -2387,7 +2425,7 @@ impl AgentEngine {
                                 );
                                 if !sleep_or_cancel(
                                     Duration::from_millis(retry_in_ms),
-                                    self.cancel_flag.as_ref(),
+                                    cancel_flag.as_ref(),
                                 )
                                 .await
                                 {
@@ -2514,6 +2552,7 @@ impl AgentEngine {
                             false,
                             provider.query_params.as_ref(),
                             provider.http_headers.as_ref(),
+                            &cancel_flag,
                         )
                         .await;
                     let summary_text = match summary_result {
@@ -2583,7 +2622,7 @@ impl AgentEngine {
 
             // Goal continuation: if goal is still Active, inject continuation prompt
             // and restart the agent loop instead of ending the turn.
-            if turn_mode != "goal" || self.is_cancelled() || prompt_hook_blocked {
+            if turn_mode != "goal" || cancel_flag.load(Ordering::SeqCst) || prompt_hook_blocked {
                 break 'goal_loop;
             }
             let continuation_goal = self
@@ -2728,7 +2767,7 @@ impl AgentEngine {
             &effective_cwd,
         );
 
-        let terminal_event = if self.is_cancelled() {
+        let terminal_event = if cancel_flag.load(Ordering::SeqCst) {
             "turn-cancelled"
         } else if terminated_by_error {
             "turn-failed"
@@ -3832,6 +3871,7 @@ impl AgentEngine {
         plan_mode: bool,
         query_params: Option<&std::collections::HashMap<String, String>>,
         extra_headers: Option<&std::collections::HashMap<String, String>>,
+        cancel_flag: &Arc<AtomicBool>,
     ) -> AppResult<CompletionResult> {
         // 根据 wire_api 选择 adapter
         let adapter = adapter::get_adapter(wire_api);
@@ -3875,7 +3915,7 @@ impl AgentEngine {
             .send();
         let response = match wait_with_cancel_and_timeout(
             request,
-            self.cancel_flag.as_ref(),
+            cancel_flag.as_ref(),
             RESPONSE_HEADER_TIMEOUT,
         )
         .await
@@ -3901,7 +3941,7 @@ impl AgentEngine {
             let status = response.status();
             let body_text = match wait_with_cancel_and_timeout(
                 response.text(),
-                self.cancel_flag.as_ref(),
+                cancel_flag.as_ref(),
                 STREAM_IDLE_TIMEOUT,
             )
             .await
@@ -3932,7 +3972,7 @@ impl AgentEngine {
         if content_type.contains("application/json") && !content_type.contains("stream") {
             let body_text = match wait_with_cancel_and_timeout(
                 response.text(),
-                self.cancel_flag.as_ref(),
+                cancel_flag.as_ref(),
                 STREAM_IDLE_TIMEOUT,
             )
             .await
@@ -3992,7 +4032,7 @@ impl AgentEngine {
         'response_stream: loop {
             let chunk = match wait_with_cancel_and_timeout(
                 stream.next(),
-                self.cancel_flag.as_ref(),
+                cancel_flag.as_ref(),
                 STREAM_IDLE_TIMEOUT,
             )
             .await
@@ -6844,6 +6884,36 @@ mod tests {
         assert!(!is_retryable_rate_limit_error(
             "LLM API error (500): internal"
         ));
+    }
+
+    #[test]
+    fn interrupt_thread_is_isolated_per_thread() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cwd = root.path().to_path_buf();
+        let thread_store = Arc::new(ThreadStore::new(&cwd.join("codey")));
+        let tool_executor = ToolExecutor::new(cwd.clone());
+        let engine = AgentEngine::new(thread_store, tool_executor, cwd).expect("engine");
+
+        let flag_a = engine.reset_cancel_flag("thread-a");
+        let flag_b = engine.reset_cancel_flag("thread-b");
+        assert!(!flag_a.load(Ordering::SeqCst));
+        assert!(!flag_b.load(Ordering::SeqCst));
+
+        engine.interrupt_thread("thread-a");
+        assert!(engine.is_thread_cancelled("thread-a"));
+        assert!(!engine.is_thread_cancelled("thread-b"));
+        assert!(flag_a.load(Ordering::SeqCst));
+        assert!(!flag_b.load(Ordering::SeqCst));
+
+        // 新一轮 thread-a 应重置自己的 flag，且不影响 thread-b 后续独立取消。
+        let flag_a2 = engine.reset_cancel_flag("thread-a");
+        assert!(!flag_a2.load(Ordering::SeqCst));
+        assert!(!engine.is_thread_cancelled("thread-a"));
+        assert!(!engine.is_thread_cancelled("thread-b"));
+
+        engine.interrupt_thread("thread-b");
+        assert!(!engine.is_thread_cancelled("thread-a"));
+        assert!(engine.is_thread_cancelled("thread-b"));
     }
 
     #[test]

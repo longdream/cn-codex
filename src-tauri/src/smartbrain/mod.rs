@@ -6,6 +6,8 @@ pub mod extractor;
 pub mod index;
 pub mod knowledge;
 pub mod mysql_native;
+pub mod postgres_native;
+pub mod sqlserver_native;
 pub mod okf;
 pub mod permissions;
 pub mod prompts;

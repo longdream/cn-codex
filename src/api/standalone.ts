@@ -304,8 +304,12 @@ export async function standaloneThreadTruncateBefore(
   });
 }
 
-export async function standaloneTurnInterrupt(): Promise<{ status: string }> {
-  return invoke("standalone_turn_interrupt");
+export async function standaloneTurnInterrupt(
+  threadId?: string | null,
+): Promise<{ status: string }> {
+  return invoke("standalone_turn_interrupt", {
+    threadId: threadId ?? null,
+  });
 }
 
 export async function standalonePlanOpen(path: string): Promise<{ status: string }> {

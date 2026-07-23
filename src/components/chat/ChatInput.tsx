@@ -9,7 +9,6 @@ import {
   IconCpu,
   IconFile,
   IconFolder,
-  IconPaperclip,
   IconPencil,
   IconPlayerSkipForward,
   IconPlugConnected,
@@ -19,6 +18,7 @@ import {
   IconSquare,
   IconTargetArrow,
   IconPuzzle,
+  IconRoute,
   IconServer,
   IconX,
 } from "@tabler/icons-react";
@@ -55,6 +55,7 @@ import type { SkillSummary } from "../../types/skill";
 import type { PluginSummary } from "../../types/plugin";
 import { standaloneConfigRead } from "../../api/standalone";
 import { miniappList, type MiniAppRecord } from "../../api/miniapp";
+import { workflowList, type WorkflowSummary } from "../../api/workflow";
 import { formatWebSnippet } from "../../utils/formatWebSnippet";
 import { derivePlanExecutionProgress } from "../../utils/planExecutionProgress";
 import {
@@ -76,7 +77,7 @@ const IMAGE_ACCEPT = "image/*";
 const ALL_ACCEPT = `${IMAGE_ACCEPT},${DOCUMENT_ACCEPT}`;
 const COMPUTER_USE_PLUGIN_ID = "computer-use";
 
-type AttachMenuView = "root" | "skill" | "plugin" | "mcp" | "miniapp";
+type AttachMenuView = "root" | "skill" | "plugin" | "mcp" | "miniapp" | "workflow";
 
 interface McpServerOption {
   name: string;
@@ -286,6 +287,7 @@ export function ChatInput({
   const [plugins, setPlugins] = useState<PluginSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerOption[]>([]);
   const [miniapps, setMiniapps] = useState<MiniAppRecord[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [attachMenuView, setAttachMenuView] = useState<AttachMenuView>("root");
   const [attachSearchQuery, setAttachSearchQuery] = useState("");
@@ -436,7 +438,15 @@ export function ChatInput({
   }, []);
 
   useEffect(() => {
-    skillList().then(setSkills).catch(() => setSkills([]));
+    const loadSkills = () => {
+      skillList().then(setSkills).catch(() => setSkills([]));
+    };
+    loadSkills();
+    const handler = () => {
+      loadSkills();
+    };
+    window.addEventListener("skills-changed", handler);
+    return () => window.removeEventListener("skills-changed", handler);
   }, []);
 
   useEffect(() => {
@@ -506,6 +516,12 @@ export function ChatInput({
     miniappList()
       .then(setMiniapps)
       .catch(() => setMiniapps([]));
+  }, []);
+
+  useEffect(() => {
+    workflowList()
+      .then(setWorkflows)
+      .catch(() => setWorkflows([]));
   }, []);
 
   const selectedRobotName = useMemo(
@@ -1022,6 +1038,18 @@ export function ChatInput({
     );
   }, [insertComposerText, intl]);
 
+  const handleSelectWorkflow = useCallback((workflow: WorkflowSummary) => {
+    insertComposerText(
+      intl.formatMessage(
+        { id: "chat.workflowPrompt" },
+        {
+          workflowName: workflow.name,
+          workflowTitle: workflow.title || workflow.name,
+        },
+      ),
+    );
+  }, [insertComposerText, intl]);
+
   const filteredAttachSkills = useMemo(() => {
     const query = attachSearchQuery.trim().toLowerCase();
     if (!query) return skills;
@@ -1062,6 +1090,16 @@ export function ChatInput({
         .includes(query);
     });
   }, [attachSearchQuery, miniapps]);
+
+  const filteredAttachWorkflows = useMemo(() => {
+    const query = attachSearchQuery.trim().toLowerCase();
+    if (!query) return workflows;
+    return workflows.filter((workflow) => {
+      return `${workflow.name} ${workflow.title} ${workflow.description}`
+        .toLowerCase()
+        .includes(query);
+    });
+  }, [attachSearchQuery, workflows]);
 
   const handleAttachClick = useCallback(() => {
     setShowAttachMenu((prev) => {
@@ -1640,7 +1678,7 @@ export function ChatInput({
               title={intl.formatMessage({ id: "chat.attachMenu" })}
               aria-expanded={showAttachMenu}
             >
-              <IconPaperclip size={15} stroke={1.8} />
+              <IconPlus size={15} stroke={1.8} />
             </button>
 
             {showAttachMenu && (
@@ -1706,6 +1744,21 @@ export function ChatInput({
                       <IconApps size={14} stroke={1.8} className="shrink-0 text-[var(--chat-muted)]" />
                       <span>{intl.formatMessage({ id: "chat.attachMiniapp" })}</span>
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttachMenuView("workflow");
+                        setAttachSearchQuery("");
+                        // Refresh list when opening so newly saved workflows show up.
+                        workflowList()
+                          .then(setWorkflows)
+                          .catch(() => setWorkflows([]));
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-[var(--chat-prose)] transition-colors hover:bg-[var(--surface-elevated)]"
+                    >
+                      <IconRoute size={14} stroke={1.8} className="shrink-0 text-[var(--chat-muted)]" />
+                      <span>{intl.formatMessage({ id: "chat.attachWorkflow" })}</span>
+                    </button>
                   </div>
                 ) : (
                   <div className="flex max-h-[280px] flex-col">
@@ -1729,7 +1782,9 @@ export function ChatInput({
                                 ? "chat.attachPlugin"
                                 : attachMenuView === "miniapp"
                                   ? "chat.attachMiniapp"
-                                  : "chat.attachMcp",
+                                  : attachMenuView === "workflow"
+                                    ? "chat.attachWorkflow"
+                                    : "chat.attachMcp",
                         })}
                       </span>
                     </div>
@@ -1839,6 +1894,37 @@ export function ChatInput({
                               </span>
                               <span className="truncate text-[11px] text-[var(--chat-faint)]">
                                 {app.databaseName || app.databaseId || app.description || app.slug}
+                              </span>
+                            </button>
+                          ))
+                        )
+                      )}
+
+                      {attachMenuView === "workflow" && (
+                        filteredAttachWorkflows.length === 0 ? (
+                          <p className="px-3 py-3 text-[12px] text-[var(--chat-faint)]">
+                            {intl.formatMessage({ id: "chat.workflow.noneAvailable" })}
+                          </p>
+                        ) : (
+                          filteredAttachWorkflows.map((workflow) => (
+                            <button
+                              key={workflow.name}
+                              type="button"
+                              onClick={() => handleSelectWorkflow(workflow)}
+                              className="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]"
+                            >
+                              <span className="truncate text-[12px] font-medium text-[var(--chat-prose)]">
+                                {workflow.title || workflow.name}
+                                <span className="ml-1 font-mono text-[10px] text-[var(--chat-faint)]">
+                                  {workflow.name}
+                                </span>
+                              </span>
+                              <span className="truncate text-[11px] text-[var(--chat-faint)]">
+                                {workflow.description
+                                  || intl.formatMessage(
+                                    { id: "chat.workflow.nodeCount" },
+                                    { count: workflow.nodeCount },
+                                  )}
                               </span>
                             </button>
                           ))

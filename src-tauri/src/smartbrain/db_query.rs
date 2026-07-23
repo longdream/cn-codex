@@ -864,36 +864,27 @@ async fn execute_postgres(
         .ok_or_else(|| "PostgreSQL databaseName 未配置。".to_string())?;
     let password = source.password.clone();
     let limited_sql = apply_row_limit_hint(sql, "postgresql", row_limit);
-
-    let args = vec![
-        "-h".to_string(),
-        host,
-        "-p".to_string(),
-        port.to_string(),
-        "-U".to_string(),
-        username,
-        "-d".to_string(),
-        database,
-        "-A".to_string(),
-        "-F".to_string(),
-        "\t".to_string(),
-        "-c".to_string(),
-        limited_sql,
-    ];
-    let env_vars = vec![("PGPASSWORD", password)];
-    let stdout = run_process_capture("psql", &args, &env_vars, timeout_sec)
-        .await
-        .map_err(|error| {
-            format!(
-                "通过内置 PostgreSQL 客户端执行失败。请确认本机已安装 `psql` CLI 且网络可达。Detail: {error}"
-            )
-        })?;
-    let (columns, rows, truncated) = parse_tsv_table(&stdout, row_limit);
+    let result = crate::smartbrain::postgres_native::execute_postgres_query(
+        &host,
+        port,
+        &username,
+        &password,
+        &database,
+        &limited_sql,
+        timeout_sec,
+        row_limit,
+    )
+    .await
+    .map_err(|error| {
+        format!(
+            "通过内置 PostgreSQL 客户端执行失败。请确认数据库配置完整（host/port/database/username/password）且网络可达。Detail: {error}"
+        )
+    })?;
     Ok((
-        columns,
-        rows,
-        truncated,
-        "Executed via built-in psql CLI".to_string(),
+        result.columns,
+        result.rows,
+        result.truncated,
+        "Executed via built-in PostgreSQL client".to_string(),
     ))
 }
 
@@ -910,39 +901,28 @@ async fn execute_sqlserver(
         .ok_or_else(|| "SQL Server username 未配置。".to_string())?;
     let password = source.password.clone();
     let database = first_non_empty(&[&source.database_name]).unwrap_or_default();
-    let server = format!("{host},{port}");
     let limited_sql = apply_row_limit_hint(sql, "sqlserver", row_limit);
-
-    let mut args = vec![
-        "-S".to_string(),
-        server,
-        "-U".to_string(),
-        username,
-        "-P".to_string(),
-        password,
-        "-s".to_string(),
-        "\t".to_string(),
-        "-W".to_string(),
-        "-Q".to_string(),
-        format!("SET NOCOUNT ON; {limited_sql}"),
-    ];
-    if !database.is_empty() {
-        args.splice(6..6, ["-d".to_string(), database]);
-    }
-
-    let stdout = run_process_capture("sqlcmd", &args, &[], timeout_sec)
-        .await
-        .map_err(|error| {
-            format!(
-                "通过内置 SQL Server 客户端执行失败。请确认本机已安装 `sqlcmd` 且网络可达。Detail: {error}"
-            )
-        })?;
-    let (columns, rows, truncated) = parse_tsv_table(&stdout, row_limit);
+    let result = crate::smartbrain::sqlserver_native::execute_sqlserver_query(
+        &host,
+        port,
+        &username,
+        &password,
+        &database,
+        &format!("SET NOCOUNT ON; {limited_sql}"),
+        timeout_sec,
+        row_limit,
+    )
+    .await
+    .map_err(|error| {
+        format!(
+            "通过内置 SQL Server 客户端执行失败。请确认数据库配置完整（host/port/username/password）且网络可达。Detail: {error}"
+        )
+    })?;
     Ok((
-        columns,
-        rows,
-        truncated,
-        "Executed via built-in sqlcmd CLI".to_string(),
+        result.columns,
+        result.rows,
+        result.truncated,
+        "Executed via built-in SQL Server client".to_string(),
     ))
 }
 

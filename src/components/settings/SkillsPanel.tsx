@@ -38,6 +38,14 @@ export function SkillsPanel() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const handler = () => {
+      void load();
+    };
+    window.addEventListener("skills-changed", handler);
+    return () => window.removeEventListener("skills-changed", handler);
+  }, [load]);
+
   const handleViewSkill = async (id: string) => {
     if (selectedSkill === id) {
       setSelectedSkill(null);

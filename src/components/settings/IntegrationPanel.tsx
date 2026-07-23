@@ -19,6 +19,29 @@ interface McpServerInfo {
   disabled?: boolean;
 }
 
+function looksLikeMcpSseUrl(url: string): boolean {
+  const path = url.trim().toLowerCase().split("?")[0] ?? "";
+  return path.endsWith("/sse") || path.includes("/sse/");
+}
+
+function normalizeMcpTransportType(raw: unknown, url?: string): string {
+  const explicit =
+    typeof raw === "string" ? raw.trim().toLowerCase().replace(/-/g, "_") : "";
+  if (
+    explicit === "http" ||
+    explicit === "streamable_http" ||
+    explicit === "streamablehttp"
+  ) {
+    return "http";
+  }
+  if (explicit === "sse") return "sse";
+  if (explicit === "stdio" || explicit === "local") return "stdio";
+  if (url && url.trim()) {
+    return looksLikeMcpSseUrl(url) ? "sse" : "http";
+  }
+  return "stdio";
+}
+
 function extractMcpServerMap(raw: Record<string, unknown>): Record<string, Record<string, unknown>> {
   const nested = raw.mcpServers ?? raw.mcp_servers;
   if (nested && typeof nested === "object" && !Array.isArray(nested)) {
@@ -65,12 +88,11 @@ function normalizeImportedMcpServer(
 
   // Keep explicit transport/type when present.
   if (typeof next.type === "string") {
-    next.type = next.type.trim().toLowerCase();
+    next.type = normalizeMcpTransportType(next.type);
   } else if (typeof next.transport === "string") {
-    next.type = String(next.transport).trim().toLowerCase();
+    next.type = normalizeMcpTransportType(next.transport);
   } else if (url) {
-    const lower = url.toLowerCase();
-    next.type = lower.includes("/sse") ? "sse" : "http";
+    next.type = looksLikeMcpSseUrl(url) ? "sse" : "http";
   }
 
   // Prefer canonical fields.
@@ -127,6 +149,7 @@ export function IntegrationPanel() {
   const [mcpSaving, setMcpSaving] = useState(false);
   const [mcpDeleteTarget, setMcpDeleteTarget] = useState<string | null>(null);
   const [mcpDeleting, setMcpDeleting] = useState(false);
+  const [mcpToggling, setMcpToggling] = useState<string | null>(null);
   const [playwrightEnabling, setPlaywrightEnabling] = useState(false);
   const [playwrightStatus, setPlaywrightStatus] = useState<string | null>(null);
   const [playwrightError, setPlaywrightError] = useState<string | null>(null);
@@ -195,21 +218,14 @@ export function IntegrationPanel() {
           command: (val.command as string) ?? "",
           args: (val.args as string[]) ?? [],
           url: typeof val.url === "string" ? val.url : undefined,
-          type: (() => {
-            const explicit =
-              typeof val.type === "string"
-                ? val.type
-                : typeof val.transport === "string"
-                  ? val.transport
-                  : "";
-            if (explicit) return explicit.toLowerCase();
-            const url = typeof val.url === "string" ? val.url : "";
-            if (url) {
-              const path = url.toLowerCase().split("?")[0] ?? "";
-              return path.endsWith("/sse") || path.includes("/sse/") ? "sse" : "http";
-            }
-            return "stdio";
-          })(),
+          type: normalizeMcpTransportType(
+            typeof val.type === "string"
+              ? val.type
+              : typeof val.transport === "string"
+                ? val.transport
+                : "",
+            typeof val.url === "string" ? val.url : undefined,
+          ),
           disabled:
             typeof val.disabled === "boolean"
               ? val.disabled
@@ -285,6 +301,56 @@ export function IntegrationPanel() {
   const handleMcpDelete = (name: string) => {
     setMcpDeleteTarget(name);
     setMcpJsonError(null);
+  };
+
+  const handleToggleMcpEnabled = async (server: McpServerInfo) => {
+    if (mcpToggling) return;
+    setMcpToggling(server.name);
+    setMcpJsonError(null);
+    try {
+      const resp = await standaloneConfigRead();
+      const cfg = (resp?.config ?? {}) as Record<string, unknown>;
+      const mcpServers = (cfg.mcp_servers ?? cfg.mcpServers ?? {}) as Record<
+        string,
+        Record<string, unknown>
+      >;
+      const existing = mcpServers[server.name];
+      if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+        throw new Error(`MCP server '${server.name}' not found in config`);
+      }
+
+      const next: Record<string, unknown> = { ...existing };
+      delete next.isActive;
+      delete next.is_active;
+      delete next.enabled;
+      next.disabled = !server.disabled;
+
+      // Keep transport type explicit for remote SSE/HTTP servers after toggle.
+      if (typeof next.type !== "string" && typeof next.transport !== "string") {
+        const url =
+          (typeof next.url === "string" && next.url) ||
+          (typeof next.server_url === "string" && next.server_url) ||
+          server.url ||
+          "";
+        if (url) {
+          next.type = looksLikeMcpSseUrl(url) ? "sse" : "http";
+        }
+      } else if (typeof next.type === "string") {
+        next.type = normalizeMcpTransportType(next.type);
+      } else if (typeof next.transport === "string") {
+        next.type = normalizeMcpTransportType(next.transport);
+      }
+
+      await standaloneConfigWrite([
+        { keyPath: `mcp_servers.${server.name}`, value: next },
+      ]);
+      await load();
+    } catch (err) {
+      console.error("Failed to toggle MCP server:", err);
+      setMcpJsonError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMcpToggling(null);
+    }
   };
 
   const handleConfirmMcpDelete = async () => {
@@ -499,11 +565,27 @@ export function IntegrationPanel() {
                     <span className="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[11px] text-[var(--accent-strong)]">
                       {(server.type || (server.url ? "http" : "stdio")).toUpperCase()}
                     </span>
-                    {server.disabled && (
-                      <span className="rounded-full bg-[var(--surface-soft)] px-2 py-1 text-[11px] text-[var(--text-faint)]">
-                        {intl.formatMessage({ id: "settings.integration.mcpDisabled" })}
-                      </span>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleMcpEnabled(server)}
+                      disabled={mcpToggling === server.name || mcpDeleting}
+                      className={`rounded-full px-2 py-1 text-[11px] transition-colors disabled:opacity-60 ${
+                        server.disabled
+                          ? "bg-[var(--surface-soft)] text-[var(--text-faint)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-muted)]"
+                          : "bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:bg-[var(--surface-elevated)]"
+                      }`}
+                      title={intl.formatMessage({
+                        id: server.disabled
+                          ? "settings.integration.mcpEnable"
+                          : "settings.integration.mcpDisable",
+                      })}
+                    >
+                      {mcpToggling === server.name
+                        ? intl.formatMessage({ id: "common.loading" })
+                        : server.disabled
+                          ? intl.formatMessage({ id: "settings.integration.mcpDisabled" })
+                          : intl.formatMessage({ id: "settings.integration.mcpEnabled" })}
+                    </button>
                     <button
                       onClick={() => handleMcpDelete(server.name)}
                       disabled={mcpDeleting}

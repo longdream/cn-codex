@@ -13,6 +13,7 @@ import {
   IconPlus,
   IconRefresh,
   IconRotateClockwise2,
+  IconX,
 } from "@tabler/icons-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
@@ -23,6 +24,7 @@ import {
   gitCommit,
   gitCommitFiles,
   gitDiff,
+  gitDiscard,
   gitFileDiffContents,
   gitLog,
   gitPull,
@@ -380,6 +382,28 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
     [intl, runAction, workspaceCwd],
   );
 
+  const handleDiscardPath = useCallback(
+    async (entry: GitStatusEntry) => {
+      if (!workspaceCwd) {
+        return;
+      }
+      const confirmText = entry.untracked
+        ? intl.formatMessage({ id: "git.confirmDiscardUntracked" }, { path: entry.path })
+        : intl.formatMessage({ id: "git.confirmDiscard" }, { path: entry.path });
+      if (!window.confirm(confirmText)) {
+        return;
+      }
+      await runAction(intl.formatMessage({ id: "git.discard" }), () =>
+        gitDiscard([entry.path], {
+          cwd: workspaceCwd,
+          untracked: entry.untracked,
+          confirmDangerous: true,
+        }),
+      );
+    },
+    [intl, runAction, workspaceCwd],
+  );
+
   const handleStageAll = useCallback(async () => {
     if (!workspaceCwd || allChangePaths.length === 0) {
       return;
@@ -618,6 +642,15 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
             title={intl.formatMessage({ id: actionType === "stage" ? "git.stage" : "git.unstage" })}
           >
             {actionType === "stage" ? <IconPlus size={12} stroke={2} /> : <IconMinus size={12} stroke={2} />}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleDiscardPath(entry)}
+            disabled={busyAction !== null}
+            className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] border border-[rgba(239,68,68,0.35)] text-[var(--danger)] transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-35"
+            title={intl.formatMessage({ id: "git.discard" })}
+          >
+            <IconX size={12} stroke={2} />
           </button>
         </div>
       </div>
