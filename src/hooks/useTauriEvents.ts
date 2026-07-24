@@ -1013,8 +1013,12 @@ export function useTauriEvents() {
                 canGoForward: false,
               });
             }
-            latestStore.setBrowserActive(true);
-            latestStore.triggerBrowserSync();
+            // 独立浏览器窗口模式下，WebView 已挂在 popup 上。
+            // 这里如果再把 browserActive 设为 true，主窗口会错误地重定位并挤坏布局。
+            if (!latestStore.browserDetached) {
+              latestStore.setBrowserActive(true);
+              latestStore.triggerBrowserSync();
+            }
           }
 
           // 同一用户轮次内多批 tool-calls-start 合并到一张工具调用卡。

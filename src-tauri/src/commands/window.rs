@@ -350,6 +350,9 @@ pub async fn window_resize_browser(
     height: f64,
 ) -> AppResult<()> {
     if let Some(webview) = app.get_webview(BROWSER_WEBVIEW_LABEL) {
+        if should_preserve_popup_browser_geometry(&app, x, y, width, height) {
+            return Ok(());
+        }
         webview.set_position(LogicalPosition::new(x, y))?;
         webview.set_size(LogicalSize::new(width, height))?;
     }
@@ -1031,7 +1034,26 @@ pub fn open_browser_embedded(
     width: f64,
     height: f64,
 ) -> AppResult<BrowserWindowInfo> {
-    open_browser_in_window(app, workspace_config_dir, "main", url, x, y, width, height)
+    // 独立浏览器窗口打开时，后续 automation/browser_run 不能把 WebView 抢回主窗口。
+    let host_label = if app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL).is_some() {
+        BROWSER_POPUP_WINDOW_LABEL
+    } else {
+        "main"
+    };
+
+    let (next_x, next_y, next_width, next_height) =
+        resolve_browser_geometry_for_host(app, host_label, x, y, width, height);
+
+    open_browser_in_window(
+        app,
+        workspace_config_dir,
+        host_label,
+        url,
+        next_x,
+        next_y,
+        next_width,
+        next_height,
+    )
 }
 
 fn open_browser_in_window(
@@ -1053,8 +1075,11 @@ fn open_browser_in_window(
         if should_navigate_existing {
             webview.navigate(browser_url)?;
         }
-        webview.set_position(LogicalPosition::new(x, y))?;
-        webview.set_size(LogicalSize::new(width, height))?;
+        // 分离窗口场景下，忽略主窗口/automation 的 offscreen 隐藏坐标，避免布局被挤坏。
+        if !should_preserve_popup_browser_geometry(app, x, y, width, height) {
+            webview.set_position(LogicalPosition::new(x, y))?;
+            webview.set_size(LogicalSize::new(width, height))?;
+        }
         let info = BrowserWindowInfo {
             label: BROWSER_WEBVIEW_LABEL.to_string(),
             url: url_string,
@@ -1213,6 +1238,78 @@ fn emit_browser_detached_state(app: &AppHandle, detached: bool, url: Option<Stri
         BROWSER_DETACHED_CHANGED_EVENT,
         BrowserDetachedChangedEvent { detached, url },
     );
+}
+
+fn is_browser_popup_open(app: &AppHandle) -> bool {
+    app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL).is_some()
+}
+
+fn is_offscreen_browser_geometry(x: f64, y: f64, width: f64, height: f64) -> bool {
+    x <= -1000.0 || y <= -1000.0 || width <= 1.0 || height <= 1.0
+}
+
+fn is_popup_local_browser_geometry(x: f64, y: f64, width: f64, height: f64) -> bool {
+    // popup 工具栏高度固定 38px，内容区从左上角附近开始。
+    // 主窗口右侧面板坐标通常 x 很大，不能套到独立窗口上。
+    x >= -1.0
+        && x <= 48.0
+        && y >= 20.0
+        && y <= 96.0
+        && width >= 200.0
+        && height >= 120.0
+}
+
+fn should_preserve_popup_browser_geometry(
+    app: &AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> bool {
+    if !is_browser_popup_open(app) {
+        return false;
+    }
+    is_offscreen_browser_geometry(x, y, width, height)
+        || !is_popup_local_browser_geometry(x, y, width, height)
+}
+
+fn resolve_browser_geometry_for_host(
+    app: &AppHandle,
+    host_label: &str,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> (f64, f64, f64, f64) {
+    if host_label != BROWSER_POPUP_WINDOW_LABEL {
+        return (x, y, width, height);
+    }
+
+    // 独立窗口已打开时，只接受 popup 本地坐标；其他坐标都回落到 popup 可用区域。
+    if is_popup_local_browser_geometry(x, y, width, height) {
+        return (x, y, width, height);
+    }
+
+    if let Some(window) = app.get_webview_window(BROWSER_POPUP_WINDOW_LABEL) {
+        if let Ok(size) = window.inner_size() {
+            let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
+            let logical_width = (size.width as f64 / scale).max(320.0);
+            let logical_height = (size.height as f64 / scale).max(220.0);
+            return (
+                0.0,
+                BROWSER_POPUP_WEBVIEW_TOP_GAP,
+                logical_width.max(320.0),
+                (logical_height - BROWSER_POPUP_WEBVIEW_TOP_GAP).max(180.0),
+            );
+        }
+    }
+
+    (
+        0.0,
+        BROWSER_POPUP_WEBVIEW_TOP_GAP,
+        width.max(320.0),
+        (height - BROWSER_POPUP_WEBVIEW_TOP_GAP).max(180.0),
+    )
 }
 
 fn ensure_browser_webview(app: &AppHandle) -> AppResult<()> {

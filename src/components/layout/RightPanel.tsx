@@ -261,7 +261,8 @@ export function RightPanel() {
 
   const syncBrowserPosition = useCallback(() => {
     const el = browserContainerRef.current;
-    if (!el || !browserActive) return;
+    // 独立窗口模式下 WebView 已挂到 popup，主窗口绝不能再写坐标，否则会把页面挤偏。
+    if (!el || !browserActive || browserDetached) return;
     const rect = el.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       void windowResizeBrowser(
@@ -271,10 +272,10 @@ export function RightPanel() {
         Math.round(rect.height),
       );
     }
-  }, [browserActive]);
+  }, [browserActive, browserDetached]);
 
   useEffect(() => {
-    if (!browserActive || !rightPanelVisible || rightPanelTab !== "browser") return;
+    if (!browserActive || browserDetached || !rightPanelVisible || rightPanelTab !== "browser") return;
     const el = browserContainerRef.current;
     if (!el) return;
 
@@ -297,7 +298,7 @@ export function RightPanel() {
       window.removeEventListener("resize", onWindowResize);
       if (resizeTimerRef.current) cancelAnimationFrame(resizeTimerRef.current);
     };
-  }, [browserActive, rightPanelVisible, rightPanelTab, syncBrowserPosition]);
+  }, [browserActive, browserDetached, rightPanelVisible, rightPanelTab, syncBrowserPosition]);
 
   const handleOpenBrowser = useCallback((url?: string) => {
     const el = browserContainerRef.current;
@@ -637,24 +638,28 @@ export function RightPanel() {
   // 切换 tab 时隐藏/恢复 webview 位置（不关闭）
   useEffect(() => {
     // 右侧面板关闭或切到非浏览器 tab 时，把原生 WebView 移出视野，但不关闭页面。
+    if (browserDetached) {
+      return;
+    }
     if (browserActive && (!rightPanelVisible || rightPanelTab !== "browser")) {
       void windowResizeBrowser(-9999, -9999, 0, 0);
     } else if (browserActive && rightPanelVisible && rightPanelTab === "browser") {
       syncBrowserPosition();
     }
-  }, [rightPanelTab, rightPanelVisible, browserActive, syncBrowserPosition]);
+  }, [rightPanelTab, rightPanelVisible, browserActive, browserDetached, syncBrowserPosition]);
 
   // browser_run 开始时强制重新定位 WebView，避免黑屏
   useEffect(() => {
     if (
       browserSyncTrigger > 0 &&
       browserActive &&
+      !browserDetached &&
       rightPanelVisible &&
       rightPanelTab === "browser"
     ) {
       syncBrowserPosition();
     }
-  }, [browserSyncTrigger, browserActive, rightPanelVisible, rightPanelTab, syncBrowserPosition]);
+  }, [browserSyncTrigger, browserActive, browserDetached, rightPanelVisible, rightPanelTab, syncBrowserPosition]);
 
   // 后端 CDP 就绪后重新定位 WebView（解决后端 -9999 覆盖前端定位的竞态）
   useEffect(() => {
@@ -663,6 +668,7 @@ export function RightPanel() {
     void listen("browser-webview-ready", () => {
       if (
         browserActiveRef.current &&
+        !browserDetachedRef.current &&
         useAppStore.getState().rightPanelVisible &&
         rightPanelTabRef.current === "browser"
       ) {
@@ -684,12 +690,12 @@ export function RightPanel() {
 
   // browserActive 变为 true 时延迟同步位置（确保 DOM 已布局）
   useEffect(() => {
-    if (browserActive && rightPanelVisible && rightPanelTab === "browser") {
+    if (browserActive && !browserDetached && rightPanelVisible && rightPanelTab === "browser") {
       const timer = setTimeout(syncBrowserPosition, 50);
       requestAnimationFrame(syncBrowserPosition);
       return () => clearTimeout(timer);
     }
-  }, [browserActive, rightPanelVisible, rightPanelTab, syncBrowserPosition]);
+  }, [browserActive, browserDetached, rightPanelVisible, rightPanelTab, syncBrowserPosition]);
 
   // 切换对话时：若恢复的浏览器状态为活跃且浏览器未打开，则自动打开并导航到保存的 URL。
   useEffect(() => {

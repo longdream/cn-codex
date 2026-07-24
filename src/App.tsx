@@ -34,6 +34,7 @@ import {
   RIGHT_PANEL_WIDTH_MAX,
 } from "./stores/appStore";
 import { useSettingsStore, initSettingsFromDb } from "./stores/settingsStore";
+import { applyDocumentTheme } from "./utils/applyTheme";
 
 const messages: Record<string, Record<string, string>> = {
   "zh-CN": zhCN,
@@ -66,12 +67,8 @@ function App() {
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: light)");
-
     const applyTheme = () => {
-      const resolvedTheme =
-        theme === "system" ? (media.matches ? "light" : "dark") : theme;
-      document.documentElement.dataset.theme = resolvedTheme;
-      document.documentElement.style.colorScheme = resolvedTheme;
+      applyDocumentTheme(theme, document, media);
     };
 
     applyTheme();
