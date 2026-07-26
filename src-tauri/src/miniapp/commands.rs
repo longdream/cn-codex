@@ -7,10 +7,10 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 use super::runtime::{self, start_app, stop_app};
-use super::scaffold::{scaffold_miniapp, ScaffoldRequest};
+use super::scaffold::{ScaffoldRequest, scaffold_miniapp};
 use super::{
-    find_app, find_app_mut, load_registry, open_page_url, save_registry, validate_slug, write_manifest,
-    MiniAppRecord, MiniAppStatus,
+    MiniAppRecord, MiniAppStatus, find_app, find_app_mut, load_registry, open_page_url,
+    save_registry, validate_slug, write_manifest,
 };
 
 #[derive(Debug, Deserialize)]
@@ -69,7 +69,10 @@ pub async fn miniapp_create(
 }
 
 #[tauri::command]
-pub async fn miniapp_start(state: State<'_, AppState>, id_or_slug: String) -> AppResult<MiniAppRecord> {
+pub async fn miniapp_start(
+    state: State<'_, AppState>,
+    id_or_slug: String,
+) -> AppResult<MiniAppRecord> {
     let dir = state.workspace_config_dir.clone();
     let mut apps = load_registry(&dir).map_err(AppError::Custom)?;
     let Some(idx) = apps
@@ -97,7 +100,10 @@ pub async fn miniapp_start(state: State<'_, AppState>, id_or_slug: String) -> Ap
 }
 
 #[tauri::command]
-pub async fn miniapp_stop(state: State<'_, AppState>, id_or_slug: String) -> AppResult<MiniAppRecord> {
+pub async fn miniapp_stop(
+    state: State<'_, AppState>,
+    id_or_slug: String,
+) -> AppResult<MiniAppRecord> {
     let dir = state.workspace_config_dir.clone();
     let mut apps = load_registry(&dir).map_err(AppError::Custom)?;
     let Some(app) = find_app_mut(&mut apps, &id_or_slug) else {
@@ -153,7 +159,8 @@ pub async fn miniapp_open_page(
         save_registry(&dir, &apps).map_err(AppError::Custom)?;
     }
 
-    let app = find_app(&apps, &id_or_slug).ok_or_else(|| AppError::Custom("小程序不存在".into()))?;
+    let app =
+        find_app(&apps, &id_or_slug).ok_or_else(|| AppError::Custom("小程序不存在".into()))?;
     let url = open_page_url(app, page_id.as_deref())
         .ok_or_else(|| AppError::Custom("小程序未分配端口，无法打开页面".into()))?;
     Ok(serde_json::json!({

@@ -275,7 +275,9 @@ pub async fn git_file_diff_contents(
                 (head_content, exists_in_head, head_binary)
             };
 
-            let worktree_path = service.cwd().join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let worktree_path = service
+                .cwd()
+                .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
             let (after_content, exists_after, after_binary) =
                 read_worktree_text(&worktree_path).await?;
             let is_binary = before_binary || after_binary;
@@ -669,7 +671,11 @@ fn normalize_commit_ref(value: &str) -> AppResult<String> {
     if trimmed.is_empty() {
         return Err(AppError::Custom("Commit hash cannot be empty.".to_string()));
     }
-    if trimmed.contains('\0') || trimmed.contains('\n') || trimmed.contains('\r') || trimmed.contains(' ') {
+    if trimmed.contains('\0')
+        || trimmed.contains('\n')
+        || trimmed.contains('\r')
+        || trimmed.contains(' ')
+    {
         return Err(AppError::Custom(format!("Invalid commit ref: {trimmed}")));
     }
     Ok(trimmed.to_string())

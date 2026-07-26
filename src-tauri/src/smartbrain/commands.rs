@@ -683,8 +683,8 @@ async fn list_databases_for_request(
             let port = request.port.unwrap_or(5432);
             let username =
                 first_non_empty(&[&request.username]).unwrap_or_else(|| "postgres".to_string());
-            let database =
-                first_non_empty(&[&request.database_name]).unwrap_or_else(|| "postgres".to_string());
+            let database = first_non_empty(&[&request.database_name])
+                .unwrap_or_else(|| "postgres".to_string());
             crate::smartbrain::postgres_native::list_postgres_databases(
                 &host,
                 port,
@@ -832,13 +832,12 @@ pub async fn smartbrain_test_database_connection(
             format!("连接成功（SQLite）· 文件 `{path}` · 探测结果={value}")
         }
         "postgresql" | "postgres" => {
-            let host =
-                first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
+            let host = first_non_empty(&[&request.host]).unwrap_or_else(|| "127.0.0.1".to_string());
             let port = request.port.unwrap_or(5432);
             let username =
                 first_non_empty(&[&request.username]).unwrap_or_else(|| "postgres".to_string());
-            let database =
-                first_non_empty(&[&request.database_name]).unwrap_or_else(|| "postgres".to_string());
+            let database = first_non_empty(&[&request.database_name])
+                .unwrap_or_else(|| "postgres".to_string());
             let result = crate::smartbrain::postgres_native::execute_postgres_query(
                 &host,
                 port,
@@ -850,9 +849,7 @@ pub async fn smartbrain_test_database_connection(
                 1,
             )
             .await
-            .map_err(|error| {
-                AppError::Custom(format!("PostgreSQL 连接测试失败: {error}"))
-            })?;
+            .map_err(|error| AppError::Custom(format!("PostgreSQL 连接测试失败: {error}")))?;
             format!(
                 "连接成功（PostgreSQL）· {host}:{port}/{database} · 探测返回 {} 行",
                 result.rows.len()
@@ -876,9 +873,7 @@ pub async fn smartbrain_test_database_connection(
                 1,
             )
             .await
-            .map_err(|error| {
-                AppError::Custom(format!("SQL Server 连接测试失败: {error}"))
-            })?;
+            .map_err(|error| AppError::Custom(format!("SQL Server 连接测试失败: {error}")))?;
             format!(
                 "连接成功（SQL Server）· {host}:{port}{} · 探测返回 {} 行",
                 if database.is_empty() {
@@ -890,9 +885,7 @@ pub async fn smartbrain_test_database_connection(
             )
         }
         other => {
-            return Err(AppError::Custom(format!(
-                "暂不支持的数据库类型 `{other}`"
-            )));
+            return Err(AppError::Custom(format!("暂不支持的数据库类型 `{other}`")));
         }
     };
 

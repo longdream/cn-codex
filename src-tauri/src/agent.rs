@@ -459,9 +459,7 @@ impl AgentEngine {
         target: &str,
     ) -> AppResult<serde_json::Value> {
         let executor = self.tool_executor.read().await;
-        executor
-            .close_subagent(app_handle, thread_id, target)
-            .await
+        executor.close_subagent(app_handle, thread_id, target).await
     }
 
     pub(crate) fn is_thread_cancelled(&self, thread_id: &str) -> bool {
@@ -1016,6 +1014,8 @@ impl AgentEngine {
         const AGENT_ITERATION_DIAGNOSTIC_INTERVAL: u32 = 128;
         // 502/503/504 通常是上游暂时不可用；给短暂故障最多 10 次恢复机会。
         const MAX_UPSTREAM_RETRIES: u32 = 10;
+        // 空流、响应头超时、连接失败等瞬时故障；有限重试，避免一次抖动就结束整轮。
+        const MAX_TRANSIENT_LLM_RETRIES: u32 = 3;
         let max_goal_continuations: usize = 10;
         // 使用固定且可解释的上下文窗口来源，避免前端分母与后端运行时配置漂移。
         let model_context_window_tokens = resolve_model_context_window_tokens(config);
@@ -1027,6 +1027,7 @@ impl AgentEngine {
         let mut rate_limit_retry_count: u32 = 0;
         let mut stream_read_retry_count: u32 = 0;
         let mut upstream_retry_count: u32 = 0;
+        let mut transient_llm_retry_count: u32 = 0;
         let mut empty_completion_retry_count: u32 = 0;
         let mut length_continuation_count: u32 = 0;
         let mut tool_calls_executed = false;
@@ -1261,6 +1262,8 @@ impl AgentEngine {
                         }) => {
                             rate_limit_retry_count = 0;
                             stream_read_retry_count = 0;
+                            upstream_retry_count = 0;
+                            transient_llm_retry_count = 0;
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
                                 "Iteration {iteration}: Message ({} chars), finish_reason={:?}, usage={:?}",
@@ -1749,6 +1752,8 @@ impl AgentEngine {
                             let calls = uniquify_tool_call_ids(calls, &mut issued_tool_call_ids);
                             rate_limit_retry_count = 0;
                             stream_read_retry_count = 0;
+                            upstream_retry_count = 0;
+                            transient_llm_retry_count = 0;
                             tool_calls_executed = true;
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
@@ -2360,6 +2365,7 @@ impl AgentEngine {
                                 && stream_read_retry_count < MAX_STREAM_READ_RETRIES
                             {
                                 rate_limit_retry_count = 0;
+                                transient_llm_retry_count = 0;
                                 stream_read_retry_count = stream_read_retry_count.saturating_add(1);
                                 let retry_in_ms = stream_read_backoff_ms(stream_read_retry_count);
                                 warn!(
@@ -2435,6 +2441,8 @@ impl AgentEngine {
                                     );
                                     rate_limit_retry_count = 0;
                                     stream_read_retry_count = 0;
+                                    upstream_retry_count = 0;
+                                    transient_llm_retry_count = 0;
                                     continue;
                                 }
                             }
@@ -2442,6 +2450,7 @@ impl AgentEngine {
                                 && rate_limit_retry_count < MAX_RATE_LIMIT_RETRIES
                             {
                                 stream_read_retry_count = 0;
+                                transient_llm_retry_count = 0;
                                 rate_limit_retry_count = rate_limit_retry_count.saturating_add(1);
                                 let retry_in_ms = rate_limit_backoff_ms(rate_limit_retry_count);
                                 warn!(
@@ -2473,6 +2482,7 @@ impl AgentEngine {
                             if is_retryable_upstream_error(&error_message)
                                 && upstream_retry_count < MAX_UPSTREAM_RETRIES
                             {
+                                transient_llm_retry_count = 0;
                                 upstream_retry_count = upstream_retry_count.saturating_add(1);
                                 let retry_in_ms = upstream_backoff_ms(upstream_retry_count);
                                 warn!(
@@ -2488,6 +2498,42 @@ impl AgentEngine {
                                         "retryInMs": retry_in_ms,
                                         "attempt": upstream_retry_count,
                                         "maxAttempts": MAX_UPSTREAM_RETRIES,
+                                    }),
+                                );
+                                if !sleep_or_cancel(
+                                    Duration::from_millis(retry_in_ms),
+                                    cancel_flag.as_ref(),
+                                )
+                                .await
+                                {
+                                    terminated_by_error = true;
+                                    break;
+                                }
+                                continue;
+                            }
+                            if is_retryable_transient_llm_error(&error_message)
+                                && transient_llm_retry_count < MAX_TRANSIENT_LLM_RETRIES
+                            {
+                                rate_limit_retry_count = 0;
+                                stream_read_retry_count = 0;
+                                upstream_retry_count = 0;
+                                transient_llm_retry_count =
+                                    transient_llm_retry_count.saturating_add(1);
+                                let retry_in_ms =
+                                    transient_llm_backoff_ms(transient_llm_retry_count);
+                                warn!(
+                                    "Iteration {iteration}: transient LLM error, retrying in {retry_in_ms} ms ({transient_llm_retry_count}/{MAX_TRANSIENT_LLM_RETRIES}): {error_message}"
+                                );
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "server-error",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "message": error_message,
+                                        "retryable": true,
+                                        "retryInMs": retry_in_ms,
+                                        "attempt": transient_llm_retry_count,
+                                        "maxAttempts": MAX_TRANSIENT_LLM_RETRIES,
                                     }),
                                 );
                                 if !sleep_or_cancel(
@@ -2689,18 +2735,25 @@ impl AgentEngine {
 
             // Goal continuation: if goal is still Active, inject continuation prompt
             // and restart the agent loop instead of ending the turn.
-            if turn_mode != "goal" || cancel_flag.load(Ordering::SeqCst) || prompt_hook_blocked {
-                break 'goal_loop;
-            }
+            // Fatal LLM failures must stop the outer goal loop as well; otherwise the
+            // thread stays locked under active_threads while the UI already looks idle.
             let continuation_goal = self
                 .thread_store
                 .get_thread(thread_id)
                 .await
                 .and_then(|t| t.goal);
-            let should_continue = continuation_goal
+            let goal_is_active = continuation_goal
                 .as_ref()
                 .is_some_and(|g| g.status == ThreadGoalStatus::Active);
-            if !should_continue || goal_continuation_count >= max_goal_continuations {
+            if !should_continue_goal_loop(
+                &turn_mode,
+                cancel_flag.load(Ordering::SeqCst),
+                prompt_hook_blocked,
+                terminated_by_error,
+                goal_is_active,
+                goal_continuation_count,
+                max_goal_continuations,
+            ) {
                 break 'goal_loop;
             }
             goal_continuation_count += 1;
@@ -2710,7 +2763,11 @@ impl AgentEngine {
             let continuation_msg = ThreadMessage {
                 id: uuid::Uuid::new_v4().to_string(),
                 role: "system".to_string(),
-                content: build_goal_continuation_prompt(continuation_goal.as_ref().unwrap()),
+                content: build_goal_continuation_prompt(
+                    continuation_goal
+                        .as_ref()
+                        .expect("goal continuation requires an active goal"),
+                ),
                 timestamp: now_secs(),
                 tool_call_id: None,
                 tool_name: None,
@@ -4802,6 +4859,21 @@ fn is_retryable_upstream_error(message: &str) -> bool {
         || lower.contains("upstream request failed")
 }
 
+fn is_retryable_transient_llm_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("empty response")
+        || lower.contains("timed out waiting for response headers")
+        || lower.contains("error sending request")
+        || lower.contains("connection refused")
+        || lower.contains("dns error")
+        || lower.contains("failed to connect")
+}
+
+fn transient_llm_backoff_ms(attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(3);
+    (1_000_u64 << shift).min(8_000)
+}
+
 fn upstream_backoff_ms(attempt: u32) -> u64 {
     let shift = attempt.saturating_sub(1).min(3);
     (1_000_u64 << shift).min(8_000)
@@ -4820,6 +4892,24 @@ fn is_retryable_stream_read_error(message: &str) -> bool {
 fn stream_read_backoff_ms(attempt: u32) -> u64 {
     let shift = attempt.saturating_sub(1).min(4);
     (1_000_u64 << shift).min(10_000)
+}
+
+/// Decide whether the outer goal loop should inject another continuation.
+/// Fatal LLM failures must end the turn so the thread lock is released and the
+/// user can continue in the same conversation without opening a new thread.
+fn should_continue_goal_loop(
+    turn_mode: &str,
+    cancelled: bool,
+    prompt_hook_blocked: bool,
+    terminated_by_error: bool,
+    goal_is_active: bool,
+    goal_continuation_count: usize,
+    max_goal_continuations: usize,
+) -> bool {
+    if turn_mode != "goal" || cancelled || prompt_hook_blocked || terminated_by_error {
+        return false;
+    }
+    goal_is_active && goal_continuation_count < max_goal_continuations
 }
 
 fn rate_limit_backoff_ms(attempt: u32) -> u64 {
@@ -4897,7 +4987,10 @@ fn text_expresses_intent(text: &str) -> bool {
 }
 
 fn is_length_truncated(finish_reason: Option<&str>) -> bool {
-    match finish_reason.map(str::trim).filter(|value| !value.is_empty()) {
+    match finish_reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         Some(reason) => {
             let lower = reason.to_ascii_lowercase();
             matches!(
@@ -7085,6 +7178,61 @@ mod tests {
     }
 
     #[test]
+    fn is_retryable_transient_llm_error_detects_empty_stream_and_header_timeout() {
+        assert!(is_retryable_transient_llm_error(
+            "LLM returned an empty response. The provider may have rejected the model or returned an incompatible stream format."
+        ));
+        assert!(is_retryable_transient_llm_error(
+            "LLM request timed out waiting for response headers after 60 seconds."
+        ));
+        assert!(is_retryable_transient_llm_error(
+            "HTTP request failed: error sending request for url (https://api.example.com/v1/chat/completions)"
+        ));
+        assert!(!is_retryable_transient_llm_error(
+            "LLM API error (401 Unauthorized)"
+        ));
+        assert!(!is_retryable_transient_llm_error(
+            "LLM API error (400 Bad Request)"
+        ));
+    }
+
+    #[test]
+    fn transient_llm_backoff_ms_grows_and_caps() {
+        assert_eq!(transient_llm_backoff_ms(1), 1_000);
+        assert_eq!(transient_llm_backoff_ms(2), 2_000);
+        assert_eq!(transient_llm_backoff_ms(3), 4_000);
+        assert_eq!(transient_llm_backoff_ms(4), 8_000);
+        assert_eq!(transient_llm_backoff_ms(99), 8_000);
+    }
+
+    #[test]
+    fn should_continue_goal_loop_stops_after_fatal_llm_error() {
+        assert!(
+            !should_continue_goal_loop("goal", false, false, true, true, 0, 10),
+            "fatal LLM errors must end the turn instead of goal continuation"
+        );
+        assert!(
+            should_continue_goal_loop("goal", false, false, false, true, 0, 10),
+            "healthy active goals may continue"
+        );
+        assert!(!should_continue_goal_loop(
+            "goal", false, false, false, true, 10, 10
+        ));
+        assert!(!should_continue_goal_loop(
+            "chat", false, false, false, true, 0, 10
+        ));
+        assert!(!should_continue_goal_loop(
+            "goal", true, false, false, true, 0, 10
+        ));
+        assert!(!should_continue_goal_loop(
+            "goal", false, true, false, true, 0, 10
+        ));
+        assert!(!should_continue_goal_loop(
+            "goal", false, false, false, false, 0, 10
+        ));
+    }
+
+    #[test]
     fn upstream_backoff_ms_grows_exponentially_and_caps() {
         assert_eq!(upstream_backoff_ms(1), 1_000);
         assert_eq!(upstream_backoff_ms(2), 2_000);
@@ -7567,8 +7715,12 @@ mod tests {
         assert!(text_expresses_intent("让我先检查相关代码"));
         assert!(text_expresses_intent("开始落地改动：先改 agent 循环"));
         assert!(text_expresses_intent("继续实现自动续跑逻辑"));
-        assert!(text_expresses_intent("I'll implement the auto-continue path now"));
-        assert!(text_expresses_intent("I need to read the file and update it"));
+        assert!(text_expresses_intent(
+            "I'll implement the auto-continue path now"
+        ));
+        assert!(text_expresses_intent(
+            "I need to read the file and update it"
+        ));
         assert!(!text_expresses_intent("已完成修复，验证通过。"));
         assert!(!text_expresses_intent("Fix is complete and verified."));
     }

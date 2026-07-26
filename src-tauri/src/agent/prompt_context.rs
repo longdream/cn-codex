@@ -3,9 +3,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::config_system::SmartBrainConfig;
-use crate::smartbrain::permissions::{
-    deserialize_permissions_value, DbPermissionPolicy,
-};
+use crate::smartbrain::permissions::{DbPermissionPolicy, deserialize_permissions_value};
 
 use super::truncate_utf8_by_bytes;
 

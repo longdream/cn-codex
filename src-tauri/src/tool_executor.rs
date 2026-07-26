@@ -3414,11 +3414,7 @@ impl ToolExecutor {
         crate::mobile_server::broadcast("tool-exec-end", payload);
     }
 
-    fn emit_subagent_status(
-        app_handle: &AppHandle,
-        thread_id: &str,
-        record: &SubagentRecord,
-    ) {
+    fn emit_subagent_status(app_handle: &AppHandle, thread_id: &str, record: &SubagentRecord) {
         let payload = serde_json::json!({
             "threadId": thread_id,
             "id": record.id,
@@ -6364,8 +6360,7 @@ impl ToolExecutor {
                     }
                 };
 
-                if let Err(error) =
-                    config.apply_edit(&format!("mcp_servers.{name}"), &server_value)
+                if let Err(error) = config.apply_edit(&format!("mcp_servers.{name}"), &server_value)
                 {
                     let msg = format!("Failed to install MCP server '{name}': {error}");
                     self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
@@ -6409,14 +6404,7 @@ impl ToolExecutor {
                     Some(table) => table,
                     None => {
                         let msg = format!("MCP server '{name}' config is invalid");
-                        self.emit_tool_end(
-                            app_handle,
-                            thread_id,
-                            call_id,
-                            "mcp_manage",
-                            -1,
-                            &msg,
-                        );
+                        self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
                         return Ok(msg);
                     }
                 };
@@ -6562,9 +6550,7 @@ impl ToolExecutor {
                 let skill_dir = skills_dir.join(skill_id);
                 let skill_md = skill_dir.join("SKILL.md");
                 let exists = skill_md.is_file();
-                let overwrite = args
-                    .overwrite
-                    .unwrap_or(matches!(action, "update"));
+                let overwrite = args.overwrite.unwrap_or(matches!(action, "update"));
                 if exists && !overwrite && matches!(action, "install" | "create") {
                     let msg = format!(
                         "Skill '{skill_id}' already exists. Pass overwrite=true or use action=update."
@@ -9284,9 +9270,8 @@ impl ToolExecutor {
                 let chunk = match chunk {
                     Ok(chunk) => chunk,
                     Err(error) => {
-                        let message = format!(
-                            "MCP SSE server '{server_name}' stream read failed: {error}"
-                        );
+                        let message =
+                            format!("MCP SSE server '{server_name}' stream read failed: {error}");
                         if let Some(tx) = endpoint_tx.take() {
                             let _ = tx.send(Err(message.clone()));
                         }
@@ -9317,11 +9302,11 @@ impl ToolExecutor {
 
                         if event == "endpoint" || event.is_empty() && data.trim().starts_with('/') {
                             if let Some(tx) = endpoint_tx.take() {
-                                let endpoint = match resolve_mcp_sse_endpoint_url(&base_url, data.trim())
-                                {
-                                    Ok(endpoint) => Ok(endpoint),
-                                    Err(error) => Err(error),
-                                };
+                                let endpoint =
+                                    match resolve_mcp_sse_endpoint_url(&base_url, data.trim()) {
+                                        Ok(endpoint) => Ok(endpoint),
+                                        Err(error) => Err(error),
+                                    };
                                 let _ = tx.send(endpoint);
                             }
                             continue;
@@ -9361,9 +9346,7 @@ impl ToolExecutor {
                     "MCP SSE server '{server_name}' closed before endpoint event"
                 )));
             }
-            let _ = event_tx.send(Err(format!(
-                "MCP SSE server '{server_name}' stream closed"
-            )));
+            let _ = event_tx.send(Err(format!("MCP SSE server '{server_name}' stream closed")));
         });
 
         let endpoint_url = match tokio::time::timeout(Duration::from_secs(10), endpoint_rx).await {
@@ -9673,12 +9656,7 @@ impl ToolExecutor {
                 "sessionIdPresent": session.session_id.is_some(),
             });
         }
-        let session = self
-            .mcp_sse_sessions
-            .lock()
-            .await
-            .get(server_name)
-            .cloned();
+        let session = self.mcp_sse_sessions.lock().await.get(server_name).cloned();
         if let Some(session) = session {
             let session = session.lock().await;
             return serde_json::json!({
@@ -12792,9 +12770,7 @@ fn clear_mcp_http_sessions_async(
     });
 }
 
-fn clear_mcp_sse_sessions_async(
-    sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpSseSession>>>>>,
-) {
+fn clear_mcp_sse_sessions_async(sessions: Arc<Mutex<HashMap<String, Arc<Mutex<McpSseSession>>>>>) {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         if let Ok(mut sessions) = sessions.try_lock() {
             for (_, session) in sessions.drain() {
@@ -12910,10 +12886,9 @@ fn response_matches_mcp_id(value: &serde_json::Value, expected_id: Option<i64>) 
             .as_i64()
             .or_else(|| number.as_u64().map(|v| v as i64))
             .is_some_and(|id| id == expected_id),
-        Some(serde_json::Value::String(text)) => text
-            .parse::<i64>()
-            .ok()
-            .is_some_and(|id| id == expected_id),
+        Some(serde_json::Value::String(text)) => {
+            text.parse::<i64>().ok().is_some_and(|id| id == expected_id)
+        }
         _ => false,
     }
 }
@@ -13057,7 +13032,10 @@ fn extract_miniapp_open_page_payload(server: &str, text: &str) -> Option<serde_j
     None
 }
 
-fn miniapp_open_page_from_value(server: &str, value: &serde_json::Value) -> Option<serde_json::Value> {
+fn miniapp_open_page_from_value(
+    server: &str,
+    value: &serde_json::Value,
+) -> Option<serde_json::Value> {
     let ui_action = value
         .pointer("/ui/action")
         .and_then(|v| v.as_str())
@@ -14938,10 +14916,7 @@ mod tests {
         })
         .expect("stdio config");
         assert_eq!(stdio["command"], "npx");
-        assert_eq!(
-            stdio["args"],
-            serde_json::json!(["-y", "godot-mcp"])
-        );
+        assert_eq!(stdio["args"], serde_json::json!(["-y", "godot-mcp"]));
         assert_eq!(stdio["disabled"], false);
 
         let remote = build_mcp_server_config_value(&McpManageArgs {

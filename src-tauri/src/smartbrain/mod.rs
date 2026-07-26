@@ -6,12 +6,12 @@ pub mod extractor;
 pub mod index;
 pub mod knowledge;
 pub mod mysql_native;
-pub mod postgres_native;
-pub mod sqlserver_native;
 pub mod okf;
 pub mod permissions;
+pub mod postgres_native;
 pub mod prompts;
 pub mod search;
+pub mod sqlserver_native;
 pub mod summarizer;
 
 use std::path::{Path, PathBuf};

@@ -1251,12 +1251,7 @@ fn is_offscreen_browser_geometry(x: f64, y: f64, width: f64, height: f64) -> boo
 fn is_popup_local_browser_geometry(x: f64, y: f64, width: f64, height: f64) -> bool {
     // popup 工具栏高度固定 38px，内容区从左上角附近开始。
     // 主窗口右侧面板坐标通常 x 很大，不能套到独立窗口上。
-    x >= -1.0
-        && x <= 48.0
-        && y >= 20.0
-        && y <= 96.0
-        && width >= 200.0
-        && height >= 120.0
+    x >= -1.0 && x <= 48.0 && y >= 20.0 && y <= 96.0 && width >= 200.0 && height >= 120.0
 }
 
 fn should_preserve_popup_browser_geometry(

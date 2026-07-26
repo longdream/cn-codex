@@ -310,8 +310,7 @@ pub fn deserialize_permissions_value(value: &serde_json::Value) -> DbPermissionP
         || value.get("writeData").is_some()
         || value.get("read_schema").is_some()
     {
-        let legacy: LegacyDbPermissions =
-            serde_json::from_value(value.clone()).unwrap_or_default();
+        let legacy: LegacyDbPermissions = serde_json::from_value(value.clone()).unwrap_or_default();
         return DbPermissionPolicy::from_legacy(&legacy);
     }
     serde_json::from_value::<DbPermissionPolicy>(value.clone())
@@ -676,11 +675,7 @@ pub fn validate_sql_policy(
             let msg = if rule.message.trim().is_empty() {
                 format!(
                     "数据库 `{database_label}` 规则 `{}` 拒绝 {} 操作。",
-                    if rule.id.is_empty() {
-                        "deny"
-                    } else {
-                        &rule.id
-                    },
+                    if rule.id.is_empty() { "deny" } else { &rule.id },
                     op.as_str()
                 )
             } else {

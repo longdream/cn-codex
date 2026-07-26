@@ -159,9 +159,7 @@ fn render_column_data(data: ColumnData<'_>) -> String {
         }
         ColumnData::Time(v) => v.map(|x| format!("{x:?}")).unwrap_or_else(|| "NULL".into()),
         ColumnData::Date(v) => v.map(|x| format!("{x:?}")).unwrap_or_else(|| "NULL".into()),
-        ColumnData::DateTime2(v) => {
-            v.map(|x| format!("{x:?}")).unwrap_or_else(|| "NULL".into())
-        }
+        ColumnData::DateTime2(v) => v.map(|x| format!("{x:?}")).unwrap_or_else(|| "NULL".into()),
         ColumnData::DateTimeOffset(v) => {
             v.map(|x| format!("{x:?}")).unwrap_or_else(|| "NULL".into())
         }

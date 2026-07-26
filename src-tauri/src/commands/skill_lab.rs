@@ -618,7 +618,12 @@ fn slugify_skill_id(value: &str) -> String {
     }
 }
 
-fn derive_preferred_skill_id(name: &str, name_hint: Option<&str>, goal: &str, current_id: &str) -> String {
+fn derive_preferred_skill_id(
+    name: &str,
+    name_hint: Option<&str>,
+    goal: &str,
+    current_id: &str,
+) -> String {
     for candidate in [name, name_hint.unwrap_or(""), goal, current_id] {
         let trimmed = candidate.trim();
         if trimmed.is_empty() {
@@ -635,7 +640,12 @@ fn derive_preferred_skill_id(name: &str, name_hint: Option<&str>, goal: &str, cu
     "generated-skill".to_string()
 }
 
-fn skill_id_conflicts(lab_root: &Path, prod_skills_root: &Path, skill_id: &str, current_id: &str) -> bool {
+fn skill_id_conflicts(
+    lab_root: &Path,
+    prod_skills_root: &Path,
+    skill_id: &str,
+    current_id: &str,
+) -> bool {
     if skill_id == current_id {
         return false;
     }
@@ -727,7 +737,11 @@ fn extract_skill_description_fallback(content: &str) -> Option<String> {
 fn ensure_skill_frontmatter(content: &str, name: &str, description: &str) -> String {
     let name = name.trim();
     let description = description.trim();
-    let fallback_name = if name.is_empty() { "untitled-skill" } else { name };
+    let fallback_name = if name.is_empty() {
+        "untitled-skill"
+    } else {
+        name
+    };
     let fallback_description = if description.is_empty() {
         format!("Skill lab deployed skill: {fallback_name}")
     } else {
@@ -945,12 +959,7 @@ pub async fn skill_lab_generate_from_goal(
     let (name, test_prompt) =
         parse_generation_response(&thread_messages, &fallback_name, &fallback_test_prompt);
 
-    let preferred_id = derive_preferred_skill_id(
-        &name,
-        Some(name_hint.as_str()),
-        goal,
-        skill_id,
-    );
+    let preferred_id = derive_preferred_skill_id(&name, Some(name_hint.as_str()), goal, skill_id);
     let lab_root = get_skill_lab_dir(&state);
     let prod_skills_root = state.workspace_config_dir.join("skills");
     let final_skill_id =
@@ -960,15 +969,10 @@ pub async fn skill_lab_generate_from_goal(
     }
 
     // 确保 frontmatter 与正式 skill 名一致（标准英文 kebab-case）
-    let content = ensure_skill_frontmatter(
-        &content,
-        &final_skill_id,
-        goal,
-    );
+    let content = ensure_skill_frontmatter(&content, &final_skill_id, goal);
     let final_dir = get_skill_lab_entry_dir(&state, &final_skill_id);
-    std::fs::write(final_dir.join("SKILL.md"), &content).map_err(|e| {
-        AppError::Custom(format!("Failed to write normalized SKILL.md: {e}"))
-    })?;
+    std::fs::write(final_dir.join("SKILL.md"), &content)
+        .map_err(|e| AppError::Custom(format!("Failed to write normalized SKILL.md: {e}")))?;
 
     // 同步 meta，确保生成后立刻以标准 skill 名称出现在列表中
     let existing_meta = final_dir
@@ -988,15 +992,15 @@ pub async fn skill_lab_generate_from_goal(
             .as_ref()
             .map(|m| m.status.clone())
             .unwrap_or_else(|| "idle".to_string()),
-       iteration_count: existing_meta
-           .as_ref()
-           .map(|m| m.iteration_count)
-           .unwrap_or(0),
+        iteration_count: existing_meta
+            .as_ref()
+            .map(|m| m.iteration_count)
+            .unwrap_or(0),
         max_iterations: existing_meta
             .as_ref()
             .map(|m| m.max_iterations)
             .unwrap_or_else(default_max_iterations),
-       last_test_result: existing_meta
+        last_test_result: existing_meta
             .as_ref()
             .and_then(|m| m.last_test_result.clone()),
         last_evaluation: existing_meta
@@ -1481,12 +1485,9 @@ async fn ask_skill_lab_critical_clarification(
         )
         .map_err(|e| format!("failed to emit clarification request: {e}"))?;
 
-    let result = crate::tool_executor::wait_for_approval_result_public(
-        app_handle,
-        &request_id,
-        600_000,
-    )
-    .await?;
+    let result =
+        crate::tool_executor::wait_for_approval_result_public(app_handle, &request_id, 600_000)
+            .await?;
     Ok(parse_skill_lab_clarify_result(&result))
 }
 
@@ -1756,9 +1757,7 @@ pub async fn skill_lab_run_test(
 
     for iteration in 0..max_iterations {
         iterations = iteration + 1;
-        info!(
-            "Skill lab evolution iteration {iterations}/{max_iterations} for {skill_id}"
-        );
+        info!("Skill lab evolution iteration {iterations}/{max_iterations} for {skill_id}");
 
         meta.status = "testing".to_string();
         write_skill_lab_meta(&meta_path, &meta);
@@ -1771,9 +1770,7 @@ pub async fn skill_lab_run_test(
             iterations,
             max_iterations,
             "phase",
-            Some(format!(
-                "开始第 {iterations}/{max_iterations} 轮测试。"
-            )),
+            Some(format!("开始第 {iterations}/{max_iterations} 轮测试。")),
             None,
             None,
             None,
@@ -2439,10 +2436,16 @@ mod tests {
 
     #[test]
     fn normalize_max_iterations_clamps_range() {
-        assert_eq!(normalize_max_iterations(0), DEFAULT_MAX_EVOLUTION_ITERATIONS);
+        assert_eq!(
+            normalize_max_iterations(0),
+            DEFAULT_MAX_EVOLUTION_ITERATIONS
+        );
         assert_eq!(normalize_max_iterations(1), 1);
         assert_eq!(normalize_max_iterations(20), 20);
-        assert_eq!(normalize_max_iterations(99), MAX_ALLOWED_EVOLUTION_ITERATIONS);
+        assert_eq!(
+            normalize_max_iterations(99),
+            MAX_ALLOWED_EVOLUTION_ITERATIONS
+        );
     }
 
     #[test]
@@ -2468,7 +2471,10 @@ mod tests {
             }
         });
         let auto_decision = parse_skill_lab_clarify_result(&auto);
-        assert_eq!(auto_decision.action, SkillLabClarifyAction::ContinueWithGuidance);
+        assert_eq!(
+            auto_decision.action,
+            SkillLabClarifyAction::ContinueWithGuidance
+        );
         assert!(auto_decision.guidance.is_empty());
 
         let custom = serde_json::json!({
@@ -2550,8 +2556,7 @@ mod tests {
     #[test]
     fn ensure_skill_frontmatter_fills_empty_fields() {
         let content = "---\nname: \ndescription:\ntags: [lab]\n---\n# Body\n";
-        let normalized =
-            ensure_skill_frontmatter(content, "stock-evaluation", "多维度股票分析");
+        let normalized = ensure_skill_frontmatter(content, "stock-evaluation", "多维度股票分析");
         assert!(normalized.contains("name: \"stock-evaluation\""));
         assert!(normalized.contains("description: \"多维度股票分析\""));
         assert!(normalized.contains("tags: [lab]"));
@@ -2570,8 +2575,7 @@ mod tests {
     #[test]
     fn ensure_skill_frontmatter_overwrites_existing_name() {
         let content = "---\nname: \"股票评价\"\ndescription: \"旧描述\"\n---\n# Body\n";
-        let normalized =
-            ensure_skill_frontmatter(content, "stock-evaluation", "多维度股票分析");
+        let normalized = ensure_skill_frontmatter(content, "stock-evaluation", "多维度股票分析");
         assert!(normalized.contains("name: \"stock-evaluation\""));
         assert!(normalized.contains("description: \"旧描述\""));
     }
@@ -2608,12 +2612,8 @@ mod tests {
         let lab = tempfile::tempdir().unwrap();
         let prod = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(lab.path().join("stock-evaluation")).unwrap();
-        let allocated = allocate_unique_skill_id(
-            lab.path(),
-            prod.path(),
-            "stock-evaluation",
-            "lab-1",
-        );
+        let allocated =
+            allocate_unique_skill_id(lab.path(), prod.path(), "stock-evaluation", "lab-1");
         assert_eq!(allocated, "stock-evaluation-2");
     }
 }

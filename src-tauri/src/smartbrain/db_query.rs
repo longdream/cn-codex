@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::permissions::{
-    deserialize_permissions_value, validate_sql_policy, DbPermissionPolicy, GlobalSqlGuards,
-    SqlOpKind,
+    DbPermissionPolicy, GlobalSqlGuards, SqlOpKind, deserialize_permissions_value,
+    validate_sql_policy,
 };
 
 pub const SMARTBRAIN_DB_SOURCES_STATE_KEY: &str = "smartbrain.db.sources";
@@ -437,7 +437,12 @@ fn validate_sql_against_permissions(
         deny_drop: settings.deny_drop,
         deny_delete_without_write_permission: settings.deny_delete_without_write_permission,
     };
-    match validate_sql_policy(sql, &source.permissions, &source_display_name(source), &guards) {
+    match validate_sql_policy(
+        sql,
+        &source.permissions,
+        &source_display_name(source),
+        &guards,
+    ) {
         Ok(op) => Ok(match op {
             SqlOpKind::ReadSchema => SqlKind::ReadSchema,
             SqlOpKind::ReadData => SqlKind::ReadData,

@@ -280,9 +280,15 @@ mod tests {
 
     #[test]
     fn normalize_reasoning_effort_maps_aliases() {
-        assert_eq!(normalize_reasoning_effort(Some("MEDIUM")), Some("medium".into()));
+        assert_eq!(
+            normalize_reasoning_effort(Some("MEDIUM")),
+            Some("medium".into())
+        );
         assert_eq!(normalize_reasoning_effort(Some("off")), None);
-        assert_eq!(normalize_reasoning_effort(Some("x-high")), Some("xhigh".into()));
+        assert_eq!(
+            normalize_reasoning_effort(Some("x-high")),
+            Some("xhigh".into())
+        );
     }
 
     #[test]
@@ -290,7 +296,9 @@ mod tests {
         let mut responses_body = serde_json::json!({"model":"gpt-5"});
         apply_reasoning_effort_to_body(&mut responses_body, "responses", "gpt-5", Some("high"));
         assert_eq!(
-            responses_body.pointer("/reasoning/effort").and_then(|v| v.as_str()),
+            responses_body
+                .pointer("/reasoning/effort")
+                .and_then(|v| v.as_str()),
             Some("high")
         );
 
