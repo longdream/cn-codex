@@ -570,6 +570,9 @@ pub fn run() {
             commands::git_reset,
             commands::git_revert,
             commands::git_cherry_pick,
+            commands::git_merge,
+            commands::git_merge_abort,
+            commands::git_merge_continue,
             // File review (pre-apply gate)
             commands::file_review_get,
             commands::file_review_update,

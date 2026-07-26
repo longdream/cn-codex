@@ -28,6 +28,9 @@ pub struct GitStatusResponse {
     pub ahead: u32,
     pub behind: u32,
     pub is_clean: bool,
+    pub merge_in_progress: bool,
+    pub conflicted_count: usize,
+    pub merge_message: Option<String>,
     pub staged_count: usize,
     pub unstaged_count: usize,
     pub untracked_count: usize,
@@ -127,7 +130,17 @@ pub async fn git_status(
             DEFAULT_MAX_OUTPUT_BYTES,
         )
         .await?;
-    Ok(parse_git_status_output(&output.stdout))
+    let mut status = parse_git_status_output(&output.stdout);
+    status.merge_in_progress = is_merge_in_progress(&service).await;
+    status.conflicted_count = status
+        .changes
+        .iter()
+        .filter(|entry| entry.status == "conflicted")
+        .count();
+    if status.merge_in_progress {
+        status.merge_message = read_merge_message(&service).await;
+    }
+    Ok(status)
 }
 
 #[tauri::command]
@@ -621,6 +634,117 @@ pub async fn git_cherry_pick(
     Ok(action_ok("Cherry-pick completed.", output))
 }
 
+#[tauri::command]
+pub async fn git_merge(
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+    branch: String,
+    mode: Option<String>,
+    no_commit: Option<bool>,
+    message: Option<String>,
+) -> AppResult<GitActionResponse> {
+    let service = git_service_from_state(&state, cwd).await?;
+    let branch = normalize_branch_name(&branch)?;
+    let mode = normalize_merge_mode(mode.as_deref())?;
+
+    let mut args = vec!["merge".to_string()];
+    match mode.as_str() {
+        "no-ff" => args.push("--no-ff".to_string()),
+        "ff-only" => args.push("--ff-only".to_string()),
+        "squash" => args.push("--squash".to_string()),
+        _ => {}
+    }
+
+    if no_commit.unwrap_or(false) {
+        if mode == "squash" {
+            // squash already stages changes without committing by default.
+        } else {
+            args.push("--no-commit".to_string());
+        }
+    }
+
+    if let Some(message) = message
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if mode != "squash" && !no_commit.unwrap_or(false) {
+            args.push("-m".to_string());
+            args.push(message.to_string());
+        }
+    }
+
+    args.push(branch.clone());
+    let output = run_git_vec(&service, &args, DEFAULT_MAX_OUTPUT_BYTES).await?;
+    let success_message = match mode.as_str() {
+        "squash" => "Squash merge completed. Review staged changes and commit when ready.",
+        "ff-only" => "Fast-forward merge completed.",
+        "no-ff" => "No-ff merge completed.",
+        _ => "Merge completed.",
+    };
+    Ok(action_ok(success_message, output))
+}
+
+#[tauri::command]
+pub async fn git_merge_abort(
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+) -> AppResult<GitActionResponse> {
+    let service = git_service_from_state(&state, cwd).await?;
+    if !is_merge_in_progress(&service).await {
+        return Err(AppError::Custom(
+            "No merge in progress to abort.".to_string(),
+        ));
+    }
+    let output = service
+        .run(&["merge", "--abort"], DEFAULT_MAX_OUTPUT_BYTES)
+        .await?;
+    Ok(action_ok("Merge aborted.", output))
+}
+
+#[tauri::command]
+pub async fn git_merge_continue(
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+    message: Option<String>,
+) -> AppResult<GitActionResponse> {
+    let service = git_service_from_state(&state, cwd).await?;
+    if !is_merge_in_progress(&service).await {
+        return Err(AppError::Custom(
+            "No merge in progress to continue.".to_string(),
+        ));
+    }
+
+    let conflicted = count_conflicted_paths(&service).await?;
+    if conflicted > 0 {
+        return Err(AppError::Custom(format!(
+            "Cannot continue merge: {conflicted} conflicted file(s) still unresolved. Stage resolved files first."
+        )));
+    }
+
+    let commit_message = message
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let output = if let Some(commit_message) = commit_message.as_deref() {
+        service
+            .run(
+                &["commit", "-m", commit_message],
+                DEFAULT_MAX_OUTPUT_BYTES,
+            )
+            .await?
+    } else {
+        // Prefer the prepared MERGE_MSG content when available.
+        service
+            .run(&["commit", "--no-edit"], DEFAULT_MAX_OUTPUT_BYTES)
+            .await?
+    };
+
+    Ok(action_ok("Merge completed.", output))
+}
+
 async fn git_service_from_state(
     state: &State<'_, AppState>,
     cwd: Option<String>,
@@ -828,6 +952,71 @@ fn normalize_reset_mode(mode: &str) -> AppResult<String> {
     }
 }
 
+fn normalize_merge_mode(mode: Option<&str>) -> AppResult<String> {
+    let normalized = mode
+        .unwrap_or("default")
+        .trim()
+        .to_ascii_lowercase()
+        .replace('_', "-");
+    match normalized.as_str() {
+        "" | "default" | "merge" => Ok("default".to_string()),
+        "no-ff" | "noff" => Ok("no-ff".to_string()),
+        "ff-only" | "ffonly" => Ok("ff-only".to_string()),
+        "squash" => Ok("squash".to_string()),
+        _ => Err(AppError::Custom(format!(
+            "Unsupported merge mode: {}. Use default/no-ff/ff-only/squash.",
+            mode.unwrap_or("")
+        ))),
+    }
+}
+
+async fn is_merge_in_progress(service: &GitService) -> bool {
+    // MERGE_HEAD exists while a merge is unresolved / in progress.
+    match service
+        .run_allow_failure(&["rev-parse", "-q", "--verify", "MERGE_HEAD"], 8 * 1024)
+        .await
+    {
+        Ok(output) => output.exit_code == 0 && !output.stdout.trim().is_empty(),
+        Err(_) => false,
+    }
+}
+
+async fn read_merge_message(service: &GitService) -> Option<String> {
+    let merge_msg_path = service.cwd().join(".git").join("MERGE_MSG");
+    match tokio::fs::read_to_string(&merge_msg_path).await {
+        Ok(content) => {
+            let trimmed = content.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+async fn count_conflicted_paths(service: &GitService) -> AppResult<usize> {
+    let output = service
+        .run(
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--name-only",
+                "--diff-filter=U",
+            ],
+            DEFAULT_MAX_OUTPUT_BYTES,
+        )
+        .await?;
+    Ok(output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .count())
+}
+
 fn action_ok(message: &str, output: GitCommandOutput) -> GitActionResponse {
     GitActionResponse {
         ok: true,
@@ -873,6 +1062,9 @@ fn parse_git_status_output(stdout: &str) -> GitStatusResponse {
         ahead: header.ahead,
         behind: header.behind,
         is_clean: changes.is_empty(),
+        merge_in_progress: false,
+        conflicted_count: 0,
+        merge_message: None,
         staged_count,
         unstaged_count,
         untracked_count,
@@ -1152,6 +1344,17 @@ mod tests {
     fn normalize_paths_rejects_empty_input() {
         let result = normalize_paths(vec!["   ".to_string()]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn normalize_merge_mode_accepts_aliases() {
+        assert_eq!(normalize_merge_mode(None).unwrap(), "default");
+        assert_eq!(normalize_merge_mode(Some("DEFAULT")).unwrap(), "default");
+        assert_eq!(normalize_merge_mode(Some("no_ff")).unwrap(), "no-ff");
+        assert_eq!(normalize_merge_mode(Some("ff-only")).unwrap(), "ff-only");
+        assert_eq!(normalize_merge_mode(Some("ffOnly")).unwrap(), "ff-only");
+        assert_eq!(normalize_merge_mode(Some("squash")).unwrap(), "squash");
+        assert!(normalize_merge_mode(Some("rebase")).is_err());
     }
 
     #[test]

@@ -8,6 +8,7 @@ import {
   IconGitBranch,
   IconGitCherryPick,
   IconGitCommit,
+  IconGitMerge,
   IconHistory,
   IconMinus,
   IconPlus,
@@ -27,6 +28,9 @@ import {
   gitDiscard,
   gitFileDiffContents,
   gitLog,
+  gitMerge,
+  gitMergeAbort,
+  gitMergeContinue,
   gitPull,
   gitPush,
   gitReset,
@@ -37,6 +41,7 @@ import {
   type GitActionResponse,
   type GitCommitFileEntry,
   type GitLogEntry,
+  type GitMergeMode,
   type GitStatusEntry,
   type GitStatusResponse,
 } from "../../api/git";
@@ -102,6 +107,8 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   const [branches, setBranches] = useState<Array<{ name: string; current: boolean; upstream?: string | null }>>([]);
   const [selectedBranch, setSelectedBranch] = useState("");
   const [newBranchName, setNewBranchName] = useState("");
+  const [mergeMode, setMergeMode] = useState<GitMergeMode>("default");
+  const [mergeNoCommit, setMergeNoCommit] = useState(false);
   const [selectedDiff, setSelectedDiff] = useState<DiffSelection | null>(null);
   const [diffText, setDiffText] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
@@ -127,6 +134,19 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   const stagedEntries = useMemo(() => changes.filter((entry) => entry.staged), [changes]);
   const unstagedEntries = useMemo(() => changes.filter((entry) => entry.unstaged), [changes]);
   const untrackedEntries = useMemo(() => changes.filter((entry) => entry.untracked), [changes]);
+  const conflictedEntries = useMemo(
+    () => changes.filter((entry) => entry.status === "conflicted"),
+    [changes],
+  );
+  const conflictedCount = status?.conflictedCount ?? conflictedEntries.length;
+  const nonConflictStagedEntries = useMemo(
+    () => stagedEntries.filter((entry) => entry.status !== "conflicted"),
+    [stagedEntries],
+  );
+  const nonConflictUnstagedEntries = useMemo(
+    () => unstagedEntries.filter((entry) => entry.status !== "conflicted" && !entry.untracked),
+    [unstagedEntries],
+  );
   const allChangePaths = useMemo(() => uniqPaths(changes), [changes]);
   const stagedPaths = useMemo(() => uniqPaths(stagedEntries), [stagedEntries]);
 
@@ -182,6 +202,18 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
+
+  // 合并进行中时预填 MERGE_MSG，方便用户继续合并提交。
+  useEffect(() => {
+    if (!status?.mergeInProgress) {
+      return;
+    }
+    const prepared = status.mergeMessage?.trim();
+    if (!prepared) {
+      return;
+    }
+    setCommitMessage((prev) => (prev.trim() ? prev : prepared));
+  }, [status?.mergeInProgress, status?.mergeMessage]);
 
   useEffect(() => {
     if (!selectedDiff) {
@@ -250,6 +282,12 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
         }
       } catch (error) {
         setErrorText(normalizeError(error));
+        // 合并冲突等失败场景也要刷新，才能显示 mergeInProgress / conflicted 文件。
+        try {
+          await refreshAll();
+        } catch {
+          // ignore secondary refresh failures
+        }
       } finally {
         if (progressTimer !== null) {
           window.clearInterval(progressTimer);
@@ -418,9 +456,60 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
     await runAction(intl.formatMessage({ id: "git.unstageAll" }), () => gitUnstage(stagedPaths, workspaceCwd));
   }, [intl, runAction, stagedPaths, workspaceCwd]);
 
+  const handleMergeContinue = useCallback(async () => {
+    if (!workspaceCwd) {
+      return;
+    }
+    if (conflictedCount > 0) {
+      setErrorText(intl.formatMessage({ id: "git.mergeContinueHasConflicts" }, { count: conflictedCount }));
+      setSection("changes");
+      return;
+    }
+    const message = commitMessage.trim() || undefined;
+    await runAction(intl.formatMessage({ id: "git.mergeContinue" }), async () => {
+      const result = await gitMergeContinue({
+        cwd: workspaceCwd,
+        message,
+      });
+      setCommitMessage("");
+      return result;
+    });
+  }, [commitMessage, conflictedCount, intl, runAction, workspaceCwd]);
+
+  const handleMergeAbort = useCallback(async () => {
+    if (!workspaceCwd) {
+      return;
+    }
+    if (!window.confirm(intl.formatMessage({ id: "git.confirmMergeAbort" }))) {
+      return;
+    }
+    await runAction(intl.formatMessage({ id: "git.mergeAbort" }), () => gitMergeAbort(workspaceCwd));
+  }, [intl, runAction, workspaceCwd]);
+
+  const handleFocusConflicts = useCallback(() => {
+    setSection("changes");
+    const firstConflict = conflictedEntries[0];
+    if (firstConflict) {
+      setSelectedDiff({
+        path: firstConflict.path,
+        mode: firstConflict.staged ? "staged" : "working",
+      });
+    }
+  }, [conflictedEntries]);
+
   const handleCommit = useCallback(
     async (mode: CommitMode) => {
       if (!workspaceCwd) {
+        return;
+      }
+
+      // 合并进行中时，提交按钮走“继续合并”语义。
+      if (status?.mergeInProgress) {
+        if (mode === "commitAndPush") {
+          setErrorText(intl.formatMessage({ id: "git.mergeContinueNoPush" }));
+          return;
+        }
+        await handleMergeContinue();
         return;
       }
 
@@ -487,7 +576,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
         setActionProgress(0);
       }
     },
-    [commitMessage, currentBranch, intl, refreshAll, workspaceCwd],
+    [commitMessage, currentBranch, handleMergeContinue, intl, refreshAll, status?.mergeInProgress, workspaceCwd],
   );
 
   const handleCheckout = useCallback(async () => {
@@ -513,6 +602,42 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
       return result;
     });
   }, [intl, newBranchName, runAction, workspaceCwd]);
+
+  const handleMerge = useCallback(async () => {
+    if (!workspaceCwd || !selectedBranch) {
+      return;
+    }
+    if (selectedBranch === currentBranch) {
+      setErrorText(intl.formatMessage({ id: "git.mergeSameBranchError" }));
+      return;
+    }
+    const modeLabel = intl.formatMessage({ id: `git.mergeMode.${mergeMode}` });
+    const noCommitHint = mergeNoCommit ? intl.formatMessage({ id: "git.mergeNoCommitHint" }) : "";
+    if (
+      !window.confirm(
+        intl.formatMessage(
+          { id: "git.confirmMerge" },
+          {
+            branch: selectedBranch,
+            current: currentBranch || "HEAD",
+            mode: modeLabel,
+            hint: noCommitHint,
+          },
+        ),
+      )
+    ) {
+      return;
+    }
+    await runAction(intl.formatMessage({ id: "git.merge" }), () =>
+      gitMerge(selectedBranch, {
+        cwd: workspaceCwd,
+        mode: mergeMode,
+        noCommit: mergeNoCommit,
+      }),
+    );
+    // 合并后回到变更页，便于查看冲突或继续提交。
+    setSection("changes");
+  }, [currentBranch, intl, mergeMode, mergeNoCommit, runAction, selectedBranch, workspaceCwd]);
 
   const handlePull = useCallback(async () => {
     if (!workspaceCwd) {
@@ -723,6 +848,11 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                   ↓{status.behind}
                 </span>
               ) : null}
+              {status?.mergeInProgress ? (
+                <span className="rounded-full border border-[rgba(245,158,11,0.45)] bg-[rgba(245,158,11,0.14)] px-1.5 py-0.5 text-amber-200">
+                  {intl.formatMessage({ id: "git.mergeInProgressTitle" })}
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -797,16 +927,23 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
               <button
                 type="button"
                 onClick={() => void handleCommit("commit")}
-                disabled={busyAction !== null || stagedCount <= 0}
+                disabled={
+                  busyAction !== null ||
+                  (status?.mergeInProgress
+                    ? conflictedCount > 0
+                    : stagedCount <= 0)
+                }
                 className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-l-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 py-1.5 text-xs font-medium text-[var(--accent-strong)] transition-colors hover:bg-[rgba(34,197,94,0.18)] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <IconCheck size={13} stroke={2} />
-                {intl.formatMessage({ id: "git.tabCommit" })}
+                {status?.mergeInProgress
+                  ? intl.formatMessage({ id: "git.mergeContinue" })
+                  : intl.formatMessage({ id: "git.tabCommit" })}
               </button>
               <button
                 type="button"
                 onClick={() => setCommitMenuOpen((open) => !open)}
-                disabled={busyAction !== null || stagedCount <= 0}
+                disabled={busyAction !== null || status?.mergeInProgress || stagedCount <= 0}
                 className="shrink-0 rounded-r-[var(--radius-sm)] border border-l-0 border-[var(--accent-border)] bg-[var(--accent-soft)] px-2 text-[var(--accent-strong)] transition-colors hover:bg-[rgba(34,197,94,0.18)] disabled:cursor-not-allowed disabled:opacity-40"
                 title={intl.formatMessage({ id: "git.commitMenu" })}
               >
@@ -835,7 +972,9 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
             </div>
           </div>
           <div className="mt-2 text-[10px] text-[var(--text-faint)]">
-            {intl.formatMessage({ id: "git.commitShortcutHint" })}
+            {status?.mergeInProgress
+              ? intl.formatMessage({ id: "git.mergeContinueHint" })
+              : intl.formatMessage({ id: "git.commitShortcutHint" })}
           </div>
         </div>
       </div>
@@ -859,6 +998,44 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
         </div>
       )}
 
+      {status?.mergeInProgress && section !== "branches" ? (
+        <div className="mx-2 mt-2 flex items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.4)] bg-[rgba(245,158,11,0.12)] px-2.5 py-1.5 text-[11px] text-amber-200">
+          <span className="min-w-0 flex-1 truncate">
+            {conflictedCount > 0
+              ? intl.formatMessage({ id: "git.mergeConflictHint" }, { count: conflictedCount })
+              : intl.formatMessage({ id: "git.mergeReadyHint" })}
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            {conflictedCount > 0 ? (
+              <button
+                type="button"
+                onClick={handleFocusConflicts}
+                className="rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.45)] px-2 py-0.5 text-[11px] text-amber-100 transition-colors hover:bg-[rgba(245,158,11,0.18)]"
+              >
+                {intl.formatMessage({ id: "git.viewConflicts" })}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleMergeContinue()}
+                disabled={busyAction !== null}
+                className="rounded-[var(--radius-sm)] border border-[var(--accent-border)] px-2 py-0.5 text-[11px] text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent-soft)] disabled:opacity-40"
+              >
+                {intl.formatMessage({ id: "git.mergeContinue" })}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleMergeAbort()}
+              disabled={busyAction !== null}
+              className="rounded-[var(--radius-sm)] border border-[rgba(239,68,68,0.35)] px-2 py-0.5 text-[11px] text-[var(--danger)] transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-40"
+            >
+              {intl.formatMessage({ id: "git.mergeAbort" })}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="min-h-0 flex-1 overflow-hidden px-2 py-2">
         {section === "changes" ? (
           <div className="flex h-full min-h-0 flex-col gap-2">
@@ -872,6 +1049,11 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
               <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1">
                 {intl.formatMessage({ id: "git.sectionUntracked" })} {status?.untrackedCount ?? 0}
               </span>
+              {conflictedCount > 0 ? (
+                <span className="rounded-full border border-[rgba(245,158,11,0.45)] bg-[rgba(245,158,11,0.14)] px-2 py-1 text-amber-200">
+                  {intl.formatMessage({ id: "git.sectionConflicts" })} {conflictedCount}
+                </span>
+              ) : null}
             </div>
 
             <div className="min-h-0 overflow-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
@@ -879,8 +1061,9 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                 <div className="p-3 text-xs text-[var(--text-faint)]">{intl.formatMessage({ id: "git.workingClean" })}</div>
               ) : (
                 <>
-                  {renderChangeSection("git.sectionStaged", stagedEntries, "staged", "unstage")}
-                  {renderChangeSection("git.sectionChanges", unstagedEntries, "working", "stage")}
+                  {renderChangeSection("git.sectionConflicts", conflictedEntries, "working", "stage")}
+                  {renderChangeSection("git.sectionStaged", nonConflictStagedEntries, "staged", "unstage")}
+                  {renderChangeSection("git.sectionChanges", nonConflictUnstagedEntries, "working", "stage")}
                   {renderChangeSection("git.sectionUntracked", untrackedEntries, "working", "stage")}
                 </>
               )}
@@ -926,6 +1109,52 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
             <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2.5 py-2 text-[11px] text-[var(--text-muted)]">
               {intl.formatMessage({ id: "git.branchSectionHint" })}
             </div>
+            {status?.mergeInProgress ? (
+              <div className="rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.4)] bg-[rgba(245,158,11,0.12)] px-2.5 py-2 text-[11px] text-amber-200">
+                <div className="mb-2 flex items-start gap-2">
+                  <IconAlertTriangle size={14} stroke={1.8} className="mt-0.5 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold">{intl.formatMessage({ id: "git.mergeInProgressTitle" })}</div>
+                    <div className="mt-0.5 text-[var(--text-muted)]">
+                      {conflictedCount > 0
+                        ? intl.formatMessage({ id: "git.mergeConflictHint" }, { count: conflictedCount })
+                        : intl.formatMessage({ id: "git.mergeReadyHint" })}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  {conflictedCount > 0 ? (
+                    <button
+                      type="button"
+                      onClick={handleFocusConflicts}
+                      className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.45)] px-2 py-1 text-xs text-amber-100 transition-colors hover:bg-[rgba(245,158,11,0.18)]"
+                    >
+                      <IconFiles size={12} stroke={1.9} />
+                      {intl.formatMessage({ id: "git.viewConflicts" })}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleMergeContinue()}
+                      disabled={busyAction !== null}
+                      className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--accent-border)] px-2 py-1 text-xs text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent-soft)] disabled:opacity-40"
+                    >
+                      <IconCheck size={12} stroke={1.9} />
+                      {intl.formatMessage({ id: "git.mergeContinue" })}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void handleMergeAbort()}
+                    disabled={busyAction !== null}
+                    className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[rgba(239,68,68,0.35)] px-2 py-1 text-xs text-[var(--danger)] transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-40"
+                  >
+                    <IconX size={12} stroke={1.9} />
+                    {intl.formatMessage({ id: "git.mergeAbort" })}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
               <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.checkout" })}</div>
               <div className="flex items-center gap-1">
@@ -968,6 +1197,65 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                 >
                   <IconPlus size={12} stroke={1.9} />
                   {intl.formatMessage({ id: "git.createAndCheckout" })}
+                </button>
+              </div>
+            </div>
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
+              <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.merge" })}</div>
+              <div className="mb-2 text-[11px] text-[var(--text-muted)]">
+                {intl.formatMessage(
+                  { id: "git.mergeSectionHint" },
+                  { current: currentBranch || status?.branch || "HEAD" },
+                )}
+              </div>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-1">
+                  <select
+                    value={selectedBranch}
+                    onChange={(event) => setSelectedBranch(event.target.value)}
+                    className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
+                  >
+                    {branches.map((branch) => (
+                      <option key={`merge-${branch.name}`} value={branch.name}>
+                        {branch.name}
+                        {branch.current ? " *" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={mergeMode}
+                    onChange={(event) => setMergeMode(event.target.value as GitMergeMode)}
+                    className="w-[108px] shrink-0 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
+                    title={intl.formatMessage({ id: "git.mergeModeLabel" })}
+                  >
+                    <option value="default">{intl.formatMessage({ id: "git.mergeMode.default" })}</option>
+                    <option value="no-ff">{intl.formatMessage({ id: "git.mergeMode.no-ff" })}</option>
+                    <option value="ff-only">{intl.formatMessage({ id: "git.mergeMode.ff-only" })}</option>
+                    <option value="squash">{intl.formatMessage({ id: "git.mergeMode.squash" })}</option>
+                  </select>
+                </div>
+                <label className="flex items-center gap-1 text-[11px] text-[var(--text-faint)]">
+                  <input
+                    type="checkbox"
+                    checked={mergeNoCommit}
+                    onChange={(event) => setMergeNoCommit(event.target.checked)}
+                    disabled={mergeMode === "squash"}
+                  />
+                  {intl.formatMessage({ id: "git.mergeNoCommit" })}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void handleMerge()}
+                  disabled={
+                    !selectedBranch ||
+                    selectedBranch === currentBranch ||
+                    busyAction !== null ||
+                    Boolean(status?.mergeInProgress)
+                  }
+                  className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
+                >
+                  <IconGitMerge size={13} stroke={1.8} />
+                  {intl.formatMessage({ id: "git.mergeIntoCurrent" })}
                 </button>
               </div>
             </div>

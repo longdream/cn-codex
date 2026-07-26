@@ -15,6 +15,9 @@ export interface GitStatusResponse {
   ahead: number;
   behind: number;
   isClean: boolean;
+  mergeInProgress?: boolean;
+  conflictedCount?: number;
+  mergeMessage?: string | null;
   stagedCount: number;
   unstagedCount: number;
   untrackedCount: number;
@@ -200,4 +203,40 @@ export async function gitCherryPick(
   noCommit = false,
 ): Promise<GitActionResponse> {
   return invoke("git_cherry_pick", { cwd, commit, noCommit, confirmDangerous });
+}
+
+export type GitMergeMode = "default" | "no-ff" | "ff-only" | "squash";
+
+export async function gitMerge(
+  branch: string,
+  options?: {
+    cwd?: string;
+    mode?: GitMergeMode;
+    noCommit?: boolean;
+    message?: string;
+  },
+): Promise<GitActionResponse> {
+  return invoke("git_merge", {
+    cwd: options?.cwd,
+    branch,
+    mode: options?.mode,
+    noCommit: options?.noCommit ?? false,
+    message: options?.message,
+  });
+}
+
+export async function gitMergeAbort(cwd?: string): Promise<GitActionResponse> {
+  return invoke("git_merge_abort", { cwd });
+}
+
+export async function gitMergeContinue(
+  options?: {
+    cwd?: string;
+    message?: string;
+  },
+): Promise<GitActionResponse> {
+  return invoke("git_merge_continue", {
+    cwd: options?.cwd,
+    message: options?.message,
+  });
 }
