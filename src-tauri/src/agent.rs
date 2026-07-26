@@ -2391,7 +2391,7 @@ impl AgentEngine {
                                 .await
                                 {
                                     terminated_by_error = true;
-                                    break;
+                                    break 'goal_loop;
                                 }
                                 continue;
                             }
@@ -2475,7 +2475,7 @@ impl AgentEngine {
                                 .await
                                 {
                                     terminated_by_error = true;
-                                    break;
+                                    break 'goal_loop;
                                 }
                                 continue;
                             }
@@ -2507,12 +2507,15 @@ impl AgentEngine {
                                 .await
                                 {
                                     terminated_by_error = true;
-                                    break;
+                                    break 'goal_loop;
                                 }
                                 continue;
                             }
-                            if is_retryable_transient_llm_error(&error_message)
-                                && transient_llm_retry_count < MAX_TRANSIENT_LLM_RETRIES
+                            if should_retry_transient_llm_error_before_ending_goal_turn(
+                                &error_message,
+                                transient_llm_retry_count,
+                                MAX_TRANSIENT_LLM_RETRIES,
+                            )
                             {
                                 rate_limit_retry_count = 0;
                                 stream_read_retry_count = 0;
@@ -2543,7 +2546,7 @@ impl AgentEngine {
                                 .await
                                 {
                                     terminated_by_error = true;
-                                    break;
+                                    break 'goal_loop;
                                 }
                                 continue;
                             }
@@ -2558,7 +2561,11 @@ impl AgentEngine {
                                 }),
                             );
                             terminated_by_error = true;
-                            break;
+                            // After the inner retry budget is exhausted (including empty
+                            // response / header timeout), end the whole turn. Breaking only
+                            // the inner agent loop previously allowed Goal continuation to
+                            // re-lock the thread while the UI looked idle.
+                            break 'goal_loop;
                         }
                     }
                 }
@@ -4912,6 +4919,32 @@ fn should_continue_goal_loop(
     goal_is_active && goal_continuation_count < max_goal_continuations
 }
 
+/// Empty streams and header timeouts are retryable inside one agent loop, but once
+/// the inner loop has already marked the turn as terminated they must not restart
+/// Goal continuation. Otherwise the thread stays locked under `active_threads`
+/// while the UI looks idle and the user cannot send another message.
+fn should_end_goal_turn_after_llm_error(error_message: &str, terminated_by_error: bool) -> bool {
+    terminated_by_error
+        && (is_retryable_transient_llm_error(error_message)
+            || error_message.to_ascii_lowercase().contains("empty response")
+            || error_message
+                .to_ascii_lowercase()
+                .contains("timed out waiting for response headers"))
+}
+
+/// Empty response / header timeout policy for Goal turns:
+/// 1. keep retrying inside the current agent loop while attempts remain;
+/// 2. after retries are exhausted, end the turn and release the lock;
+/// 3. never convert the exhausted failure into Goal continuation.
+fn should_retry_transient_llm_error_before_ending_goal_turn(
+    error_message: &str,
+    transient_llm_retry_count: u32,
+    max_transient_llm_retries: u32,
+) -> bool {
+    is_retryable_transient_llm_error(error_message)
+        && transient_llm_retry_count < max_transient_llm_retries
+}
+
 fn rate_limit_backoff_ms(attempt: u32) -> u64 {
     let normalized_attempt = attempt.max(1);
     let shift = normalized_attempt.saturating_sub(1).min(20);
@@ -7230,6 +7263,39 @@ mod tests {
         assert!(!should_continue_goal_loop(
             "goal", false, false, false, false, 0, 10
         ));
+    }
+
+    #[test]
+    fn empty_response_and_header_timeout_end_goal_turn_after_termination() {
+        for message in [
+            "LLM returned an empty response. The provider may have rejected the model or returned an incompatible stream format. Check the provider/model configuration and retry.",
+            "LLM request timed out waiting for response headers after 60 seconds.",
+        ] {
+            assert!(
+                should_retry_transient_llm_error_before_ending_goal_turn(message, 0, 3),
+                "empty/timeout must retry multiple times before ending the goal turn: {message}"
+            );
+            assert!(
+                should_retry_transient_llm_error_before_ending_goal_turn(message, 2, 3),
+                "empty/timeout should still retry while budget remains: {message}"
+            );
+            assert!(
+                !should_retry_transient_llm_error_before_ending_goal_turn(message, 3, 3),
+                "empty/timeout must stop retrying after the budget is exhausted: {message}"
+            );
+            assert!(
+                should_end_goal_turn_after_llm_error(message, true),
+                "terminated empty/timeout failures must end the goal turn: {message}"
+            );
+            assert!(
+                !should_continue_goal_loop("goal", false, false, true, true, 0, 10),
+                "goal continuation must stay blocked after empty/timeout termination"
+            );
+            assert!(
+                !should_end_goal_turn_after_llm_error(message, false),
+                "unterminated retries may still recover inside the agent loop"
+            );
+        }
     }
 
     #[test]
