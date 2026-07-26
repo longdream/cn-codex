@@ -501,6 +501,7 @@ pub fn run() {
             standalone::standalone_thread_truncate_before,
             standalone::standalone_chat,
             standalone::standalone_turn_interrupt,
+            standalone::standalone_subagent_close,
             standalone::standalone_plan_open,
             // Usage tracking
             commands::usage_get_stats,

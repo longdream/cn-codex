@@ -1,0 +1,1 @@
+{"mcp_config": "codey/config.toml", "mcp_servers": "playwright,computer-use", "mcp_client": "src-tauri/src/tool_executor.rs", "supports_mcp_calls": true}

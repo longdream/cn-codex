@@ -25,6 +25,7 @@ import { MessageList } from "./MessageList";
 import { TokenUsageBadge } from "./TokenUsageBadge";
 import { resolveApproval } from "../../api/approval";
 import { RobotWaitBanner } from "./RobotWaitBanner";
+import { ActiveSubagentsBar } from "./ActiveSubagentsBar";
 
 export function ChatPage() {
   const intl = useIntl();
@@ -40,11 +41,16 @@ export function ChatPage() {
   // 发送请求已发起，但后端 turn-started 事件尚未到达时保持“运行中”态，
   // 避免上一轮 turn-completed 把输入区短暂打回空闲按钮。
   const [isDispatching, setIsDispatching] = useState(false);
-  const [isStopping, setIsStopping] = useState(false);
+  // 按会话记录“正在停止”，避免对话1点停止后切到对话2仍显示“正在停止”。
+  const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
   const dispatchSeqRef = useRef(0);
   const activeDispatchSeqRef = useRef<number | null>(null);
   const activeDispatchPromiseRef = useRef<Promise<unknown> | null>(null);
   const interruptedDispatchSeqRef = useRef<number | null>(null);
+  const isStopping =
+    stoppingThreadId !== null &&
+    !!currentThreadId &&
+    stoppingThreadId === currentThreadId;
   const isBusy = isStreaming || isDispatching || isStopping;
 
   const handleSend = useCallback(
@@ -168,6 +174,10 @@ export function ChatPage() {
               overrideModelId,
             ),
             smartbrainEnabled,
+            subagentEnabled:
+              latest.currentThreadId === threadId
+                ? latest.subagentEnabled
+                : (threadPref?.subagentEnabled ?? false),
           },
           userMessage.id,
         );
@@ -216,7 +226,7 @@ export function ChatPage() {
         }
         if (interruptedDispatchSeqRef.current === dispatchSeq) {
           interruptedDispatchSeqRef.current = null;
-          setIsStopping(false);
+          setStoppingThreadId((prev) => (prev === threadId ? null : prev));
         }
       }
     },
@@ -233,7 +243,9 @@ export function ChatPage() {
     const activeDispatch = activeDispatchPromiseRef.current;
     if (activeDispatch) {
       interruptedDispatchSeqRef.current = activeDispatchSeqRef.current;
-      setIsStopping(true);
+      if (threadId) {
+        setStoppingThreadId(threadId);
+      }
     }
     setIsDispatching(false);
 
@@ -296,7 +308,11 @@ export function ChatPage() {
     if (activeDispatch) {
       await activeDispatch.catch(() => undefined);
     } else {
-      setIsStopping(false);
+      if (threadId) {
+        setStoppingThreadId((prev) => (prev === threadId ? null : prev));
+      } else {
+        setStoppingThreadId(null);
+      }
     }
   }, [intl]);
 
@@ -488,6 +504,8 @@ export function ChatPage() {
 
   useEffect(() => {
     setIsDispatching(false);
+    // 切换会话时不把其他会话的“正在停止”带过来。
+    // stoppingThreadId 会按 currentThreadId 自动隔离展示。
   }, [currentThreadId]);
 
   useEffect(() => {
@@ -663,6 +681,8 @@ export function ChatPage() {
       )}
 
       <RobotWaitBanner />
+
+      <ActiveSubagentsBar />
 
       <ChatInput
         onSend={handleSend}

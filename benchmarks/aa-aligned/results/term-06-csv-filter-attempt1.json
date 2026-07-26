@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:44:55.7870539+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-06-csv-filter",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "filter ok",
+    "wall_time_sec":  0.039,
+    "notes":  ""
+}

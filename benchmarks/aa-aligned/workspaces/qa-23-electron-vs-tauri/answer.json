@@ -1,0 +1,1 @@
+{"framework": "Tauri", "plugins": "dialog,fs,notification,opener,process,shell", "rust_entry": "src-tauri/src/main.rs", "has_state_management": true}

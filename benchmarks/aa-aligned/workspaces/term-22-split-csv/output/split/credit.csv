@@ -1,0 +1,4 @@
+txn_id,type,amount,date
+1,credit,100.00,2026-01-01
+3,credit,200.00,2026-01-03
+6,credit,150.00,2026-01-06

@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:44:58.0199685+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-11-sort-by-column",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "sort ok",
+    "wall_time_sec":  0.037,
+    "notes":  ""
+}

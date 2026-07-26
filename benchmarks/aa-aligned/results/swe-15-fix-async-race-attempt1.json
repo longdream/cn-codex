@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:51:57.4164401+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "swe-15-fix-async-race",
+    "component":  "swe_edit",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "tests passed",
+    "wall_time_sec":  1.173,
+    "notes":  ""
+}

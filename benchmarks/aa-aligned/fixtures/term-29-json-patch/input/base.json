@@ -1,0 +1,10 @@
+{
+  "name": "config",
+  "version": 1,
+  "enabled": true,
+  "items": [
+    1,
+    2,
+    3
+  ]
+}

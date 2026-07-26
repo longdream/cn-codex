@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:44:59.3692599+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-14-parse-urls",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "parse urls ok",
+    "wall_time_sec":  0.035,
+    "notes":  ""
+}

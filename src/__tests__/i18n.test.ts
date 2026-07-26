@@ -91,6 +91,7 @@ describe("i18n messages", () => {
       expect(msgs).toHaveProperty("chat.planProgress.step");
       expect(msgs).toHaveProperty("chat.planProgress.filesChanged");
       expect(msgs).toHaveProperty("chat.planProgress.open");
+      expect(msgs).toHaveProperty("chat.scrollToBottom");
       expect(msgs).toHaveProperty("chat.goalStatus.active");
       expect(msgs).toHaveProperty("chat.goalStatus.paused");
       expect(msgs).toHaveProperty("chat.goalStatus.blocked");

@@ -262,6 +262,9 @@ pub struct ConfigToml {
     pub smartbrain: Option<SmartBrainConfig>,
     #[serde(default)]
     pub image_generation: Option<ImageGenerationConfig>,
+    /// 对话级子智能体开关（仅内存覆盖，不写回全局 config.toml）。
+    #[serde(default)]
+    pub subagent_enabled: Option<bool>,
     /// 当前选中的 local-pool 模型的端点列表（仅 local-pool 类型供应商使用）
     #[serde(default)]
     pub model_endpoints: Vec<ModelEndpointInfo>,
@@ -806,6 +809,11 @@ impl ConfigToml {
                 .as_deref(),
             Some("live" | "cached" | "enabled" | "true" | "on" | "1")
         )
+    }
+
+    /// 对话级子智能体开关；默认关闭，仅在对话框显式开启时暴露 spawn_agent 工具族。
+    pub fn subagent_enabled(&self) -> bool {
+        self.subagent_enabled.unwrap_or(false)
     }
 
     pub fn resolved_mcp_servers(&self) -> HashMap<String, McpServerConfig> {

@@ -556,6 +556,36 @@ describe("appStore", () => {
     });
   });
 
+  describe("setThreadSubagentEnabled", () => {
+    it("persists per-thread subagent toggle without affecting other threads", () => {
+      useAppStore.setState({
+        currentThreadId: "t-main",
+        subagentEnabled: false,
+        threadPreferences: {},
+        threadRuntimeStates: {},
+      });
+
+      useAppStore.getState().setThreadSubagentEnabled(true);
+      let state = useAppStore.getState();
+      expect(state.subagentEnabled).toBe(true);
+      expect(state.threadPreferences["t-main"]?.subagentEnabled).toBe(true);
+
+      // 切换到另一个会话时，偏好仍按 threadId 隔离。
+      useAppStore.setState({
+        currentThreadId: "t-other",
+        subagentEnabled: false,
+      });
+      expect(useAppStore.getState().threadPreferences["t-main"]?.subagentEnabled).toBe(true);
+      expect(useAppStore.getState().threadPreferences["t-other"]).toBeUndefined();
+
+      useAppStore.getState().setThreadSubagentEnabled(false);
+      state = useAppStore.getState();
+      expect(state.subagentEnabled).toBe(false);
+      expect(state.threadPreferences["t-other"]?.subagentEnabled).toBeUndefined();
+      expect(state.threadPreferences["t-main"]?.subagentEnabled).toBe(true);
+    });
+  });
+
   describe("loadThreads", () => {
     it("filters threads not in threadProjectMap and deletes them", async () => {
       useAppStore.setState({
@@ -1820,6 +1850,7 @@ describe("appStore", () => {
         overrideProviderId: "provider-old",
         overrideModelId: "old-model",
         smartbrainEnabled: true,
+        subagentEnabled: true,
         threads: [],
         messages: [{ id: "m1", role: "user", content: "hi", timestamp: 1 }],
       });
@@ -1831,6 +1862,7 @@ describe("appStore", () => {
       expect(state.overrideProviderId).toBeNull();
       expect(state.overrideModelId).toBeNull();
       expect(state.smartbrainEnabled).toBe(false);
+      expect(state.subagentEnabled).toBe(false);
       expect(state.currentModel).toBe("qwen3.6-27b");
       expect(state.activeProviderId).toBe("provider-qwen");
     });

@@ -1,0 +1,1 @@
+{"subdirs": "approval,auth,browser,chat,common,detail,diff,lan,layout,settings,workflow", "app_component": "src/App.tsx", "message_list": "MessageList", "input_component": "ChatInput"}

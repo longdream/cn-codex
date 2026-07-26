@@ -1,0 +1,679 @@
+{
+  "name": "CN-Codex AA-Aligned Coding Agent Proxy Suite v2",
+  "version": "2.0.0",
+  "aligned_to": {
+    "index": "Artificial Analysis Coding Agent Index v1.3",
+    "components": [
+      "DeepSWE",
+      "Terminal-Bench v2",
+      "SWE-Atlas-QnA"
+    ],
+    "scoring": "pass@1, 3 attempts/task, equal weight components",
+    "official_refs": {
+      "coding_agents": "https://artificialanalysis.ai/agents/coding-agents",
+      "methodology": "https://artificialanalysis.ai/methodology/coding-agents-benchmarking"
+    }
+  },
+  "official_reference_scores": {
+    "grok_4_5_high": {
+      "intelligence_index": 54,
+      "coding_agent_index_grok_build": 76,
+      "pricing_usd_per_mtok": {
+        "input": 2.0,
+        "output": 6.0
+      },
+      "context_window": 500000,
+      "notes": "AA public numbers as of 2026-07-08"
+    }
+  },
+  "local_index": {
+    "name": "CN-Codex Coding Agent Proxy Index",
+    "formula": "mean([repo_qa_pass1, terminal_pass1, swe_edit_pass1])",
+    "components": {
+      "repo_qa": {
+        "aligns_to": "SWE-Atlas-QnA",
+        "weight": 0.3334
+      },
+      "terminal": {
+        "aligns_to": "Terminal-Bench v2",
+        "weight": 0.3333
+      },
+      "swe_edit": {
+        "aligns_to": "DeepSWE",
+        "weight": 0.3333
+      }
+    }
+  },
+  "tasks": [
+    {
+      "id": "qa-01-find-entrypoint",
+      "component": "repo_qa",
+      "title": "Locate app entry and framework",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "qa-02-config-provider",
+      "component": "repo_qa",
+      "title": "Answer provider config questions",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "qa-03-tool-pipeline",
+      "component": "repo_qa",
+      "title": "Explain tool-call pipeline from source",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-04-test-command",
+      "component": "repo_qa",
+      "title": "Identify how tests are run",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "qa-05-package-deps",
+      "component": "repo_qa",
+      "title": "Identify key dependencies",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "qa-06-routing-structure",
+      "component": "repo_qa",
+      "title": "Explore routing structure",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-07-i18n-setup",
+      "component": "repo_qa",
+      "title": "Identify i18n configuration",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-08-store-architecture",
+      "component": "repo_qa",
+      "title": "Analyze state store architecture",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-09-component-tree",
+      "component": "repo_qa",
+      "title": "Identify main component tree",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-10-api-layer",
+      "component": "repo_qa",
+      "title": "Identify API layer structure",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-11-types-definitions",
+      "component": "repo_qa",
+      "title": "Explore TypeScript type definitions",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "qa-12-hooks-usage",
+      "component": "repo_qa",
+      "title": "Identify custom hooks",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-13-styles-theme",
+      "component": "repo_qa",
+      "title": "Identify styling approach",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "qa-14-build-tooling",
+      "component": "repo_qa",
+      "title": "Identify build tooling",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "qa-15-tauri-config",
+      "component": "repo_qa",
+      "title": "Explore Tauri configuration",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-16-git-branch",
+      "component": "repo_qa",
+      "title": "Analyze git repository state",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "qa-17-ci-config",
+      "component": "repo_qa",
+      "title": "Identify CI configuration",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-18-error-handling",
+      "component": "repo_qa",
+      "title": "Find error handling patterns",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-19-perf-optimization",
+      "component": "repo_qa",
+      "title": "Find performance optimizations",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "qa-20-security-patterns",
+      "component": "repo_qa",
+      "title": "Identify security patterns",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "qa-21-plugin-system",
+      "component": "repo_qa",
+      "title": "Explore plugin system",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "qa-22-mcp-integration",
+      "component": "repo_qa",
+      "title": "Explore MCP integration",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "qa-23-electron-vs-tauri",
+      "component": "repo_qa",
+      "title": "Distinguish desktop framework choice",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-24-logging-system",
+      "component": "repo_qa",
+      "title": "Find logging system",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "qa-25-test-coverage",
+      "component": "repo_qa",
+      "title": "Analyze test coverage",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-26-utils-modules",
+      "component": "repo_qa",
+      "title": "Find utility modules",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "qa-27-markdown-rendering",
+      "component": "repo_qa",
+      "title": "Find markdown rendering",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-28-file-attachment",
+      "component": "repo_qa",
+      "title": "Find file attachment handling",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-29-keyboard-shortcuts",
+      "component": "repo_qa",
+      "title": "Find keyboard shortcuts",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "qa-30-workspace-config",
+      "component": "repo_qa",
+      "title": "Explore workspace configuration",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "term-01-json-transform",
+      "component": "terminal",
+      "title": "Shell JSON transform and checksum",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-02-log-etl",
+      "component": "terminal",
+      "title": "Parse logs and emit summary CSV",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-03-batch-rename",
+      "component": "terminal",
+      "title": "Batch rename and manifest",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-04-mini-pipeline",
+      "component": "terminal",
+      "title": "Multi-step data pipeline via shell",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "term-05-merge-json",
+      "component": "terminal",
+      "title": "Merge multiple JSON files",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-06-csv-filter",
+      "component": "terminal",
+      "title": "Filter CSV by conditions",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-07-file-count",
+      "component": "terminal",
+      "title": "Count files by extension",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-08-dedup-lines",
+      "component": "terminal",
+      "title": "Deduplicate lines in text file",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-09-tsv-to-csv",
+      "component": "terminal",
+      "title": "Convert TSV to CSV",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-10-find-and-replace",
+      "component": "terminal",
+      "title": "Find and replace in files",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-11-sort-by-column",
+      "component": "terminal",
+      "title": "Sort CSV by column",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-12-validate-json",
+      "component": "terminal",
+      "title": "Validate JSON files",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-13-generate-checksums",
+      "component": "terminal",
+      "title": "Generate file checksums",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-14-parse-urls",
+      "component": "terminal",
+      "title": "Parse URLs from text",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-15-table-join",
+      "component": "terminal",
+      "title": "Join two CSV files",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "term-16-parse-nginx-log",
+      "component": "terminal",
+      "title": "Parse Nginx access log",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "term-17-date-transform",
+      "component": "terminal",
+      "title": "Transform date formats",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-18-diff-files",
+      "component": "terminal",
+      "title": "Compare two files",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-19-json-to-csv",
+      "component": "terminal",
+      "title": "Convert JSON array to CSV",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-20-base64-encode",
+      "component": "terminal",
+      "title": "Batch base64 encode/decode",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-21-find-duplicates",
+      "component": "terminal",
+      "title": "Find duplicate files",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "term-22-split-csv",
+      "component": "terminal",
+      "title": "Split CSV by column value",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-23-grep-and-count",
+      "component": "terminal",
+      "title": "Grep and count patterns",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "term-24-ip-validate",
+      "component": "terminal",
+      "title": "Validate IP addresses",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-25-json-flatten",
+      "component": "terminal",
+      "title": "Flatten nested JSON",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "term-26-encrypt-decrypt",
+      "component": "terminal",
+      "title": "Simple file encryption",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "term-27-html-to-text",
+      "component": "terminal",
+      "title": "Extract text from HTML",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-28-csv-statistics",
+      "component": "terminal",
+      "title": "Compute CSV statistics",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "term-29-json-patch",
+      "component": "terminal",
+      "title": "Apply JSON patch operations",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "term-30-tar-archive",
+      "component": "terminal",
+      "title": "Create and extract archive",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-01-fix-off-by-one",
+      "component": "swe_edit",
+      "title": "Fix off-by-one bug with tests",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "swe-02-add-feature",
+      "component": "swe_edit",
+      "title": "Add feature and keep tests green",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-03-refactor-api",
+      "component": "swe_edit",
+      "title": "Refactor API without breaking callers",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-04-bug-and-regression",
+      "component": "swe_edit",
+      "title": "Fix bug + add regression test",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-05-fix-divide-by-zero",
+      "component": "swe_edit",
+      "title": "Fix divide-by-zero bug",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "swe-06-add-sort-function",
+      "component": "swe_edit",
+      "title": "Add sort function to array utils",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-07-fix-string-escape",
+      "component": "swe_edit",
+      "title": "Fix string escaping bug",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-08-add-debounce",
+      "component": "swe_edit",
+      "title": "Add debounce utility",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-09-fix-json-parse",
+      "component": "swe_edit",
+      "title": "Fix JSON parse error handling",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "swe-10-add-date-format",
+      "component": "swe_edit",
+      "title": "Add date formatting utilities",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-11-fix-regex",
+      "component": "swe_edit",
+      "title": "Fix regex pattern bug",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-12-add-queue",
+      "component": "swe_edit",
+      "title": "Implement a queue data structure",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-13-fix-memoization",
+      "component": "swe_edit",
+      "title": "Fix memoization cache bug",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-14-add-clone",
+      "component": "swe_edit",
+      "title": "Add deep clone utility",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-15-fix-async-race",
+      "component": "swe_edit",
+      "title": "Fix async race condition",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-16-add-binary-search",
+      "component": "swe_edit",
+      "title": "Add binary search",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "swe-17-fix-array-mutation",
+      "component": "swe_edit",
+      "title": "Fix array mutation side effect",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-18-add-event-emitter",
+      "component": "swe_edit",
+      "title": "Implement EventEmitter",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-19-fix-type-coercion",
+      "component": "swe_edit",
+      "title": "Fix type coercion bug",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "swe-20-add-pipe",
+      "component": "swe_edit",
+      "title": "Add function composition utilities",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-21-fix-float-arithmetic",
+      "component": "swe_edit",
+      "title": "Fix floating point arithmetic",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-22-add-lru-cache",
+      "component": "swe_edit",
+      "title": "Implement LRU cache",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-23-fix-enum",
+      "component": "swe_edit",
+      "title": "Fix enum parsing bug",
+      "difficulty": "easy",
+      "timeout_min": 10
+    },
+    {
+      "id": "swe-24-add-md5-hash",
+      "component": "swe_edit",
+      "title": "Add MD5 hash utility",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-25-fix-timer-leak",
+      "component": "swe_edit",
+      "title": "Fix timer leak",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-26-add-trie",
+      "component": "swe_edit",
+      "title": "Implement Trie (prefix tree)",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-27-fix-promise-chain",
+      "component": "swe_edit",
+      "title": "Fix promise chain error swallowing",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-28-add-csv-parse",
+      "component": "swe_edit",
+      "title": "Add CSV parser",
+      "difficulty": "hard",
+      "timeout_min": 25
+    },
+    {
+      "id": "swe-29-fix-null-pointer",
+      "component": "swe_edit",
+      "title": "Fix null pointer dereference",
+      "difficulty": "medium",
+      "timeout_min": 15
+    },
+    {
+      "id": "swe-30-add-rate-limiter",
+      "component": "swe_edit",
+      "title": "Implement rate limiter",
+      "difficulty": "hard",
+      "timeout_min": 25
+    }
+  ]
+}

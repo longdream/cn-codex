@@ -229,6 +229,7 @@ export type ServerEventName =
   | "server-warning"
   | "config-warning"
   | "skills-changed"
+  | "mcp-servers-changed"
   | "server-request-resolved"
   | "server-request"
   | "events-lagged"

@@ -1,0 +1,6 @@
+{
+  "entrypoint": "src/main.tsx",
+  "ui_framework": "react",
+  "desktop_framework": "tauri",
+  "test_script": "test"
+}

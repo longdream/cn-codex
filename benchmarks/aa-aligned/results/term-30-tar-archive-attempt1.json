@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:45:06.4809711+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-30-tar-archive",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "archive ok",
+    "wall_time_sec":  0.03,
+    "notes":  ""
+}

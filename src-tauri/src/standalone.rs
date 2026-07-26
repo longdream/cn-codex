@@ -1472,10 +1472,16 @@ pub async fn standalone_chat(
     robot_id: Option<String>,
     provider: Option<ThreadChatProviderOverride>,
     smartbrain_enabled: Option<bool>,
+    subagent_enabled: Option<bool>,
     client_message_id: Option<String>,
 ) -> AppResult<serde_json::Value> {
     let mut config = state.config_manager.read()?;
-    apply_thread_chat_overrides(&mut config, provider.as_ref(), smartbrain_enabled);
+    apply_thread_chat_overrides(
+        &mut config,
+        provider.as_ref(),
+        smartbrain_enabled,
+        subagent_enabled,
+    );
     let override_cwd = cwd.map(std::path::PathBuf::from);
     let is_goal_mode = mode.as_deref() == Some("goal");
     let mode = mode.as_deref();
@@ -1605,6 +1611,7 @@ fn apply_thread_chat_overrides(
     config: &mut crate::config_system::ConfigToml,
     provider: Option<&ThreadChatProviderOverride>,
     smartbrain_enabled: Option<bool>,
+    subagent_enabled: Option<bool>,
 ) {
     if let Some(provider) = provider {
         let provider_key = provider.provider_key.as_str().trim().to_string();
@@ -1752,6 +1759,9 @@ fn apply_thread_chat_overrides(
         smartbrain.knowledge_enabled = enabled;
         config.smartbrain = Some(smartbrain);
     }
+    if let Some(enabled) = subagent_enabled {
+        config.subagent_enabled = Some(enabled);
+    }
 }
 
 #[tauri::command]
@@ -1787,6 +1797,29 @@ pub async fn standalone_turn_interrupt(
         target_thread_id
     );
     Ok(serde_json::json!({ "status": "interrupted" }))
+}
+
+#[tauri::command]
+pub async fn standalone_subagent_close(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    thread_id: String,
+    target: String,
+) -> AppResult<serde_json::Value> {
+    let thread_id = thread_id.trim().to_string();
+    let target = target.trim().to_string();
+    if thread_id.is_empty() {
+        return Err(AppError::Custom("thread_id must not be empty".to_string()));
+    }
+    if target.is_empty() {
+        return Err(AppError::Custom("target must not be empty".to_string()));
+    }
+
+    info!("Subagent close requested: thread={thread_id}, target={target}");
+    state
+        .agent_engine
+        .close_subagent(&app_handle, &thread_id, &target)
+        .await
 }
 
 #[tauri::command]
@@ -2165,17 +2198,29 @@ mod tests {
         smartbrain.knowledge_enabled = false;
         config.smartbrain = Some(smartbrain);
 
-        super::apply_thread_chat_overrides(&mut config, None, Some(true));
+        super::apply_thread_chat_overrides(&mut config, None, Some(true), None);
         let active = config.smartbrain_config();
         assert!(active.enabled);
         assert!(active.knowledge_enabled);
         assert!(active.knowledge_is_active());
 
-        super::apply_thread_chat_overrides(&mut config, None, Some(false));
+        super::apply_thread_chat_overrides(&mut config, None, Some(false), None);
         let inactive = config.smartbrain_config();
         assert!(!inactive.enabled);
         assert!(!inactive.knowledge_enabled);
         assert!(!inactive.knowledge_is_active());
+    }
+
+    #[test]
+    fn apply_thread_chat_overrides_sets_subagent_enabled() {
+        let mut config = crate::config_system::ConfigToml::default();
+        assert!(!config.subagent_enabled());
+
+        super::apply_thread_chat_overrides(&mut config, None, None, Some(true));
+        assert!(config.subagent_enabled());
+
+        super::apply_thread_chat_overrides(&mut config, None, None, Some(false));
+        assert!(!config.subagent_enabled());
     }
 
     #[test]

@@ -249,6 +249,14 @@ export function IntegrationPanel() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const handler = () => {
+      void load();
+    };
+    window.addEventListener("mcp-servers-changed", handler);
+    return () => window.removeEventListener("mcp-servers-changed", handler);
+  }, [load]);
+
   const handleMcpJsonImport = async () => {
     setMcpJsonError(null);
     const text = mcpJsonText.trim();

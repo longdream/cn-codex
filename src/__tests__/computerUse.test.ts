@@ -45,6 +45,7 @@ function emptyRuntime(partial: Partial<ThreadRuntimeState> = {}): ThreadRuntimeS
     selectedRobotId: null,
     robotCreateMode: false,
     robotWaitCountdown: null,
+    liveSubagents: {},
     reasoningText: "",
     browserPanelUrl: null,
     browserPanelTitle: null,
@@ -56,6 +57,7 @@ function emptyRuntime(partial: Partial<ThreadRuntimeState> = {}): ThreadRuntimeS
     overrideProviderId: null,
     overrideModelId: null,
     smartbrainEnabled: false,
+    subagentEnabled: false,
     updatedAt: Date.now(),
     ...partial,
   };

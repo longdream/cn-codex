@@ -138,6 +138,101 @@ describe("plan execution progress", () => {
     expect(derivePlanExecutionProgress(messages, false)).toBeNull();
   });
 
+  it("auto-completes unfinished plan steps when the turn is no longer running", () => {
+    const messages = [
+      userMessage(),
+      toolMessage([planCall(["completed", "in_progress", "pending"])]),
+    ];
+
+    expect(derivePlanExecutionProgress(messages, false)).toMatchObject({
+      currentStep: 3,
+      totalSteps: 3,
+      running: false,
+      steps: [
+        { step: "Step 1", status: "completed" },
+        { step: "Step 2", status: "completed" },
+        { step: "Step 3", status: "completed" },
+      ],
+    });
+  });
+
+  it("keeps unfinished plan steps while the turn is still running", () => {
+    const messages = [
+      userMessage(),
+      toolMessage([planCall(["completed", "in_progress", "pending"])]),
+    ];
+
+    expect(derivePlanExecutionProgress(messages, true)).toMatchObject({
+      currentStep: 2,
+      totalSteps: 3,
+      running: true,
+      steps: [
+        { step: "Step 1", status: "completed" },
+        { step: "Step 2", status: "in_progress" },
+        { step: "Step 3", status: "pending" },
+      ],
+    });
+  });
+
+  it("auto-completes unfinished plan steps when the goal is already complete", () => {
+    const messages = [
+      userMessage(),
+      toolMessage([planCall(["completed", "in_progress", "pending"])]),
+    ];
+
+    expect(derivePlanExecutionProgress(messages, true, undefined, "complete")).toMatchObject({
+      currentStep: 3,
+      totalSteps: 3,
+      running: false,
+      steps: [
+        { step: "Step 1", status: "completed" },
+        { step: "Step 2", status: "completed" },
+        { step: "Step 3", status: "completed" },
+      ],
+    });
+  });
+
+  it("does not auto-complete plan steps while the goal is still active between turns", () => {
+    const messages = [
+      userMessage(),
+      toolMessage([planCall(["completed", "in_progress", "pending"])]),
+    ];
+
+    expect(derivePlanExecutionProgress(messages, false, undefined, "active")).toMatchObject({
+      currentStep: 2,
+      totalSteps: 3,
+      running: false,
+      steps: [
+        { step: "Step 1", status: "completed" },
+        { step: "Step 2", status: "in_progress" },
+        { step: "Step 3", status: "pending" },
+      ],
+    });
+  });
+
+  it("auto-completes robot workflow nodes when the goal is already complete", () => {
+    expect(derivePlanExecutionProgress([userMessage()], false, {
+      currentNodeIndex: 1,
+      runtimeNodes: ["Implement", "Verify"],
+      nodeDeliveries: ["Artifacts: code"],
+    }, "complete")).toMatchObject({
+      currentStep: 2,
+      running: false,
+      steps: [
+        { step: "Implement", status: "completed" },
+        { step: "Verify", status: "completed" },
+      ],
+      robotWorkflow: {
+        completed: true,
+        currentNodeIndex: 1,
+        nodes: [
+          { step: "Implement", status: "completed" },
+          { step: "Verify", status: "completed" },
+        ],
+      },
+    });
+  });
+
   it("uses robot workflow nodes when the model did not call update_plan", () => {
     const messages = [userMessage()];
 

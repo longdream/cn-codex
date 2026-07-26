@@ -89,6 +89,7 @@ pub struct ToolExecutor {
     web_search_enabled: bool,
     /// Request-scoped SmartBrain override. `None` falls back to workspace config.
     smartbrain_enabled_override: Option<bool>,
+    subagent_enabled_override: Option<bool>,
     subagents: Arc<Mutex<HashMap<String, SubagentRecord>>>,
     subagent_handles: Arc<Mutex<HashMap<String, crate::subagent_engine::SubagentHandle>>>,
     exec_sessions: Arc<Mutex<HashMap<u64, ExecSessionRecord>>>,
@@ -424,6 +425,56 @@ struct PluginManageArgs {
     id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct McpManageArgs {
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    server: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    env: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default, alias = "transport")]
+    r#type: Option<String>,
+    #[serde(default)]
+    headers: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    disabled: Option<bool>,
+    #[serde(default)]
+    config: Option<serde_json::Value>,
+    #[serde(default)]
+    overwrite: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SkillManageArgs {
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    skill_id: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+    #[serde(default)]
+    overwrite: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct PluginInstallCandidate {
@@ -744,6 +795,7 @@ impl ToolExecutor {
             mcp_sse_sessions: Arc::new(Mutex::new(HashMap::new())),
             web_search_enabled: false,
             smartbrain_enabled_override: None,
+            subagent_enabled_override: None,
             subagents: Arc::new(Mutex::new(subagents)),
             subagent_handles: Arc::new(Mutex::new(HashMap::new())),
             exec_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -765,6 +817,30 @@ impl ToolExecutor {
 
     pub fn set_smartbrain_enabled_override(&mut self, enabled: Option<bool>) {
         self.smartbrain_enabled_override = enabled;
+    }
+
+    pub fn set_subagent_enabled_override(&mut self, enabled: Option<bool>) {
+        self.subagent_enabled_override = enabled;
+    }
+
+    fn is_subagent_tool_name(name: &str) -> bool {
+        matches!(
+            name,
+            "spawn_agent"
+                | "wait_agent"
+                | "send_input"
+                | "resume_agent"
+                | "list_agents"
+                | "close_agent"
+        )
+    }
+
+    fn subagent_tools_enabled(&self) -> bool {
+        self.subagent_enabled_override.unwrap_or(false)
+    }
+
+    fn subagent_tools_allowed(&self, name: &str) -> bool {
+        !Self::is_subagent_tool_name(name) || self.subagent_tools_enabled()
     }
 
     /// Thread-scoped tools activated by `tool_search` (or explicit activation).
@@ -846,6 +922,9 @@ impl ToolExecutor {
                 // Optional web tools are only present in `tool_specs` when enabled.
                 | "web_search"
                 | "web_fetch"
+                // Install/manage MCP servers and local skills so Settings UI can show them.
+                | "mcp_manage"
+                | "skill_manage"
         )
     }
 
@@ -990,6 +1069,72 @@ impl ToolExecutor {
         }
 
         processes.len().max(cancel_flags.len())
+    }
+
+    /// Close/cancel a subagent by id from the UI or other non-tool call sites.
+    ///
+    /// Mirrors `close_agent` tool semantics without emitting tool-exec events.
+    pub async fn close_subagent(
+        &self,
+        app_handle: &AppHandle,
+        thread_id: &str,
+        target: &str,
+    ) -> AppResult<serde_json::Value> {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err(crate::error::AppError::Custom(
+                "subagent target must not be empty".to_string(),
+            ));
+        }
+
+        let previous_status;
+        let agent_snapshot;
+        {
+            let mut subagents = self.subagents.lock().await;
+            match subagents.get_mut(target) {
+                None => {
+                    return Err(crate::error::AppError::Custom(format!(
+                        "No subagent found with id: {target}"
+                    )));
+                }
+                Some(record) => {
+                    previous_status = record.status.clone();
+                    if record.status == "running" {
+                        record.status = "closed".to_string();
+                        let completed_at_ms = now_millis();
+                        record.completed_at_ms = Some(completed_at_ms);
+                        if record.duration_ms.is_none() {
+                            record.duration_ms =
+                                Some(completed_at_ms.saturating_sub(record.started_at_ms));
+                        }
+                    }
+                    agent_snapshot = record.clone();
+                }
+            }
+        }
+
+        if previous_status == "running" {
+            let handles = self.subagent_handles.lock().await;
+            if let Some(handle) = handles.get(target) {
+                handle.cancel_flag.store(true, Ordering::SeqCst);
+            }
+        }
+
+        persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
+        Self::emit_subagent_status(app_handle, thread_id, &agent_snapshot);
+
+        Ok(serde_json::json!({
+            "target": target,
+            "closed": previous_status == "running",
+            "previousStatus": previous_status,
+            "status": agent_snapshot.status,
+            "message": if previous_status == "running" {
+                "Subagent closed"
+            } else {
+                "Subagent already finished"
+            },
+            "agent": agent_snapshot,
+        }))
     }
 
     async fn remember_permission_grant(&self, profile: serde_json::Value) {
@@ -1446,6 +1591,122 @@ impl ToolExecutor {
                             "id": {
                                 "type": "string",
                                 "description": "Compatibility alias for plugin_id."
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "mcp_manage",
+                    "description": "Install, list, enable, disable, or uninstall MCP servers in codey/config.toml so they appear in Settings > Integration. Prefer this over freeform config edits when the user asks to install an MCP server. Supports stdio (command/args) and remote (type+url) servers.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["list", "install", "add", "enable", "disable", "uninstall", "remove"],
+                                "description": "MCP management action. Defaults to list. install/add writes config.toml and refreshes Settings."
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "MCP server name, e.g. godot or playwright. Required for install/enable/disable/uninstall."
+                            },
+                            "server": {
+                                "type": "string",
+                                "description": "Compatibility alias for name."
+                            },
+                            "command": {
+                                "type": "string",
+                                "description": "stdio launch command, e.g. npx or node."
+                            },
+                            "args": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "stdio command arguments."
+                            },
+                            "cwd": {
+                                "type": "string",
+                                "description": "Optional working directory for stdio servers."
+                            },
+                            "env": {
+                                "type": "object",
+                                "additionalProperties": { "type": "string" },
+                                "description": "Optional environment variables for the MCP process."
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Remote MCP server URL for http/sse transports."
+                            },
+                            "type": {
+                                "type": "string",
+                                "description": "Transport type: stdio, sse, or http/streamable-http."
+                            },
+                            "headers": {
+                                "type": "object",
+                                "additionalProperties": { "type": "string" },
+                                "description": "Optional HTTP headers for remote MCP servers."
+                            },
+                            "disabled": {
+                                "type": "boolean",
+                                "description": "Whether the server starts disabled. Defaults to false on install."
+                            },
+                            "config": {
+                                "type": "object",
+                                "description": "Optional full server config object. Merged with top-level fields."
+                            },
+                            "overwrite": {
+                                "type": "boolean",
+                                "description": "Allow overwriting an existing MCP server with the same name. Defaults to false."
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "skill_manage",
+                    "description": "Install, list, update, or uninstall local skills under codey/skills so they appear in Settings > Skills. Prefer this over freeform file writes when the user asks to install a skill.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["list", "install", "create", "update", "uninstall", "remove"],
+                                "description": "Skill management action. Defaults to list. install/create writes codey/skills/<id>/SKILL.md."
+                            },
+                            "skill_id": {
+                                "type": "string",
+                                "description": "Skill directory id under codey/skills (lowercase letters, digits, hyphen/underscore). Required for install/update/uninstall."
+                            },
+                            "id": {
+                                "type": "string",
+                                "description": "Compatibility alias for skill_id."
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Optional display name written into SKILL.md frontmatter when content is omitted."
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional skill description for generated SKILL.md frontmatter."
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Full SKILL.md markdown content. If omitted for install/create, a template is generated from name/description/tags."
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Optional tags for generated SKILL.md frontmatter."
+                            },
+                            "overwrite": {
+                                "type": "boolean",
+                                "description": "Allow overwriting an existing skill. Defaults to false for install/create, true for update."
                             }
                         },
                         "required": []
@@ -2726,7 +2987,15 @@ impl ToolExecutor {
             let Some(name) = Self::tool_spec_name(&spec) else {
                 continue;
             };
-            if Self::is_core_tool_name(name) || activated.contains(name) {
+            // Subagent tools are dialog-gated: even if tool_search previously activated them,
+            // keep them hidden unless this chat explicitly enabled subagents.
+            if !self.subagent_tools_allowed(name) {
+                continue;
+            }
+            if Self::is_core_tool_name(name)
+                || activated.contains(name)
+                || Self::is_subagent_tool_name(name)
+            {
                 if seen.insert(name.to_string()) {
                     tools.push(spec);
                 }
@@ -2849,6 +3118,15 @@ impl ToolExecutor {
         thread_id: &str,
         turn_id: Option<&str>,
     ) -> AppResult<String> {
+        // Dialog-level gate: subagent tools must not run when the composer switch is off,
+        // even if an older tool_search activation still lists them for the thread.
+        if Self::is_subagent_tool_name(tool_name) && !self.subagent_tools_enabled() {
+            let msg = "Subagents are disabled for this chat. Enable 子智能体 in the composer to use spawn_agent / wait_agent / send_input / resume_agent / list_agents / close_agent.".to_string();
+            self.emit_tool_start(app_handle, thread_id, call_id, tool_name, "disabled");
+            self.emit_tool_end(app_handle, thread_id, call_id, tool_name, -1, &msg);
+            return Ok(msg);
+        }
+
         if let Some(alias) = self.mcp_tool_aliases.get(tool_name).cloned() {
             return self
                 .exec_mcp_direct_tool(
@@ -2908,6 +3186,14 @@ impl ToolExecutor {
             }
             "plugin_manage" => {
                 self.exec_plugin_manage(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "mcp_manage" => {
+                self.exec_mcp_manage(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "skill_manage" => {
+                self.exec_skill_manage(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "robot_save" => {
@@ -3126,6 +3412,26 @@ impl ToolExecutor {
         });
         app_handle.emit("tool-exec-end", payload.clone()).ok();
         crate::mobile_server::broadcast("tool-exec-end", payload);
+    }
+
+    fn emit_subagent_status(
+        app_handle: &AppHandle,
+        thread_id: &str,
+        record: &SubagentRecord,
+    ) {
+        let payload = serde_json::json!({
+            "threadId": thread_id,
+            "id": record.id,
+            "role": record.role,
+            "status": record.status,
+            "prompt": record.prompt,
+            "durationMs": record.duration_ms,
+            "output": record.output,
+            "error": record.error,
+            "updatedAt": now_millis(),
+        });
+        app_handle.emit("subagent-status", payload.clone()).ok();
+        crate::mobile_server::broadcast("subagent-status", payload);
     }
 
     fn emit_apply_patch_progress(
@@ -4923,6 +5229,7 @@ impl ToolExecutor {
             subagents.insert(id.clone(), record.clone());
         }
         persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
+        Self::emit_subagent_status(app_handle, thread_id, &record);
 
         let subagent_config = crate::subagent_engine::SubagentConfig {
             base_url: provider_config.base_url.clone(),
@@ -4975,6 +5282,8 @@ impl ToolExecutor {
         let workspace_config_dir = self.workspace_config_dir.clone();
         let subagent_handles_clone = self.subagent_handles.clone();
         let finished_id = id.clone();
+        let app_handle_bg = app_handle.clone();
+        let thread_id_bg = thread_id.to_string();
         tokio::spawn(async move {
             if let Ok(result) = result_rx.await {
                 let (status, output_val, error_val, exit_code) = match result.status {
@@ -4998,6 +5307,7 @@ impl ToolExecutor {
                     }
                 };
                 let completed_at_ms = now_millis();
+                let mut emit_record: Option<SubagentRecord> = None;
                 {
                     let mut subagents = subagents_clone.lock().await;
                     if let Some(record) = subagents.get_mut(&finished_id) {
@@ -5007,10 +5317,14 @@ impl ToolExecutor {
                         record.exit_code = exit_code;
                         record.output = output_val;
                         record.error = error_val;
+                        emit_record = Some(record.clone());
                     }
                 }
                 persist_subagent_records(&workspace_config_dir, &subagents_clone).await;
                 subagent_handles_clone.lock().await.remove(&finished_id);
+                if let Some(record) = emit_record {
+                    ToolExecutor::emit_subagent_status(&app_handle_bg, &thread_id_bg, &record);
+                }
             }
         });
 
@@ -5267,6 +5581,9 @@ impl ToolExecutor {
             }
         }
         persist_subagent_records(&self.workspace_config_dir, &self.subagents).await;
+        if let Some(record) = self.subagents.lock().await.get(&target).cloned() {
+            Self::emit_subagent_status(app_handle, thread_id, &record);
+        }
 
         let tool_executor_for_subagent = Arc::new(tokio::sync::RwLock::new(
             ToolExecutor::with_workspace_config_dir(cwd, self.workspace_config_dir.clone()),
@@ -5291,6 +5608,8 @@ impl ToolExecutor {
         let workspace_config_dir = self.workspace_config_dir.clone();
         let subagent_handles_clone = self.subagent_handles.clone();
         let finished_id = target.clone();
+        let app_handle_bg = app_handle.clone();
+        let thread_id_bg = thread_id.to_string();
         tokio::spawn(async move {
             if let Ok(result) = result_rx.await {
                 let (status, output_val, error_val, exit_code) = match result.status {
@@ -5314,6 +5633,7 @@ impl ToolExecutor {
                     }
                 };
                 let completed_at_ms = now_millis();
+                let mut emit_record: Option<SubagentRecord> = None;
                 {
                     let mut subagents = subagents_clone.lock().await;
                     if let Some(record) = subagents.get_mut(&finished_id) {
@@ -5323,10 +5643,14 @@ impl ToolExecutor {
                         record.exit_code = exit_code;
                         record.output = output_val;
                         record.error = error_val;
+                        emit_record = Some(record.clone());
                     }
                 }
                 persist_subagent_records(&workspace_config_dir, &subagents_clone).await;
                 subagent_handles_clone.lock().await.remove(&finished_id);
+                if let Some(record) = emit_record {
+                    ToolExecutor::emit_subagent_status(&app_handle_bg, &thread_id_bg, &record);
+                }
             }
         });
 
@@ -5452,6 +5776,9 @@ impl ToolExecutor {
             message: "Subagent closed".to_string(),
             agent: agent_snapshot,
         };
+        if let Some(record) = result.agent.as_ref() {
+            Self::emit_subagent_status(app_handle, thread_id, record);
+        }
         let output = serde_json::to_string_pretty(&result).unwrap_or_default();
         self.emit_tool_end(app_handle, thread_id, call_id, "close_agent", 0, &output);
         Ok(output)
@@ -5487,7 +5814,10 @@ impl ToolExecutor {
         let matches = search_tool_entries(self.tool_search_entries(), query, limit);
         let mut activated_names = BTreeSet::new();
         for entry in &matches {
-            if entry.kind == "tool" && !Self::is_core_tool_name(&entry.name) {
+            if entry.kind == "tool"
+                && !Self::is_core_tool_name(&entry.name)
+                && self.subagent_tools_allowed(&entry.name)
+            {
                 activated_names.insert(entry.name.clone());
             }
             if entry.kind == "mcp_server" {
@@ -5919,6 +6249,426 @@ impl ToolExecutor {
 
         let output = truncate_output(&output, TOOL_OUTPUT_SEARCH_MAX_CHARS);
         self.emit_tool_end(app_handle, thread_id, call_id, "plugin_manage", 0, &output);
+        Ok(output)
+    }
+
+    async fn exec_mcp_manage(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        let args: McpManageArgs = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid mcp_manage args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "mcp_manage", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let action = args
+            .action
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("list");
+        let server_name = args
+            .name
+            .as_deref()
+            .or(args.server.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let display = server_name.as_deref().unwrap_or(action);
+        self.emit_tool_start(app_handle, thread_id, call_id, "mcp_manage", display);
+
+        let config_path = self.workspace_config_dir.join("config.toml");
+        let mut config = match ConfigToml::load(&config_path) {
+            Ok(config) => config,
+            Err(error) => {
+                let msg = format!("Failed to load codey/config.toml: {error}");
+                self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let output = match action {
+            "list" => {
+                let mut servers: Vec<_> = config
+                    .resolved_mcp_servers()
+                    .into_values()
+                    .map(|server| {
+                        let mut env_keys = server.env.keys().cloned().collect::<Vec<_>>();
+                        env_keys.sort();
+                        let mut header_keys = server.headers.keys().cloned().collect::<Vec<_>>();
+                        header_keys.sort();
+                        serde_json::json!({
+                            "name": server.name,
+                            "transport": server.transport,
+                            "command": server.command,
+                            "args": server.args,
+                            "cwd": server.cwd,
+                            "url": server.url,
+                            "disabled": server.disabled,
+                            "envKeys": env_keys,
+                            "headerKeys": header_keys,
+                        })
+                    })
+                    .collect();
+                servers.sort_by(|a, b| {
+                    a.get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .cmp(&b.get("name").and_then(serde_json::Value::as_str))
+                });
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "servers": servers,
+                    "configPath": config_path.to_string_lossy(),
+                    "source": "codey/config.toml",
+                }))
+                .unwrap_or_default()
+            }
+            "install" | "add" => {
+                let Some(name) = server_name.as_deref() else {
+                    let msg = "mcp_manage install requires name".to_string();
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                };
+                if let Err(error) = sanitize_mcp_server_name(name) {
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &error);
+                    return Ok(error);
+                }
+                let overwrite = args.overwrite.unwrap_or(false);
+                if config.mcp_servers.contains_key(name) && !overwrite {
+                    let msg = format!(
+                        "MCP server '{name}' already exists in codey/config.toml. Pass overwrite=true to replace it."
+                    );
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                }
+
+                let server_value = match build_mcp_server_config_value(&args) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "mcp_manage",
+                            -1,
+                            &error,
+                        );
+                        return Ok(error);
+                    }
+                };
+
+                if let Err(error) =
+                    config.apply_edit(&format!("mcp_servers.{name}"), &server_value)
+                {
+                    let msg = format!("Failed to install MCP server '{name}': {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                if let Err(error) = config.save(&config_path) {
+                    let msg = format!("Failed to save codey/config.toml: {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                }
+
+                emit_mcp_servers_changed(
+                    app_handle,
+                    name,
+                    action,
+                    config_path.to_string_lossy().as_ref(),
+                );
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "completed": true,
+                    "action": action,
+                    "name": name,
+                    "server": server_value,
+                    "configPath": config_path.to_string_lossy(),
+                    "uiVisible": true,
+                    "message": format!("MCP server '{name}' installed into codey/config.toml and Settings > Integration can now show it."),
+                }))
+                .unwrap_or_default()
+            }
+            "enable" | "disable" => {
+                let Some(name) = server_name.as_deref() else {
+                    let msg = format!("mcp_manage action '{action}' requires name");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                };
+                let Some(existing) = config.mcp_servers.get(name).cloned() else {
+                    let msg = format!("MCP server not found in codey/config.toml: {name}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                };
+                let mut table = match existing.as_table().cloned() {
+                    Some(table) => table,
+                    None => {
+                        let msg = format!("MCP server '{name}' config is invalid");
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "mcp_manage",
+                            -1,
+                            &msg,
+                        );
+                        return Ok(msg);
+                    }
+                };
+                table.remove("isActive");
+                table.remove("is_active");
+                table.remove("enabled");
+                table.insert(
+                    "disabled".to_string(),
+                    toml::Value::Boolean(action == "disable"),
+                );
+                let next = toml_table_to_json_object(&table);
+                if let Err(error) = config.apply_edit(&format!("mcp_servers.{name}"), &next) {
+                    let msg = format!("Failed to {action} MCP server '{name}': {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                if let Err(error) = config.save(&config_path) {
+                    let msg = format!("Failed to save codey/config.toml: {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                emit_mcp_servers_changed(
+                    app_handle,
+                    name,
+                    action,
+                    config_path.to_string_lossy().as_ref(),
+                );
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "completed": true,
+                    "action": action,
+                    "name": name,
+                    "disabled": action == "disable",
+                    "configPath": config_path.to_string_lossy(),
+                }))
+                .unwrap_or_default()
+            }
+            "uninstall" | "remove" => {
+                let Some(name) = server_name.as_deref() else {
+                    let msg = "mcp_manage uninstall requires name".to_string();
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                };
+                if !config.mcp_servers.contains_key(name) {
+                    let msg = format!("MCP server not found in codey/config.toml: {name}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                if let Err(error) =
+                    config.apply_edit(&format!("mcp_servers.{name}"), &serde_json::Value::Null)
+                {
+                    let msg = format!("Failed to uninstall MCP server '{name}': {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                if let Err(error) = config.save(&config_path) {
+                    let msg = format!("Failed to save codey/config.toml: {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                emit_mcp_servers_changed(
+                    app_handle,
+                    name,
+                    "uninstall",
+                    config_path.to_string_lossy().as_ref(),
+                );
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "completed": true,
+                    "action": "uninstall",
+                    "name": name,
+                    "configPath": config_path.to_string_lossy(),
+                }))
+                .unwrap_or_default()
+            }
+            other => {
+                let msg = format!(
+                    "mcp_manage action must be one of list, install, add, enable, disable, uninstall, or remove: {other}"
+                );
+                self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let output = truncate_output(&output, TOOL_OUTPUT_SEARCH_MAX_CHARS);
+        self.emit_tool_end(app_handle, thread_id, call_id, "mcp_manage", 0, &output);
+        Ok(output)
+    }
+
+    async fn exec_skill_manage(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        let args: SkillManageArgs = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid skill_manage args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "skill_manage", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let action = args
+            .action
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("list");
+        let skill_id = args
+            .skill_id
+            .as_deref()
+            .or(args.id.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let display = skill_id.as_deref().unwrap_or(action);
+        self.emit_tool_start(app_handle, thread_id, call_id, "skill_manage", display);
+
+        let skills_dir = self.workspace_config_dir.join("skills");
+
+        let output = match action {
+            "list" => {
+                let skills = list_local_skills(&skills_dir);
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "skills": skills,
+                    "skillsDir": skills_dir.to_string_lossy(),
+                }))
+                .unwrap_or_default()
+            }
+            "install" | "create" | "update" => {
+                let Some(skill_id) = skill_id.as_deref() else {
+                    let msg = format!("skill_manage action '{action}' requires skill_id");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                    return Ok(msg);
+                };
+                if let Err(error) = sanitize_skill_manage_id(skill_id) {
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &error);
+                    return Ok(error);
+                }
+
+                let skill_dir = skills_dir.join(skill_id);
+                let skill_md = skill_dir.join("SKILL.md");
+                let exists = skill_md.is_file();
+                let overwrite = args
+                    .overwrite
+                    .unwrap_or(matches!(action, "update"));
+                if exists && !overwrite && matches!(action, "install" | "create") {
+                    let msg = format!(
+                        "Skill '{skill_id}' already exists. Pass overwrite=true or use action=update."
+                    );
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                if !exists && action == "update" {
+                    let msg = format!(
+                        "Skill '{skill_id}' does not exist. Use action=install to create it."
+                    );
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                    return Ok(msg);
+                }
+
+                let content = match build_skill_manage_content(&args, skill_id) {
+                    Ok(content) => content,
+                    Err(error) => {
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "skill_manage",
+                            -1,
+                            &error,
+                        );
+                        return Ok(error);
+                    }
+                };
+                if content.chars().count() > MAX_SKILL_MANAGE_CONTENT_CHARS {
+                    let msg = format!(
+                        "Skill content too large (max {MAX_SKILL_MANAGE_CONTENT_CHARS} characters)"
+                    );
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                    return Ok(msg);
+                }
+
+                if let Err(error) = std::fs::create_dir_all(&skill_dir) {
+                    let msg = format!("Failed to create skill directory: {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                if let Err(error) = std::fs::write(&skill_md, &content) {
+                    let msg = format!("Failed to write SKILL.md: {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                    return Ok(msg);
+                }
+
+                let (name, description, tags) = parse_tool_search_skill_frontmatter(&content);
+                emit_skills_changed(app_handle, skill_id, action);
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "completed": true,
+                    "action": action,
+                    "skillId": skill_id,
+                    "name": if name.is_empty() { skill_id.to_string() } else { name },
+                    "description": description,
+                    "tags": tags,
+                    "path": skill_md.to_string_lossy(),
+                    "uiVisible": true,
+                    "message": format!("Skill '{skill_id}' saved under codey/skills and Settings > Skills can now show it."),
+                }))
+                .unwrap_or_default()
+            }
+            "uninstall" | "remove" => {
+                let Some(skill_id) = skill_id.as_deref() else {
+                    let msg = "skill_manage uninstall requires skill_id".to_string();
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                    return Ok(msg);
+                };
+                if let Err(error) = sanitize_skill_manage_id(skill_id) {
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &error);
+                    return Ok(error);
+                }
+                let skill_dir = skills_dir.join(skill_id);
+                if !skill_dir.exists() {
+                    let msg = format!("Skill not found: {skill_id}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                if let Err(error) = std::fs::remove_dir_all(&skill_dir) {
+                    let msg = format!("Failed to uninstall skill '{skill_id}': {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                    return Ok(msg);
+                }
+                emit_skills_changed(app_handle, skill_id, "uninstall");
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "completed": true,
+                    "action": "uninstall",
+                    "skillId": skill_id,
+                    "removedPath": skill_dir.to_string_lossy(),
+                }))
+                .unwrap_or_default()
+            }
+            other => {
+                let msg = format!(
+                    "skill_manage action must be one of list, install, create, update, uninstall, or remove: {other}"
+                );
+                self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let output = truncate_output(&output, TOOL_OUTPUT_SEARCH_MAX_CHARS);
+        self.emit_tool_end(app_handle, thread_id, call_id, "skill_manage", 0, &output);
         Ok(output)
     }
 
@@ -9463,6 +10213,288 @@ async fn terminate_shell_child(child: &Arc<Mutex<Child>>) {
 
     let mut guard = child.lock().await;
     let _ = guard.kill().await;
+}
+
+const MAX_SKILL_MANAGE_CONTENT_CHARS: usize = 400_000;
+
+fn sanitize_mcp_server_name(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("MCP server name must not be empty".to_string());
+    }
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains('[')
+        || name.contains(']')
+        || name.contains('"')
+        || name.contains('\'')
+        || name.contains(' ')
+        || Path::new(name).components().count() != 1
+    {
+        return Err(format!(
+            "Invalid MCP server name '{name}'. Use a single token without path separators or spaces."
+        ));
+    }
+    Ok(())
+}
+
+fn sanitize_skill_manage_id(skill_id: &str) -> Result<(), String> {
+    let skill_id = skill_id.trim();
+    if skill_id.is_empty()
+        || skill_id.contains('/')
+        || skill_id.contains('\\')
+        || skill_id.contains("..")
+        || Path::new(skill_id).components().count() != 1
+    {
+        return Err(format!(
+            "Invalid skill_id '{skill_id}'. Use a single directory name without path separators."
+        ));
+    }
+    if !skill_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(format!(
+            "Invalid skill_id '{skill_id}'. Use lowercase letters, digits, hyphen, or underscore."
+        ));
+    }
+    Ok(())
+}
+
+fn string_map_to_json(map: &BTreeMap<String, String>) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    for (key, value) in map {
+        object.insert(key.clone(), serde_json::Value::String(value.clone()));
+    }
+    serde_json::Value::Object(object)
+}
+
+fn toml_table_to_json_object(table: &toml::Table) -> serde_json::Value {
+    serde_json::to_value(table).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn build_mcp_server_config_value(args: &McpManageArgs) -> Result<serde_json::Value, String> {
+    let mut object = match &args.config {
+        Some(serde_json::Value::Object(map)) => map.clone(),
+        Some(_) => return Err("mcp_manage config must be an object".to_string()),
+        None => serde_json::Map::new(),
+    };
+
+    if let Some(command) = args
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        object.insert(
+            "command".to_string(),
+            serde_json::Value::String(command.to_string()),
+        );
+    }
+    if let Some(args_list) = &args.args {
+        object.insert(
+            "args".to_string(),
+            serde_json::Value::Array(
+                args_list
+                    .iter()
+                    .map(|item| serde_json::Value::String(item.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(cwd) = args
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        object.insert(
+            "cwd".to_string(),
+            serde_json::Value::String(cwd.to_string()),
+        );
+    }
+    if let Some(env) = &args.env {
+        object.insert("env".to_string(), string_map_to_json(env));
+    }
+    if let Some(url) = args
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        object.insert(
+            "url".to_string(),
+            serde_json::Value::String(url.to_string()),
+        );
+    }
+    if let Some(transport) = args
+        .r#type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        object.insert(
+            "type".to_string(),
+            serde_json::Value::String(transport.to_string()),
+        );
+    }
+    if let Some(headers) = &args.headers {
+        object.insert("headers".to_string(), string_map_to_json(headers));
+    }
+    if let Some(disabled) = args.disabled {
+        object.insert("disabled".to_string(), serde_json::Value::Bool(disabled));
+    }
+
+    object.remove("name");
+    object.remove("description");
+    object.remove("isActive");
+    object.remove("is_active");
+    object.remove("enabled");
+
+    let command = object
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let url = object
+        .get("url")
+        .or_else(|| object.get("server_url"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if command.is_empty() && url.is_empty() {
+        return Err(
+            "mcp_manage install requires either command (stdio) or url (http/sse)".to_string(),
+        );
+    }
+
+    if !url.is_empty() {
+        if object
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            let inferred = if url.to_ascii_lowercase().contains("/sse") {
+                "sse"
+            } else {
+                "http"
+            };
+            object.insert(
+                "type".to_string(),
+                serde_json::Value::String(inferred.to_string()),
+            );
+        }
+    }
+
+    if !object.contains_key("disabled") {
+        object.insert("disabled".to_string(), serde_json::Value::Bool(false));
+    }
+
+    Ok(serde_json::Value::Object(object))
+}
+
+fn build_skill_manage_content(args: &SkillManageArgs, skill_id: &str) -> Result<String, String> {
+    if let Some(content) = args
+        .content
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(content.to_string());
+    }
+
+    let name = args
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(skill_id);
+    let description = args
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Installed via skill_manage");
+    let tags = args.tags.clone().unwrap_or_default();
+    let tags_literal = if tags.is_empty() {
+        "[]".to_string()
+    } else {
+        let rendered = tags
+            .iter()
+            .map(|tag| format!("\"{}\"", tag.replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("[{rendered}]")
+    };
+
+    Ok(format!(
+        "---\nname: \"{}\"\ndescription: \"{}\"\ntags: {}\n---\n\n# {}\n\n{}\n",
+        name.replace('"', "\\\""),
+        description.replace('"', "\\\""),
+        tags_literal,
+        name,
+        description
+    ))
+}
+
+fn list_local_skills(skills_dir: &Path) -> Vec<serde_json::Value> {
+    let Ok(entries) = std::fs::read_dir(skills_dir) else {
+        return Vec::new();
+    };
+    let mut skills = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let skill_md = path.join("SKILL.md");
+        if !skill_md.is_file() {
+            continue;
+        }
+        let id = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "skill".to_string());
+        let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
+        let (name, description, tags) = parse_tool_search_skill_frontmatter(&content);
+        skills.push(serde_json::json!({
+            "id": id,
+            "name": if name.is_empty() { id.clone() } else { name },
+            "description": description,
+            "tags": tags,
+            "path": skill_md.to_string_lossy(),
+        }));
+    }
+    skills.sort_by(|left, right| {
+        left.get("id")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get("id").and_then(serde_json::Value::as_str))
+    });
+    skills
+}
+
+fn emit_mcp_servers_changed(app_handle: &AppHandle, name: &str, action: &str, config_path: &str) {
+    let payload = serde_json::json!({
+        "name": name,
+        "action": action,
+        "configPath": config_path,
+        "source": "mcp_manage",
+    });
+    let _ = app_handle.emit("mcp-servers-changed", payload.clone());
+    crate::mobile_server::broadcast("mcp-servers-changed", payload);
+}
+
+fn emit_skills_changed(app_handle: &AppHandle, skill_id: &str, action: &str) {
+    let payload = serde_json::json!({
+        "skillId": skill_id,
+        "action": action,
+        "source": "skill_manage",
+    });
+    let _ = app_handle.emit("skills-changed", payload.clone());
+    crate::mobile_server::broadcast("skills-changed", payload);
 }
 
 fn apply_browser_defaults(_workspace_config_dir: &Path, payload: &mut serde_json::Value) {
@@ -13704,6 +14736,8 @@ mod tests {
         assert!(disabled_names.contains(&"mcp_list_resource_templates"));
         assert!(disabled_names.contains(&"mcp_list_prompts"));
         assert!(disabled_names.contains(&"mcp_get_prompt"));
+        assert!(disabled_names.contains(&"mcp_manage"));
+        assert!(disabled_names.contains(&"skill_manage"));
         assert!(enabled_names.contains(&"web_search"));
         assert!(enabled_names.contains(&"web_fetch"));
         assert!(enabled_names.contains(&"code_review"));
@@ -13711,6 +14745,8 @@ mod tests {
         assert!(enabled_names.contains(&"list_available_plugins_to_install"));
         assert!(enabled_names.contains(&"request_plugin_install"));
         assert!(enabled_names.contains(&"plugin_manage"));
+        assert!(enabled_names.contains(&"mcp_manage"));
+        assert!(enabled_names.contains(&"skill_manage"));
         assert!(enabled_names.contains(&"request_user_input"));
         assert!(enabled_names.contains(&"request_permissions"));
         assert!(enabled_names.contains(&"memory_update"));
@@ -13814,15 +14850,160 @@ mod tests {
         assert!(!other_names.contains("memory_list"));
     }
 
+    #[tokio::test]
+    async fn subagent_tools_attach_only_when_dialog_switch_enabled() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("workspace");
+        let config_dir = root.join("codey");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+
+        let mut executor = ToolExecutor::with_workspace_config_dir(root, config_dir);
+        let disabled = executor
+            .tool_specs_for_turn(false, false, Some("thread-subagent"))
+            .await;
+        let disabled_names: BTreeSet<_> = disabled
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+        assert!(!disabled_names.contains("spawn_agent"));
+        assert!(!disabled_names.contains("wait_agent"));
+
+        executor.set_subagent_enabled_override(Some(true));
+        let enabled = executor
+            .tool_specs_for_turn(false, false, Some("thread-subagent"))
+            .await;
+        let enabled_names: BTreeSet<_> = enabled
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+        assert!(enabled_names.contains("spawn_agent"));
+        assert!(enabled_names.contains("wait_agent"));
+        assert!(enabled_names.contains("send_input"));
+        assert!(enabled_names.contains("list_agents"));
+        assert!(enabled_names.contains("close_agent"));
+        assert!(enabled_names.contains("resume_agent"));
+    }
+
+    #[tokio::test]
+    async fn subagent_tools_stay_hidden_even_if_tool_search_activated_while_disabled() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("workspace");
+        let config_dir = root.join("codey");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+
+        let mut executor = ToolExecutor::with_workspace_config_dir(root, config_dir);
+        executor.set_subagent_enabled_override(Some(false));
+        executor
+            .activate_tools_for_thread(
+                "thread-subagent-bypass",
+                ["spawn_agent", "wait_agent", "list_agents"],
+            )
+            .await;
+
+        let specs = executor
+            .tool_specs_for_turn(false, false, Some("thread-subagent-bypass"))
+            .await;
+        let names: BTreeSet<_> = specs
+            .iter()
+            .filter_map(ToolExecutor::tool_spec_name)
+            .map(str::to_string)
+            .collect();
+        assert!(!names.contains("spawn_agent"));
+        assert!(!names.contains("wait_agent"));
+        assert!(!names.contains("list_agents"));
+    }
+
     #[test]
     fn core_tool_name_set_is_intentionally_small() {
         assert!(ToolExecutor::is_core_tool_name("tool_search"));
         assert!(ToolExecutor::is_core_tool_name("apply_patch"));
+        assert!(ToolExecutor::is_core_tool_name("mcp_manage"));
+        assert!(ToolExecutor::is_core_tool_name("skill_manage"));
         assert!(!ToolExecutor::is_core_tool_name(
             "mcp__playwright__browser_click"
         ));
         assert!(!ToolExecutor::is_core_tool_name("memory_list"));
         assert!(!ToolExecutor::is_core_tool_name("spawn_agent"));
+    }
+
+    #[test]
+    fn build_mcp_server_config_value_supports_stdio_and_remote() {
+        let stdio = build_mcp_server_config_value(&McpManageArgs {
+            command: Some("npx".to_string()),
+            args: Some(vec!["-y".to_string(), "godot-mcp".to_string()]),
+            disabled: Some(false),
+            ..Default::default()
+        })
+        .expect("stdio config");
+        assert_eq!(stdio["command"], "npx");
+        assert_eq!(
+            stdio["args"],
+            serde_json::json!(["-y", "godot-mcp"])
+        );
+        assert_eq!(stdio["disabled"], false);
+
+        let remote = build_mcp_server_config_value(&McpManageArgs {
+            url: Some("http://127.0.0.1:3000/sse".to_string()),
+            ..Default::default()
+        })
+        .expect("remote config");
+        assert_eq!(remote["url"], "http://127.0.0.1:3000/sse");
+        assert_eq!(remote["type"], "sse");
+    }
+
+    #[test]
+    fn mcp_manage_helpers_persist_server_into_config_toml() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let config_path = temp_dir.path().join("config.toml");
+        let mut config = ConfigToml::default();
+        let server = build_mcp_server_config_value(&McpManageArgs {
+            command: Some("npx".to_string()),
+            args: Some(vec!["-y".to_string(), "godot-mcp".to_string()]),
+            ..Default::default()
+        })
+        .expect("server config");
+        config
+            .apply_edit("mcp_servers.godot", &server)
+            .expect("apply edit");
+        config.save(&config_path).expect("save config");
+
+        let reloaded = ConfigToml::load(&config_path).expect("reload config");
+        let servers = reloaded.resolved_mcp_servers();
+        let godot = servers.get("godot").expect("godot server");
+        assert_eq!(godot.command, "npx");
+        assert_eq!(godot.args, vec!["-y", "godot-mcp"]);
+        assert!(!godot.disabled);
+    }
+
+    #[test]
+    fn skill_manage_helpers_write_skill_md() {
+        sanitize_skill_manage_id("godot-helper").expect("valid id");
+        assert!(sanitize_skill_manage_id("../evil").is_err());
+
+        let content = build_skill_manage_content(
+            &SkillManageArgs {
+                name: Some("Godot Helper".to_string()),
+                description: Some("Help with Godot MCP".to_string()),
+                tags: Some(vec!["godot".to_string(), "mcp".to_string()]),
+                ..Default::default()
+            },
+            "godot-helper",
+        )
+        .expect("content");
+        assert!(content.contains("name: \"Godot Helper\""));
+        assert!(content.contains("Help with Godot MCP"));
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let skill_dir = temp_dir.path().join("godot-helper");
+        std::fs::create_dir_all(&skill_dir).expect("skill dir");
+        let skill_md = skill_dir.join("SKILL.md");
+        std::fs::write(&skill_md, &content).expect("write skill");
+        let listed = list_local_skills(temp_dir.path());
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["id"], "godot-helper");
+        assert_eq!(listed[0]["name"], "Godot Helper");
     }
 
     #[tokio::test]

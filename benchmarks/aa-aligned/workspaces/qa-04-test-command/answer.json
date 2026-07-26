@@ -1,0 +1,6 @@
+{
+  "test_script": "test",
+  "runner": "vitest",
+  "has_watch_script": true,
+  "rust_manifest": "src-tauri/Cargo.toml"
+}

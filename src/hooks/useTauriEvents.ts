@@ -20,6 +20,7 @@ import {
 import { resolveApproval } from "../api/approval";
 import { decodePathRefRangeSnippet, PATH_REF_MIME } from "../utils/pathRefSnippet";
 import { shouldAcceptEventSequence } from "../utils/turnEventSequence";
+import { liveSubagentFromPayload } from "../utils/subagentStatus";
 
 interface TurnEventPayload {
   threadId: string;
@@ -282,6 +283,11 @@ function toolActivityLabel(
     echarts_report: intl.formatMessage({ id: "tool.echartsReport" }),
     view_image: intl.formatMessage({ id: "tool.viewImage" }),
     spawn_agent: intl.formatMessage({ id: "tool.spawnAgent" }),
+    wait_agent: intl.formatMessage({ id: "tool.waitAgent" }),
+    send_input: intl.formatMessage({ id: "tool.sendInput" }),
+    resume_agent: intl.formatMessage({ id: "tool.resumeAgent" }),
+    list_agents: intl.formatMessage({ id: "tool.listAgents" }),
+    close_agent: intl.formatMessage({ id: "tool.closeAgent" }),
     update_plan: intl.formatMessage({ id: "tool.updatePlan" }),
   };
   const desc = base.startsWith("mcp__")
@@ -658,6 +664,14 @@ export function useTauriEvents() {
           next.attachments,
           next.options?.goalBudgetTokens,
           next.options?.robotId,
+          {
+            provider: store.buildThreadChatProviderOverride(
+              runtime.overrideProviderId ?? null,
+              runtime.overrideModelId ?? null,
+            ),
+            smartbrainEnabled: runtime.smartbrainEnabled ?? false,
+            subagentEnabled: runtime.subagentEnabled ?? false,
+          },
         );
       } catch (err) {
         console.error(`[background-queue] Failed to send queued message for thread ${threadId}:`, err);
@@ -1452,6 +1466,30 @@ export function useTauriEvents() {
 
         listen("skills-changed", () => {
           window.dispatchEvent(new CustomEvent("skills-changed"));
+        }),
+
+        listen("mcp-servers-changed", () => {
+          window.dispatchEvent(new CustomEvent("mcp-servers-changed"));
+        }),
+
+        // 子智能体后台状态推送（spawn/resume 完成后更新活跃条，不必等 wait_agent）
+        listen<{
+          threadId?: string;
+          id?: string;
+          role?: string;
+          status?: string;
+          prompt?: string;
+          durationMs?: number | null;
+          output?: string | null;
+          error?: string | null;
+          updatedAt?: number;
+        }>("subagent-status", (e) => {
+          const store = useAppStore.getState();
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
+          const agent = liveSubagentFromPayload(e.payload);
+          if (!agent) return;
+          store.upsertLiveSubagentForThread(threadId, agent);
         }),
 
         // 机器人提问倒计时等待

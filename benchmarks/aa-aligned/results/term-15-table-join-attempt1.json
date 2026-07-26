@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:44:59.8094214+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-15-table-join",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "join ok",
+    "wall_time_sec":  0.035,
+    "notes":  ""
+}

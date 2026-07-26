@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "name": "Alice",
+    "dept": "eng"
+  },
+  {
+    "id": 2,
+    "name": "Bob",
+    "dept": "sales"
+  },
+  {
+    "id": 3,
+    "name": "Carol",
+    "dept": "eng"
+  }
+]

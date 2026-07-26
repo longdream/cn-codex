@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:45:04.2647488+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-25-json-flatten",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "flatten ok",
+    "wall_time_sec":  0.041,
+    "notes":  ""
+}

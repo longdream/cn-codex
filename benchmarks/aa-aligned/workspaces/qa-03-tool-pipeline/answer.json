@@ -1,0 +1,6 @@
+{
+  "has_apply_patch": true,
+  "has_browser_run": true,
+  "has_tool_search": true,
+  "source_file": "src/hooks/useTauriEvents.ts"
+}

@@ -451,6 +451,19 @@ impl AgentEngine {
         }
     }
 
+    /// Close a background subagent by id for the given chat thread.
+    pub async fn close_subagent(
+        &self,
+        app_handle: &AppHandle,
+        thread_id: &str,
+        target: &str,
+    ) -> AppResult<serde_json::Value> {
+        let executor = self.tool_executor.read().await;
+        executor
+            .close_subagent(app_handle, thread_id, target)
+            .await
+    }
+
     pub(crate) fn is_thread_cancelled(&self, thread_id: &str) -> bool {
         let flags = self
             .cancel_flags
@@ -990,8 +1003,11 @@ impl AgentEngine {
         }
 
         let mut intent_retries: u32 = 0;
-        const MAX_INTENT_RETRIES: u32 = 2;
+        // 模型经常先输出“我先/继续实现/开始落地”等意图而不带 tool call。
+        // 旧值 2 太容易耗尽，导致 turn 提前结束，用户只能手动输入“继续”。
+        const MAX_INTENT_RETRIES: u32 = 6;
         const MAX_EMPTY_COMPLETION_RETRIES: u32 = 2;
+        const MAX_LENGTH_CONTINUATIONS: u32 = 4;
         const MAX_RATE_LIMIT_RETRIES: u32 = 6;
         const MAX_STREAM_READ_RETRIES: u32 = 2;
         // Keep periodic diagnostics for unusually long turns, but do not treat an
@@ -1012,6 +1028,7 @@ impl AgentEngine {
         let mut stream_read_retry_count: u32 = 0;
         let mut upstream_retry_count: u32 = 0;
         let mut empty_completion_retry_count: u32 = 0;
+        let mut length_continuation_count: u32 = 0;
         let mut tool_calls_executed = false;
         let mut terminated_by_error = false;
         let mut force_new_plan_on_next_emit =
@@ -1116,9 +1133,11 @@ impl AgentEngine {
                         smartbrain_recall_context.as_deref(),
                     );
                     let smartbrain_enabled = config.smartbrain_config().knowledge_is_active();
+                    let subagent_enabled = config.subagent_enabled();
                     let tools = if turn_mode == "robot-create" || turn_mode == "robot-modify" {
                         let mut executor = self.tool_executor.write().await;
                         executor.set_smartbrain_enabled_override(Some(smartbrain_enabled));
+                        executor.set_subagent_enabled_override(Some(false));
                         executor
                             .tool_specs(false)
                             .into_iter()
@@ -1144,6 +1163,8 @@ impl AgentEngine {
                         ];
                         let mut executor = self.tool_executor.write().await;
                         executor.set_smartbrain_enabled_override(Some(smartbrain_enabled));
+                        // Plan mode stays read-only: never expose mutating subagent tools.
+                        executor.set_subagent_enabled_override(Some(false));
                         executor
                             .tool_specs(config.web_search_enabled())
                             .into_iter()
@@ -1156,6 +1177,7 @@ impl AgentEngine {
                     } else {
                         let mut executor = self.tool_executor.write().await;
                         executor.set_smartbrain_enabled_override(Some(smartbrain_enabled));
+                        executor.set_subagent_enabled_override(Some(subagent_enabled));
                         // MCP discovery is intentionally deferred. A normal chat turn must
                         // not spawn or connect to MCP servers; tool_search activates the
                         // generic MCP tools only when the model actually needs that capability.
@@ -1235,13 +1257,15 @@ impl AgentEngine {
                             ref text,
                             ref usage,
                             ref plan_text,
+                            ref finish_reason,
                         }) => {
                             rate_limit_retry_count = 0;
                             stream_read_retry_count = 0;
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
-                                "Iteration {iteration}: Message ({} chars), usage={:?}",
+                                "Iteration {iteration}: Message ({} chars), finish_reason={:?}, usage={:?}",
                                 text.len(),
+                                finish_reason,
                                 usage
                             );
                             if let Some(u) = usage {
@@ -1296,6 +1320,47 @@ impl AgentEngine {
                                     .to_string();
                             }
 
+                            // 输出被 max_tokens/length 截断时，自动续写，避免中途停住等用户输入“继续”。
+                            if turn_mode != "plan"
+                                && is_length_truncated(finish_reason.as_deref())
+                                && length_continuation_count < MAX_LENGTH_CONTINUATIONS
+                            {
+                                length_continuation_count =
+                                    length_continuation_count.saturating_add(1);
+                                warn!(
+                                    "Response truncated by finish_reason={:?}; auto-continuing ({length_continuation_count}/{MAX_LENGTH_CONTINUATIONS})",
+                                    finish_reason
+                                );
+                                if !cleaned_text.is_empty() {
+                                    let partial_msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "assistant".to_string(),
+                                        content: cleaned_text.clone(),
+                                        timestamp: now_secs(),
+                                        tool_call_id: None,
+                                        tool_name: None,
+                                        tool_calls: None,
+                                        attachments: Vec::new(),
+                                    };
+                                    self.thread_store
+                                        .add_message(thread_id, partial_msg)
+                                        .await?;
+                                }
+                                let nudge_msg = ThreadMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role: "system".to_string(),
+                                    content: "Your previous response was truncated by the output token limit. Continue from where you left off without repeating already written content. If tool actions are still required, call the tools now instead of only describing the next step."
+                                        .to_string(),
+                                    timestamp: now_secs(),
+                                    tool_call_id: None,
+                                    tool_name: None,
+                                    tool_calls: None,
+                                    attachments: Vec::new(),
+                                };
+                                self.thread_store.add_message(thread_id, nudge_msg).await?;
+                                continue;
+                            }
+
                             if turn_mode != "plan"
                                 && !cleaned_text.is_empty()
                                 && iteration > 0
@@ -1311,8 +1376,9 @@ impl AgentEngine {
                                     role: "system".to_string(),
                                     content:
                                         "You expressed intent to perform an action but did not \
-                                          call any tools. Please call the appropriate tool(s) now \
-                                          instead of describing what you plan to do."
+                                          call any tools. Do NOT stop and wait for the user to say \
+                                          \"continue\". Immediately call the appropriate tool(s) now \
+                                          in this same turn instead of only describing what you plan to do."
                                             .to_string(),
                                     timestamp: now_secs(),
                                     tool_call_id: None,
@@ -1678,6 +1744,7 @@ impl AgentEngine {
                             calls,
                             preceding_text,
                             usage,
+                            ..
                         }) => {
                             let calls = uniquify_tool_call_ids(calls, &mut issued_tool_call_ids);
                             rate_limit_retry_count = 0;
@@ -2946,6 +3013,17 @@ impl AgentEngine {
         let miniapp_instructions =
             crate::miniapp::render_miniapp_runtime_prompt(&workspace_config_dir);
 
+        let subagent_instructions = if config.subagent_enabled() {
+            "\n\n## Subagent tools (enabled for this chat)\n\
+             - spawn_agent / wait_agent / send_input / list_agents / close_agent / resume_agent are available without tool_search.\n\
+             - Each subagent has an independent in-memory context and does NOT write intermediate turns into the main chat history.\n\
+             - Use subagents to parallelize investigation, review, testing, or implementation; summarize only the final outcomes back to the user.\n\
+             - Do not nest subagents: child agents cannot spawn further agents.\n\
+             - Prefer wait_agent/list_agents after spawning so the main chain continues only with consolidated results."
+        } else {
+            ""
+        };
+
         let is_project_mode = effective_cwd != self.cwd;
         let file_creation_policy = if is_project_mode {
             "FILE CREATION POLICY: You are working inside a project directory. \
@@ -2982,12 +3060,14 @@ impl AgentEngine {
              - view_image: Inspect and preview local image files, returning format, dimensions, size, and path.\n\
              - browser_run: Run a browser session for page navigation, UI interaction, screenshots, and web app testing. Runtime is CN-Codex built-in Tauri WebView controlled by Rust-side JS Injection + CDP. Keep action batches focused and rely on screenshots/html/snapshot for verification.\n\
              - smartbrain_search: Search Local Knowledge Base (本地知识库) knowledge. For SQL (`smartbrain_sql_query`) and other non-core helpers, discover them with `tool_search` first (never invent Python/shell DB scripts; never re-ask saved passwords).\n\
+             - mcp_manage: Install, list, enable, disable, or uninstall MCP servers into codey/config.toml so Settings > Integration shows them. Use this instead of freeform config edits when the user asks to install an MCP server.\n\
+             - skill_manage: Install, list, update, or uninstall local skills under codey/skills so Settings > Skills shows them. Use this instead of freeform file writes when the user asks to install a skill.\n\
              \n\
              Layered tool loading:\n\
              - Default exposed schemas are a small core set (shell, files, apply_patch, code_search, browser_run, tool_search, plan/permissions, etc.).\n\
              - Non-core tools stay callable after discovery: first call `tool_search` with the capability you need; matching tool schemas are activated for the next model call in this same turn (and remain available later in the thread).\n\
              - Expensive MCP direct schemas (especially Playwright `mcp__playwright__*`) are never attached by default; always lazy-load them with `tool_search` before calling.\n\
-             - Discoverable non-core groups include: memory_*, image_generate/ocr_image/echarts_report, apps/plugin tools, spawn_agent/wait_agent/send_input/resume_agent/list_agents/close_agent, mcp_list_*/mcp_call_tool/mcp_get_prompt, and mcp__server__tool direct tools.\n\
+             - Discoverable non-core groups include: memory_*, image_generate/ocr_image/echarts_report, apps/plugin tools, spawn_agent/wait_agent/send_input/resume_agent/list_agents/close_agent, mcp_list_*/mcp_call_tool/mcp_get_prompt, and mcp__server__tool direct tools. MCP/skill install tools (`mcp_manage`, `skill_manage`) are core tools and should be used for durable installs that appear in Settings.\n\
              {web_tool_instructions}\
              \n\
              IMAGE TOOL RULE: When the user asks to generate/create/draw an image, use `tool_search` for `image_generate` if needed, then call it instead of only describing the image. \
@@ -3031,7 +3111,7 @@ impl AgentEngine {
              WINDOWS SHELL: This system uses PowerShell. Do NOT use '&&' to chain commands — \
              use ';' instead (e.g. 'cd mydir; npm install'). Use Set-Location or cd to change \
              directories. Alternatively, set the 'workdir' parameter in the shell tool call.\n\
-             {skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{robot_runtime_instructions}{smartbrain_instructions}{miniapp_instructions}"
+             {skills_instructions}{apps_instructions}{mode_instructions}{user_instructions}{robot_runtime_instructions}{smartbrain_instructions}{miniapp_instructions}{subagent_instructions}"
         )
     }
 
@@ -4461,12 +4541,14 @@ impl AgentEngine {
                 calls: final_tool_calls,
                 preceding_text: full_text,
                 usage: usage_info,
+                finish_reason,
             })
         } else {
             Ok(CompletionResult::Message {
                 text: full_text,
                 usage: usage_info,
                 plan_text,
+                finish_reason,
             })
         }
     }
@@ -4515,12 +4597,14 @@ impl AgentEngine {
                 text: output.text,
                 usage: output.usage,
                 plan_text: None,
+                finish_reason: None,
             })
         } else {
             Ok(CompletionResult::ToolCalls {
                 calls: tool_calls,
                 preceding_text: output.text,
                 usage: output.usage,
+                finish_reason: None,
             })
         }
     }
@@ -4688,12 +4772,14 @@ impl AgentEngine {
                 calls: final_tool_calls,
                 preceding_text: text,
                 usage: usage_info,
+                finish_reason: None,
             })
         } else {
             Ok(CompletionResult::Message {
                 text,
                 usage: usage_info,
                 plan_text: None,
+                finish_reason: None,
             })
         }
     }
@@ -4749,11 +4835,58 @@ fn text_expresses_intent(text: &str) -> bool {
         "let me ",
         "i'll ",
         "i will ",
+        "i am going to",
+        "i'm going to",
+        "i'm about to",
+        "going to ",
+        "start implementing",
+        "continue implementing",
+        "continue working",
+        "now implement",
+        "will implement",
+        "will update",
+        "will modify",
+        "will patch",
+        "will check",
+        "will read",
+        "will search",
+        "will fix",
+        "need to check",
+        "need to read",
+        "need to update",
+        "need to implement",
+        "need to fix",
         "让我",
         "接下来",
         "我来",
         "我将",
         "我先",
+        "我接着",
+        "接着改",
+        "接着实现",
+        "接着修",
+        "开始落地",
+        "开始实现",
+        "开始修",
+        "开始改",
+        "继续实现",
+        "继续修",
+        "继续改",
+        "继续落地",
+        "继续把",
+        "正在修改",
+        "正在实现",
+        "正在批量",
+        "正在改",
+        "落地改动",
+        "准备修改",
+        "准备实现",
+        "需要修改",
+        "需要实现",
+        "需要检查",
+        "需要读取",
+        "需要查看",
+        "需要搜索",
         "查看一下",
         "检查一下",
         "读取一下",
@@ -4761,6 +4894,19 @@ fn text_expresses_intent(text: &str) -> bool {
         "分析一下",
     ];
     intent_patterns.iter().any(|p| lower.contains(p))
+}
+
+fn is_length_truncated(finish_reason: Option<&str>) -> bool {
+    match finish_reason.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(reason) => {
+            let lower = reason.to_ascii_lowercase();
+            matches!(
+                lower.as_str(),
+                "length" | "max_tokens" | "max_output_tokens" | "max_output_tokens_reached"
+            )
+        }
+        None => false,
+    }
 }
 
 fn looks_like_textual_tool_protocol_leak(text: &str) -> bool {
@@ -4813,12 +4959,15 @@ enum CompletionResult {
         text: String,
         usage: Option<UsageInfo>,
         plan_text: Option<String>,
+        finish_reason: Option<String>,
     },
     /// 包含 tool call 的回复
     ToolCalls {
         calls: Vec<ToolCallRequest>,
         preceding_text: String,
         usage: Option<UsageInfo>,
+        #[allow(dead_code)]
+        finish_reason: Option<String>,
     },
 }
 
@@ -7411,6 +7560,26 @@ mod tests {
         assert!(turn_budget_limited(Some(999), &usage));
         assert!(!turn_budget_limited(Some(1_001), &usage));
         assert!(!turn_budget_limited(None, &usage));
+    }
+
+    #[test]
+    fn text_expresses_intent_detects_common_unfinished_work_phrases() {
+        assert!(text_expresses_intent("让我先检查相关代码"));
+        assert!(text_expresses_intent("开始落地改动：先改 agent 循环"));
+        assert!(text_expresses_intent("继续实现自动续跑逻辑"));
+        assert!(text_expresses_intent("I'll implement the auto-continue path now"));
+        assert!(text_expresses_intent("I need to read the file and update it"));
+        assert!(!text_expresses_intent("已完成修复，验证通过。"));
+        assert!(!text_expresses_intent("Fix is complete and verified."));
+    }
+
+    #[test]
+    fn is_length_truncated_recognizes_provider_reasons() {
+        assert!(is_length_truncated(Some("length")));
+        assert!(is_length_truncated(Some("MAX_TOKENS")));
+        assert!(is_length_truncated(Some("max_output_tokens")));
+        assert!(!is_length_truncated(Some("stop")));
+        assert!(!is_length_truncated(None));
     }
 
     #[test]

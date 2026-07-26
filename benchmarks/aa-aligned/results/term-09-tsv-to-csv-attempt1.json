@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:44:57.1131640+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-09-tsv-to-csv",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "tsv to csv ok",
+    "wall_time_sec":  0.038,
+    "notes":  ""
+}

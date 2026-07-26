@@ -1,0 +1,6 @@
+order_id,region,amount,status
+1,east,10.00,paid
+2,east,20.00,paid
+3,west,25.00,paid
+4,west,40.00,refunded
+5,east,5.00,pending

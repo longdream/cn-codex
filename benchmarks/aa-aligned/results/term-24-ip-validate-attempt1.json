@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:45:03.8075357+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-24-ip-validate",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "ip validate ok",
+    "wall_time_sec":  0.041,
+    "notes":  ""
+}

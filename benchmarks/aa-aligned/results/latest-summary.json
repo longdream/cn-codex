@@ -1,0 +1,650 @@
+﻿{
+    "generated_at":  "2026-07-26T06:52:11.1416773+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "local_proxy_index":  1,
+    "components":  {
+                       "terminal":  1,
+                       "swe_edit":  1,
+                       "repo_qa":  1
+                   },
+    "task_scores":  [
+                        {
+                            "task_id":  "qa-01-find-entrypoint",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-02-config-provider",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-03-tool-pipeline",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-04-test-command",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-05-package-deps",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-06-routing-structure",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-07-i18n-setup",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-08-store-architecture",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-09-component-tree",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-10-api-layer",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-11-types-definitions",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-12-hooks-usage",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-13-styles-theme",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-14-build-tooling",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-15-tauri-config",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-16-git-branch",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-17-ci-config",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-18-error-handling",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-19-perf-optimization",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-20-security-patterns",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-21-plugin-system",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-22-mcp-integration",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-23-electron-vs-tauri",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-24-logging-system",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-25-test-coverage",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-26-utils-modules",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-27-markdown-rendering",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-28-file-attachment",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-29-keyboard-shortcuts",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "qa-30-workspace-config",
+                            "component":  "repo_qa",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-01-json-transform",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-02-log-etl",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-03-batch-rename",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-04-mini-pipeline",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-05-merge-json",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-06-csv-filter",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-07-file-count",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-08-dedup-lines",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-09-tsv-to-csv",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-10-find-and-replace",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-11-sort-by-column",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-12-validate-json",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-13-generate-checksums",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-14-parse-urls",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-15-table-join",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-16-parse-nginx-log",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-17-date-transform",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-18-diff-files",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-19-json-to-csv",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-20-base64-encode",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-21-find-duplicates",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-22-split-csv",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-23-grep-and-count",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-24-ip-validate",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-25-json-flatten",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-26-encrypt-decrypt",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-27-html-to-text",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-28-csv-statistics",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-29-json-patch",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "term-30-tar-archive",
+                            "component":  "terminal",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-01-fix-off-by-one",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-02-add-feature",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-03-refactor-api",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-04-bug-and-regression",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-05-fix-divide-by-zero",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-06-add-sort-function",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-07-fix-string-escape",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-08-add-debounce",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-09-fix-json-parse",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-10-add-date-format",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-11-fix-regex",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-12-add-queue",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-13-fix-memoization",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-14-add-clone",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-15-fix-async-race",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-16-add-binary-search",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-17-fix-array-mutation",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-18-add-event-emitter",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-19-fix-type-coercion",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-20-add-pipe",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-21-fix-float-arithmetic",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-22-add-lru-cache",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-23-fix-enum",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-24-add-md5-hash",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-25-fix-timer-leak",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-26-add-trie",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-27-fix-promise-chain",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-28-add-csv-parse",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-29-fix-null-pointer",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        },
+                        {
+                            "task_id":  "swe-30-add-rate-limiter",
+                            "component":  "swe_edit",
+                            "attempts":  1,
+                            "pass1":  1,
+                            "status":  "scored"
+                        }
+                    ],
+    "official_reference":  {
+                               "intelligence_index":  54,
+                               "coding_agent_index_grok_build":  76,
+                               "model":  "Grok 4.5 (high)",
+                               "note":  "Official AA score is model+harness specific. Compare only as reference, not absolute equality."
+                           },
+    "interpretation":  "Very strong local agent performance (proxy). AA Grok4.5@GrokBuild Coding Agent Index ref=76."
+}

@@ -1,0 +1,1 @@
+{"md_library": "react-markdown", "supports_code_highlight": true, "supports_latex": false, "md_component": "src/components/chat/CodeBlock.tsx or MessageList.tsx"}

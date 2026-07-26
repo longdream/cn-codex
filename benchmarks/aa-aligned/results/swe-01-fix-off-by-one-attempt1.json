@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:51:48.6345697+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "swe-01-fix-off-by-one",
+    "component":  "swe_edit",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "tests passed",
+    "wall_time_sec":  0.157,
+    "notes":  ""
+}

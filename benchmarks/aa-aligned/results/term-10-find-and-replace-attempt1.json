@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:44:57.5646418+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-10-find-and-replace",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "replace ok",
+    "wall_time_sec":  0.037,
+    "notes":  ""
+}

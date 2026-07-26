@@ -1,0 +1,26 @@
+{
+  "name": "test",
+  "address": {
+    "city": "NYC",
+    "zip": "10001",
+    "coordinates": {
+      "lat": 40.7,
+      "lng": -74.0
+    }
+  },
+  "tags": [
+    "a",
+    "b",
+    "c"
+  ],
+  "metadata": {
+    "views": 100,
+    "likes": {
+      "count": 25,
+      "users": [
+        "u1",
+        "u2"
+      ]
+    }
+  }
+}

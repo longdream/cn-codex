@@ -7,6 +7,7 @@ import {
   IconChevronRight,
   IconClock,
   IconCopy,
+  IconCpu,
   IconExternalLink,
   IconFile,
   IconFileDiff,
@@ -45,6 +46,11 @@ import {
   parsePatchDiffEntries,
   type PatchDiffEntry,
 } from "../../utils/parsePatchDiff";
+import {
+  isSubagentToolName,
+  parseSubagentToolOutput,
+  subagentStatusTone,
+} from "../../utils/subagentStatus";
 import { ApplyPatchDiffPreview } from "./ApplyPatchDiffPreview";
 import { ChartBlock } from "./ChartBlock";
 import { CodeBlock } from "./CodeBlock";
@@ -72,6 +78,7 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   const scrollRafRef = useRef<number | null>(null);
   // 流式输出时不要每个 token 都完整重渲染 Markdown，否则段落/列表结构会反复重排导致抖动。
   const [stableStreamingText, setStableStreamingText] = useState(streamingText);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const stableStreamingTextRef = useRef(streamingText);
   const streamingFlushTimerRef = useRef<number | null>(null);
   const latestStreamingTextRef = useRef(streamingText);
@@ -82,6 +89,19 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
     return distance < 96;
   }, []);
 
+  const updateScrollToBottomVisibility = useCallback((el?: HTMLDivElement | null) => {
+    const scroller = el ?? scrollerRef.current;
+    if (!scroller) {
+      setShowScrollToBottom(false);
+      return;
+    }
+    const canScroll = scroller.scrollHeight - scroller.clientHeight > 8;
+    const nearBottom = isNearBottom(scroller);
+    // 仅根据实际滚动位置更新按钮；不要在 ResizeObserver 等时机覆盖 stickToBottom，
+    // 否则内容增高瞬间会被误判为“离开底部”，打断流式自动贴底。
+    setShowScrollToBottom(canScroll && !nearBottom);
+  }, [isNearBottom]);
+
   const scrollToBottom = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
@@ -90,7 +110,25 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
     // smooth 动画会被高频 token 更新反复打断，表现为整段“抽搐”。
     // 流式阶段统一用即时贴底；消息结构变化时也优先 auto。
     scroller.scrollTop = scroller.scrollHeight;
+    setShowScrollToBottom(false);
   }, []);
+
+  const handleJumpToBottom = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    stickToBottomRef.current = true;
+    setShowScrollToBottom(false);
+    // 用户主动跳转到底部时用平滑滚动，读起来更自然。
+    if (typeof scroller.scrollTo === "function") {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+    } else {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+    // smooth 结束后再校准一次，避免动画中途高度变化导致按钮残留。
+    window.setTimeout(() => {
+      updateScrollToBottomVisibility(scroller);
+    }, 320);
+  }, [updateScrollToBottomVisibility]);
 
   const scheduleScrollToBottom = useCallback(() => {
     if (!stickToBottomRef.current) return;
@@ -147,7 +185,11 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   useEffect(() => {
     // 新消息结构变化：若用户仍贴底，则滚到底。
     scheduleScrollToBottom();
-  }, [messages, scheduleScrollToBottom]);
+    const frame = window.requestAnimationFrame(() => {
+      updateScrollToBottomVisibility();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, scheduleScrollToBottom, updateScrollToBottomVisibility]);
 
   useEffect(() => {
     const wasStreaming = previousIsStreamingRef.current;
@@ -169,10 +211,11 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
     if (!content || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
       scheduleScrollToBottom();
+      updateScrollToBottomVisibility();
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [scheduleScrollToBottom]);
+  }, [scheduleScrollToBottom, updateScrollToBottomVisibility]);
 
   if (messages.length === 0 && !isStreaming) {
     if (!initialized && initError) {
@@ -215,60 +258,76 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   }
 
   return (
-    <div
-      ref={scrollerRef}
-      className="chat-dialog-surface thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pb-7 pt-6 sm:px-8"
-      onScroll={(event) => {
-        stickToBottomRef.current = isNearBottom(event.currentTarget);
-      }}
-    >
-      <div ref={contentRef} className="mx-auto flex w-full max-w-[1180px] flex-col gap-5">
-        {messages.map((message, index) => (
-          <MessageRow
-            key={message.id}
-            message={message}
-            messageIndex={index}
-            sourceMessages={messages}
-            onExecutePlan={onExecutePlan}
-            onResendUserMessage={onResendUserMessage}
-            canEdit={!isStreaming}
-          />
-        ))}
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scrollerRef}
+        className="chat-dialog-surface thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 pb-7 pt-6 sm:px-8"
+        onScroll={(event) => {
+          const scroller = event.currentTarget;
+          stickToBottomRef.current = isNearBottom(scroller);
+          updateScrollToBottomVisibility(scroller);
+        }}
+      >
+        <div ref={contentRef} className="mx-auto flex w-full max-w-[1180px] flex-col gap-5">
+          {messages.map((message, index) => (
+            <MessageRow
+              key={message.id}
+              message={message}
+              messageIndex={index}
+              sourceMessages={messages}
+              onExecutePlan={onExecutePlan}
+              onResendUserMessage={onResendUserMessage}
+              canEdit={!isStreaming}
+            />
+          ))}
 
-        {isStreaming && streamingText && (
-          <article className="chat-answer group relative">
-            <div className="chat-status-line mb-5 border-b border-[var(--chat-line)] pb-3">
-              <IconLoader2 size={16} stroke={1.8} className="animate-spin text-[var(--accent)]" />
-              <span>{streamingLabel || intl.formatMessage({ id: "chat.runSummary.running" })}</span>
+          {isStreaming && streamingText && (
+            <article className="chat-answer group relative">
+              <div className="chat-status-line mb-5 border-b border-[var(--chat-line)] pb-3">
+                <IconLoader2 size={16} stroke={1.8} className="animate-spin text-[var(--accent)]" />
+                <span>{streamingLabel || intl.formatMessage({ id: "chat.runSummary.running" })}</span>
+                <IconChevronRight size={16} stroke={1.8} className="text-[var(--chat-faint)]" />
+              </div>
+              <div className="chat-prose chat-prose-streaming max-w-[980px]">
+                <StreamingMessageContent content={stableStreamingText || streamingText} />
+                <span className="ml-1 inline-block h-3.5 w-1 animate-pulse rounded-sm bg-[var(--accent)] align-middle" />
+              </div>
+            </article>
+          )}
+
+          {isStreaming && !streamingText && (
+            <div className="chat-status-line border-b border-[var(--chat-line)] pb-3">
+              <span className="flex gap-1">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-faint)]" style={{ animationDelay: "0ms" }} />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-faint)]" style={{ animationDelay: "140ms" }} />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-faint)]" style={{ animationDelay: "280ms" }} />
+              </span>
+              {streamingLabel || intl.formatMessage({ id: "chat.thinking" })}
               <IconChevronRight size={16} stroke={1.8} className="text-[var(--chat-faint)]" />
             </div>
-            <div className="chat-prose chat-prose-streaming max-w-[980px]">
-              <StreamingMessageContent content={stableStreamingText || streamingText} />
-              <span className="ml-1 inline-block h-3.5 w-1 animate-pulse rounded-sm bg-[var(--accent)] align-middle" />
+          )}
+
+          {messages.length > 0 && !isStreaming && (
+            <div className="mt-1 flex justify-end">
+              <GenerateSkillButton />
             </div>
-          </article>
-        )}
+          )}
 
-        {isStreaming && !streamingText && (
-          <div className="chat-status-line border-b border-[var(--chat-line)] pb-3">
-            <span className="flex gap-1">
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-faint)]" style={{ animationDelay: "0ms" }} />
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-faint)]" style={{ animationDelay: "140ms" }} />
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--chat-faint)]" style={{ animationDelay: "280ms" }} />
-            </span>
-            {streamingLabel || intl.formatMessage({ id: "chat.thinking" })}
-            <IconChevronRight size={16} stroke={1.8} className="text-[var(--chat-faint)]" />
-          </div>
-        )}
-
-        {messages.length > 0 && !isStreaming && (
-          <div className="mt-1 flex justify-end">
-            <GenerateSkillButton />
-          </div>
-        )}
-
-        <div ref={bottomRef} />
+          <div ref={bottomRef} />
+        </div>
       </div>
+
+      {showScrollToBottom && (
+        <button
+          type="button"
+          onClick={handleJumpToBottom}
+          className="chat-scroll-to-bottom"
+          title={intl.formatMessage({ id: "chat.scrollToBottom" })}
+          aria-label={intl.formatMessage({ id: "chat.scrollToBottom" })}
+        >
+          <IconChevronDown size={18} stroke={2} />
+        </button>
+      )}
     </div>
   );
 }
@@ -1057,12 +1116,12 @@ function toolGroupIcon(type: string) {
     case "request_plugin_install": return <IconSettings size={13} stroke={1.8} />;
     case "plugin_manage": return <IconSettings size={13} stroke={1.8} />;
     case "browser_run": return <IconBrowser size={13} stroke={1.8} />;
-    case "spawn_agent": return <IconMessage2 size={13} stroke={1.8} />;
+    case "spawn_agent": return <IconCpu size={13} stroke={1.8} />;
     case "wait_agent": return <IconClock size={13} stroke={1.8} />;
-    case "send_input": return <IconMessage2 size={13} stroke={1.8} />;
+    case "send_input": return <IconSend size={13} stroke={1.8} />;
     case "resume_agent": return <IconRefresh size={13} stroke={1.8} />;
-    case "list_agents": return <IconMessage2 size={13} stroke={1.8} />;
-    case "close_agent": return <IconMessage2 size={13} stroke={1.8} />;
+    case "list_agents": return <IconCpu size={13} stroke={1.8} />;
+    case "close_agent": return <IconX size={13} stroke={1.8} />;
     case "web_search": return <IconSearch size={13} stroke={1.8} />;
     case "web_fetch": return <IconFileText size={13} stroke={1.8} />;
     default: return <IconFile size={13} stroke={1.8} />;
@@ -1078,6 +1137,28 @@ function parseToolArgs(item: ToolCallItem): Record<string, unknown> {
     }
     return {};
   }
+}
+
+function subagentStatusLabel(status: string | undefined, intl: ReturnType<typeof useIntl>): string {
+  const normalized = (status ?? "running").trim().toLowerCase();
+  const key = `tool.subagent.status.${normalized}`;
+  try {
+    return intl.formatMessage({ id: key, defaultMessage: status ?? "running" });
+  } catch {
+    return status ?? "running";
+  }
+}
+
+function toolFriendlyName(name: string, intl: ReturnType<typeof useIntl>): string {
+  const map: Record<string, string> = {
+    spawn_agent: intl.formatMessage({ id: "tool.spawnAgent" }),
+    wait_agent: intl.formatMessage({ id: "tool.waitAgent" }),
+    send_input: intl.formatMessage({ id: "tool.sendInput" }),
+    resume_agent: intl.formatMessage({ id: "tool.resumeAgent" }),
+    list_agents: intl.formatMessage({ id: "tool.listAgents" }),
+    close_agent: intl.formatMessage({ id: "tool.closeAgent" }),
+  };
+  return map[name] ?? name;
 }
 
 function parseBrowserRunOutput(output?: string): {
@@ -1209,6 +1290,8 @@ function NestedToolItem({ item }: { item: ToolCallItem }) {
   // 明细同样只在用户点击时展开，避免工具状态更新时展开内容跳动。
   const [userExpanded, setUserExpanded] = useState(false);
   const isExpanded = userExpanded;
+  const intl = useIntl();
+  const friendlyName = toolFriendlyName(item.name, intl);
 
   const statusColor =
     item.status === "running"
@@ -1234,9 +1317,16 @@ function NestedToolItem({ item }: { item: ToolCallItem }) {
         )}
         {toolGroupIcon(item.name)}
         <span className="min-w-0 flex-1 truncate">
-          <span className="font-mono text-[var(--chat-prose)]">{item.name}</span>
+          <span className={`${isSubagentToolName(item.name) ? "" : "font-mono "}text-[var(--chat-prose)]`}>
+            {friendlyName}
+          </span>
           {item.displayLabel && item.displayLabel !== item.name && (
             <span className="ml-1.5 text-[var(--chat-faint)]">{item.displayLabel}</span>
+          )}
+          {isSubagentToolName(item.name) && (
+            <span className="ml-1.5 rounded-[var(--radius-sm)] bg-[var(--chat-chip)] px-1 py-0.5 text-[10px] text-[var(--chat-faint)]">
+              {intl.formatMessage({ id: "tool.subagent.isolated" })}
+            </span>
           )}
         </span>
         {item.status !== "running" && (
@@ -1296,6 +1386,9 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
     : null;
   const imageGenerateResult = item.name === "image_generate"
     ? parseImageGenerateOutput(item.output)
+    : null;
+  const subagentResult = isSubagentToolName(item.name)
+    ? parseSubagentToolOutput(item.output)
     : null;
   const planItems = Array.isArray(args.plan)
     ? args.plan.filter((item): item is { step?: unknown; status?: unknown } => typeof item === "object" && item !== null)
@@ -1796,34 +1889,106 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
       {item.name === "spawn_agent" && (
         <div className="space-y-1.5">
           <div className="flex items-center gap-1.5">
-            <IconMessage2 size={11} stroke={1.8} />
-            <span className="font-mono">{role ?? "agent"}</span>
+            <IconCpu size={11} stroke={1.8} />
+            <span className="font-mono">
+              {role ?? subagentResult?.agents[0]?.role ?? "agent"}
+            </span>
+            {(subagentResult?.agents[0]?.id || agentId) && (
+              <span className="rounded-[var(--radius-sm)] bg-[var(--chat-chip)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--chat-faint)]">
+                {subagentResult?.agents[0]?.id ?? agentId}
+              </span>
+            )}
+            {subagentResult?.agents[0]?.status && (
+              <span className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] ${subagentStatusTone(subagentResult.agents[0].status)}`}>
+                {subagentStatusLabel(subagentResult.agents[0].status, intl)}
+              </span>
+            )}
           </div>
           {prompt && (
             <p className="max-h-[4.5rem] overflow-hidden text-[var(--chat-prose)]">
               {prompt}
             </p>
           )}
+          {subagentResult?.agents[0]?.output && (
+            <p className="max-h-[4.5rem] overflow-hidden text-[11px] text-[var(--chat-muted)]">
+              {subagentResult.agents[0].output}
+            </p>
+          )}
+          {subagentResult?.agents[0]?.error && (
+            <p className="text-[11px] text-[var(--danger)]">
+              {subagentResult.agents[0].error}
+            </p>
+          )}
         </div>
       )}
       {item.name === "wait_agent" && (
-        <div className="flex items-center gap-1.5">
-          <IconClock size={11} stroke={1.8} />
-          <span className="font-mono">
-            {agentId ?? (agentIds.length ? `${agentIds.length} agents` : "agents")}
-          </span>
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <IconClock size={11} stroke={1.8} />
+            <span className="font-mono">
+              {agentId ?? (agentIds.length ? `${agentIds.length} agents` : "agents")}
+            </span>
+            {typeof subagentResult?.completed === "boolean" && (
+              <span className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] ${
+                subagentResult.completed
+                  ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                  : "bg-[var(--warning-soft,var(--chat-chip))] text-[var(--warning)]"
+              }`}>
+                {subagentResult.completed
+                  ? intl.formatMessage({ id: "tool.subagent.status.completed" })
+                  : intl.formatMessage({ id: "tool.subagent.status.running" })}
+              </span>
+            )}
+          </div>
+          {subagentResult?.agents?.length ? (
+            <div className="space-y-1">
+              {subagentResult.agents.map((agent, index) => (
+                <div
+                  key={agent.id ?? `${index}`}
+                  className="flex flex-wrap items-center gap-1.5 rounded-[var(--radius-sm)] bg-[var(--chat-chip)] px-2 py-1 text-[11px]"
+                >
+                  <IconCpu size={11} stroke={1.8} className="text-[var(--chat-muted)]" />
+                  <span className="font-mono text-[var(--chat-prose)]">{agent.id ?? agent.role ?? "agent"}</span>
+                  {agent.role && agent.id && (
+                    <span className="text-[var(--chat-faint)]">{agent.role}</span>
+                  )}
+                  {agent.status && (
+                    <span className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] ${subagentStatusTone(agent.status)}`}>
+                      {subagentStatusLabel(agent.status, intl)}
+                    </span>
+                  )}
+                  {agent.durationMs != null && (
+                    <span className="text-[var(--chat-faint)]">{formatDuration(agent.durationMs)}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {subagentResult?.missing?.length ? (
+            <p className="text-[11px] text-[var(--danger)]">
+              {intl.formatMessage({ id: "tool.subagent.missing" })}: {subagentResult.missing.join(", ")}
+            </p>
+          ) : null}
         </div>
       )}
       {item.name === "send_input" && (
         <div className="space-y-1.5">
           <div className="flex items-center gap-1.5">
-            <IconMessage2 size={11} stroke={1.8} />
+            <IconSend size={11} stroke={1.8} />
             <span className="font-mono">{sendInputTarget ?? "agent"}</span>
+            {subagentResult?.status && (
+              <span className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] ${subagentStatusTone(subagentResult.status)}`}>
+                {subagentStatusLabel(subagentResult.status, intl)}
+              </span>
+            )}
           </div>
           {sendInputMessage && (
             <p className="max-h-[4.5rem] overflow-hidden text-[var(--chat-prose)]">
               {sendInputMessage}
             </p>
+          )}
+          {subagentResult?.note && (
+            <p className="text-[11px] text-[var(--chat-muted)]">{subagentResult.note}</p>
           )}
         </div>
       )}
@@ -1831,18 +1996,58 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
         <div className="flex items-center gap-1.5">
           <IconRefresh size={11} stroke={1.8} />
           <span className="font-mono">{resumeAgentTarget ?? "agent"}</span>
+          {subagentResult?.status && (
+            <span className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] ${subagentStatusTone(subagentResult.status)}`}>
+              {subagentStatusLabel(subagentResult.status, intl)}
+            </span>
+          )}
         </div>
       )}
       {item.name === "list_agents" && (
-        <div className="flex items-center gap-1.5">
-          <IconMessage2 size={11} stroke={1.8} />
-          <span className="font-mono">{String(args.status ?? "agents")}</span>
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <IconCpu size={11} stroke={1.8} />
+            <span className="font-mono">
+              {subagentResult?.agents?.length
+                ? `${subagentResult.agents.length} agents`
+                : String(args.status ?? "agents")}
+            </span>
+          </div>
+          {subagentResult?.agents?.length ? (
+            <div className="space-y-1">
+              {subagentResult.agents.map((agent, index) => (
+                <div
+                  key={agent.id ?? `${index}`}
+                  className="flex flex-wrap items-center gap-1.5 rounded-[var(--radius-sm)] bg-[var(--chat-chip)] px-2 py-1 text-[11px]"
+                >
+                  <span className="font-mono text-[var(--chat-prose)]">{agent.id ?? "agent"}</span>
+                  {agent.role && <span className="text-[var(--chat-faint)]">{agent.role}</span>}
+                  {agent.status && (
+                    <span className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] ${subagentStatusTone(agent.status)}`}>
+                      {subagentStatusLabel(agent.status, intl)}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       )}
       {item.name === "close_agent" && (
         <div className="flex items-center gap-1.5">
-          <IconMessage2 size={11} stroke={1.8} />
-          <span className="font-mono">{closeAgentTarget ?? "agent"}</span>
+          <IconX size={11} stroke={1.8} />
+          <span className="font-mono">{closeAgentTarget ?? subagentResult?.target ?? "agent"}</span>
+          {(subagentResult?.previousStatus || subagentResult?.closed != null) && (
+            <span className={`rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] ${
+              subagentResult?.closed
+                ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                : subagentStatusTone(subagentResult?.previousStatus)
+            }`}>
+              {subagentResult?.closed
+                ? intl.formatMessage({ id: "tool.subagent.status.closed" })
+                : subagentStatusLabel(subagentResult?.previousStatus, intl)}
+            </span>
+          )}
         </div>
       )}
       {item.name === "browser_run" && (
@@ -1947,7 +2152,7 @@ function ToolDetailView({ item }: { item: ToolCallItem }) {
         </div>
       )}
 
-      {item.output && item.status !== "running" && (
+      {item.output && item.status !== "running" && !(isSubagentToolName(item.name) && subagentResult) && (
         <div className="group/output relative mt-1">
           <div className="mb-1 flex items-center justify-between text-[11px] text-[var(--chat-faint)]">
             <span>output</span>

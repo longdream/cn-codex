@@ -1,0 +1,5 @@
+{"manifest": [
+  {"file": "file1.txt", "encoded": "SGVsbG8gV29ybGQ="},
+  {"file": "file2.txt", "encoded": "QmFzZTY0IHRlc3QgZGF0YQ=="},
+  {"file": "file3.txt", "encoded": "U2hvcnQgdGV4dA=="}
+]}

@@ -1,0 +1,1 @@
+{"uses_try_catch": true, "has_error_boundary": true, "error_reporting": "console", "error_hook": "ErrorBoundary component"}

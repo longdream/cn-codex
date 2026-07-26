@@ -1,0 +1,1 @@
+{"vite_config": "vite.config.ts", "ts_config": "tsconfig.json", "uses_postcss": true, "build_output": "dist"}

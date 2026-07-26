@@ -1,0 +1,1 @@
+{"hook_count": 4, "hook_files": "useAppVersion,useFortuneDetailStream,useRecording,useTauriEvents", "tauri_events_hook": "useTauriEvents", "recording_hook": "useRecording"}

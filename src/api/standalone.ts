@@ -240,6 +240,7 @@ export async function standaloneThreadGoalClear(
 export interface StandaloneChatOverrides {
   provider?: StandaloneChatProviderOverride | null;
   smartbrainEnabled?: boolean | null;
+  subagentEnabled?: boolean | null;
 }
 
 /** 仅本对话生效的供应商/模型覆盖快照（不写全局 config.toml） */
@@ -287,6 +288,7 @@ export async function standaloneChat(
     robotId,
     provider: overrides?.provider ?? null,
     smartbrainEnabled: overrides?.smartbrainEnabled ?? null,
+    subagentEnabled: overrides?.subagentEnabled ?? null,
     clientMessageId: clientMessageId ?? null,
   });
 }
@@ -310,6 +312,19 @@ export async function standaloneTurnInterrupt(
   return invoke("standalone_turn_interrupt", {
     threadId: threadId ?? null,
   });
+}
+
+export async function standaloneSubagentClose(
+  threadId: string,
+  target: string,
+): Promise<{
+  target: string;
+  closed: boolean;
+  previousStatus: string;
+  status: string;
+  message: string;
+}> {
+  return invoke("standalone_subagent_close", { threadId, target });
 }
 
 export async function standalonePlanOpen(path: string): Promise<{ status: string }> {

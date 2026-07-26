@@ -1,0 +1,5 @@
+level,count
+DEBUG,1
+ERROR,2
+INFO,3
+WARN,1

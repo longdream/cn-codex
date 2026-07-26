@@ -1091,6 +1091,32 @@ textarea:focus {
   color: var(--chat-muted);
 }
 
+.chat-scroll-to-bottom {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  z-index: 20;
+  display: inline-flex;
+  transform: translateX(-50%);
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--chat-line);
+  border-radius: 9999px;
+  background: var(--chat-card-solid);
+  color: var(--chat-prose);
+  box-shadow: var(--shadow-soft);
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.chat-scroll-to-bottom:hover {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .hljs {
   display: block;
   overflow-x: auto;

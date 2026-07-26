@@ -1,0 +1,3 @@
+valid1.json
+valid2.json
+valid3.json

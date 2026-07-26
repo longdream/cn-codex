@@ -1,0 +1,6 @@
+student_id,name,grade,subject,score
+1,Alice,10,Math,95
+1,Alice,10,Science,88
+2,Bob,11,Math,72
+3,Carol,10,Science,91
+5,Eve,11,Math,85

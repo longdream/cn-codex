@@ -1,0 +1,1 @@
+{"supports_file_upload": true, "supported_types": "images, documents", "size_limit": "Tauri dialog", "attachment_component": "ChatInput"}

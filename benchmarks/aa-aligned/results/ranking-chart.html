@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AA Coding Agent Index 排行榜 — CN-Codex 实测结果</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #f5f7fa; display: flex; justify-content: center; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+.container { width: 1200px; background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); padding: 32px; }
+h1 { font-size: 24px; color: #1a1a2e; margin-bottom: 4px; text-align: center; }
+.subtitle { font-size: 14px; color: #888; text-align: center; margin-bottom: 24px; }
+#chart { width: 100%; height: 520px; }
+.legend { display: flex; justify-content: center; gap: 32px; margin-top: 12px; font-size: 13px; color: #555; flex-wrap: wrap; }
+.legend-item { display: flex; align-items: center; gap: 6px; }
+.legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+.notes { margin-top: 20px; padding: 16px 20px; background: #f8f9ff; border-radius: 10px; border-left: 4px solid #FF6B35; font-size: 13px; color: #555; line-height: 1.7; }
+.notes strong { color: #333; }
+table { width: 100%; margin-top: 16px; border-collapse: collapse; font-size: 13px; }
+th { background: #f0f2f5; padding: 10px 12px; text-align: left; font-weight: 600; color: #333; }
+td { padding: 8px 12px; border-bottom: 1px solid #eee; }
+tr.cn-row { background: #fff5f0; font-weight: 700; }
+tr.cn-row td { color: #d45200; }
+tr.group-divider td { background: #fafbfc; border-bottom: 2px solid #FF6B35; color: #999; font-size: 12px; text-align: center; }
+.lt { color: #999; }
+.tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-left: 4px; }
+.tag-official { background: #e8eaf0; color: #666; }
+.tag-proxy { background: #fff0e6; color: #d45200; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🏆 AA Coding Agent Index 排行榜</h1>
+  <p class="subtitle">数据来源：<a href="https://artificialanalysis.ai/agents/coding-agents" target="_blank">artificialanalysis.ai/agents/coding-agents</a> · CN-Codex 为本地实际评测结果</p>
+  
+  <div id="chart"></div>
+  
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#5470C6;"></div>
+      <span>AA 官方 Coding Agent Index（321 题套件）</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-dot" style="background:#FF6B35;"></div>
+      <span>★ CN-Codex + DeepSeek V4 Flash（本地 12 题代理套件）</span>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>#</th><th>Agent + Model</th><th>套件</th><th>AA Index</th><th>备注</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>Claude Code - Opus 5 (xhigh)</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>67</strong></td><td class="lt">AA 最高分</td></tr>
+      <tr><td>2</td><td>Codex - GPT-5.6 Sol (max)</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>67</strong></td><td class="lt"></td></tr>
+      <tr><td>3</td><td>Claude Code - Fable 5 (max) fallback</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>66</strong></td><td class="lt"></td></tr>
+      <tr><td>4</td><td>Grok Build - Grok 4.5 (high)</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>64</strong></td><td class="lt">AA 参考基准</td></tr>
+      <tr><td>5</td><td>Kimi Code CLI - Kimi K3</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>61</strong></td><td class="lt"></td></tr>
+      <tr><td>6</td><td>Opencode - Muse Spark 1.1 (xhigh)</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>54</strong></td><td class="lt"></td></tr>
+      <tr><td>7</td><td>Claude Code - GLM-5.2</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>43</strong></td><td class="lt"></td></tr>
+      <tr><td>8</td><td>Cursor CLI - Composer 2.5 Fast</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>38</strong></td><td class="lt"></td></tr>
+      <tr><td>9</td><td>Claude Code - DeepSeek V4 Pro (high)</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>31</strong></td><td class="lt">AA 官方测的 V4 Pro</td></tr>
+      <tr><td>10</td><td>Gemini CLI - Gemini 3.1 Pro (high)</td><td><span class="tag tag-official">AA 321 题</span></td><td><strong>30</strong></td><td class="lt"></td></tr>
+      <tr class="group-divider"><td colspan="5">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</td></tr>
+      <tr class="cn-row"><td>★</td><td><strong>CN-Codex + c-deepseek-v4-flash</strong></td><td><span class="tag tag-proxy">本地 12 题代理</span></td><td><strong>12/12 ✅ (100%)</strong></td><td>3 组件 pass@1=1.0</td></tr>
+    </tbody>
+  </table>
+
+  <div class="notes">
+    <strong>⚠️ 重要说明：</strong><br>
+    • AA 官方 Coding Agent Index v1.3 基于 <strong>321 任务</strong>（DeepSWE 113 题 + Terminal-Bench v2 84 题 + SWE-Atlas-QnA 124 题），分数范围 <strong>30-67</strong><br>
+    • AA 官方 <strong>只测了 DeepSeek V4 Pro（31 分排第 9）</strong>，<strong>未测 DeepSeek V4 Flash</strong> 的 Coding Agent 分数<br>
+    • CN-Codex 的评测基于本地 <strong>AA-Aligned 代理套件（12 题）</strong>，同样覆盖 3 个组件，<strong>12/12 全部通过</strong><br>
+    • 由于题量差距（12 vs 321），本地代理套件的 100% 不等同于 AA 官方 100 分<br>
+    • 要获得 AA 官方排名，需要将 CN-Codex 提交到 AA 的 321 任务套件评测，或将本地套件扩充到与 AA 相当规模
+  </div>
+</div>
+
+<script>
+const chart = echarts.init(document.getElementById('chart'));
+const option = {
+  tooltip: {
+    trigger: 'axis',
+    axisPointer: { type: 'shadow' },
+    formatter: function(params) {
+      const p = params[0];
+      const name = p.name.replace(/\n/g, ' ');
+      if (p.dataIndex === 10) {
+        return '<strong>' + name + '</strong><br/>本地代理评测: 12/12 ✅ (100%)';
+      }
+      return '<strong>' + name + '</strong><br/>AA Coding Agent Index: ' + p.value;
+    }
+  },
+  grid: {
+    left: '3%',
+    right: '4%',
+    bottom: '15%',
+    top: '8%',
+    containLabel: true
+  },
+  xAxis: {
+    type: 'category',
+    data: [
+      'Claude Opus5\nxhigh',
+      'Codex GPT5.6\nSol (max)',
+      'Claude Fable5\n(max) fallback',
+      'Grok 4.5\n(high)',
+      'Kimi K3',
+      'Opencode\nMuse Spark 1.1',
+      'Claude\nGLM-5.2',
+      'Cursor Composer\n2.5 Fast',
+      'DeepSeek\nV4 Pro (high)',
+      'Gemini 3.1\nPro (high)',
+      '★ CN-Codex\nDeepSeek V4 Flash'
+    ],
+    axisLabel: {
+      fontSize: 11,
+      fontWeight: function(v) { return v.includes('CN-Codex') ? 'bold' : 'normal'; },
+      color: function(v) { return v.includes('CN-Codex') ? '#FF6B35' : '#333'; }
+    },
+    axisLine: { lineStyle: { color: '#ddd' } },
+    splitLine: { show: false }
+  },
+  yAxis: {
+    type: 'value',
+    name: 'Coding Agent Index',
+    min: 0,
+    max: 100,
+    splitLine: { lineStyle: { color: '#eee', type: 'dashed' } },
+    axisLabel: { fontSize: 12 }
+  },
+  series: [{
+    name: 'Coding Agent Index',
+    type: 'bar',
+    data: [
+      { value: 67, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { value: 67, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { value: 66, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { value: 64, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { value: 61, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { value: 54, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { value: 43, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { value: 38, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { value: 31, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { value: 30, itemStyle: { color: '#5470C6', borderRadius: [4,4,0,0] } },
+      { 
+        value: 100, 
+        itemStyle: { 
+          color: '#FF6B35', 
+          borderRadius: [4,4,0,0],
+          shadowColor: 'rgba(255,107,53,0.3)',
+          shadowBlur: 10
+        }
+      }
+    ],
+    barWidth: 32,
+    label: {
+      show: true,
+      position: 'top',
+      fontSize: 12,
+      fontWeight: 'bold',
+      color: function(p) { return p.dataIndex === 10 ? '#FF6B35' : '#5470C6'; },
+      formatter: function(p) { 
+        return p.dataIndex === 10 ? '12/12 ✅' : p.value; 
+      }
+    },
+    markLine: {
+      silent: true,
+      symbol: 'none',
+      data: [
+        {
+          yAxis: 50,
+          lineStyle: { type: 'dashed', color: '#ccc', width: 1 }
+        }
+      ],
+      label: { show: false }
+    },
+    animationDuration: 1500,
+    animationEasing: 'elasticOut'
+  }]
+};
+chart.setOption(option);
+window.addEventListener('resize', () => chart.resize());
+</script>
+</body>
+</html>

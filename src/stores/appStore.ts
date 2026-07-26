@@ -19,6 +19,7 @@ import type {
   ProviderPreset,
   VisionFallbackKind,
 } from "../types/provider";
+import type { ActiveSubagentView } from "../utils/subagentStatus";
 
 export const GENERAL_PROJECT_ID = "__general__";
 
@@ -360,6 +361,8 @@ export interface ThreadRuntimeState {
   selectedRobotId: string | null;
   robotCreateMode: boolean;
   robotWaitCountdown: RobotWaitCountdown | null;
+  /** 当前线程的实时子智能体状态（subagent-status 事件） */
+  liveSubagents: Record<string, ActiveSubagentView>;
   reasoningText: string;
   /** 浏览器状态 — 每个对话独立维护 */
   browserPanelUrl: string | null;
@@ -375,6 +378,8 @@ export interface ThreadRuntimeState {
   overrideModelId: string | null;
   /** 本对话是否启用本地知识库 */
   smartbrainEnabled: boolean;
+  /** 本对话是否启用子智能体工具 */
+  subagentEnabled: boolean;
   updatedAt: number;
 }
 
@@ -398,6 +403,7 @@ function createDefaultThreadRuntimeState(): ThreadRuntimeState {
     selectedRobotId: null,
     robotCreateMode: false,
     robotWaitCountdown: null,
+    liveSubagents: {},
     reasoningText: "",
     browserPanelUrl: null,
     browserPanelTitle: null,
@@ -409,6 +415,7 @@ function createDefaultThreadRuntimeState(): ThreadRuntimeState {
     overrideProviderId: null,
     overrideModelId: null,
     smartbrainEnabled: false,
+    subagentEnabled: false,
     updatedAt: Date.now(),
   };
 }
@@ -1133,11 +1140,12 @@ type PersistedProviderRecord = Omit<ProviderConfig, "models"> & {
   maxOutputTokens?: unknown;
 };
 
-/** 跨会话持久化的对话级偏好（模型覆盖 + 本地知识库开关） */
+/** 跨会话持久化的对话级偏好（模型覆盖 + 本地知识库/子智能体开关） */
 export interface ThreadPreference {
   overrideProviderId?: string | null;
   overrideModelId?: string | null;
   smartbrainEnabled?: boolean;
+  subagentEnabled?: boolean;
 }
 
 function normalizePositiveInt(value: unknown, fallback: number): number {
@@ -1720,11 +1728,16 @@ function buildThreadPreferencePatch(
       patch.smartbrainEnabled !== undefined
         ? patch.smartbrainEnabled
         : (existing?.smartbrainEnabled ?? false),
+    subagentEnabled:
+      patch.subagentEnabled !== undefined
+        ? patch.subagentEnabled
+        : (existing?.subagentEnabled ?? false),
   };
   const isEmpty =
     !next.overrideProviderId &&
     !next.overrideModelId &&
-    !next.smartbrainEnabled;
+    !next.smartbrainEnabled &&
+    !next.subagentEnabled;
   return isEmpty ? null : next;
 }
 
@@ -1847,6 +1860,8 @@ interface AppState {
   overrideModelId: string | null;
   /** 本对话是否启用本地知识库 */
   smartbrainEnabled: boolean;
+  /** 本对话是否启用子智能体工具 */
+  subagentEnabled: boolean;
   /** 各对话持久化偏好，key 为 threadId */
   threadPreferences: Record<string, ThreadPreference>;
   autoApprove: boolean;
@@ -1858,6 +1873,8 @@ interface AppState {
   /** 机器人提问倒计时等待状态 */
   robotWaitCountdown: RobotWaitCountdown | null;
   setRobotWaitCountdown: (v: RobotWaitCountdown | null) => void;
+  /** 当前线程实时子智能体状态 */
+  liveSubagents: Record<string, ActiveSubagentView>;
 
   /** Workflow 提取：当设置为非空 threadId 时弹出提取对话框 */
   workflowExtractThreadId: string | null;
@@ -1970,6 +1987,7 @@ interface AppState {
   setWorkflowExtractThreadId: (id: string | null) => void;
   setThreadModelOverride: (providerId: string | null, modelId: string | null) => void;
   setThreadSmartbrainEnabled: (enabled: boolean) => void;
+  setThreadSubagentEnabled: (enabled: boolean) => void;
   buildThreadChatProviderOverride: (
     providerId?: string | null,
     modelId?: string | null,
@@ -2049,6 +2067,9 @@ interface AppState {
   dequeueMessageForThread: (threadId: string) => QueuedMessage | null;
   enqueueMessageToThread: (threadId: string, msg: QueuedMessage) => void;
   setRobotWaitCountdownForThread: (threadId: string, v: RobotWaitCountdown | null) => void;
+  upsertLiveSubagentForThread: (threadId: string, agent: ActiveSubagentView) => void;
+  clearLiveSubagentsForThread: (threadId: string) => void;
+  removeLiveSubagentForThread: (threadId: string, agentId: string) => void;
   setActivePlanForThread: (threadId: string, plan: PlanFile | null) => void;
   setLatestPlanContentForThread: (threadId: string, content: string | null) => void;
 }
@@ -2072,6 +2093,7 @@ function assembleRuntimeStateFromStore(
     | "selectedRobotId"
     | "robotCreateMode"
     | "robotWaitCountdown"
+    | "liveSubagents"
     | "browserPanelUrl"
     | "browserPanelTitle"
     | "browserPanelStatus"
@@ -2082,6 +2104,7 @@ function assembleRuntimeStateFromStore(
     | "overrideProviderId"
     | "overrideModelId"
     | "smartbrainEnabled"
+    | "subagentEnabled"
   >,
 ): ThreadRuntimeState {
   return {
@@ -2100,6 +2123,7 @@ function assembleRuntimeStateFromStore(
     selectedRobotId: state.selectedRobotId,
     robotCreateMode: state.robotCreateMode,
     robotWaitCountdown: state.robotWaitCountdown,
+    liveSubagents: state.liveSubagents,
     reasoningText: "",
     browserPanelUrl: state.browserPanelUrl,
     browserPanelTitle: state.browserPanelTitle,
@@ -2111,6 +2135,7 @@ function assembleRuntimeStateFromStore(
     overrideProviderId: state.overrideProviderId,
     overrideModelId: state.overrideModelId,
     smartbrainEnabled: state.smartbrainEnabled,
+    subagentEnabled: state.subagentEnabled,
     updatedAt: Date.now(),
   };
 }
@@ -2181,6 +2206,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   robotCreateMode: false,
   robotWaitCountdown: null,
   setRobotWaitCountdown: (v) => set({ robotWaitCountdown: v }),
+  liveSubagents: {},
   workflowExtractThreadId: null,
   rightPanelVisible: false,
   rightPanelTab: "browser",
@@ -2208,6 +2234,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   overrideProviderId: null,
   overrideModelId: null,
   smartbrainEnabled: false,
+  subagentEnabled: false,
   threadPreferences: {},
 
   setInitialized: (v) => set({ initialized: v }),
@@ -2240,6 +2267,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       pendingComposerInsert: null,
       pendingMessageQueue: [],
       pendingFileReviews: {},
+      liveSubagents: {},
       browserPanelUrl: null,
       browserPanelTitle: null,
       browserPanelStatus: "idle",
@@ -2250,6 +2278,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       overrideProviderId: pref.overrideProviderId ?? null,
       overrideModelId: pref.overrideModelId ?? null,
       smartbrainEnabled: pref.smartbrainEnabled ?? false,
+      subagentEnabled: pref.subagentEnabled ?? false,
     });
   },
   startNewThreadWithMessage: (threadId, message) => {
@@ -2262,6 +2291,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       overrideProviderId: state.overrideProviderId,
       overrideModelId: state.overrideModelId,
       smartbrainEnabled: state.smartbrainEnabled,
+      subagentEnabled: state.subagentEnabled,
     });
     if (draftPref) {
       nextPrefs[threadId] = draftPref;
@@ -2294,6 +2324,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       overrideProviderId: pref.overrideProviderId ?? null,
       overrideModelId: pref.overrideModelId ?? null,
       smartbrainEnabled: pref.smartbrainEnabled ?? false,
+      subagentEnabled: pref.subagentEnabled ?? false,
       threadPreferences: nextPrefs,
     });
   },
@@ -2397,6 +2428,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       overrideProviderId: null,
       overrideModelId: null,
       smartbrainEnabled: false,
+      subagentEnabled: false,
     });
     return id;
   },
@@ -2434,6 +2466,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       overrideProviderId: null,
       overrideModelId: null,
       smartbrainEnabled: false,
+      subagentEnabled: false,
     });
   },
 
@@ -2469,6 +2502,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       overrideProviderId: null,
       overrideModelId: null,
       smartbrainEnabled: false,
+      subagentEnabled: false,
     });
   },
 
@@ -2516,6 +2550,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             overrideProviderId: null,
             overrideModelId: null,
             smartbrainEnabled: false,
+            subagentEnabled: false,
           }
         : {}),
     });
@@ -3182,6 +3217,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
     }
   },
+  setThreadSubagentEnabled: (enabled) => {
+    const state = get();
+    const threadId = state.currentThreadId;
+    const nextPrefs = { ...state.threadPreferences };
+    if (threadId) {
+      const nextPref = buildThreadPreferencePatch(nextPrefs[threadId], {
+        subagentEnabled: enabled,
+      });
+      if (nextPref) {
+        nextPrefs[threadId] = nextPref;
+      } else {
+        delete nextPrefs[threadId];
+      }
+      saveThreadPreferences(nextPrefs);
+    }
+    set({
+      subagentEnabled: enabled,
+      threadPreferences: nextPrefs,
+    });
+    if (threadId) {
+      get().applyToThread(threadId, () => ({
+        subagentEnabled: enabled,
+      }));
+    }
+  },
   buildThreadChatProviderOverride: (providerId, modelId) => {
     const state = get();
     return buildThreadChatProviderOverrideSnapshot(
@@ -3252,10 +3312,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           robotCreateMode: false,
           pendingMessageQueue: [],
           pendingFileReviews: {},
+          liveSubagents: {},
           // 新对话默认继承全局供应商/模型，本地知识库默认关闭。
           overrideProviderId: null,
           overrideModelId: null,
           smartbrainEnabled: false,
+          subagentEnabled: false,
         });
         const newThread: ThreadSummary = {
           id: threadId,
@@ -3365,6 +3427,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         robotCreateMode: false,
         pendingMessageQueue: [],
         pendingFileReviews: {},
+        liveSubagents: {},
         browserPanelUrl: null,
         browserPanelTitle: null,
         browserPanelStatus: "idle",
@@ -3375,6 +3438,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         overrideProviderId: pref.overrideProviderId ?? null,
         overrideModelId: pref.overrideModelId ?? null,
         smartbrainEnabled: pref.smartbrainEnabled ?? false,
+        subagentEnabled: pref.subagentEnabled ?? false,
       });
       if (rawThread?.id) {
         set((state) => {
@@ -3407,6 +3471,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         activePlan: null,
         pendingMessageQueue: [],
         pendingFileReviews: {},
+        liveSubagents: {},
         browserPanelUrl: null,
         browserPanelTitle: null,
         browserPanelStatus: "idle",
@@ -3452,6 +3517,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedRobotId: saved.selectedRobotId,
       robotCreateMode: saved.robotCreateMode,
       robotWaitCountdown: saved.robotWaitCountdown,
+      liveSubagents: saved.liveSubagents ?? {},
       browserPanelUrl: saved.browserPanelUrl,
       browserPanelTitle: saved.browserPanelTitle,
       browserPanelStatus: saved.browserPanelStatus,
@@ -3462,6 +3528,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       overrideProviderId: saved.overrideProviderId ?? pref.overrideProviderId ?? null,
       overrideModelId: saved.overrideModelId ?? pref.overrideModelId ?? null,
       smartbrainEnabled: saved.smartbrainEnabled ?? pref.smartbrainEnabled ?? false,
+      subagentEnabled: saved.subagentEnabled ?? pref.subagentEnabled ?? false,
     });
     return true;
   },
@@ -3756,6 +3823,48 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().applyToThread(threadId, () => ({
       robotWaitCountdown: v,
     }));
+  },
+
+  upsertLiveSubagentForThread: (threadId, agent) => {
+    if (!threadId || !agent?.id) return;
+    get().applyToThread(threadId, (draft) => {
+      const existing = draft.liveSubagents?.[agent.id];
+      if (existing && agent.updatedAt < existing.updatedAt) {
+        return {};
+      }
+      return {
+        liveSubagents: {
+          ...(draft.liveSubagents ?? {}),
+          [agent.id]: {
+            ...existing,
+            ...agent,
+            role: agent.role || existing?.role || "agent",
+            prompt: agent.prompt || existing?.prompt,
+            durationMs: agent.durationMs ?? existing?.durationMs ?? null,
+            output: agent.output ?? existing?.output ?? null,
+            error: agent.error ?? existing?.error ?? null,
+            source: "live",
+          },
+        },
+      };
+    });
+  },
+
+  clearLiveSubagentsForThread: (threadId) => {
+    get().applyToThread(threadId, () => ({
+      liveSubagents: {},
+    }));
+  },
+
+  removeLiveSubagentForThread: (threadId, agentId) => {
+    if (!threadId || !agentId) return;
+    get().applyToThread(threadId, (draft) => {
+      const current = draft.liveSubagents ?? {};
+      if (!current[agentId]) return {};
+      const next = { ...current };
+      delete next[agentId];
+      return { liveSubagents: next };
+    });
   },
 
   setActivePlanForThread: (threadId, plan) => {

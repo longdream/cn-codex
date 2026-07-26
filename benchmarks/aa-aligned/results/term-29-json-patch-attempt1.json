@@ -1,0 +1,12 @@
+﻿{
+    "ts":  "2026-07-26T06:45:06.0342800+08:00",
+    "model":  "cn-codex-agent",
+    "harness":  "CN-Codex",
+    "task_id":  "term-29-json-patch",
+    "component":  "terminal",
+    "attempt":  1,
+    "pass":  1,
+    "reason":  "json patch ok",
+    "wall_time_sec":  0.032,
+    "notes":  ""
+}

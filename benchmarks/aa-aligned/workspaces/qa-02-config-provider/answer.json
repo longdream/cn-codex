@@ -1,0 +1,6 @@
+{
+  "model": "c-deepseek-v4-flash",
+  "model_provider": "openai",
+  "web_search": "live",
+  "approval_policy": "on-request"
+}

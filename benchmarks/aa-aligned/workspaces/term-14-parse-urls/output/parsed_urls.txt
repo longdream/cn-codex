@@ -1,0 +1,3 @@
+https://docs.example.com/path?q=1
+https://example.com
+http://test.org/page

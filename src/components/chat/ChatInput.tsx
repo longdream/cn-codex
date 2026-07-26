@@ -325,8 +325,13 @@ export function ChatInput({
   const goalRunning =
     mode === "goal" && currentGoal?.status === "active" && composerBusy;
   const planExecutionProgress = useMemo(
-    () => derivePlanExecutionProgress(messages, composerBusy, currentGoal?.workflowProgress),
-    [composerBusy, currentGoal?.workflowProgress, messages],
+    () => derivePlanExecutionProgress(
+      messages,
+      composerBusy,
+      currentGoal?.workflowProgress,
+      currentGoal?.status,
+    ),
+    [composerBusy, currentGoal?.status, currentGoal?.workflowProgress, messages],
   );
 
   // 供应商相关
@@ -337,6 +342,8 @@ export function ChatInput({
   const smartbrainEnabled = useAppStore((s) => s.smartbrainEnabled);
   const setThreadModelOverride = useAppStore((s) => s.setThreadModelOverride);
   const setThreadSmartbrainEnabled = useAppStore((s) => s.setThreadSmartbrainEnabled);
+  const subagentEnabled = useAppStore((s) => s.subagentEnabled);
+  const setThreadSubagentEnabled = useAppStore((s) => s.setThreadSubagentEnabled);
 
   // 兼容旧的 configuredModels
   const configuredModels = useAppStore((s) => s.configuredModels);
@@ -2201,6 +2208,22 @@ export function ChatInput({
             >
               <IconBrain size={12} stroke={1.8} className="flex-shrink-0" />
               <span className="truncate">{intl.formatMessage({ id: "chat.smartbrain" })}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setThreadSubagentEnabled(!subagentEnabled)}
+              className={`flex items-center gap-1 rounded-full px-2 py-1 transition-colors ${
+                subagentEnabled
+                  ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                  : "hover:bg-[var(--chat-chip)] hover:text-[var(--chat-prose)]"
+              }`}
+              title={intl.formatMessage({
+                id: subagentEnabled ? "chat.subagentOn" : "chat.subagentOff",
+              })}
+            >
+              <IconCpu size={12} stroke={1.8} className="flex-shrink-0" />
+              <span className="truncate">{intl.formatMessage({ id: "chat.subagent" })}</span>
             </button>
 
             <button

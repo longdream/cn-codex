@@ -1,0 +1,5 @@
+Visit https://example.com for info
+Check http://test.org/page and https://example.com again
+Also ftp://files.com and https://docs.example.com/path?q=1
+No url here
+Email: user@example.com

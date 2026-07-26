@@ -187,10 +187,36 @@ function currentStepNumber(steps: PlanProgressStep[]): number {
   return completed >= steps.length ? steps.length : Math.min(steps.length, completed + 1);
 }
 
+function shouldFinalizePlanSteps(
+  running: boolean,
+  goalStatus?: ThreadGoal["status"] | null,
+): boolean {
+  // Goal finished: always settle the plan UI even if transport still looks busy.
+  if (goalStatus === "complete") {
+    return true;
+  }
+  // Active/paused/blocked goals may still resume; keep the last update_plan snapshot.
+  if (goalStatus != null) {
+    return false;
+  }
+  // Chat / no-goal turns: settle once the turn is no longer running.
+  return !running;
+}
+
+function finalizePlanSteps(steps: PlanProgressStep[]): PlanProgressStep[] {
+  if (steps.every((step) => step.status === "completed")) {
+    return steps;
+  }
+  return steps.map((step) => (
+    step.status === "completed" ? step : { ...step, status: "completed" as const }
+  ));
+}
+
 export function derivePlanExecutionProgress(
   messages: ChatMessage[],
   running: boolean,
   workflowProgress?: ThreadGoal["workflowProgress"],
+  goalStatus?: ThreadGoal["status"] | null,
 ): PlanExecutionProgress | null {
   let lastUserIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -293,6 +319,22 @@ export function derivePlanExecutionProgress(
     return null;
   }
 
+  const finalizeSteps = shouldFinalizePlanSteps(running, goalStatus);
+  if (finalizeSteps) {
+    steps = finalizePlanSteps(steps);
+    if (robotWorkflow && !robotWorkflow.completed) {
+      robotWorkflow = {
+        ...robotWorkflow,
+        completed: true,
+        currentNodeIndex: Math.max(0, robotWorkflow.nodes.length - 1),
+        nodes: robotWorkflow.nodes.map((node) => (
+          node.status === "completed" ? node : { ...node, status: "completed" as const }
+        )),
+      };
+    }
+  }
+  const effectiveRunning = finalizeSteps ? false : running;
+
   if (!running && latestSummary?.changedFileSnapshots?.length) {
     const finalStats = snapshotStats(latestSummary.changedFileSnapshots);
     if (finalStats) {
@@ -311,6 +353,6 @@ export function derivePlanExecutionProgress(
     changedFileCount: changedPaths.size,
     additions,
     deletions,
-    running,
+    running: effectiveRunning,
   };
 }
