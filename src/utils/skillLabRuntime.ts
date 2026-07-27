@@ -36,7 +36,12 @@ export function buildSkillLabRuntimeConfig(
     return null;
   }
   return {
-    provider: { ...provider },
+    provider: {
+      ...provider,
+      ...(Array.isArray(provider.modelEndpoints)
+        ? { modelEndpoints: provider.modelEndpoints.map((endpoint) => ({ ...endpoint })) }
+        : {}),
+    },
     smartbrainEnabled: preference.smartbrainEnabled === true,
   };
 }

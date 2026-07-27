@@ -242,6 +242,32 @@ describe("Skill Lab command runtime snapshots", () => {
     });
   });
 
+  it("deep-copies resource pool endpoints into the command snapshot", () => {
+    const providerSnapshot = {
+      providerKey: "pool",
+      modelId: "pool-model",
+      modelEndpoints: [{
+        url: "https://pool-one.example.com/v1",
+        model: "pool-model-one",
+        apiKey: "runtime-only-key",
+      }],
+      activeEndpointIndex: 0,
+    };
+    const runtimeConfig = buildSkillLabRuntimeConfig(
+      { providerId: "pool", modelId: "pool-model", smartbrainEnabled: false },
+      () => providerSnapshot,
+    );
+
+    providerSnapshot.modelEndpoints[0].url = "https://changed.example.com/v1";
+    providerSnapshot.modelEndpoints[0].model = "changed-model";
+
+    expect(runtimeConfig?.provider.modelEndpoints?.[0]).toEqual({
+      url: "https://pool-one.example.com/v1",
+      model: "pool-model-one",
+      apiKey: "runtime-only-key",
+    });
+  });
+
   it("rejects an invalid provider or model selection", () => {
     expect(buildSkillLabRuntimeConfig(
       { providerId: "", modelId: "quality-pro", smartbrainEnabled: false },

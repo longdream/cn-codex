@@ -1892,6 +1892,66 @@ fn build_evolution_eval_user(skill_content: &str, test_prompt: &str, last_output
     )
 }
 
+struct SkillLabLlmEndpoint {
+    base_url: String,
+    api_key: String,
+    wire_api: String,
+    model: String,
+    query_params: Option<HashMap<String, String>>,
+    http_headers: Option<HashMap<String, String>>,
+}
+
+fn resolve_skill_lab_llm_endpoint(
+    config: &crate::config_system::ConfigToml,
+) -> AppResult<SkillLabLlmEndpoint> {
+    let default_model = config.resolve_model();
+    let (_provider_id, provider) = config.resolve_provider();
+    if !config.model_endpoints.is_empty() {
+        let index = config
+            .active_endpoint_index
+            .unwrap_or(0)
+            .min(config.model_endpoints.len() - 1);
+        let endpoint = &config.model_endpoints[index];
+        let model = endpoint
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(default_model.as_str())
+            .to_string();
+        if model.is_empty() {
+            return Err(AppError::Custom("No model configured".to_string()));
+        }
+        return Ok(SkillLabLlmEndpoint {
+            base_url: endpoint.url.clone(),
+            api_key: endpoint.api_key.clone().unwrap_or_default(),
+            wire_api: endpoint
+                .wire_api
+                .as_deref()
+                .or(provider.wire_api.as_deref())
+                .unwrap_or("chat")
+                .to_string(),
+            model,
+            query_params: None,
+            http_headers: None,
+        });
+    }
+
+    if default_model.is_empty() {
+        return Err(AppError::Custom("No model configured".to_string()));
+    }
+    Ok(SkillLabLlmEndpoint {
+        base_url: provider
+            .resolve_base_url()
+            .ok_or_else(|| AppError::Custom("No base URL configured for provider".to_string()))?,
+        api_key: provider.resolve_api_key().unwrap_or_default(),
+        wire_api: provider.wire_api.as_deref().unwrap_or("chat").to_string(),
+        model: default_model,
+        query_params: provider.query_params.clone(),
+        http_headers: provider.http_headers.clone(),
+    })
+}
+
 /// 运行自动测试闭环：测试 → 评估 → 改写 → 重复
 #[tauri::command]
 pub async fn skill_lab_run_test(
@@ -1930,20 +1990,7 @@ pub async fn skill_lab_run_test(
     // 使用命令启动时捕获的实验室运行快照，不修改全局配置或草稿元数据。
     let base_config = state.config_manager.read()?;
     let config = apply_skill_lab_runtime_config(&base_config, &params.runtime_config)?;
-    let (_provider_id, provider_info) = config.resolve_provider();
-    let model = config.resolve_model();
-    if model.is_empty() {
-        return Err(AppError::Custom("No model configured".to_string()));
-    }
-    let base_url = provider_info
-        .resolve_base_url()
-        .ok_or_else(|| AppError::Custom("No base URL configured for provider".to_string()))?;
-    let api_key = provider_info.resolve_api_key().unwrap_or_default();
-    let wire_api = provider_info
-        .wire_api
-        .as_deref()
-        .unwrap_or("chat")
-        .to_string();
+    let endpoint = resolve_skill_lab_llm_endpoint(&config)?;
 
     // 与主 agent 保持一致：使用配置中的 max_output_tokens，并夹到 API 允许的范围内
     // （部分 API 要求 max_tokens ∈ [1, 65536]，适配器默认 131072 会触发 400）。
@@ -1953,7 +2000,7 @@ pub async fn skill_lab_run_test(
         .unwrap_or(65536);
 
     let http = reqwest::Client::new();
-    let adapter = adapter::get_adapter(&wire_api);
+    let adapter = adapter::get_adapter(&endpoint.wire_api);
 
     let mut last_output = String::new();
     let mut evaluation_raw = String::new();
@@ -2035,13 +2082,13 @@ pub async fn skill_lab_run_test(
         last_output = call_test_non_streaming_with_retry(
             &http,
             &*adapter,
-            &base_url,
-            &api_key,
-            &model,
+            &endpoint.base_url,
+            &endpoint.api_key,
+            &endpoint.model,
             Some(max_output_tokens),
             &test_messages,
-            provider_info.query_params.as_ref(),
-            provider_info.http_headers.as_ref(),
+            endpoint.query_params.as_ref(),
+            endpoint.http_headers.as_ref(),
             &app_handle,
             &skill_id,
             iterations,
@@ -2120,13 +2167,13 @@ pub async fn skill_lab_run_test(
         evaluation_raw = call_ai_non_streaming(
             &http,
             &*adapter,
-            &base_url,
-            &api_key,
-            &model,
+            &endpoint.base_url,
+            &endpoint.api_key,
+            &endpoint.model,
             Some(max_output_tokens),
             &eval_messages,
-            provider_info.query_params.as_ref(),
-            provider_info.http_headers.as_ref(),
+            endpoint.query_params.as_ref(),
+            endpoint.http_headers.as_ref(),
         )
         .await
         .map_err(|e| {
@@ -2362,13 +2409,13 @@ pub async fn skill_lab_run_test(
         let rewritten = call_ai_non_streaming(
             &http,
             &*adapter,
-            &base_url,
-            &api_key,
-            &model,
+            &endpoint.base_url,
+            &endpoint.api_key,
+            &endpoint.model,
             Some(max_output_tokens),
             &rewrite_messages,
-            provider_info.query_params.as_ref(),
-            provider_info.http_headers.as_ref(),
+            endpoint.query_params.as_ref(),
+            endpoint.http_headers.as_ref(),
         )
         .await
         .map_err(|e| {
@@ -2573,6 +2620,39 @@ mod tests {
         );
         assert_eq!(original.model.as_deref(), Some("original-model"));
         assert!(!original.smartbrain_config().knowledge_is_active());
+    }
+
+    #[test]
+    fn skill_lab_evolution_resolves_active_pool_endpoint() {
+        let mut config = crate::config_system::ConfigToml::default();
+        config.model = Some("pool-default".to_string());
+        config.model_provider = Some("pool-provider".to_string());
+        config.model_endpoints = vec![
+            crate::config_system::ModelEndpointInfo {
+                url: "https://pool-one.example.com/v1".to_string(),
+                label: Some("one".to_string()),
+                model: Some("pool-model-one".to_string()),
+                api_key: Some("pool-key-one".to_string()),
+                wire_api: Some("chat".to_string()),
+            },
+            crate::config_system::ModelEndpointInfo {
+                url: "https://pool-two.example.com/v1".to_string(),
+                label: Some("two".to_string()),
+                model: Some("pool-model-two".to_string()),
+                api_key: Some("pool-key-two".to_string()),
+                wire_api: Some("responses".to_string()),
+            },
+        ];
+        config.active_endpoint_index = Some(1);
+
+        let endpoint = resolve_skill_lab_llm_endpoint(&config).unwrap();
+
+        assert_eq!(endpoint.base_url, "https://pool-two.example.com/v1");
+        assert_eq!(endpoint.api_key, "pool-key-two");
+        assert_eq!(endpoint.wire_api, "responses");
+        assert_eq!(endpoint.model, "pool-model-two");
+        assert!(endpoint.query_params.is_none());
+        assert!(endpoint.http_headers.is_none());
     }
 
     #[test]
