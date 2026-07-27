@@ -13,6 +13,16 @@ import {
   IconSparkles,
   IconX,
 } from "@tabler/icons-react";
+import { useAppStore } from "../../stores/appStore";
+import { resolveProviderModelId } from "../../utils/chatModelSelection";
+import {
+  buildSkillLabRuntimeConfig,
+  loadSkillLabPreferences,
+  saveSkillLabPreferences,
+  type SkillLabPreferences,
+  type SkillLabStagePreference,
+} from "../../utils/skillLabRuntime";
+import { ProviderModelPicker } from "../shared/ProviderModelPicker";
 import { SettingsPagination, usePagedItems } from "./SettingsPagination";
 
 /** 实验室草稿摘要 */
@@ -220,6 +230,15 @@ function isLiveRunStatus(status: string | null | undefined): boolean {
 
 export function SkillLabPanel() {
   const intl = useIntl();
+  const appInitialized = useAppStore((state) => state.initialized);
+  const providers = useAppStore((state) => state.providers);
+  const activeProviderId = useAppStore((state) => state.activeProviderId);
+  const configuredModels = useAppStore((state) => state.configuredModels);
+  const activeModelId = useAppStore((state) => state.activeModelId);
+  const currentModel = useAppStore((state) => state.currentModel);
+  const buildThreadChatProviderOverride = useAppStore(
+    (state) => state.buildThreadChatProviderOverride,
+  );
   const [skills, setSkills] = useState<SkillLabSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SkillLabDetail | null>(null);
@@ -256,6 +275,11 @@ export function SkillLabPanel() {
   const [scoreHistoryPage, setScoreHistoryPage] = useState(0);
   // 自动保存开关：开启后编辑内容会自动防抖落盘
   const [autoSave, setAutoSave] = useState(true);
+  const [runtimePreferences, setRuntimePreferences] = useState<SkillLabPreferences>({
+    generation: { providerId: "", modelId: "", smartbrainEnabled: false },
+    evolution: { providerId: "", modelId: "", smartbrainEnabled: false },
+  });
+  const runtimePreferencesInitialized = useRef(false);
   // 上次已保存字段快照，用于判断是否存在未保存改动
   const [savedSnapshot, setSavedSnapshot] = useState<{
     name: string;
@@ -271,6 +295,60 @@ export function SkillLabPanel() {
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+
+  const activeProvider = useMemo(
+    () => providers.find((provider) => provider.id === activeProviderId) ?? null,
+    [activeProviderId, providers],
+  );
+  const activeConfiguredModel = useMemo(
+    () => configuredModels.find((model) => model.id === activeModelId) ?? null,
+    [activeModelId, configuredModels],
+  );
+  const defaultModelId = resolveProviderModelId(activeProvider, {
+    currentModel,
+    legacyModelId: activeConfiguredModel?.model,
+  });
+
+  useEffect(() => {
+    if (!appInitialized || runtimePreferencesInitialized.current || providers.length === 0) {
+      return;
+    }
+    setRuntimePreferences(loadSkillLabPreferences(
+      providers,
+      activeProviderId,
+      defaultModelId,
+    ));
+    runtimePreferencesInitialized.current = true;
+  }, [activeProviderId, appInitialized, defaultModelId, providers]);
+
+  useEffect(() => {
+    if (
+      runtimePreferencesInitialized.current
+      && runtimePreferences.generation.providerId
+      && runtimePreferences.generation.modelId
+      && runtimePreferences.evolution.providerId
+      && runtimePreferences.evolution.modelId
+    ) {
+      saveSkillLabPreferences(runtimePreferences);
+    }
+  }, [runtimePreferences]);
+
+  const updateRuntimePreference = useCallback((
+    stage: keyof SkillLabPreferences,
+    update: Partial<SkillLabStagePreference>,
+  ) => {
+    setRuntimePreferences((previous) => ({
+      ...previous,
+      [stage]: { ...previous[stage], ...update },
+    }));
+  }, []);
+
+  const isRuntimePreferenceValid = useCallback((preference: SkillLabStagePreference) => {
+    const provider = providers.find((item) => item.id === preference.providerId);
+    return Boolean(provider?.models.some((model) => model.id === preference.modelId));
+  }, [providers]);
+  const generationRuntimeValid = isRuntimePreferenceValid(runtimePreferences.generation);
+  const evolutionRuntimeValid = isRuntimePreferenceValid(runtimePreferences.evolution);
 
   // 加载列表
   const loadList = useCallback(async () => {
@@ -516,6 +594,14 @@ export function SkillLabPanel() {
 
   const handleGenerate = useCallback(async () => {
     if (!selectedId || !goal.trim()) return;
+    const runtimeConfig = buildSkillLabRuntimeConfig(
+      runtimePreferences.generation,
+      buildThreadChatProviderOverride,
+    );
+    if (!runtimeConfig) {
+      setGenerationError(intl.formatMessage({ id: "settings.skillLab.runtimeInvalid" }));
+      return;
+    }
     const targetId = selectedId;
     setGenerating(true);
     setCheckingPython(true);
@@ -546,6 +632,7 @@ export function SkillLabPanel() {
             skillId: targetId,
             goal: goal.trim(),
             nameHint: name.trim() || undefined,
+            runtimeConfig,
           },
         },
       );
@@ -612,11 +699,29 @@ export function SkillLabPanel() {
       setCheckingPython(false);
       setGenerating(false);
     }
-  }, [selectedId, goal, intl, name, maxIterations, loadList]);
+  }, [
+    selectedId,
+    goal,
+    runtimePreferences.generation,
+    buildThreadChatProviderOverride,
+    intl,
+    name,
+    maxIterations,
+    loadList,
+  ]);
 
   // 运行完整的测试闭环：测试 → 评估 → 改写 → 重复
   const handleRunTest = useCallback(async () => {
     if (!selectedId) return;
+    const runtimeConfig = buildSkillLabRuntimeConfig(
+      runtimePreferences.evolution,
+      buildThreadChatProviderOverride,
+    );
+    if (!runtimeConfig) {
+      setTestError(intl.formatMessage({ id: "settings.skillLab.runtimeInvalid" }));
+      setResultDialogOpen(true);
+      return;
+    }
     const targetId = selectedId;
     setTesting(true);
     setTestError(null);
@@ -662,7 +767,10 @@ export function SkillLabPanel() {
 
       // 调用后端自动测试闭环
       const result = await invoke<SkillLabTestResult>("skill_lab_run_test", {
-        skillId: targetId,
+        params: {
+          skillId: targetId,
+          runtimeConfig,
+        },
       });
       setTestResult(result);
 
@@ -694,7 +802,18 @@ export function SkillLabPanel() {
     } finally {
       setTesting(false);
     }
-  }, [selectedId, name, goal, content, testPrompt, maxIterations, loadList, intl]);
+  }, [
+    selectedId,
+    runtimePreferences.evolution,
+    buildThreadChatProviderOverride,
+    name,
+    goal,
+    content,
+    testPrompt,
+    maxIterations,
+    loadList,
+    intl,
+  ]);
 
   // 部署为正式 Skill（写入 codey/skills/<id>/，之后 /skill 可用）
   const handleDeploy = useCallback(
@@ -1175,6 +1294,40 @@ export function SkillLabPanel() {
                 ) : null}
               </div>
 
+              <section className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-subtle)] p-3">
+                <div className="mb-3">
+                  <h4 className="text-xs font-semibold text-[var(--text-base)]">
+                    {intl.formatMessage({ id: "settings.skillLab.generationRuntime" })}
+                  </h4>
+                  <p className="mt-1 text-[11px] text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "settings.skillLab.runtimeHint" })}
+                  </p>
+                </div>
+                <ProviderModelPicker
+                  providers={providers}
+                  providerId={runtimePreferences.generation.providerId}
+                  modelId={runtimePreferences.generation.modelId}
+                  disabled={generating}
+                  providerLabel={intl.formatMessage({ id: "chat.providerLabel" })}
+                  modelLabel={intl.formatMessage({ id: "chat.modelLabel" })}
+                  modelSearchPlaceholder={intl.formatMessage({ id: "chat.modelSearchPlaceholder" })}
+                  emptyModelsLabel={intl.formatMessage({ id: "chat.modelSearchEmpty" })}
+                  onChange={(selection) => updateRuntimePreference("generation", selection)}
+                />
+                <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-[var(--text-base)]">
+                  <input
+                    type="checkbox"
+                    checked={runtimePreferences.generation.smartbrainEnabled}
+                    disabled={generating}
+                    onChange={(event) => updateRuntimePreference("generation", {
+                      smartbrainEnabled: event.target.checked,
+                    })}
+                    className="accent-[var(--accent-strong)]"
+                  />
+                  {intl.formatMessage({ id: "settings.skillLab.useLocalKnowledge" })}
+                </label>
+              </section>
+
               <div>
                 <label className="block text-xs font-medium text-[var(--text-base)] mb-1">
                   {intl.formatMessage({ id: "settings.skillLab.content" })}
@@ -1238,6 +1391,40 @@ export function SkillLabPanel() {
                   </span>
                 </div>
               </div>
+
+              <section className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-subtle)] p-3">
+                <div className="mb-3">
+                  <h4 className="text-xs font-semibold text-[var(--text-base)]">
+                    {intl.formatMessage({ id: "settings.skillLab.evolutionRuntime" })}
+                  </h4>
+                  <p className="mt-1 text-[11px] text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "settings.skillLab.runtimeHint" })}
+                  </p>
+                </div>
+                <ProviderModelPicker
+                  providers={providers}
+                  providerId={runtimePreferences.evolution.providerId}
+                  modelId={runtimePreferences.evolution.modelId}
+                  disabled={testing}
+                  providerLabel={intl.formatMessage({ id: "chat.providerLabel" })}
+                  modelLabel={intl.formatMessage({ id: "chat.modelLabel" })}
+                  modelSearchPlaceholder={intl.formatMessage({ id: "chat.modelSearchPlaceholder" })}
+                  emptyModelsLabel={intl.formatMessage({ id: "chat.modelSearchEmpty" })}
+                  onChange={(selection) => updateRuntimePreference("evolution", selection)}
+                />
+                <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-[var(--text-base)]">
+                  <input
+                    type="checkbox"
+                    checked={runtimePreferences.evolution.smartbrainEnabled}
+                    disabled={testing}
+                    onChange={(event) => updateRuntimePreference("evolution", {
+                      smartbrainEnabled: event.target.checked,
+                    })}
+                    className="accent-[var(--accent-strong)]"
+                  />
+                  {intl.formatMessage({ id: "settings.skillLab.useLocalKnowledge" })}
+                </label>
+              </section>
 
               {detail?.scoreHistory?.length ? (
                 <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-main)] p-3 space-y-2">
@@ -1338,7 +1525,7 @@ export function SkillLabPanel() {
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={handleGenerate}
-                  disabled={generating || checkingPython || !goal.trim()}
+                  disabled={generating || checkingPython || !goal.trim() || !generationRuntimeValid}
                   className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium
                              bg-indigo-600 text-white hover:opacity-80 transition-opacity
                              disabled:opacity-50"
@@ -1378,7 +1565,7 @@ export function SkillLabPanel() {
 
                 <button
                   onClick={handleRunTest}
-                  disabled={testing || !content.trim() || !testPrompt.trim()}
+                  disabled={testing || !content.trim() || !testPrompt.trim() || !evolutionRuntimeValid}
                   className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium
                              bg-[var(--accent)] text-white hover:opacity-80 transition-opacity
                              disabled:opacity-50"

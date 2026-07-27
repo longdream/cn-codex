@@ -1607,7 +1607,7 @@ fn resolve_robot_id_for_run_turn<'a>(
 }
 
 /// 将“仅本对话”的供应商/模型/知识库开关合并到内存配置，不写回全局 config.toml。
-fn apply_thread_chat_overrides(
+pub(crate) fn apply_thread_chat_overrides(
     config: &mut crate::config_system::ConfigToml,
     provider: Option<&ThreadChatProviderOverride>,
     smartbrain_enabled: Option<bool>,

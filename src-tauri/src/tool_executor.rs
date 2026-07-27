@@ -38,7 +38,7 @@ use crate::state::{AppState, ApprovalAction};
 
 mod code_review_support;
 mod code_search_support;
-mod memory_support;
+pub(crate) mod memory_support;
 mod patch_support;
 use code_review_support::{
     CodeReviewArgs, analyze_code_review_diff, code_review_git_args, code_review_scope_label,
