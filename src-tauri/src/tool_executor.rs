@@ -1440,7 +1440,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "write_file",
-                    "description": "Create a new UTF-8 text file with the given content, or completely rewrite a file only when explicitly required. For changes to an existing text file, use apply_patch so unrelated content, encoding, and line endings are preserved.",
+                    "description": "Create a new UTF-8 text file. Existing files require overwrite=true and complete replacement content; omission placeholders and destructive truncation are rejected. For changes to an existing text file, use apply_patch so unrelated content, encoding, and line endings are preserved.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1451,6 +1451,10 @@ impl ToolExecutor {
                             "content": {
                                 "type": "string",
                                 "description": "The content to write to the file."
+                            },
+                            "overwrite": {
+                                "type": "boolean",
+                                "description": "Set to true only when the user explicitly requested a complete rewrite of an existing file. This does not bypass placeholder or destructive-truncation safeguards. Defaults to false."
                             }
                         },
                         "required": ["path", "content"]
@@ -4054,6 +4058,8 @@ impl ToolExecutor {
         struct WriteArgs {
             path: String,
             content: String,
+            #[serde(default)]
+            overwrite: bool,
         }
 
         let args: WriteArgs = serde_json::from_str(arguments)
@@ -4063,6 +4069,29 @@ impl ToolExecutor {
         info!("Writing file: {}", full_path.display());
 
         self.emit_tool_start(app_handle, thread_id, call_id, "write_file", &args.path);
+
+        if full_path.is_file() {
+            if !args.overwrite {
+                let msg = format!(
+                    "Error writing {}: the file already exists. Use apply_patch for edits, or set overwrite=true only when the user explicitly requested a complete rewrite.",
+                    args.path
+                );
+                self.emit_tool_end(app_handle, thread_id, call_id, "write_file", -1, &msg);
+                return Err(crate::error::AppError::Custom(msg));
+            }
+
+            let existing = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
+                crate::error::AppError::Custom(format!(
+                    "Error writing {}: failed to inspect existing UTF-8 file before overwrite: {e}",
+                    args.path
+                ))
+            })?;
+            if let Err(reason) = validate_existing_file_rewrite(&existing, &args.content) {
+                let msg = format!("Error writing {}: {reason}", args.path);
+                self.emit_tool_end(app_handle, thread_id, call_id, "write_file", -1, &msg);
+                return Err(crate::error::AppError::Custom(msg));
+            }
+        }
 
         if let Some(parent) = full_path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
@@ -4096,7 +4125,10 @@ impl ToolExecutor {
     ) -> AppResult<String> {
         let patch = match extract_patch_argument(arguments) {
             Ok(patch) => patch,
-            Err(msg) => {
+            Err(error) => {
+                let msg = format!(
+                    "{error}\nUse Codex patch syntax: '*** Begin Patch', then '*** Update File: path', hunks beginning with '@@', and '*** End Patch'. Do not use classic context-diff headers or fall back to write_file for an existing file."
+                );
                 self.emit_tool_start(
                     app_handle,
                     thread_id,
@@ -4139,7 +4171,7 @@ impl ToolExecutor {
             }
             Err(err) => {
                 let msg = format!(
-                    "Error applying patch: {err}\nDo not fall back to Python, PowerShell, sed, or other shell-based file editing. Correct the patch path or context and retry apply_patch so text encoding is preserved."
+                    "Error applying patch: {err}\nUse Codex patch headers such as '*** Update File: path' (not classic '*** path', '--- path', or '***************' context-diff headers). Do not fall back to write_file, Python, PowerShell, sed, or other whole-file editing. Correct the patch path or context and retry apply_patch so existing content and encoding are preserved."
                 );
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
                 return Err(crate::error::AppError::Custom(msg));
@@ -13348,6 +13380,48 @@ pub(crate) async fn wait_for_approval_result_public(
     wait_for_approval_result(app_handle, request_id, timeout_ms).await
 }
 
+fn validate_existing_file_rewrite(existing: &str, replacement: &str) -> Result<(), String> {
+    let normalized = replacement.to_lowercase();
+    let contains_ellipsis = normalized.contains("...") || normalized.contains('…');
+    let contains_omission_marker = [
+        "保留原有内容",
+        "省略原有内容",
+        "其余内容不变",
+        "剩余内容不变",
+        "content omitted",
+        "keep existing content",
+        "existing content unchanged",
+        "rest of the file",
+        "rest unchanged",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker));
+
+    if contains_ellipsis && contains_omission_marker {
+        return Err(
+            "replacement contains an omission placeholder and is not complete file content. Use apply_patch instead."
+                .to_string(),
+        );
+    }
+
+    const LARGE_EXISTING_FILE_BYTES: usize = 4 * 1024;
+    const MAX_DESTRUCTIVE_SHRINK_FACTOR: usize = 4;
+    if existing.len() >= LARGE_EXISTING_FILE_BYTES
+        && replacement
+            .len()
+            .saturating_mul(MAX_DESTRUCTIVE_SHRINK_FACTOR)
+            < existing.len()
+    {
+        return Err(format!(
+            "replacement would shrink an existing {}-byte file to {} bytes. Use apply_patch so omitted content cannot be lost.",
+            existing.len(),
+            replacement.len()
+        ));
+    }
+
+    Ok(())
+}
+
 fn resolve_command_cwd(base: &Path, cwd: Option<&str>) -> PathBuf {
     let Some(cwd) = cwd.filter(|value| !value.trim().is_empty()) else {
         let base_display = normalize_windows_verbatim_prefix(&base.to_string_lossy());
@@ -14652,6 +14726,32 @@ fn render_numbered_file_slice(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_file_rewrite_rejects_omission_placeholders() {
+        let existing = "complete document\n".repeat(20);
+        let replacement = "header\n... (保留原有内容直到第949行) ...\nnew section\n";
+
+        let error = validate_existing_file_rewrite(&existing, replacement).unwrap_err();
+        assert!(error.contains("omission placeholder"));
+    }
+
+    #[test]
+    fn existing_file_rewrite_rejects_destructive_truncation() {
+        let existing = "0123456789abcdef\n".repeat(400);
+        let replacement = "short complete-looking replacement\n";
+
+        let error = validate_existing_file_rewrite(&existing, replacement).unwrap_err();
+        assert!(error.contains("would shrink"));
+    }
+
+    #[test]
+    fn existing_file_rewrite_allows_complete_similar_sized_content() {
+        let existing = "old line\n".repeat(600);
+        let replacement = "new line\n".repeat(600);
+
+        assert!(validate_existing_file_rewrite(&existing, &replacement).is_ok());
+    }
 
     #[test]
     fn tool_specs_include_web_tools_only_when_enabled() {

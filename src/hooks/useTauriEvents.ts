@@ -1348,6 +1348,9 @@ export function useTauriEvents() {
               const retrySuffix =
                 attempt > 0 && maxAttempts > 0 ? ` (${attempt}/${maxAttempts})` : "";
               store.setStreamingForThread(threadId, true);
+              // Drop any truncated SSE text so the automatic reconnect does not
+              // concatenate a fresh response onto the previous partial stream.
+              store.clearStreamingTextForThread(threadId);
               store.setStreamingLabelForThread(threadId, `服务暂时不可用，${waitSeconds}s 后重试${retrySuffix}`);
               return;
             }

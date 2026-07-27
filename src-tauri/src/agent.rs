@@ -572,6 +572,7 @@ impl AgentEngine {
         // It must read the file again before submitting another patch for that path.
         let mut patch_paths_requiring_refresh: HashSet<String> = HashSet::new();
         let mut failed_apply_patch_fingerprints: HashSet<u64> = HashSet::new();
+        let mut apply_patch_failed_in_turn = false;
         let mut turn_usage = TurnUsage::default();
         // 统计“本轮成功模型调用次数”：
         // - 每次 stream_completion 返回 Ok（无论是 Message 还是 ToolCalls）计 1 次；
@@ -2006,8 +2007,16 @@ impl AgentEngine {
                                     apply_patch_fingerprint.is_some_and(|fingerprint| {
                                         failed_apply_patch_fingerprints.contains(&fingerprint)
                                     });
+                                let blocked_write_file_fallback =
+                                    should_block_write_file_after_patch_failure(
+                                        &call.name,
+                                        apply_patch_failed_in_turn,
+                                        &requested_file_changes,
+                                        &effective_cwd,
+                                    );
                                 if stale_patch_paths.is_empty()
                                     && !duplicate_failed_patch
+                                    && !blocked_write_file_fallback
                                     && !requested_file_changes.is_empty()
                                 {
                                     capture_before_file_snapshots(
@@ -2130,6 +2139,11 @@ impl AgentEngine {
                                             Err(e) => (format!("update_goal error: {e}"), false),
                                         }
                                     }
+                                } else if blocked_write_file_fallback {
+                                    (
+                                        "write_file was blocked because apply_patch already failed in this turn and the target file exists. Do not replace the file or use omission placeholders. Re-read the relevant context and retry apply_patch with Codex headers such as '*** Update File: path'.".to_string(),
+                                        false,
+                                    )
                                 } else if !stale_patch_paths.is_empty() {
                                     (
                                         format!(
@@ -2181,6 +2195,7 @@ impl AgentEngine {
                                     }
                                 }
                                 if call.name == "apply_patch" {
+                                    apply_patch_failed_in_turn = !success;
                                     if !success
                                         && stale_patch_paths.is_empty()
                                         && !duplicate_failed_patch
@@ -3112,7 +3127,7 @@ impl AgentEngine {
              - shell / shell_command: Execute short shell commands to run code, install packages, build projects, etc.; shell_command supports Codex-style workdir, timeout_ms, login, and sandbox permission request fields.\n\
              - exec_command / write_stdin / close_exec_session: Start a persistent command session for long-running or interactive commands, write stdin or poll output by session id, and close sessions that are no longer needed.\n\
              - read_file: Read the contents of a file at the given path. Supports line_offset/max_lines/end_line for numbered ranged reads; prefer this over shell when inspecting large files or specific line windows. Defaults to a 200-line numbered page (hard cap 400).\n\
-             - write_file: Create or overwrite a file with the given content.\n\
+             - write_file: Create a new file. Rewriting an existing file requires overwrite=true and complete content, and destructive truncation is rejected.\n\
              - tool_search: Search available CN-Codex tools, skills, plugin skills, and discovered MCP tools, then activate matching non-core schemas for the next model call in this same turn. Default turns only expose a small core tool set; non-core tools (MCP/Playwright, memory, image generation, MCP helpers, agents, plugins, etc.) are lazy-loaded through this tool.\n\
              - code_review: Review current git changes or a diff against a base ref, reporting changed files, diff-check issues, and obvious risk patterns.\n\
              - apply_patch: Apply Codex-style patches to add, update, delete, or move files. Prefer raw/freeform patch text when available; function-call providers may pass the same body as patch or command.\n\
@@ -3157,7 +3172,7 @@ impl AgentEngine {
              \n\
              FILE EDITING RULES:\n\
              1. Use `apply_patch` as the default for every edit to an existing text file, including single-file edits. It applies contextual diffs and avoids rewriting unrelated content.\n\
-             2. Use `write_file` only to create a new file or when the user explicitly requests a complete file rewrite.\n\
+             2. Use `write_file` only to create a new file or when the user explicitly requests a complete file rewrite; existing files require overwrite=true. Never use it as a fallback after apply_patch fails.\n\
              3. `apply_patch` supports single-file and multi-file add/update/delete/move operations. Read the relevant file content before constructing an update hunk. In every hunk body, prefix each removed line with `-`, each added line with `+`, and each unchanged context line with one space; never use `|-`, `+|`, `||`, or separate old/new blocks. Keep hunks small with about 3 exact context lines above and below each change. When text repeats, write an exact class/function/section source line after `@@` to anchor the search; use `*** End of File` when the hunk must target the file ending. If a hunk fails to match, immediately re-read that file and retry `apply_patch` with refreshed, smaller context; do not stop at the first patch error.\n\
              4. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
                 Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
@@ -4188,23 +4203,25 @@ impl AgentEngine {
                         "Stream read error after {bytes_read} bytes, {:.1}s elapsed: {e}",
                         elapsed.as_secs_f64()
                     );
-                    if !full_text.is_empty() || !tool_calls.is_empty() {
-                        warn!(
-                            "Partial content available ({} chars text, {} tool calls), using as result",
-                            full_text.len(),
-                            tool_calls.len()
-                        );
-                        if finish_reason.is_none() {
-                            finish_reason = Some("stream_error".to_string());
-                        }
-                        break;
-                    }
+                    // Never treat a mid-stream disconnect as a successful completion.
+                    // Partial text/tool-call fragments often look "non-empty" but are
+                    // truncated intents (e.g. "开始重写 FileTree...") that would otherwise
+                    // end the turn without retrying. Always bubble a retryable error so
+                    // the agent loop can reconnect.
                     return Err(AppError::Custom(format!(
                         "Stream read error after {bytes_read} bytes, {:.1}s elapsed: {e}",
                         elapsed.as_secs_f64()
                     )));
                 }
-                WaitOutcome::Ready(None) => break,
+                WaitOutcome::Ready(None) => {
+                    if stream_ended_without_terminal_marker(finish_reason.as_deref()) {
+                        return Err(AppError::Custom(format!(
+                            "Stream read error after {bytes_read} bytes, {:.1}s elapsed: unexpected EOF before terminal marker",
+                            stream_start.elapsed().as_secs_f64()
+                        )));
+                    }
+                    break;
+                }
                 WaitOutcome::Cancelled => {
                     info!("SSE stream cancelled by user");
                     return Ok(CompletionResult::Cancelled {
@@ -4894,6 +4911,10 @@ fn is_retryable_stream_read_error(message: &str) -> bool {
         || lower.contains("connection closed")
         || lower.contains("unexpected eof")
         || lower.contains("incomplete message")
+}
+
+fn stream_ended_without_terminal_marker(finish_reason: Option<&str>) -> bool {
+    finish_reason.is_none()
 }
 
 fn stream_read_backoff_ms(attempt: u32) -> u64 {
@@ -6672,6 +6693,25 @@ fn tool_result_success(tool_name: &str, output: &str) -> bool {
     true
 }
 
+fn should_block_write_file_after_patch_failure(
+    tool_name: &str,
+    apply_patch_failed_in_turn: bool,
+    changes: &[FileChange],
+    cwd: &Path,
+) -> bool {
+    tool_name == "write_file"
+        && apply_patch_failed_in_turn
+        && changes.iter().any(|change| {
+            let path = PathBuf::from(&change.path);
+            let resolved = if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            };
+            resolved.is_file()
+        })
+}
+
 fn patch_paths_requiring_refresh_for(
     changes: &[FileChange],
     paths_requiring_refresh: &HashSet<String>,
@@ -7321,6 +7361,35 @@ mod tests {
         assert!(!is_retryable_stream_read_error(
             "Stream idle timeout after 300 seconds"
         ));
+    }
+
+    #[test]
+    fn partial_stream_disconnect_is_retryable_not_successful_finish() {
+        // Regression for the bug where a mid-stream disconnect with partial text
+        // was treated as finish_reason=stream_error success and ended the turn.
+        let message =
+            "Stream read error after 13891 bytes, 126.6s elapsed: error decoding response body";
+        assert!(
+            is_retryable_stream_read_error(message),
+            "partial stream disconnect must stay on the retryable path"
+        );
+        assert!(
+            !is_length_truncated(Some("stream_error")),
+            "stream_error must not be treated as a length-truncated success"
+        );
+    }
+
+    #[test]
+    fn eof_without_terminal_marker_is_retryable_not_successful_finish() {
+        assert!(stream_ended_without_terminal_marker(None));
+        assert!(!stream_ended_without_terminal_marker(Some("stop")));
+        assert!(!stream_ended_without_terminal_marker(Some("tool_calls")));
+
+        let message = "Stream read error after 12584 bytes, 109.2s elapsed: unexpected EOF before terminal marker";
+        assert!(
+            is_retryable_stream_read_error(message),
+            "an EOF without [DONE] or finish_reason must use the stream retry path"
+        );
     }
 
     #[test]
@@ -8169,6 +8238,41 @@ mod tests {
         assert!(tool_result_success(
             "apply_patch",
             "Success. Applied patch.\n- modified src/i18n/zh-CN/common.json"
+        ));
+    }
+
+    #[test]
+    fn failed_patch_blocks_write_file_fallback_for_existing_files() {
+        let temp_dir = tempfile::tempdir().expect("should create temp dir");
+        let existing_path = temp_dir.path().join("document.md");
+        std::fs::write(&existing_path, "original content").expect("should create existing file");
+        let existing_changes = vec![FileChange {
+            path: existing_path.to_string_lossy().to_string(),
+            action: "modified".to_string(),
+        }];
+
+        assert!(should_block_write_file_after_patch_failure(
+            "write_file",
+            true,
+            &existing_changes,
+            temp_dir.path(),
+        ));
+        assert!(!should_block_write_file_after_patch_failure(
+            "write_file",
+            false,
+            &existing_changes,
+            temp_dir.path(),
+        ));
+
+        let new_changes = vec![FileChange {
+            path: "new-document.md".to_string(),
+            action: "modified".to_string(),
+        }];
+        assert!(!should_block_write_file_after_patch_failure(
+            "write_file",
+            true,
+            &new_changes,
+            temp_dir.path(),
         ));
     }
 

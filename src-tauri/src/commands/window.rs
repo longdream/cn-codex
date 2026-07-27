@@ -3015,6 +3015,192 @@ pub async fn delete_path(path: String, recursive: Option<bool>) -> AppResult<()>
     Ok(())
 }
 
+fn sanitize_created_entry_name(name: &str) -> AppResult<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Custom("Name cannot be empty".into()));
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(AppError::Custom("Invalid name".into()));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(AppError::Custom(
+            "Name cannot contain path separators".into(),
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        const INVALID: &[char] = &['<', '>', ':', '"', '|', '?', '*'];
+        if trimmed.chars().any(|ch| INVALID.contains(&ch) || ch.is_control()) {
+            return Err(AppError::Custom(
+                "Name contains invalid characters".into(),
+            ));
+        }
+    }
+    Ok(trimmed.to_string())
+}
+
+fn file_entry_from_path(path: &std::path::Path) -> AppResult<FileEntry> {
+    let metadata = fs::metadata(path)
+        .map_err(|e| AppError::Custom(format!("Failed to read path metadata: {e}")))?;
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    Ok(FileEntry {
+        name,
+        path: super::normalize_windows_verbatim_prefix(&path.to_string_lossy()),
+        is_dir: metadata.is_dir(),
+        size: metadata.len(),
+    })
+}
+
+fn copy_path_recursive(src: &std::path::Path, dest: &std::path::Path) -> AppResult<()> {
+    let metadata = fs::symlink_metadata(src)
+        .map_err(|e| AppError::Custom(format!("Failed to read source metadata: {e}")))?;
+    if metadata.file_type().is_symlink() {
+        return Err(AppError::Custom(
+            "Copying symbolic links is not supported".into(),
+        ));
+    }
+    if metadata.is_dir() {
+        fs::create_dir_all(dest)
+            .map_err(|e| AppError::Custom(format!("Failed to create directory: {e}")))?;
+        for entry in fs::read_dir(src)
+            .map_err(|e| AppError::Custom(format!("Failed to read directory: {e}")))?
+        {
+            let entry =
+                entry.map_err(|e| AppError::Custom(format!("Failed to read directory entry: {e}")))?;
+            let child_dest = dest.join(entry.file_name());
+            copy_path_recursive(&entry.path(), &child_dest)?;
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| AppError::Custom(format!("Failed to create parent directory: {e}")))?;
+    }
+    fs::copy(src, dest).map_err(|e| AppError::Custom(format!("Failed to copy file: {e}")))?;
+    Ok(())
+}
+
+fn ensure_destination_available(dest: &std::path::Path) -> AppResult<()> {
+    if dest.exists() {
+        return Err(AppError::Custom(format!(
+            "Path already exists: {}",
+            super::normalize_windows_verbatim_prefix(&dest.to_string_lossy())
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_not_moving_into_self(
+    source: &std::path::Path,
+    dest: &std::path::Path,
+) -> AppResult<()> {
+    let canonical_source = source.canonicalize().unwrap_or_else(|_| source.to_path_buf());
+    let dest_parent = dest
+        .parent()
+        .map(|parent| parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf()));
+    if let Some(parent) = dest_parent {
+        if parent.starts_with(&canonical_source) {
+            return Err(AppError::Custom(
+                "Cannot move or copy a folder into itself".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_path_entry(
+    parent_dir: String,
+    name: String,
+    is_dir: bool,
+) -> AppResult<FileEntry> {
+    let safe_name = sanitize_created_entry_name(&name)?;
+    let (display_parent, parent_path) = resolve_existing_path(&parent_dir)?;
+    if !parent_path.is_dir() {
+        return Err(AppError::Custom(format!(
+            "Parent path is not a directory: {display_parent}"
+        )));
+    }
+
+    let target_path = parent_path.join(&safe_name);
+    ensure_destination_available(&target_path)?;
+
+    if is_dir {
+        fs::create_dir(&target_path)
+            .map_err(|e| AppError::Custom(format!("Failed to create directory: {e}")))?;
+    } else {
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| AppError::Custom(format!("Failed to create parent directory: {e}")))?;
+        }
+        fs::File::create(&target_path)
+            .map_err(|e| AppError::Custom(format!("Failed to create file: {e}")))?;
+    }
+
+    file_entry_from_path(&target_path)
+}
+
+#[tauri::command]
+pub async fn rename_path_entry(from: String, to: String) -> AppResult<FileEntry> {
+    let (display_from, source_path) = resolve_existing_path(&from)?;
+    let display_to = normalize_windows_verbatim_prefix(&to);
+    let dest_path = std::path::PathBuf::from(&display_to);
+
+    if let Some(name) = dest_path.file_name().and_then(|value| value.to_str()) {
+        sanitize_created_entry_name(name)?;
+    } else {
+        return Err(AppError::Custom("Invalid destination path".into()));
+    }
+
+    if let Some(parent) = dest_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| AppError::Custom(format!("Failed to create parent directory: {e}")))?;
+        }
+    }
+
+    ensure_destination_available(&dest_path)?;
+    ensure_not_moving_into_self(&source_path, &dest_path)?;
+
+    fs::rename(&source_path, &dest_path).map_err(|e| {
+        AppError::Custom(format!(
+            "Failed to rename '{display_from}' -> '{display_to}': {e}"
+        ))
+    })?;
+
+    file_entry_from_path(&dest_path)
+}
+
+#[tauri::command]
+pub async fn copy_path_entry(from: String, to: String) -> AppResult<FileEntry> {
+    let (display_from, source_path) = resolve_existing_path(&from)?;
+    let display_to = normalize_windows_verbatim_prefix(&to);
+    let dest_path = std::path::PathBuf::from(&display_to);
+
+    if let Some(name) = dest_path.file_name().and_then(|value| value.to_str()) {
+        sanitize_created_entry_name(name)?;
+    } else {
+        return Err(AppError::Custom("Invalid destination path".into()));
+    }
+
+    ensure_destination_available(&dest_path)?;
+    ensure_not_moving_into_self(&source_path, &dest_path)?;
+
+    copy_path_recursive(&source_path, &dest_path).map_err(|e| {
+        AppError::Custom(format!(
+            "Failed to copy '{display_from}' -> '{display_to}': {e}"
+        ))
+    })?;
+
+    file_entry_from_path(&dest_path)
+}
+
 const MAX_ATTACH_SIZE: u64 = 2 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_SIZE: u64 = 512 * 1024;
 const MAX_TEXT_PREVIEW_WRITE_SIZE: u64 = 512 * 1024;

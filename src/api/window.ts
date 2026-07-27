@@ -330,6 +330,26 @@ export async function deletePath(path: string, recursive = false): Promise<void>
   await invoke("delete_path", { path, recursive });
 }
 
+export async function createPathEntry(
+  parentDir: string,
+  name: string,
+  isDir: boolean,
+): Promise<FileEntry> {
+  return invoke<FileEntry>("create_path_entry", {
+    parentDir,
+    name,
+    isDir,
+  });
+}
+
+export async function renamePathEntry(from: string, to: string): Promise<FileEntry> {
+  return invoke<FileEntry>("rename_path_entry", { from, to });
+}
+
+export async function copyPathEntry(from: string, to: string): Promise<FileEntry> {
+  return invoke<FileEntry>("copy_path_entry", { from, to });
+}
+
 export interface FileAttachResult {
   name: string;
   mimeType: string;

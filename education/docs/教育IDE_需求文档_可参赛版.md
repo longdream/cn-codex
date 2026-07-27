@@ -947,3 +947,244 @@ src/components/education/
 > 我们做一个会理解、会等待、会调整、也会逐步放手的 AI 学习教练。
 >
 > 它用学生数字孪生记住成长证据，用主动式 Agent 把计划变成行动，用线上线下闭环让真实学习被看见，最终帮助学生成为自己的学习管理者。
+
+---
+
+## 17. 学科包可插拔设计
+
+### 17.1 设计目标
+
+教育核心引擎（学生数字孪生、多 Agent 编排、任务闭环、授权与审计）保持学科无关；各学科以**学科包**形式提供教学内容资产，支持选择后自动启用、停用后可恢复，形成可插拔扩展能力。
+
+| 决策项 | 第一期结论 |
+|---|---|
+| 扩展目标 | 内容可扩展：知识图谱、任务模板、错因分类 |
+| 包粒度 | 学科级（如初中数学包），包内可按年级/章节组织 |
+| 来源与安装 | 内置官方包；学生选择学科后自动启用 |
+| 非目标 | 远程下载商店、第三方上传、包内可执行代码、完整题库/教材分发 |
+
+设计原则：
+
+- **学科不是硬编码**：数学、语文、英语等不写死在核心引擎中。
+- **自动安装与启用**：初始化或设置中选择学科后，系统启用对应内置包。
+- **隔离与安全**：每个包独立目录，仅含结构化 JSON/YAML 资源，不含可执行代码。
+- **历史数据安全**：停用/卸载只影响新计划与新任务生成；不删除学生已有任务、证据与孪生记录。
+- **上下文隔离**：与第 5 章一致，学科状态、知识证据与目标均按 `subject` 隔离，禁止跨学科总分。
+
+### 17.2 逻辑关系
+
+```text
+通用教育引擎
+├── 学生数字孪生 / Supervisor / 规划·陪伴·成长·干预 Agent
+├── 任务状态机 / 结构化交互 / 授权审计
+└── SubjectPackageRegistry（学科包注册与启用）
+        │
+        ├── junior-math（初中数学包）
+        ├── junior-chinese（初中语文包）
+        └── junior-english（初中英语包）
+```
+
+学生选择学科后的主路径：
+
+```text
+选择学科
+  → 校验并启用内置学科包
+  → 写入 student_subject_enrollments
+  → 规划 Agent 读取该包知识图谱与任务模板
+  → 生成该学科目标、周计划与任务
+  → 反馈与错因写入该学科 scope 的孪生状态
+```
+
+### 17.3 包目录结构
+
+```text
+education/
+  subject-packs/
+    junior-math/
+      manifest.json
+      knowledge-graph.json
+      task-templates.json
+      error-taxonomy.json
+      demo/                         # 可选：演示任务与样例数据
+    junior-chinese/
+      manifest.json
+      knowledge-graph.json
+      task-templates.json
+      error-taxonomy.json
+    junior-english/
+      manifest.json
+      knowledge-graph.json
+      task-templates.json
+      error-taxonomy.json
+```
+
+#### 17.3.1 `manifest.json` 最小字段
+
+```json
+{
+  "id": "junior-math",
+  "name": "初中数学",
+  "version": "1.0.0",
+  "subject": "math",
+  "stage": "junior",
+  "grades": ["7", "8", "9"],
+  "locale": "zh-CN",
+  "description": "初中数学知识图谱、任务模板与错因分类",
+  "resources": {
+    "knowledge_graph": "knowledge-graph.json",
+    "task_templates": "task-templates.json",
+    "error_taxonomy": "error-taxonomy.json"
+  },
+  "compatibility": {
+    "min_engine_version": "1.0.0"
+  },
+  "status": "official"
+}
+```
+
+字段约束：
+
+- `id` 全局唯一，建议 `{stage}-{subject}`。
+- `subject` 为孪生、任务、观测统一使用的学科标识（如 `math`）。
+- `resources` 指向包内相对路径；缺任一必需资源则启用失败。
+- 第一期不支持包内脚本、自定义二进制工具或动态加载代码。
+
+#### 17.3.2 知识图谱最小结构
+
+```json
+{
+  "pack_id": "junior-math",
+  "nodes": [
+    {
+      "id": "math.function.graph_mapping",
+      "title": "函数图像与解析式对应",
+      "grades": ["8"],
+      "prerequisites": ["math.function.concept"],
+      "tags": ["function", "representation"]
+    }
+  ],
+  "edges": [
+    {
+      "from": "math.function.concept",
+      "to": "math.function.graph_mapping",
+      "type": "prerequisite"
+    }
+  ]
+}
+```
+
+#### 17.3.3 任务模板最小结构
+
+```json
+{
+  "pack_id": "junior-math",
+  "templates": [
+    {
+      "id": "tpl_function_graph_mapping_15m",
+      "title": "15 分钟图像—表达式映射练习",
+      "subject": "math",
+      "knowledge_nodes": ["math.function.graph_mapping"],
+      "estimated_minutes": 15,
+      "scenario_type": "offline_practice",
+      "goal_patterns": ["提升函数基础", "修复图像转换"],
+      "interaction_hints": ["choice", "form", "text_input"],
+      "success_criteria": ["完成指定题量", "反馈主要错因", "自评信心"],
+      "remediation": {
+        "on_repeated_error": "降阶到先备知识点并缩短任务"
+      }
+    }
+  ]
+}
+```
+
+#### 17.3.4 错因分类最小结构
+
+```json
+{
+  "pack_id": "junior-math",
+  "categories": [
+    {
+      "id": "err_graph_expression_mismatch",
+      "title": "图像与解析式对应错误",
+      "knowledge_nodes": ["math.function.graph_mapping"],
+      "feedback_fields": ["which_step_failed", "example_item", "confidence"],
+      "default_strategy": "representation_switch"
+    }
+  ]
+}
+```
+
+### 17.4 启用、停用与生命周期
+
+#### 17.4.1 启用流程
+
+```text
+1. 学生在初始化或设置中选择学科（可多选）
+2. SubjectPackageRegistry 扫描 education/subject-packs/
+3. 按 subject 匹配官方包并校验 manifest 与必需资源
+4. 写入 student_subject_enrollments（student_id, pack_id, subject, enabled_at, version）
+5. 将包摘要注入规划 / 成长分析 / 干预策略 Agent 的最小上下文
+6. 目标页、计划页、画像页按已启用学科筛选与切换
+```
+
+#### 17.4.2 停用 / 卸载规则
+
+- 仅将对应 `student_subject_enrollments` 标记为停用或删除启用关系。
+- **不删除**已生成任务、交互事件、StateObservation、知识证据与周回顾记录。
+- 停用后：不再为该学科生成新计划或主动任务；历史视图仍可按授权查看。
+- 再次启用时：沿用学生既有孪生与证据，按当前包版本继续规划。
+
+#### 17.4.3 版本与兼容
+
+- 包使用语义化版本；启用时记录 `pack_version`。
+- 引擎升级后若 `min_engine_version` 不满足，禁用该包并提示“需要更新系统后再启用”。
+- 第一期不做在线热更新；内容更新随产品发布替换内置包目录。
+
+### 17.5 与现有架构的集成
+
+| 模块 | 集成方式 |
+|---|---|
+| 学生数字孪生 | 目标、知识状态、五维观测均带 `scope.subject`；仅已启用学科可进入新目标创建 |
+| 规划 Agent | 只读取已启用包的知识图谱与任务模板生成阶段/周计划 |
+| 陪伴 Agent | 任务启动与反馈字段可引用包内错因分类与交互提示 |
+| 成长分析 Agent | 连续困难、错因聚合限定在同一 `subject` 与知识节点 |
+| 干预策略 Agent | 降阶、换表征、缩时等策略优先映射包内 `default_strategy` |
+| 初始化画像 | “主要学科”选择即触发包启用；未启用学科不出现在默认计划中 |
+| 前端学科切换 | 画像与计划默认按学科视图展示，不显示跨学科总分 |
+
+建议新增编排能力（概念接口）：
+
+| 接口 | 作用 |
+|---|---|
+| `edu_list_subject_packs` | 列出内置可用学科包 |
+| `edu_enable_subject_pack` | 启用学科包并写入 enrollment |
+| `edu_disable_subject_pack` | 停用学科包（保留历史） |
+| `edu_get_subject_pack_context` | 获取某学科最小知识/模板/错因摘要供 Agent 使用 |
+
+### 17.6 与 MVP / 复赛 / 决赛范围的关系
+
+| 阶段 | 学科包范围 |
+|---|---|
+| Phase 1 MVP | 1 个官方学科包（建议 `junior-math`）+ 选择启用闭环 + 3 个真实任务模板与 Demo 数据 |
+| Phase 2 复赛 | 包内知识图谱与错因分类更完整；画像/计划按学科切换稳定 |
+| Phase 3 决赛 | 多学科官方包并行；可选跨学科任务包；仍不默认开放第三方任意代码包 |
+
+### 17.7 验收要点
+
+1. 未启用某学科包时，系统不得生成该学科新计划或新任务。
+2. 启用 `junior-math` 后，初始化与规划流程可读取其知识节点与任务模板。
+3. 停用学科包后，历史任务与证据仍可查看，但不再推送该学科新任务。
+4. 包缺少 `manifest` 或任一必需资源时，启用失败并给出可理解错误，不得部分写入。
+5. 任一学科观测与知识状态必须带 `subject`；不得因多包并存产生跨学科总分。
+6. 学科包目录中不得加载或执行自定义代码入口。
+
+### 17.8 非目标（第一期明确不做）
+
+- 远程学科包商店、自动下载与付费分发。
+- 教师/机构自由上传未审核包。
+- 包内注册任意 Agent 工具或前端自定义组件。
+- 以教材版本为唯一安装粒度（可作为包内标签，不作为第一期安装单位）。
+
+### 17.9 独立设计说明
+
+更细的包 Schema 示例与演进说明见：`education/docs/学科包可插拔设计.md`。本章为参赛需求文档中的正式需求条目；两者冲突时以本章为准。

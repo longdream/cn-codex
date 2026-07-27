@@ -493,12 +493,18 @@ async fn stream_completion_internal(
         {
             WaitOutcome::Ready(Some(Ok(chunk))) => chunk,
             WaitOutcome::Ready(Some(Err(e))) => {
-                if !full_text.is_empty() || !tool_calls.is_empty() {
-                    break;
-                }
+                // Match the main agent: a truncated stream is a retryable failure,
+                // not a successful partial completion.
                 return Err(AppError::Custom(format!("Stream read error: {e}")));
             }
-            WaitOutcome::Ready(None) => break,
+            WaitOutcome::Ready(None) => {
+                if finish_reason.is_none() {
+                    return Err(AppError::Custom(format!(
+                        "Stream read error after {bytes_read} bytes: unexpected EOF before terminal marker"
+                    )));
+                }
+                break;
+            }
             WaitOutcome::Cancelled => return Ok(CompletionResult::Cancelled),
             WaitOutcome::TimedOut => {
                 return Err(AppError::Custom(format!(

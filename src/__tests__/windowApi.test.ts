@@ -10,6 +10,10 @@ import {
   browserGoBack,
   browserGoForward,
   browserNavigateHome,
+  copyPathEntry,
+  createPathEntry,
+  deletePath,
+  renamePathEntry,
   searchWorkspaceFiles,
   windowClose,
   windowMinimize,
@@ -154,6 +158,52 @@ describe("window API", () => {
       maxResults: 80,
       caseSensitive: true,
       include: "src/**/*.ts",
+    });
+  });
+
+  it("routes file tree mutation commands through tauri invoke", async () => {
+    mockInvoke
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        name: "new.ts",
+        path: "E:/work/demo/src/new.ts",
+        isDir: false,
+        size: 0,
+      })
+      .mockResolvedValueOnce({
+        name: "renamed.ts",
+        path: "E:/work/demo/src/renamed.ts",
+        isDir: false,
+        size: 0,
+      })
+      .mockResolvedValueOnce({
+        name: "copy.ts",
+        path: "E:/work/demo/src/copy.ts",
+        isDir: false,
+        size: 0,
+      });
+
+    await deletePath("E:/work/demo/src/a.ts", false);
+    await createPathEntry("E:/work/demo/src", "new.ts", false);
+    await renamePathEntry("E:/work/demo/src/a.ts", "E:/work/demo/src/renamed.ts");
+    await copyPathEntry("E:/work/demo/src/a.ts", "E:/work/demo/src/copy.ts");
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "delete_path", {
+      path: "E:/work/demo/src/a.ts",
+      recursive: false,
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "create_path_entry", {
+      parentDir: "E:/work/demo/src",
+      name: "new.ts",
+      isDir: false,
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(3, "rename_path_entry", {
+      from: "E:/work/demo/src/a.ts",
+      to: "E:/work/demo/src/renamed.ts",
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(4, "copy_path_entry", {
+      from: "E:/work/demo/src/a.ts",
+      to: "E:/work/demo/src/copy.ts",
     });
   });
 });
