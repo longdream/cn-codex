@@ -176,13 +176,46 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
       setStatus(statusResp);
       setHistory(logResp.entries);
       setBranches(branchResp.branches);
-      setSelectedBranch((prev) => prev || branchResp.current || branchResp.branches[0]?.name || "");
+      setSelectedBranch((prev) => {
+        const names = new Set(branchResp.branches.map((branch) => branch.name));
+        if (prev && names.has(prev)) {
+          return prev;
+        }
+        return branchResp.current || branchResp.branches[0]?.name || "";
+      });
     } catch (error) {
       setErrorText(normalizeError(error));
     } finally {
       setLoading(false);
     }
   }, [workspaceCwd]);
+
+  const refreshBranches = useCallback(async () => {
+    if (!workspaceCwd) {
+      setBranches([]);
+      setSelectedBranch("");
+      return;
+    }
+
+    setLoading(true);
+    setErrorText(null);
+    try {
+      const branchResp = await gitBranchList(workspaceCwd);
+      setBranches(branchResp.branches);
+      setSelectedBranch((prev) => {
+        const names = new Set(branchResp.branches.map((branch) => branch.name));
+        if (prev && names.has(prev)) {
+          return prev;
+        }
+        return branchResp.current || branchResp.branches[0]?.name || "";
+      });
+      setNoticeText(intl.formatMessage({ id: "git.branchesRefreshed" }));
+    } catch (error) {
+      setErrorText(normalizeError(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [intl, workspaceCwd]);
 
   const loadDiff = useCallback(
     async (selection: DiffSelection) => {
@@ -765,6 +798,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
             disabled={busyAction !== null}
             className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-subtle)] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-soft)] hover:text-[var(--text-strong)] disabled:opacity-35"
             title={intl.formatMessage({ id: actionType === "stage" ? "git.stage" : "git.unstage" })}
+            aria-label={intl.formatMessage({ id: actionType === "stage" ? "git.stage" : "git.unstage" })}
           >
             {actionType === "stage" ? <IconPlus size={12} stroke={2} /> : <IconMinus size={12} stroke={2} />}
           </button>
@@ -774,6 +808,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
             disabled={busyAction !== null}
             className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] border border-[rgba(239,68,68,0.35)] text-[var(--danger)] transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-35"
             title={intl.formatMessage({ id: "git.discard" })}
+            aria-label={intl.formatMessage({ id: "git.discard" })}
           >
             <IconX size={12} stroke={2} />
           </button>
@@ -861,6 +896,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
               onClick={() => void refreshAll()}
               className={iconButtonClass}
               title={intl.formatMessage({ id: "git.refreshTitle" })}
+              aria-label={intl.formatMessage({ id: "git.refreshTitle" })}
             >
               <IconRefresh size={14} stroke={1.8} className={loading ? "animate-spin" : ""} />
             </button>
@@ -870,6 +906,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
               disabled={busyAction !== null}
               className={iconButtonClass}
               title={intl.formatMessage({ id: "git.pull" })}
+              aria-label={intl.formatMessage({ id: "git.pull" })}
             >
               <IconArrowDown size={14} stroke={1.8} />
             </button>
@@ -879,6 +916,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
               disabled={busyAction !== null}
               className={iconButtonClass}
               title={intl.formatMessage({ id: "git.push" })}
+              aria-label={intl.formatMessage({ id: "git.push" })}
             >
               <IconArrowUp size={14} stroke={1.8} />
             </button>
@@ -906,6 +944,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                 disabled={busyAction !== null || allChangePaths.length === 0}
                 className={`${iconButtonClass} shrink-0`}
                 title={intl.formatMessage({ id: "git.stageAll" })}
+                aria-label={intl.formatMessage({ id: "git.stageAll" })}
               >
                 <IconPlus size={13} stroke={2} />
               </button>
@@ -915,6 +954,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                 disabled={busyAction !== null || stagedPaths.length === 0}
                 className={`${iconButtonClass} shrink-0`}
                 title={intl.formatMessage({ id: "git.unstageAll" })}
+                aria-label={intl.formatMessage({ id: "git.unstageAll" })}
               >
                 <IconMinus size={13} stroke={2} />
               </button>
@@ -933,19 +973,27 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                     ? conflictedCount > 0
                     : stagedCount <= 0)
                 }
-                className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-l-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-3 py-1.5 text-xs font-medium text-[var(--accent-strong)] transition-colors hover:bg-[rgba(34,197,94,0.18)] disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-l-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)] transition-colors hover:bg-[rgba(34,197,94,0.18)] disabled:cursor-not-allowed disabled:opacity-40"
+                title={
+                  status?.mergeInProgress
+                    ? intl.formatMessage({ id: "git.mergeContinue" })
+                    : intl.formatMessage({ id: "git.tabCommit" })
+                }
+                aria-label={
+                  status?.mergeInProgress
+                    ? intl.formatMessage({ id: "git.mergeContinue" })
+                    : intl.formatMessage({ id: "git.tabCommit" })
+                }
               >
                 <IconCheck size={13} stroke={2} />
-                {status?.mergeInProgress
-                  ? intl.formatMessage({ id: "git.mergeContinue" })
-                  : intl.formatMessage({ id: "git.tabCommit" })}
               </button>
               <button
                 type="button"
                 onClick={() => setCommitMenuOpen((open) => !open)}
                 disabled={busyAction !== null || status?.mergeInProgress || stagedCount <= 0}
-                className="shrink-0 rounded-r-[var(--radius-sm)] border border-l-0 border-[var(--accent-border)] bg-[var(--accent-soft)] px-2 text-[var(--accent-strong)] transition-colors hover:bg-[rgba(34,197,94,0.18)] disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-r-[var(--radius-sm)] border border-l-0 border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)] transition-colors hover:bg-[rgba(34,197,94,0.18)] disabled:cursor-not-allowed disabled:opacity-40"
                 title={intl.formatMessage({ id: "git.commitMenu" })}
+                aria-label={intl.formatMessage({ id: "git.commitMenu" })}
               >
                 <IconChevronDown size={13} stroke={2} />
               </button>
@@ -1010,27 +1058,33 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
               <button
                 type="button"
                 onClick={handleFocusConflicts}
-                className="rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.45)] px-2 py-0.5 text-[11px] text-amber-100 transition-colors hover:bg-[rgba(245,158,11,0.18)]"
+                className={iconButtonClass}
+                title={intl.formatMessage({ id: "git.viewConflicts" })}
+                aria-label={intl.formatMessage({ id: "git.viewConflicts" })}
               >
-                {intl.formatMessage({ id: "git.viewConflicts" })}
+                <IconFiles size={14} stroke={1.8} />
               </button>
             ) : (
               <button
                 type="button"
                 onClick={() => void handleMergeContinue()}
                 disabled={busyAction !== null}
-                className="rounded-[var(--radius-sm)] border border-[var(--accent-border)] px-2 py-0.5 text-[11px] text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent-soft)] disabled:opacity-40"
+                className={iconButtonClass}
+                title={intl.formatMessage({ id: "git.mergeContinue" })}
+                aria-label={intl.formatMessage({ id: "git.mergeContinue" })}
               >
-                {intl.formatMessage({ id: "git.mergeContinue" })}
+                <IconCheck size={14} stroke={1.8} />
               </button>
             )}
             <button
               type="button"
               onClick={() => void handleMergeAbort()}
               disabled={busyAction !== null}
-              className="rounded-[var(--radius-sm)] border border-[rgba(239,68,68,0.35)] px-2 py-0.5 text-[11px] text-[var(--danger)] transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-40"
+              className={iconButtonClass}
+              title={intl.formatMessage({ id: "git.mergeAbort" })}
+              aria-label={intl.formatMessage({ id: "git.mergeAbort" })}
             >
-              {intl.formatMessage({ id: "git.mergeAbort" })}
+              <IconX size={14} stroke={1.8} />
             </button>
           </div>
         </div>
@@ -1106,8 +1160,18 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
           </div>
         ) : section === "branches" ? (
           <div className="flex h-full flex-col gap-2">
-            <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2.5 py-2 text-[11px] text-[var(--text-muted)]">
-              {intl.formatMessage({ id: "git.branchSectionHint" })}
+            <div className="flex items-center justify-between gap-2 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2.5 py-2 text-[11px] text-[var(--text-muted)]">
+              <span className="min-w-0 flex-1">{intl.formatMessage({ id: "git.branchSectionHint" })}</span>
+              <button
+                type="button"
+                onClick={() => void refreshBranches()}
+                disabled={loading || busyAction !== null}
+                className={iconButtonClass}
+                title={intl.formatMessage({ id: "git.refreshBranches" })}
+                aria-label={intl.formatMessage({ id: "git.refreshBranches" })}
+              >
+                <IconRefresh size={14} stroke={1.8} className={loading ? "animate-spin" : ""} />
+              </button>
             </div>
             {status?.mergeInProgress ? (
               <div className="rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.4)] bg-[rgba(245,158,11,0.12)] px-2.5 py-2 text-[11px] text-amber-200">
@@ -1127,30 +1191,33 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                     <button
                       type="button"
                       onClick={handleFocusConflicts}
-                      className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.45)] px-2 py-1 text-xs text-amber-100 transition-colors hover:bg-[rgba(245,158,11,0.18)]"
+                      className={iconButtonClass}
+                      title={intl.formatMessage({ id: "git.viewConflicts" })}
+                      aria-label={intl.formatMessage({ id: "git.viewConflicts" })}
                     >
-                      <IconFiles size={12} stroke={1.9} />
-                      {intl.formatMessage({ id: "git.viewConflicts" })}
+                      <IconFiles size={14} stroke={1.8} />
                     </button>
                   ) : (
                     <button
                       type="button"
                       onClick={() => void handleMergeContinue()}
                       disabled={busyAction !== null}
-                      className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--accent-border)] px-2 py-1 text-xs text-[var(--accent-strong)] transition-colors hover:bg-[var(--accent-soft)] disabled:opacity-40"
+                      className={iconButtonClass}
+                      title={intl.formatMessage({ id: "git.mergeContinue" })}
+                      aria-label={intl.formatMessage({ id: "git.mergeContinue" })}
                     >
-                      <IconCheck size={12} stroke={1.9} />
-                      {intl.formatMessage({ id: "git.mergeContinue" })}
+                      <IconCheck size={14} stroke={1.8} />
                     </button>
                   )}
                   <button
                     type="button"
                     onClick={() => void handleMergeAbort()}
                     disabled={busyAction !== null}
-                    className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[rgba(239,68,68,0.35)] px-2 py-1 text-xs text-[var(--danger)] transition-colors hover:bg-[var(--danger-soft)] disabled:opacity-40"
+                    className={iconButtonClass}
+                    title={intl.formatMessage({ id: "git.mergeAbort" })}
+                    aria-label={intl.formatMessage({ id: "git.mergeAbort" })}
                   >
-                    <IconX size={12} stroke={1.9} />
-                    {intl.formatMessage({ id: "git.mergeAbort" })}
+                    <IconX size={14} stroke={1.8} />
                   </button>
                 </div>
               </div>
@@ -1173,10 +1240,11 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                   type="button"
                   onClick={() => void handleCheckout()}
                   disabled={!selectedBranch || busyAction !== null}
-                  className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
+                  className={iconButtonClass}
+                  title={intl.formatMessage({ id: "git.checkout" })}
+                  aria-label={intl.formatMessage({ id: "git.checkout" })}
                 >
-                  <IconGitBranch size={12} stroke={1.9} />
-                  {intl.formatMessage({ id: "git.checkout" })}
+                  <IconGitBranch size={14} stroke={1.8} />
                 </button>
               </div>
             </div>
@@ -1193,10 +1261,11 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                   type="button"
                   onClick={() => void handleCreateBranch()}
                   disabled={busyAction !== null}
-                  className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
+                  className={iconButtonClass}
+                  title={intl.formatMessage({ id: "git.createAndCheckout" })}
+                  aria-label={intl.formatMessage({ id: "git.createAndCheckout" })}
                 >
-                  <IconPlus size={12} stroke={1.9} />
-                  {intl.formatMessage({ id: "git.createAndCheckout" })}
+                  <IconPlus size={14} stroke={1.8} />
                 </button>
               </div>
             </div>
@@ -1233,6 +1302,21 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                     <option value="ff-only">{intl.formatMessage({ id: "git.mergeMode.ff-only" })}</option>
                     <option value="squash">{intl.formatMessage({ id: "git.mergeMode.squash" })}</option>
                   </select>
+                  <button
+                    type="button"
+                    onClick={() => void handleMerge()}
+                    disabled={
+                      !selectedBranch ||
+                      selectedBranch === currentBranch ||
+                      busyAction !== null ||
+                      Boolean(status?.mergeInProgress)
+                    }
+                    className={iconButtonClass}
+                    title={intl.formatMessage({ id: "git.mergeIntoCurrent" })}
+                    aria-label={intl.formatMessage({ id: "git.mergeIntoCurrent" })}
+                  >
+                    <IconGitMerge size={14} stroke={1.8} />
+                  </button>
                 </div>
                 <label className="flex items-center gap-1 text-[11px] text-[var(--text-faint)]">
                   <input
@@ -1243,20 +1327,6 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                   />
                   {intl.formatMessage({ id: "git.mergeNoCommit" })}
                 </label>
-                <button
-                  type="button"
-                  onClick={() => void handleMerge()}
-                  disabled={
-                    !selectedBranch ||
-                    selectedBranch === currentBranch ||
-                    busyAction !== null ||
-                    Boolean(status?.mergeInProgress)
-                  }
-                  className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
-                >
-                  <IconGitMerge size={13} stroke={1.8} />
-                  {intl.formatMessage({ id: "git.mergeIntoCurrent" })}
-                </button>
               </div>
             </div>
           </div>
@@ -1346,7 +1416,8 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
             </div>
             <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
               <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.executeReset" })}</div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-2">
+                <div className="grid grid-cols-2 gap-2">
                 <select
                   value={resetMode}
                   onChange={(event) => setResetMode(event.target.value as "soft" | "mixed" | "hard")}
@@ -1362,56 +1433,62 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                   placeholder="target (HEAD)"
                   className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
                 />
-                <button
-                  type="button"
-                  onClick={() => void handleReset()}
-                  disabled={busyAction !== null}
-                  className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] hover:bg-[var(--surface-elevated)] disabled:opacity-40"
-                >
-                  <IconRotateClockwise2 size={13} stroke={1.8} />
-                  {intl.formatMessage({ id: "git.executeReset" })}
-                </button>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void handleReset()}
+                    disabled={busyAction !== null}
+                    className={iconButtonClass}
+                    title={intl.formatMessage({ id: "git.executeReset" })}
+                    aria-label={intl.formatMessage({ id: "git.executeReset" })}
+                  >
+                    <IconRotateClockwise2 size={14} stroke={1.8} />
+                  </button>
+                </div>
               </div>
             </div>
 
             <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
               <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.executeRevert" })}</div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="flex items-center gap-1">
                 <input
                   value={revertCommit}
                   onChange={(event) => setRevertCommit(event.target.value)}
                   placeholder="revert commit"
-                  className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
+                  className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
                 />
                 <button
                   type="button"
                   onClick={() => void handleRevert()}
                   disabled={busyAction !== null}
-                  className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] hover:bg-[var(--surface-elevated)] disabled:opacity-40"
+                  className={iconButtonClass}
+                  title={intl.formatMessage({ id: "git.executeRevert" })}
+                  aria-label={intl.formatMessage({ id: "git.executeRevert" })}
                 >
-                  <IconHistory size={13} stroke={1.8} />
-                  {intl.formatMessage({ id: "git.executeRevert" })}
+                  <IconHistory size={14} stroke={1.8} />
                 </button>
               </div>
             </div>
 
             <div className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] p-2">
               <div className="mb-2 text-[11px] font-semibold text-[var(--text-faint)]">{intl.formatMessage({ id: "git.cherryPickLabel" })}</div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="flex items-center gap-1">
                 <input
                   value={cherryCommit}
                   onChange={(event) => setCherryCommit(event.target.value)}
                   placeholder={intl.formatMessage({ id: "git.cherryPickPlaceholder" })}
-                  className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
+                  className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
                 />
                 <button
                   type="button"
                   onClick={() => void handleCherryPick()}
                   disabled={busyAction !== null}
-                  className="inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 py-1 text-xs text-[var(--text-base)] hover:bg-[var(--surface-elevated)] disabled:opacity-40"
+                  className={iconButtonClass}
+                  title={intl.formatMessage({ id: "git.cherryPickLabel" })}
+                  aria-label={intl.formatMessage({ id: "git.cherryPickLabel" })}
                 >
-                  <IconGitCherryPick size={13} stroke={1.8} />
-                  {intl.formatMessage({ id: "git.cherryPickLabel" })}
+                  <IconGitCherryPick size={14} stroke={1.8} />
                 </button>
               </div>
               <label className="mt-2 flex items-center gap-1 text-[11px] text-[var(--text-faint)]">
