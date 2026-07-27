@@ -21,6 +21,10 @@ import { resolveApproval } from "../api/approval";
 import { decodePathRefRangeSnippet, PATH_REF_MIME } from "../utils/pathRefSnippet";
 import { shouldAcceptEventSequence } from "../utils/turnEventSequence";
 import { liveSubagentFromPayload } from "../utils/subagentStatus";
+import {
+  normalizeReportedFileChanges,
+  normalizeReportedFilePath,
+} from "../utils/reportedFilePath";
 
 interface TurnEventPayload {
   threadId: string;
@@ -132,7 +136,7 @@ function runSummaryFromTurn(turn: TurnEventPayload["turn"]): RunSummary | null {
     startedAt: toTimestamp(turn.startedAt),
     completedAt: toTimestamp(turn.completedAt),
     durationMs: turn.durationMs,
-    changedFiles: turn.changedFiles ?? [],
+    changedFiles: normalizeReportedFileChanges(turn.changedFiles),
     changedFileSnapshots: normalizeFileChangeSnapshots(turn.changedFileSnapshots),
     usage: normalizeTokenUsage(turn.usage),
     goalBudgetTokens: normalizeTokenBudget(turn.goalBudgetTokens),
@@ -149,7 +153,7 @@ function normalizeFileChangeSnapshots(
 
   const normalized = snapshots
     .map((snapshot) => ({
-      path: String(snapshot.path ?? "").trim(),
+      path: normalizeReportedFilePath(String(snapshot.path ?? "").trim()),
       action: String(snapshot.action ?? "modified").trim() || "modified",
       beforeContent:
         typeof snapshot.beforeContent === "string" ? snapshot.beforeContent : undefined,

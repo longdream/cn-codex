@@ -20,6 +20,10 @@ import type {
   VisionFallbackKind,
 } from "../types/provider";
 import type { ActiveSubagentView } from "../utils/subagentStatus";
+import {
+  normalizeReportedFileChanges,
+  normalizeReportedFilePath,
+} from "../utils/reportedFilePath";
 
 export const GENERAL_PROJECT_ID = "__general__";
 
@@ -741,7 +745,7 @@ function normalizeRunSummary(turn: RawTurn): RunSummary | null {
     startedAt: turn.startedAt ? toMillis(turn.startedAt) : undefined,
     completedAt: turn.completedAt ? toMillis(turn.completedAt) : undefined,
     durationMs: turn.durationMs ?? undefined,
-    changedFiles: turn.changedFiles ?? [],
+    changedFiles: normalizeReportedFileChanges(turn.changedFiles),
     changedFileSnapshots: normalizeFileChangeSnapshots(turn.changedFileSnapshots),
     usage: normalizeTokenUsage(turn.usage),
     goalBudgetTokens: normalizeTokenBudget(turn.goalBudgetTokens),
@@ -758,7 +762,7 @@ function normalizeFileChangeSnapshots(
 
   const normalized = snapshots
     .map((snapshot) => ({
-      path: String(snapshot.path ?? "").trim(),
+      path: normalizeReportedFilePath(String(snapshot.path ?? "").trim()),
       action: String(snapshot.action ?? "modified").trim() || "modified",
       beforeContent:
         typeof snapshot.beforeContent === "string" ? snapshot.beforeContent : undefined,

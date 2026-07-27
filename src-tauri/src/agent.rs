@@ -6914,14 +6914,64 @@ fn parse_git_status_line(line: &str) -> Option<(String, String)> {
         return None;
     }
 
-    let path = raw_path
-        .rsplit(" -> ")
-        .next()
-        .unwrap_or(raw_path)
-        .trim_matches('"')
-        .replace('\\', "/");
+    let path = raw_path.rsplit(" -> ").next().unwrap_or(raw_path).trim();
+    let path = decode_git_quoted_path(path).replace('\\', "/");
 
     Some((path, status))
+}
+
+fn decode_git_quoted_path(path: &str) -> String {
+    let Some(inner) = path
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return path.to_string();
+    };
+
+    let input = inner.as_bytes();
+    let mut output = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        if input[index] != b'\\' || index + 1 >= input.len() {
+            output.push(input[index]);
+            index += 1;
+            continue;
+        }
+
+        index += 1;
+        let escaped = input[index];
+        if (b'0'..=b'7').contains(&escaped) {
+            let mut value = 0_u16;
+            let mut digits = 0;
+            while index < input.len() && digits < 3 && (b'0'..=b'7').contains(&input[index]) {
+                value = value * 8 + u16::from(input[index] - b'0');
+                index += 1;
+                digits += 1;
+            }
+            if value <= u16::from(u8::MAX) {
+                output.push(value as u8);
+            } else {
+                output.extend_from_slice(&input[index - digits..index]);
+            }
+            continue;
+        }
+
+        output.push(match escaped {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b't' => b'\t',
+            b'n' => b'\n',
+            b'v' => 0x0b,
+            b'f' => 0x0c,
+            b'r' => b'\r',
+            b'\\' => b'\\',
+            b'"' => b'"',
+            other => other,
+        });
+        index += 1;
+    }
+
+    String::from_utf8(output).unwrap_or_else(|_| path.trim_matches('"').to_string())
 }
 
 fn parse_skill_prompt_frontmatter(content: &str) -> (String, String) {
@@ -7491,6 +7541,27 @@ mod tests {
         merge_git_changes(&mut changes, &before, &after);
 
         assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn parse_git_status_line_decodes_quoted_utf8_octal_path() {
+        let line = r#" M "education/docs/\346\225\231\350\202\262IDE_\351\234\200\346\261\202\346\226\207\346\241\243_\345\217\257\345\217\202\350\265\233\347\211\210.md""#;
+
+        assert_eq!(
+            parse_git_status_line(line),
+            Some((
+                "education/docs/教育IDE_需求文档_可参赛版.md".to_string(),
+                "M".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_git_status_line_keeps_plain_path() {
+        assert_eq!(
+            parse_git_status_line("?? src/new file.ts"),
+            Some(("src/new file.ts".to_string(), "??".to_string()))
+        );
     }
 
     #[test]
