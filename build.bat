@@ -70,12 +70,12 @@ if not defined CARGO_PROFILE_RELEASE_CODEGEN_UNITS set "CARGO_PROFILE_RELEASE_CO
 echo.
 echo [0/5] Checking disk space and cleaning bulky Rust cache...
 echo [%date% %time%] [0/5] Disk check + rust cache cleanup >> "%LOGFILE%"
-for /f "usebackq tokens=1,2 delims=|" %%A in (`powershell -NoProfile -Command "$p='%PROJECT_DIR%'; $root=[System.IO.Path]::GetPathRoot((Resolve-Path $p)); $d=Get-CimInstance Win32_LogicalDisk -Filter (\"DeviceID='\" + $root.TrimEnd('\\') + \"'\"); if ($d) { '{0}|{1:N2}' -f $d.DeviceID, ($d.FreeSpace/1GB) } else { '?:|0' }"`) do (
+set "PROJECT_DRIVE=?"
+set "PROJECT_FREE_GB=0"
+for /f "usebackq tokens=1,2 delims=|" %%A in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\scripts\check-disk-space.ps1" -Path "%PROJECT_DIR%"`) do (
     set "PROJECT_DRIVE=%%A"
     set "PROJECT_FREE_GB=%%B"
 )
-if not defined PROJECT_DRIVE set "PROJECT_DRIVE=?"
-if not defined PROJECT_FREE_GB set "PROJECT_FREE_GB=0"
 echo [INFO] Project drive %PROJECT_DRIVE% free=%PROJECT_FREE_GB% GB
 echo [%date% %time%] Project drive %PROJECT_DRIVE% free=%PROJECT_FREE_GB% GB >> "%LOGFILE%"
 
@@ -83,6 +83,7 @@ REM Prefer soft clean by default; escalate when disk is tight.
 set "CLEAN_MODE=auto"
 if /I "%~1"=="fullclean" set "CLEAN_MODE=full"
 if /I "%~1"=="clean" set "CLEAN_MODE=debug"
+echo [INFO] Cleaning Rust cache ^(mode=%CLEAN_MODE%^)... this may take a while
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%\scripts\clean-rust-cache.ps1" -Mode %CLEAN_MODE% >> "%LOGFILE%" 2>&1
 if errorlevel 1 (
     echo [WARN] Rust cache cleanup reported errors; continuing build.

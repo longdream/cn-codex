@@ -16,6 +16,10 @@ import {
 import { useAppStore } from "../../stores/appStore";
 import { resolveProviderModelId } from "../../utils/chatModelSelection";
 import {
+  formatSkillLabImprovementRequest,
+  needsSkillLabImprovement,
+} from "../../utils/skillLabImprovement";
+import {
   buildSkillLabRuntimeConfig,
   loadSkillLabPreferences,
   saveSkillLabPreferences,
@@ -31,6 +35,7 @@ interface SkillLabSummary {
   name: string;
   status: string;
   iterationCount: number;
+  needsImprovement: boolean;
 }
 
 /** 实验室草稿完整内容 */
@@ -250,6 +255,7 @@ export function SkillLabPanel() {
   const [goal, setGoal] = useState("");
   const [content, setContent] = useState("");
   const [testPrompt, setTestPrompt] = useState("");
+  const [improvementRequest, setImprovementRequest] = useState("");
   const [maxIterations, setMaxIterations] = useState(FALLBACK_MAX_ITERATIONS);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -543,6 +549,11 @@ export function SkillLabPanel() {
       setGoal(d.goal ?? "");
       setContent(d.content);
       setTestPrompt(d.testPrompt);
+      setImprovementRequest(
+        needsSkillLabImprovement(d.status, d.lastEvaluation)
+          ? formatSkillLabImprovementRequest(d.lastEvaluation)
+          : "",
+      );
       const nextMaxIterations = normalizeMaxIterations(d.maxIterations);
       setMaxIterations(nextMaxIterations);
       setSavedSnapshot({
@@ -570,6 +581,7 @@ export function SkillLabPanel() {
     setGoal("");
     setContent("");
     setTestPrompt("");
+    setImprovementRequest("");
     setMaxIterations(FALLBACK_MAX_ITERATIONS);
     setGenerationError("");
     setPythonInfo("");
@@ -676,6 +688,7 @@ export function SkillLabPanel() {
       setName(nextName);
       setContent(nextContent);
       setTestPrompt(nextTestPrompt);
+      setImprovementRequest("");
       setSavedSnapshot({
         name: nextName,
         goal: goal.trim(),
@@ -710,9 +723,11 @@ export function SkillLabPanel() {
     loadList,
   ]);
 
-  // 运行完整的测试闭环：测试 → 评估 → 改写 → 重复
-  const handleRunTest = useCallback(async () => {
+  // 运行完整的测试闭环：测试 → 评估 → 改写 → 重复。
+  // improvementRequest 仅作为本次请求快照发送，不进入草稿保存数据。
+  const runEvolution = useCallback(async (requestedImprovement?: string | null) => {
     if (!selectedId) return;
+    const normalizedImprovement = requestedImprovement?.trim() || null;
     const runtimeConfig = buildSkillLabRuntimeConfig(
       runtimePreferences.evolution,
       buildThreadChatProviderOverride,
@@ -770,6 +785,7 @@ export function SkillLabPanel() {
         params: {
           skillId: targetId,
           runtimeConfig,
+          improvementRequest: normalizedImprovement,
         },
       });
       setTestResult(result);
@@ -781,6 +797,11 @@ export function SkillLabPanel() {
       if (targetId !== selectedIdRef.current) return;
       setDetail(refreshed);
       setContent(result.finalContent);
+      setImprovementRequest(
+        needsSkillLabImprovement(refreshed.status, refreshed.lastEvaluation)
+          ? formatSkillLabImprovementRequest(refreshed.lastEvaluation)
+          : "",
+      );
       await loadList();
       setResultDialogOpen(true);
     } catch (err) {
@@ -814,6 +835,19 @@ export function SkillLabPanel() {
     loadList,
     intl,
   ]);
+
+  const handleRunTest = useCallback(() => {
+    void runEvolution(null);
+  }, [runEvolution]);
+
+  const handleImproveNow = useCallback(() => {
+    if (!improvementRequest.trim()) {
+      setTestError(intl.formatMessage({ id: "settings.skillLab.improvementRequired" }));
+      setResultDialogOpen(true);
+      return;
+    }
+    void runEvolution(improvementRequest);
+  }, [improvementRequest, intl, runEvolution]);
 
   // 部署为正式 Skill（写入 codey/skills/<id>/，之后 /skill 可用）
   const handleDeploy = useCallback(
@@ -858,6 +892,11 @@ export function SkillLabPanel() {
           setGoal(refreshed.goal ?? "");
           setContent(refreshed.content);
           setTestPrompt(refreshed.testPrompt);
+          setImprovementRequest(
+            needsSkillLabImprovement(refreshed.status, refreshed.lastEvaluation)
+              ? formatSkillLabImprovementRequest(refreshed.lastEvaluation)
+              : "",
+          );
           setMaxIterations(normalizeMaxIterations(refreshed.maxIterations));
           setSavedSnapshot({
             name: refreshed.name,
@@ -908,6 +947,7 @@ export function SkillLabPanel() {
         setGoal("");
         setContent("");
         setTestPrompt("");
+        setImprovementRequest("");
         setName("");
         setPythonInfo("");
         setGenerationError("");
@@ -968,6 +1008,9 @@ export function SkillLabPanel() {
     ? "settings.skillLab.deployDisabledRunning"
     : currentDeployState.disabledReasonId;
   const currentCanDeploy = currentDeployState.canDeploy && !selectedActiveRun;
+  const currentNeedsImprovement = detail
+    ? needsSkillLabImprovement(detail.status, detail.lastEvaluation)
+    : Boolean(selectedSummary?.needsImprovement);
   const promoting = deployingId !== null;
   const totalIterations =
     detail?.iterationCount ?? selectedSummary?.iterationCount ?? 0;
@@ -1109,11 +1152,18 @@ export function SkillLabPanel() {
                         ${selectedId === s.id ? "bg-[var(--accent-muted)]" : "hover:bg-[var(--surface-hover)]"}`}
                     >
                       <td className="px-2 py-2">
-                        <div
-                          className="max-w-[180px] truncate font-medium text-[var(--text-strong)]"
-                          title={s.name || s.id}
-                        >
-                          {s.name || s.id}
+                        <div className="flex max-w-[220px] items-center gap-1.5">
+                          <div
+                            className="min-w-0 truncate font-medium text-[var(--text-strong)]"
+                            title={s.name || s.id}
+                          >
+                            {s.name || s.id}
+                          </div>
+                          {s.needsImprovement && !liveRun ? (
+                            <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                              {intl.formatMessage({ id: "settings.skillLab.needsImprovement" })}
+                            </span>
+                          ) : null}
                         </div>
                       </td>
                       <td className="px-2 py-2">
@@ -1492,6 +1542,51 @@ export function SkillLabPanel() {
                   </pre>
                 </div>
               )}
+
+              {currentNeedsImprovement ? (
+                <section className="rounded-lg border border-amber-300 bg-amber-50/70 p-3 dark:border-amber-900/60 dark:bg-amber-950/20">
+                  <div className="mb-2">
+                    <h5 className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+                      {intl.formatMessage({ id: "settings.skillLab.improvementTitle" })}
+                    </h5>
+                    <p className="mt-1 text-[11px] text-amber-700/80 dark:text-amber-300/80">
+                      {intl.formatMessage({ id: "settings.skillLab.improvementDescription" })}
+                    </p>
+                  </div>
+                  <textarea
+                    value={improvementRequest}
+                    onChange={(event) => setImprovementRequest(event.target.value)}
+                    disabled={testing}
+                    placeholder={intl.formatMessage({
+                      id: "settings.skillLab.improvementPlaceholder",
+                    })}
+                    rows={7}
+                    className="w-full resize-y rounded-lg border border-amber-300 bg-[var(--surface-main)] px-3 py-2 text-xs text-[var(--text-base)] outline-none focus:border-[var(--accent)] disabled:opacity-60 dark:border-amber-900/60"
+                  />
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      onClick={handleImproveNow}
+                      disabled={
+                        testing
+                        || !improvementRequest.trim()
+                        || !content.trim()
+                        || !testPrompt.trim()
+                        || !evolutionRuntimeValid
+                      }
+                      className="flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-80 disabled:opacity-50"
+                    >
+                      {testing ? (
+                        <IconLoader2 size={14} stroke={2} className="animate-spin" />
+                      ) : (
+                        <IconSparkles size={14} stroke={2} />
+                      )}
+                      {testing
+                        ? intl.formatMessage({ id: "settings.skillLab.improving" })
+                        : intl.formatMessage({ id: "settings.skillLab.improveNow" })}
+                    </button>
+                  </div>
+                </section>
+              ) : null}
 
               {deployFeedback ? (
                 <div
