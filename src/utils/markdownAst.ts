@@ -98,6 +98,8 @@ export interface MarkdownTableBlock {
   type: "table";
   header: MarkdownTableCellBlock[];
   rows: MarkdownTableCellBlock[][];
+  /** GFM 列对齐：left / center / right，缺省按 left 处理。 */
+  align: Array<"left" | "center" | "right" | null>;
 }
 
 export interface MarkdownBlockQuoteBlock {
@@ -247,11 +249,18 @@ function blockFromNode(node: DefinitionContent | BlockContent): MarkdownBlock[] 
     case "table": {
       const tableNode = node as Table;
       const [headerRow, ...bodyRows] = tableNode.children;
+      const align = (tableNode.align ?? []).map((value) => {
+        if (value === "left" || value === "center" || value === "right") {
+          return value;
+        }
+        return null;
+      });
       return [
         {
           type: "table",
           header: rowToCells(headerRow),
           rows: bodyRows.map((row) => rowToCells(row)),
+          align,
         },
       ];
     }

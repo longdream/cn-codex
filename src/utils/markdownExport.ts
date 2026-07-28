@@ -43,6 +43,7 @@ interface PdfCursorState {
 }
 
 type DocxHeadingLevel = (typeof HeadingLevel)[keyof typeof HeadingLevel];
+type TableAlign = "left" | "center" | "right" | null;
 
 function headingLevelByDepth(depth: number): DocxHeadingLevel {
   switch (depth) {
@@ -124,14 +125,24 @@ function paragraphFromInlines(
     prefix?: string;
     spacingBefore?: number;
     spacingAfter?: number;
+    align?: TableAlign;
   },
 ): Paragraph {
   const runs = inlines.flatMap((inline) => textRunsFromInline(inline));
   if (options?.prefix) {
     runs.unshift(new TextRun({ text: options.prefix }));
   }
+  const alignment =
+    options?.align === "center"
+      ? "center"
+      : options?.align === "right"
+        ? "right"
+        : options?.align === "left"
+          ? "left"
+          : undefined;
   return new Paragraph({
     heading: options?.heading,
+    alignment,
     children: runs.length > 0 ? runs : [new TextRun({ text: "" })],
     indent: options?.indentLeft ? { left: options.indentLeft } : undefined,
     spacing: {
@@ -251,7 +262,9 @@ function docxChildrenFromBlock(block: MarkdownBlock, depth = 0): Array<Paragraph
         1,
         block.header.length,
         ...block.rows.map((row) => row.length),
+        block.align.length,
       );
+      const aligns: TableAlign[] = Array.from({ length: maxColumns }, (_, index) => block.align[index] ?? null);
       const normalizedRows = [block.header, ...block.rows].map((row) => {
         const next = [...row];
         while (next.length < maxColumns) {
@@ -261,12 +274,13 @@ function docxChildrenFromBlock(block: MarkdownBlock, depth = 0): Array<Paragraph
       });
       const rows = normalizedRows.map((row, rowIndex) =>
         new TableRow({
-          children: row.map((cell) =>
+          children: row.map((cell, columnIndex) =>
             new TableCell({
               width: { size: 100 / maxColumns, type: WidthType.PERCENTAGE },
               children: [
                 paragraphFromInlines(cell.inlines, {
                   spacingAfter: 60,
+                  align: aligns[columnIndex] ?? null,
                 }),
               ],
               shading: rowIndex === 0
@@ -385,17 +399,153 @@ function writePdfList(state: PdfCursorState, block: MarkdownListBlock, depth = 0
   state.cursorY += 4;
 }
 
+function measurePdfTextWidth(state: PdfCursorState, text: string, fontSize: number): number {
+  state.doc.setFontSize(fontSize);
+  return state.doc.getTextWidth(text || " ");
+}
+
+function wrapPdfCellText(
+  state: PdfCursorState,
+  text: string,
+  maxWidth: number,
+  fontSize: number,
+): string[] {
+  state.doc.setFontSize(fontSize);
+  const lines = state.doc.splitTextToSize((text || " ").replace(/\r\n?/g, "\n"), Math.max(1, maxWidth)) as string[];
+  return lines.length > 0 ? lines : [" "];
+}
+
 function writePdfTable(state: PdfCursorState, block: Extract<MarkdownBlock, { type: "table" }>): void {
-  const header = block.header.map((cell) => flattenInlineText(cell.inlines).trim());
-  const rows = block.rows.map((row) => row.map((cell) => flattenInlineText(cell.inlines).trim()));
-  const headerLine = header.join(" | ");
-  const separatorLine = header.map(() => "---").join(" | ");
-  writePdfWrappedText(state, headerLine || " ", { fontSize: 10.5, spacingAfter: 2 });
-  writePdfWrappedText(state, separatorLine, { fontSize: 10, spacingAfter: 2, color: [71, 85, 105] });
-  rows.forEach((row) => {
-    writePdfWrappedText(state, row.join(" | ") || " ", { fontSize: 10.5, spacingAfter: 2 });
+  const fontSize = 10;
+  const lineHeight = 13;
+  const cellPaddingX = 6;
+  const cellPaddingY = 5;
+  const borderColor: [number, number, number] = [203, 213, 225];
+  const headerFill: [number, number, number] = [248, 250, 252];
+  const headerTextColor: [number, number, number] = [15, 23, 42];
+  const bodyTextColor: [number, number, number] = [30, 41, 59];
+
+  const matrix = [
+    block.header.map((cell) => flattenInlineText(cell.inlines).trim() || " "),
+    ...block.rows.map((row) => row.map((cell) => flattenInlineText(cell.inlines).trim() || " ")),
+  ];
+  if (matrix.length === 0) {
+    return;
+  }
+
+  const columnCount = Math.max(1, ...matrix.map((row) => row.length));
+  const normalized = matrix.map((row) => {
+    const next = [...row];
+    while (next.length < columnCount) {
+      next.push(" ");
+    }
+    return next.slice(0, columnCount);
   });
-  state.cursorY += 6;
+  const aligns: TableAlign[] = Array.from(
+    { length: columnCount },
+    (_, index) => block.align[index] ?? null,
+  );
+
+  // 按内容估算列宽，再按可用宽度等比缩放，保证表格边框与列对齐。
+  const rawWidths = Array.from({ length: columnCount }, (_, columnIndex) => {
+    let maxContentWidth = 28;
+    normalized.forEach((row) => {
+      const cellText = row[columnIndex] ?? " ";
+      // 长文本允许换行，但至少按前 24 个字符估算基础列宽。
+      const sample = cellText.length > 24 ? `${cellText.slice(0, 24)}…` : cellText;
+      maxContentWidth = Math.max(maxContentWidth, measurePdfTextWidth(state, sample, fontSize));
+    });
+    return maxContentWidth + cellPaddingX * 2;
+  });
+  const rawTotal = rawWidths.reduce((sum, width) => sum + width, 0);
+  const scale = rawTotal > state.contentWidth ? state.contentWidth / rawTotal : 1;
+  const columnWidths = rawWidths.map((width) => Math.max(36, width * scale));
+  // 缩放后可能仍有浮点误差，最后一列补齐到内容宽度，避免右边框错位。
+  const widthSum = columnWidths.reduce((sum, width) => sum + width, 0);
+  if (columnWidths.length > 0) {
+    columnWidths[columnWidths.length - 1] += Math.max(0, state.contentWidth - widthSum);
+  }
+
+  const measureRowHeight = (row: string[]): number => {
+    let maxLines = 1;
+    row.forEach((cell, columnIndex) => {
+      const lines = wrapPdfCellText(
+        state,
+        cell,
+        Math.max(1, columnWidths[columnIndex] - cellPaddingX * 2),
+        fontSize,
+      );
+      maxLines = Math.max(maxLines, lines.length);
+    });
+    return maxLines * lineHeight + cellPaddingY * 2;
+  };
+
+  const drawRow = (row: string[], isHeader: boolean, y: number, rowHeight: number): void => {
+    let x = PDF_MARGIN_X;
+    row.forEach((cell, columnIndex) => {
+      const width = columnWidths[columnIndex];
+      if (isHeader) {
+        state.doc.setFillColor(headerFill[0], headerFill[1], headerFill[2]);
+        state.doc.rect(x, y, width, rowHeight, "F");
+      }
+      state.doc.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+      state.doc.setLineWidth(0.6);
+      state.doc.rect(x, y, width, rowHeight, "S");
+
+      const lines = wrapPdfCellText(
+        state,
+        cell,
+        Math.max(1, width - cellPaddingX * 2),
+        fontSize,
+      );
+      const textColor = isHeader ? headerTextColor : bodyTextColor;
+      const align = aligns[columnIndex] ?? "left";
+      state.doc.setTextColor(textColor[0], textColor[1], textColor[2]);
+      state.doc.setFontSize(fontSize);
+      lines.forEach((line, lineIndex) => {
+        // jsPDF text baseline 约在字高 80%，加上顶部内边距后视觉居中更稳。
+        const textY = y + cellPaddingY + lineHeight * 0.8 + lineIndex * lineHeight;
+        const textWidth = measurePdfTextWidth(state, line, fontSize);
+        const contentWidth = Math.max(1, width - cellPaddingX * 2);
+        let textX = x + cellPaddingX;
+        if (align === "center") {
+          textX = x + cellPaddingX + Math.max(0, (contentWidth - textWidth) / 2);
+        } else if (align === "right") {
+          textX = x + width - cellPaddingX - textWidth;
+        }
+        state.doc.text(line, textX, textY);
+      });
+      x += width;
+    });
+  };
+
+  const headerRow = normalized[0] ?? Array.from({ length: columnCount }, () => " ");
+  const bodyRows = normalized.slice(1);
+  const headerHeight = measureRowHeight(headerRow);
+  const pageBottom = state.pageHeight - PDF_MARGIN_Y;
+
+  const drawHeaderRow = (): void => {
+    ensurePdfPageSpace(state, headerHeight);
+    drawRow(headerRow, true, state.cursorY, headerHeight);
+    state.cursorY += headerHeight;
+  };
+
+  // 首页先画表头；后续分页时重复表头，方便阅读。
+  drawHeaderRow();
+
+  bodyRows.forEach((row) => {
+    const rowHeight = measureRowHeight(row);
+    // 当前页放不下时：换页并重复表头。
+    if (state.cursorY + rowHeight > pageBottom) {
+      state.doc.addPage();
+      state.cursorY = PDF_MARGIN_Y;
+      drawHeaderRow();
+    }
+    ensurePdfPageSpace(state, rowHeight);
+    drawRow(row, false, state.cursorY, rowHeight);
+    state.cursorY += rowHeight;
+  });
+  state.cursorY += 8;
 }
 
 export async function exportMarkdownAsDocxBytes(markdown: string): Promise<Uint8Array> {
