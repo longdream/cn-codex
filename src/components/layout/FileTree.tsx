@@ -1,8 +1,12 @@
 import {
   IconBrowser,
+  IconClipboard,
+  IconCopy,
+  IconCut,
   IconChevronDown,
   IconChevronRight,
   IconFile,
+  IconFilePlus,
   IconFileCode,
   IconFileText,
   IconFileTypeCss,
@@ -10,10 +14,12 @@ import {
   IconFileTypeJsx,
   IconFileTypeTs,
   IconFolder,
+  IconFolderPlus,
   IconFolderOpen,
   IconJson,
   IconMarkdown,
   IconMessagePlus,
+  IconPencil,
   IconPhoto,
   IconSearch,
   IconTrash,
@@ -22,9 +28,12 @@ import {
 import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
 import {
+  copyPathEntry,
+  createPathEntry,
   deletePath,
   readTextFilePreview,
   readDirectory,
+  renamePathEntry,
   revealInExplorer,
   searchWorkspaceFiles,
   type FileEntry,
@@ -35,11 +44,17 @@ import {
 import { useAppStore } from "../../stores/appStore";
 import { ContextMenu, type ContextMenuEntry } from "../common/ContextMenu";
 import { PATH_REF_MIME, supportsPathRefRangeByName } from "../../utils/pathRefSnippet";
+import { getParentPath, joinPath, pathsEqual, uniqueNameInDirectory } from "../../utils/fileTreeSelection";
 
 interface TreeNode extends FileEntry {
   children?: TreeNode[];
   loaded: boolean;
   expanded: boolean;
+}
+
+interface FileTreeClipboard {
+  node: Pick<TreeNode, "path" | "name" | "isDir">;
+  operation: "copy" | "cut";
 }
 
 function fileIcon(name: string, size: number) {
@@ -148,8 +163,10 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
-    node: TreeNode;
+    node?: TreeNode;
+    targetDir: string;
   } | null>(null);
+  const [clipboard, setClipboard] = useState<FileTreeClipboard | null>(null);
   const [detailOpenError, setDetailOpenError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -358,10 +375,20 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     (e: React.MouseEvent, node: TreeNode) => {
       e.preventDefault();
       e.stopPropagation();
-      setContextMenu({ x: e.clientX, y: e.clientY, node });
+      setContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        node,
+        targetDir: node.isDir ? node.path : getParentPath(node.path),
+      });
     },
     [],
   );
+
+  const handleWorkspaceContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, targetDir: rootPath ?? "" });
+  }, [rootPath]);
 
   const removeNode = useCallback((nodePath: string) => {
     const prune = (items: TreeNode[]): TreeNode[] =>
@@ -402,16 +429,84 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     }
   }, [intl, removeNode]);
 
+  const refreshTree = useCallback(async () => {
+    if (!rootPath) return;
+    setActionError(null);
+    try {
+      setNodes(await loadChildren(rootPath));
+    } catch (err) {
+      setActionError(String(err));
+    }
+  }, [loadChildren, rootPath]);
+
+  const handleCreateEntry = useCallback(async (parentDir: string, isDir: boolean) => {
+    const name = window.prompt(
+      intl.formatMessage({ id: isDir ? "fileTree.newFolderPrompt" : "fileTree.newFilePrompt" }),
+      isDir ? "new-folder" : "untitled",
+    )?.trim();
+    if (!name) return;
+
+    setActionError(null);
+    try {
+      await createPathEntry(parentDir, name, isDir);
+      await refreshTree();
+    } catch (err) {
+      setActionError(String(err));
+    }
+  }, [intl, refreshTree]);
+
+  const handleRenameNode = useCallback(async (node: TreeNode) => {
+    const name = window.prompt(
+      intl.formatMessage({ id: "fileTree.renamePrompt" }, { name: node.name }),
+      node.name,
+    )?.trim();
+    if (!name || name === node.name) return;
+
+    setActionError(null);
+    try {
+      await renamePathEntry(node.path, joinPath(getParentPath(node.path), name));
+      await refreshTree();
+    } catch (err) {
+      setActionError(String(err));
+    }
+  }, [intl, refreshTree]);
+
+  const handlePaste = useCallback(async (targetDir: string) => {
+    if (!clipboard) return;
+    if (clipboard.operation === "cut" && pathsEqual(getParentPath(clipboard.node.path), targetDir)) {
+      return;
+    }
+
+    setActionError(null);
+    try {
+      const entries = await readDirectory(targetDir);
+      const targetName = clipboard.operation === "copy"
+        ? uniqueNameInDirectory(entries.map((entry) => entry.name), clipboard.node.name)
+        : clipboard.node.name;
+      const targetPath = joinPath(targetDir, targetName);
+      if (clipboard.operation === "copy") {
+        await copyPathEntry(clipboard.node.path, targetPath);
+      } else {
+        await renamePathEntry(clipboard.node.path, targetPath);
+        setClipboard(null);
+      }
+      await refreshTree();
+    } catch (err) {
+      setActionError(String(err));
+    }
+  }, [clipboard, refreshTree]);
+
+  const contextMenuNode = contextMenu?.node;
   const contextMenuItems: ContextMenuEntry[] = contextMenu
     ? [
-        ...(!contextMenu.node.isDir
+        ...(contextMenuNode && !contextMenuNode.isDir
           ? [
               {
                 id: "add-to-chat",
                 label: intl.formatMessage({ id: "fileTree.addToChat" }),
                 icon: <IconMessagePlus size={14} stroke={1.8} />,
                 onClick: () => {
-                  const targetNode = contextMenu.node;
+                  const targetNode = contextMenuNode;
                   if (!supportsPathRefRangeByName(targetNode.name)) {
                     addAttachedFile(buildPathRefAttachment(targetNode.path, targetNode.name));
                     return;
@@ -433,14 +528,14 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                     });
                 },
               } satisfies ContextMenuEntry,
-              ...(isWebPreviewFile(contextMenu.node.name)
+              ...(isWebPreviewFile(contextMenuNode.name)
                 ? [
                     {
                       id: "open-in-browser",
                       label: intl.formatMessage({ id: "fileTree.openInBrowser" }),
                       icon: <IconBrowser size={14} stroke={1.8} />,
                       onClick: () => {
-                        const filePath = contextMenu.node.path;
+                        const filePath = contextMenuNode.path;
                         setRightPanelTab("browser");
                         setBrowserPanelState({
                           url: filePath,
@@ -454,22 +549,69 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
             ]
           : []),
         {
-          id: "reveal",
-          label: intl.formatMessage({ id: "contextMenu.openInExplorer" }),
-          icon: <IconFolderOpen size={14} stroke={1.8} />,
-          onClick: () => void revealInExplorer(contextMenu.node.path),
+          id: "new-file",
+          label: intl.formatMessage({ id: "fileTree.newFile" }),
+          icon: <IconFilePlus size={14} stroke={1.8} />,
+          onClick: () => void handleCreateEntry(contextMenu.targetDir, false),
         },
         {
-          id: "delete",
-          label: contextMenu.node.isDir
-            ? intl.formatMessage({ id: "fileTree.deleteFolder" })
-            : intl.formatMessage({ id: "fileTree.deleteFile" }),
-          icon: <IconTrash size={14} stroke={1.8} />,
-          danger: true,
-          onClick: () => {
-            void handleDeleteNode(contextMenu.node);
-          },
+          id: "new-folder",
+          label: intl.formatMessage({ id: "fileTree.newFolder" }),
+          icon: <IconFolderPlus size={14} stroke={1.8} />,
+          onClick: () => void handleCreateEntry(contextMenu.targetDir, true),
         },
+        { id: "create-divider", divider: true },
+        ...(contextMenuNode
+          ? [
+              {
+                id: "rename",
+                label: intl.formatMessage({ id: "fileTree.rename" }),
+                icon: <IconPencil size={14} stroke={1.8} />,
+                onClick: () => void handleRenameNode(contextMenuNode),
+              } satisfies ContextMenuEntry,
+              {
+                id: "copy",
+                label: intl.formatMessage({ id: "fileTree.copy" }),
+                icon: <IconCopy size={14} stroke={1.8} />,
+                onClick: () => setClipboard({ node: contextMenuNode, operation: "copy" }),
+              } satisfies ContextMenuEntry,
+              {
+                id: "cut",
+                label: intl.formatMessage({ id: "fileTree.cut" }),
+                icon: <IconCut size={14} stroke={1.8} />,
+                onClick: () => setClipboard({ node: contextMenuNode, operation: "cut" }),
+              } satisfies ContextMenuEntry,
+            ]
+          : []),
+        {
+          id: "paste",
+          label: intl.formatMessage({ id: "fileTree.paste" }),
+          icon: <IconClipboard size={14} stroke={1.8} />,
+          disabled: !clipboard || (clipboard.operation === "cut" && pathsEqual(getParentPath(clipboard.node.path), contextMenu.targetDir)),
+          onClick: () => void handlePaste(contextMenu.targetDir),
+        },
+        ...(contextMenuNode
+          ? [
+              { id: "file-divider", divider: true } satisfies ContextMenuEntry,
+              {
+                id: "reveal",
+                label: intl.formatMessage({ id: "contextMenu.openInExplorer" }),
+                icon: <IconFolderOpen size={14} stroke={1.8} />,
+                onClick: () => void revealInExplorer(contextMenuNode.path),
+              } satisfies ContextMenuEntry,
+              {
+                id: "delete",
+                label: contextMenuNode.isDir
+                  ? intl.formatMessage({ id: "fileTree.deleteFolder" })
+                  : intl.formatMessage({ id: "fileTree.deleteFile" }),
+                icon: <IconTrash size={14} stroke={1.8} />,
+                danger: true,
+                onClick: () => {
+                  void handleDeleteNode(contextMenuNode);
+                },
+              } satisfies ContextMenuEntry,
+            ]
+          : []),
       ]
     : [];
 
@@ -573,7 +715,10 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
         </div>
       </div>
 
-      <div className="relative flex-1 overflow-y-auto overflow-x-hidden">
+      <div
+        className="relative flex-1 overflow-y-auto overflow-x-hidden"
+        onContextMenu={handleWorkspaceContextMenu}
+      >
         {detailOpenError && (
           <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
             {intl.formatMessage({ id: "fileTree.openDetailFailed" }, { error: detailOpenError })}
@@ -581,7 +726,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
         )}
         {actionError && (
           <div className="mx-2 mt-2 rounded-[var(--radius-sm)] border border-[var(--danger)]/35 bg-[var(--danger-soft)] px-2 py-1 text-[11px] text-[var(--danger)]">
-            {intl.formatMessage({ id: "fileTree.deleteFailed" }, { error: actionError })}
+            {intl.formatMessage({ id: "fileTree.actionFailed" }, { error: actionError })}
           </div>
         )}
         {searchError && (

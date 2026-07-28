@@ -651,7 +651,6 @@ export function SkillLabPanel() {
 
       const finalId = generated.skillId?.trim() || targetId;
       const nextName =
-        generated.skillId?.trim() ||
         generated.name?.trim() ||
         name.trim() ||
         finalId;
@@ -1358,12 +1357,17 @@ export function SkillLabPanel() {
                   providerId={runtimePreferences.generation.providerId}
                   modelId={runtimePreferences.generation.modelId}
                   disabled={generating}
-                  providerLabel={intl.formatMessage({ id: "chat.providerLabel" })}
+                  providerLabel={intl.formatMessage({ id: "chat.modelProviderLabel" })}
                   modelLabel={intl.formatMessage({ id: "chat.modelLabel" })}
                   modelSearchPlaceholder={intl.formatMessage({ id: "chat.modelSearchPlaceholder" })}
                   emptyModelsLabel={intl.formatMessage({ id: "chat.modelSearchEmpty" })}
                   onChange={(selection) => updateRuntimePreference("generation", selection)}
                 />
+                {!generationRuntimeValid ? (
+                  <p className="mt-2 text-[11px] text-red-500">
+                    {intl.formatMessage({ id: "settings.skillLab.runtimeInvalid" })}
+                  </p>
+                ) : null}
                 <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-[var(--text-base)]">
                   <input
                     type="checkbox"
@@ -1456,12 +1460,17 @@ export function SkillLabPanel() {
                   providerId={runtimePreferences.evolution.providerId}
                   modelId={runtimePreferences.evolution.modelId}
                   disabled={testing}
-                  providerLabel={intl.formatMessage({ id: "chat.providerLabel" })}
+                  providerLabel={intl.formatMessage({ id: "chat.modelProviderLabel" })}
                   modelLabel={intl.formatMessage({ id: "chat.modelLabel" })}
                   modelSearchPlaceholder={intl.formatMessage({ id: "chat.modelSearchPlaceholder" })}
                   emptyModelsLabel={intl.formatMessage({ id: "chat.modelSearchEmpty" })}
                   onChange={(selection) => updateRuntimePreference("evolution", selection)}
                 />
+                {!evolutionRuntimeValid ? (
+                  <p className="mt-2 text-[11px] text-red-500">
+                    {intl.formatMessage({ id: "settings.skillLab.runtimeInvalid" })}
+                  </p>
+                ) : null}
                 <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-[var(--text-base)]">
                   <input
                     type="checkbox"
@@ -1568,6 +1577,7 @@ export function SkillLabPanel() {
                       onClick={handleImproveNow}
                       disabled={
                         testing
+                        || !name.trim()
                         || !improvementRequest.trim()
                         || !content.trim()
                         || !testPrompt.trim()
@@ -1660,7 +1670,7 @@ export function SkillLabPanel() {
 
                 <button
                   onClick={handleRunTest}
-                  disabled={testing || !content.trim() || !testPrompt.trim() || !evolutionRuntimeValid}
+                  disabled={testing || !name.trim() || !content.trim() || !testPrompt.trim() || !evolutionRuntimeValid}
                   className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium
                              bg-[var(--accent)] text-white hover:opacity-80 transition-opacity
                              disabled:opacity-50"
