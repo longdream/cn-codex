@@ -4062,8 +4062,21 @@ impl ToolExecutor {
             overwrite: bool,
         }
 
-        let args: WriteArgs = serde_json::from_str(arguments)
-            .map_err(|e| crate::error::AppError::Custom(format!("Invalid write_file args: {e}")))?;
+        let args: WriteArgs = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid write_file args: {e}");
+                self.emit_tool_start(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "write_file",
+                    "invalid arguments",
+                );
+                self.emit_tool_end(app_handle, thread_id, call_id, "write_file", -1, &msg);
+                return Err(crate::error::AppError::Custom(msg));
+            }
+        };
 
         let full_path = self.cwd.join(&args.path);
         info!("Writing file: {}", full_path.display());
@@ -4080,12 +4093,17 @@ impl ToolExecutor {
                 return Err(crate::error::AppError::Custom(msg));
             }
 
-            let existing = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
-                crate::error::AppError::Custom(format!(
-                    "Error writing {}: failed to inspect existing UTF-8 file before overwrite: {e}",
-                    args.path
-                ))
-            })?;
+            let existing = match tokio::fs::read_to_string(&full_path).await {
+                Ok(existing) => existing,
+                Err(e) => {
+                    let msg = format!(
+                        "Error writing {}: failed to inspect existing UTF-8 file before overwrite: {e}",
+                        args.path
+                    );
+                    self.emit_tool_end(app_handle, thread_id, call_id, "write_file", -1, &msg);
+                    return Err(crate::error::AppError::Custom(msg));
+                }
+            };
             if let Err(reason) = validate_existing_file_rewrite(&existing, &args.content) {
                 let msg = format!("Error writing {}: {reason}", args.path);
                 self.emit_tool_end(app_handle, thread_id, call_id, "write_file", -1, &msg);
@@ -4093,11 +4111,18 @@ impl ToolExecutor {
             }
         }
 
-        if let Some(parent) = full_path.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
+        if let Some(parent) = full_path.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            let msg = format!(
+                "Error writing {}: failed to create parent directory: {e}",
+                args.path
+            );
+            self.emit_tool_end(app_handle, thread_id, call_id, "write_file", -1, &msg);
+            return Err(crate::error::AppError::Custom(msg));
         }
 
-        let result = match tokio::fs::write(&full_path, &args.content).await {
+        match tokio::fs::write(&full_path, &args.content).await {
             Ok(()) => {
                 let msg = format!(
                     "Successfully wrote {} bytes to {}",
@@ -4105,15 +4130,14 @@ impl ToolExecutor {
                     args.path
                 );
                 self.emit_tool_end(app_handle, thread_id, call_id, "write_file", 0, &msg);
-                msg
+                Ok(msg)
             }
             Err(e) => {
                 let msg = format!("Error writing {}: {e}", args.path);
                 self.emit_tool_end(app_handle, thread_id, call_id, "write_file", -1, &msg);
-                msg
+                Err(crate::error::AppError::Custom(msg))
             }
-        };
-        Ok(result)
+        }
     }
 
     async fn exec_apply_patch(

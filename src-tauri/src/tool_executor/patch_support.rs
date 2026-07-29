@@ -668,6 +668,27 @@ fn apply_update_hunks(
             pos = seek_sequence(lines, old_lines, cursor, hunk.is_end_of_file);
         }
 
+        // Models occasionally copy read_file's `line | content` gutter into
+        // +/- lines after dropping only the number. Keep exact matching first
+        // so a real source line beginning with ` |` is never changed by this fallback.
+        let gutter_stripped_old = old_lines
+            .iter()
+            .map(|line| line.strip_prefix(" |").unwrap_or(line).to_string())
+            .collect::<Vec<_>>();
+        let gutter_stripped_new = new_lines
+            .iter()
+            .map(|line| line.strip_prefix(" |").unwrap_or(line).to_string())
+            .collect::<Vec<_>>();
+        if pos.is_none()
+            && gutter_stripped_old != old_lines
+            && let Some(gutter_pos) =
+                seek_sequence(lines, &gutter_stripped_old, cursor, hunk.is_end_of_file)
+        {
+            pos = Some(gutter_pos);
+            old_lines = &gutter_stripped_old;
+            new_lines = &gutter_stripped_new;
+        }
+
         if pos.is_none()
             && !hunk.is_end_of_file
             && let Some((reduced_pos, reduced_old, reduced_new)) =
@@ -1118,8 +1139,8 @@ pub(crate) fn format_apply_patch_report(report: &ApplyPatchReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ParsedPatchAction, PatchHunk, apply_update_hunks, extract_patch_argument,
-        parse_patch_actions,
+        ParsedPatchAction, PatchHunk, apply_patch_to_workspace, apply_update_hunks,
+        extract_patch_argument, parse_patch_actions,
     };
 
     fn apply_parsed_update(lines: &mut Vec<String>, patch: &str, path: &str) {
@@ -1186,6 +1207,41 @@ done"#;
             ParsedPatchAction::Update { path, .. } => assert_eq!(path, "src/style.css"),
             other => panic!("expected update action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn apply_patch_writes_chinese_filename_from_absolute_path_and_read_gutter_diff() {
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("\u{4f5c}\u{54c1}\u{7b80}\u{4ecb}.md");
+        std::fs::write(&target, "heading\nold content\n").unwrap();
+        let patch = format!(
+            "*** Begin Patch\n*** Update File: {}\n@@\n- |old content\n+ |new content\n*** End Patch",
+            target.display()
+        );
+
+        let report = apply_patch_to_workspace(workspace.path(), &patch).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "heading\nnew content\n"
+        );
+        assert_eq!(report.changes.len(), 1);
+        assert_eq!(report.changes[0].action, "modified");
+    }
+
+    #[test]
+    fn read_gutter_fallback_does_not_change_a_real_pipe_prefixed_source_line() {
+        let mut lines = vec![" |old content".to_string()];
+        let patch = r#"*** Begin Patch
+*** Update File: source.md
+@@
+- |old content
++ |new content
+*** End Patch"#;
+
+        apply_parsed_update(&mut lines, patch, "source.md");
+
+        assert_eq!(lines, vec![" |new content"]);
     }
 
     #[test]

@@ -573,6 +573,9 @@ impl AgentEngine {
         let mut patch_paths_requiring_refresh: HashSet<String> = HashSet::new();
         let mut failed_apply_patch_fingerprints: HashSet<u64> = HashSet::new();
         let mut apply_patch_failed_in_turn = false;
+        let mut failed_file_edit_attempts = 0_u32;
+        let mut successful_file_edit_attempts = 0_u32;
+        let mut file_edit_status_retry_count = 0_u32;
         let mut turn_usage = TurnUsage::default();
         // 统计“本轮成功模型调用次数”：
         // - 每次 stream_completion 返回 Ok（无论是 Message 还是 ToolCalls）计 1 次；
@@ -1394,7 +1397,30 @@ impl AgentEngine {
                                 continue;
                             }
 
-                            let content = if cleaned_text.is_empty() && iteration > 0 {
+                            let all_file_edits_failed =
+                                failed_file_edit_attempts > 0 && successful_file_edit_attempts == 0;
+                            if all_file_edits_failed && file_edit_status_retry_count == 0 {
+                                file_edit_status_retry_count = 1;
+                                let correction_msg = ThreadMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role: "system".to_string(),
+                                    content: "Every apply_patch/write_file call in this turn failed; no file edit was written successfully. Do not claim the modification succeeded. Retry apply_patch now if the task can still be completed, otherwise report the failure and its cause explicitly."
+                                        .to_string(),
+                                    timestamp: now_secs(),
+                                    tool_call_id: None,
+                                    tool_name: None,
+                                    tool_calls: None,
+                                    attachments: Vec::new(),
+                                };
+                                self.thread_store
+                                    .add_message(thread_id, correction_msg)
+                                    .await?;
+                                continue;
+                            }
+
+                            let content = if all_file_edits_failed {
+                                final_text_with_failed_file_edit_status(&cleaned_text)
+                            } else if cleaned_text.is_empty() && iteration > 0 {
                                 String::new()
                             } else {
                                 cleaned_text.clone()
@@ -1962,6 +1988,10 @@ impl AgentEngine {
                                 if let Some(blocking_hook) =
                                     first_blocking_hook_result(&pre_tool_hook_results)
                                 {
+                                    if matches!(call.name.as_str(), "apply_patch" | "write_file") {
+                                        failed_file_edit_attempts =
+                                            failed_file_edit_attempts.saturating_add(1);
+                                    }
                                     let result_content =
                                         blocked_tool_call_output(&call.name, blocking_hook);
                                     results_json.push(serde_json::json!({
@@ -2174,11 +2204,41 @@ impl AgentEngine {
                                     match tool_result {
                                         Ok(output) => {
                                             let success = tool_result_success(&call.name, &output);
+                                            if success {
+                                                info!(
+                                                    "Tool call completed: {} call_id={} success=true",
+                                                    call.name, call.id
+                                                );
+                                            } else {
+                                                warn!(
+                                                    "Tool call completed: {} call_id={} success=false output={}",
+                                                    call.name,
+                                                    call.id,
+                                                    truncate_log_message(&output)
+                                                );
+                                            }
                                             (output, success)
                                         }
-                                        Err(e) => (format!("Tool execution error: {e}"), false),
+                                        Err(e) => {
+                                            warn!(
+                                                "Tool call failed: {} call_id={} error={}",
+                                                call.name,
+                                                call.id,
+                                                truncate_log_message(&e.to_string())
+                                            );
+                                            (format!("Tool execution error: {e}"), false)
+                                        }
                                     }
                                 };
+                                if matches!(call.name.as_str(), "apply_patch" | "write_file") {
+                                    if success {
+                                        successful_file_edit_attempts =
+                                            successful_file_edit_attempts.saturating_add(1);
+                                    } else {
+                                        failed_file_edit_attempts =
+                                            failed_file_edit_attempts.saturating_add(1);
+                                    }
+                                }
                                 if call.name == "read_file"
                                     && success
                                     && !result_content.starts_with("Error reading")
@@ -6687,10 +6747,31 @@ fn apply_patch_failure_requires_refresh(result: &str) -> bool {
 }
 
 fn tool_result_success(tool_name: &str, output: &str) -> bool {
-    if tool_name == "apply_patch" {
-        return output.starts_with("Success. Applied patch.");
+    match tool_name {
+        "apply_patch" => output.starts_with("Success. Applied patch."),
+        "write_file" => output.starts_with("Successfully wrote "),
+        _ => true,
     }
-    true
+}
+
+fn truncate_log_message(message: &str) -> String {
+    const MAX_CHARS: usize = 500;
+    let mut chars = message.chars();
+    let prefix: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{prefix}... [truncated]")
+    } else {
+        prefix
+    }
+}
+
+fn final_text_with_failed_file_edit_status(text: &str) -> String {
+    const STATUS: &str = "File modification status: failed. No apply_patch/write_file call wrote a file successfully in this turn.";
+    if text.trim().is_empty() {
+        STATUS.to_string()
+    } else {
+        format!("{STATUS}\n\n{text}")
+    }
 }
 
 fn should_block_write_file_after_patch_failure(
@@ -8310,6 +8391,23 @@ mod tests {
             "apply_patch",
             "Success. Applied patch.\n- modified src/i18n/zh-CN/common.json"
         ));
+        assert!(!tool_result_success(
+            "write_file",
+            "Error writing existing.md: access denied"
+        ));
+        assert!(tool_result_success(
+            "write_file",
+            "Successfully wrote 12 bytes to new.md"
+        ));
+    }
+
+    #[test]
+    fn failed_file_edits_are_explicit_in_final_text() {
+        let text = final_text_with_failed_file_edit_status("The requested change is complete.");
+
+        assert!(text.starts_with("File modification status: failed."));
+        assert!(text.contains("No apply_patch/write_file call wrote a file successfully"));
+        assert!(text.contains("The requested change is complete."));
     }
 
     #[test]
