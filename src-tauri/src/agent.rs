@@ -576,6 +576,9 @@ impl AgentEngine {
         let mut failed_file_edit_attempts = 0_u32;
         let mut successful_file_edit_attempts = 0_u32;
         let mut file_edit_status_retry_count = 0_u32;
+        let mut last_read_only_tool_signature: Option<String> = None;
+        let mut suppressed_repetitive_tools: HashSet<String> = HashSet::new();
+        let mut last_logged_tool_names: Option<Vec<String>> = None;
         let mut turn_usage = TurnUsage::default();
         // 统计“本轮成功模型调用次数”：
         // - 每次 stream_completion 返回 Ok（无论是 Message 还是 ToolCalls）计 1 次；
@@ -1216,6 +1219,25 @@ impl AgentEngine {
                                 }
                             }
                         }));
+                    }
+
+                    if !suppressed_repetitive_tools.is_empty() {
+                        tools.retain(|spec| {
+                            spec.pointer("/function/name")
+                                .and_then(|value| value.as_str())
+                                .map_or(true, |name| !suppressed_repetitive_tools.contains(name))
+                        });
+                    }
+                    let tool_names = tool_spec_names(&tools);
+                    if last_logged_tool_names.as_ref() != Some(&tool_names) {
+                        info!(
+                            "Tool schemas for turn {turn_id}: count={}, apply_patch_exposed={}, suppressed_repetitive={:?}, names={:?}",
+                            tool_names.len(),
+                            tool_names.iter().any(|name| name == "apply_patch"),
+                            suppressed_repetitive_tools,
+                            tool_names
+                        );
+                        last_logged_tool_names = Some(tool_names);
                     }
 
                     let result = self
@@ -1866,6 +1888,38 @@ impl AgentEngine {
 
                             for mut call in calls {
                                 info!("Tool call: {} args={}", call.name, call.arguments);
+                                if repeated_read_only_tool_call(
+                                    &mut last_read_only_tool_signature,
+                                    &call,
+                                ) {
+                                    suppressed_repetitive_tools.insert(call.name.clone());
+                                    let result_content = format!(
+                                        "Repeated {tool} call blocked: the immediately preceding call used the same arguments and its result is already in context. Do not search or read the same content again. Use the existing result; if the user requested a code change, call apply_patch now. The {tool} schema is disabled for the remainder of this turn to prevent an infinite read-only loop.",
+                                        tool = call.name
+                                    );
+                                    warn!(
+                                        "Blocked repeated read-only tool call: {} args={}",
+                                        call.name, call.arguments
+                                    );
+                                    results_json.push(serde_json::json!({
+                                        "id": call.id,
+                                        "tool": call.name,
+                                        "success": false,
+                                        "repeatedReadOnlyCall": true,
+                                    }));
+                                    let tool_msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "tool".to_string(),
+                                        content: result_content,
+                                        timestamp: now_secs(),
+                                        tool_call_id: Some(call.id.clone()),
+                                        tool_name: Some(call.name.clone()),
+                                        tool_calls: None,
+                                        attachments: Vec::new(),
+                                    };
+                                    self.thread_store.add_message(thread_id, tool_msg).await?;
+                                    continue;
+                                }
                                 if goal_completed_now {
                                     let skipped_call_id = call.id.clone();
                                     let skipped_tool_name = call.name.clone();
@@ -2231,6 +2285,11 @@ impl AgentEngine {
                                     }
                                 };
                                 if matches!(call.name.as_str(), "apply_patch" | "write_file") {
+                                    // A real edit attempt is progress. Re-enable read-only tools so
+                                    // a failed patch can refresh context and a successful patch can
+                                    // be verified without carrying the loop breaker indefinitely.
+                                    suppressed_repetitive_tools.clear();
+                                    last_read_only_tool_signature = None;
                                     if success {
                                         successful_file_edit_attempts =
                                             successful_file_edit_attempts.saturating_add(1);
@@ -3190,7 +3249,7 @@ impl AgentEngine {
              - write_file: Create a new file. Rewriting an existing file requires overwrite=true and complete content, and destructive truncation is rejected.\n\
              - tool_search: Search available CN-Codex tools, skills, plugin skills, and discovered MCP tools, then activate matching non-core schemas for the next model call in this same turn. Default turns only expose a small core tool set; non-core tools (MCP/Playwright, memory, image generation, MCP helpers, agents, plugins, etc.) are lazy-loaded through this tool.\n\
              - code_review: Review current git changes or a diff against a base ref, reporting changed files, diff-check issues, and obvious risk patterns.\n\
-             - apply_patch: Apply Codex-style patches to add, update, delete, or move files. Prefer raw/freeform patch text when available; function-call providers may pass the same body as patch or command.\n\
+             - apply_patch: Edit files with a Codex patch. Pass the complete raw patch body in the required patch field.\n\
              - list_directory: List files and subdirectories in a directory.\n\
              - code_search: Search source code in the current workspace using CN-Codex's built-in search engine.\n\
              - update_plan: Update a concise multi-step task plan; keep at most one step in_progress.\n\
@@ -3233,7 +3292,8 @@ impl AgentEngine {
              FILE EDITING RULES:\n\
              1. Use `apply_patch` as the default for every edit to an existing text file, including single-file edits. It applies contextual diffs and avoids rewriting unrelated content.\n\
              2. Use `write_file` only to create a new file or when the user explicitly requests a complete file rewrite; existing files require overwrite=true. Never use it as a fallback after apply_patch fails.\n\
-             3. `apply_patch` supports single-file and multi-file add/update/delete/move operations. Read the relevant file content before constructing an update hunk. In every hunk body, prefix each removed line with `-`, each added line with `+`, and each unchanged context line with one space; never use `|-`, `+|`, `||`, or separate old/new blocks. Keep hunks small with about 3 exact context lines above and below each change. When text repeats, write an exact class/function/section source line after `@@` to anchor the search; use `*** End of File` when the hunk must target the file ending. If a hunk fails to match, immediately re-read that file and retry `apply_patch` with refreshed, smaller context; do not stop at the first patch error.\n\
+             3. For `apply_patch`, send one complete patch in the required `patch` field and prefer workspace-relative paths. \
+             Numbered `read_file` output includes a display gutter before file content; never copy its line number or separator into a patch. If a hunk fails, re-read the affected range and retry with smaller exact context.\n\
              4. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
                 Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
              5. Do not use python/PowerShell scripts to read or write files, and do not use shell loops such as Get-Content + ForEach-Object to dump line ranges. Use `read_file` (with line_offset/max_lines/end_line when needed), `apply_patch`, or (for new files) `write_file` instead.\n\
@@ -5409,6 +5469,39 @@ fn build_smartbrain_recall_context(
 
     let merged = sections.join("\n\n---\n\n");
     Some(truncate_chars_with_marker(&merged, max_chars))
+}
+
+fn tool_spec_names(tools: &[serde_json::Value]) -> Vec<String> {
+    tools
+        .iter()
+        .filter_map(|spec| {
+            spec.pointer("/function/name")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn repeated_read_only_tool_call(
+    last_signature: &mut Option<String>,
+    call: &ToolCallRequest,
+) -> bool {
+    if !matches!(
+        call.name.as_str(),
+        "read_file" | "code_search" | "list_directory"
+    ) {
+        *last_signature = None;
+        return false;
+    }
+
+    let normalized_arguments = serde_json::from_str::<serde_json::Value>(&call.arguments)
+        .ok()
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .unwrap_or_else(|| call.arguments.trim().to_string());
+    let signature = format!("{}:{normalized_arguments}", call.name);
+    let repeated = last_signature.as_deref() == Some(signature.as_str());
+    *last_signature = Some(signature);
+    repeated
 }
 
 fn assistant_is_waiting_for_user(text: &str) -> bool {
@@ -8010,6 +8103,45 @@ mod tests {
         ));
         assert!(!text_expresses_intent("已完成修复，验证通过。"));
         assert!(!text_expresses_intent("Fix is complete and verified."));
+    }
+
+    #[test]
+    fn repeated_read_only_tool_call_blocks_only_consecutive_identical_calls() {
+        let read = ToolCallRequest {
+            id: "read-1".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path":"src/main.rs","line_offset":1}"#.to_string(),
+        };
+        let mut last_signature = None;
+
+        assert!(!repeated_read_only_tool_call(&mut last_signature, &read));
+        assert!(repeated_read_only_tool_call(&mut last_signature, &read));
+
+        let patch = ToolCallRequest {
+            id: "patch-1".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: "*** Begin Patch\n*** End Patch".to_string(),
+        };
+        assert!(!repeated_read_only_tool_call(&mut last_signature, &patch));
+        assert!(!repeated_read_only_tool_call(&mut last_signature, &read));
+    }
+
+    #[test]
+    fn repeated_read_only_tool_call_distinguishes_different_ranges() {
+        let mut last_signature = None;
+        let first = ToolCallRequest {
+            id: "read-1".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path":"src/main.rs","line_offset":1}"#.to_string(),
+        };
+        let second = ToolCallRequest {
+            id: "read-2".to_string(),
+            name: "read_file".to_string(),
+            arguments: r#"{"path":"src/main.rs","line_offset":201}"#.to_string(),
+        };
+
+        assert!(!repeated_read_only_tool_call(&mut last_signature, &first));
+        assert!(!repeated_read_only_tool_call(&mut last_signature, &second));
     }
 
     #[test]

@@ -1,1 +1,1 @@
-\\?\D:\rustwork\cn-codex\src-tauri\target\debug
+\\?\E:\work\RustWorks\cn-codex\build
