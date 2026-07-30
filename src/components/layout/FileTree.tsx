@@ -45,6 +45,7 @@ import { useAppStore } from "../../stores/appStore";
 import { ContextMenu, type ContextMenuEntry } from "../common/ContextMenu";
 import { PATH_REF_MIME, supportsPathRefRangeByName } from "../../utils/pathRefSnippet";
 import { getParentPath, joinPath, pathsEqual, uniqueNameInDirectory } from "../../utils/fileTreeSelection";
+import { resolveInlineRename } from "../../utils/inlineRename";
 
 interface TreeNode extends FileEntry {
   children?: TreeNode[];
@@ -169,6 +170,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   const [clipboard, setClipboard] = useState<FileTreeClipboard | null>(null);
   const [detailOpenError, setDetailOpenError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [includeQuery, setIncludeQuery] = useState("");
@@ -455,21 +457,27 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     }
   }, [intl, refreshTree]);
 
-  const handleRenameNode = useCallback(async (node: TreeNode) => {
-    const name = window.prompt(
-      intl.formatMessage({ id: "fileTree.renamePrompt" }, { name: node.name }),
-      node.name,
-    )?.trim();
-    if (!name || name === node.name) return;
+  const handleStartRename = useCallback((node: TreeNode) => {
+    setRenaming({ path: node.path, value: node.name });
+  }, []);
+
+  const handleCancelRename = useCallback(() => {
+    setRenaming(null);
+  }, []);
+
+  const handleSubmitRename = useCallback(async (node: TreeNode, value: string) => {
+    const resolution = resolveInlineRename(value, node.name);
+    setRenaming(null);
+    if (!resolution.shouldRename) return;
 
     setActionError(null);
     try {
-      await renamePathEntry(node.path, joinPath(getParentPath(node.path), name));
+      await renamePathEntry(node.path, joinPath(getParentPath(node.path), resolution.name));
       await refreshTree();
     } catch (err) {
       setActionError(String(err));
     }
-  }, [intl, refreshTree]);
+  }, [refreshTree]);
 
   const handlePaste = useCallback(async (targetDir: string) => {
     if (!clipboard) return;
@@ -567,7 +575,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                 id: "rename",
                 label: intl.formatMessage({ id: "fileTree.rename" }),
                 icon: <IconPencil size={14} stroke={1.8} />,
-                onClick: () => void handleRenameNode(contextMenuNode),
+                onClick: () => handleStartRename(contextMenuNode),
               } satisfies ContextMenuEntry,
               {
                 id: "copy",
@@ -863,6 +871,12 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                 onOpenFile={handleOpenFile}
                 onContextMenu={handleContextMenu}
                 onDragStart={handleDragStart}
+                renaming={renaming}
+                onRenameValueChange={(value) =>
+                  setRenaming((current) => current ? { ...current, value } : null)
+                }
+                onSubmitRename={handleSubmitRename}
+                onCancelRename={handleCancelRename}
               />
             ))}
           </div>
@@ -886,6 +900,10 @@ interface FileTreeNodeProps {
   onOpenFile: (node: TreeNode) => void;
   onContextMenu: (e: React.MouseEvent, node: TreeNode) => void;
   onDragStart: (e: DragEvent, node: TreeNode) => void;
+  renaming: { path: string; value: string } | null;
+  onRenameValueChange: (value: string) => void;
+  onSubmitRename: (node: TreeNode, value: string) => void;
+  onCancelRename: () => void;
 }
 
 function FileTreeNode({
@@ -895,8 +913,13 @@ function FileTreeNode({
   onOpenFile,
   onContextMenu,
   onDragStart,
+  renaming,
+  onRenameValueChange,
+  onSubmitRename,
+  onCancelRename,
 }: FileTreeNodeProps) {
   const paddingLeft = 8 + depth * 16;
+  const isRenaming = renaming?.path === node.path;
 
   return (
     <>
@@ -938,7 +961,29 @@ function FileTreeNode({
             <span className="flex-shrink-0">{fileIcon(node.name, 15)}</span>
           </>
         )}
-        <span className="min-w-0 truncate text-[var(--text-base)]">{node.name}</span>
+        {isRenaming ? (
+          <input
+            autoFocus
+            aria-label={`Rename ${node.name}`}
+            className="min-w-0 flex-1 rounded border border-[var(--accent)] bg-[var(--surface-elevated)] px-1 py-0 text-[12px] leading-4 text-[var(--text-base)] outline-none"
+            value={renaming.value}
+            onChange={(event) => onRenameValueChange(event.target.value)}
+            onFocus={(event) => event.currentTarget.select()}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Enter") {
+                event.preventDefault();
+                onSubmitRename(node, renaming.value);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                onCancelRename();
+              }
+            }}
+          />
+        ) : (
+          <span className="min-w-0 truncate text-[var(--text-base)]">{node.name}</span>
+        )}
       </div>
       {node.isDir && node.expanded && node.children && (
         <>
@@ -951,6 +996,10 @@ function FileTreeNode({
               onOpenFile={onOpenFile}
               onContextMenu={onContextMenu}
               onDragStart={onDragStart}
+              renaming={renaming}
+              onRenameValueChange={onRenameValueChange}
+              onSubmitRename={onSubmitRename}
+              onCancelRename={onCancelRename}
             />
           ))}
         </>
