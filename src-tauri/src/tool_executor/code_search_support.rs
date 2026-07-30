@@ -1,3 +1,4 @@
+use super::*;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -390,4 +391,129 @@ fn relative_display_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+impl ToolExecutor {
+    pub(crate) async fn exec_code_search(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        let args: CodeSearchArgs = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid code_search args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "code_search", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_search", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let display = format!(
+            "pattern={} path={}",
+            args.pattern,
+            args.path.as_deref().unwrap_or(".")
+        );
+        self.emit_tool_start(app_handle, thread_id, call_id, "code_search", &display);
+
+        let command = match build_code_search_command(&self.cwd, &args) {
+            Ok(command) => command,
+            Err(msg) => {
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_search", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let mut process = Command::new(&command.rg_path);
+        process
+            .args(&command.args)
+            .current_dir(&self.cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        process.no_console();
+
+        let mut child = match process.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                let msg = format!("Failed to start embedded code search engine: {e}");
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_search", -1, &msg);
+                return Ok(msg);
+            }
+        };
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+        let stdout_collector = stdout_buffer.clone();
+        let stderr_collector = stderr_buffer.clone();
+        let mut stdout_handle = tokio::spawn(async move {
+            if let Some(stdout) = stdout {
+                collect_shell_stream_bytes(stdout, stdout_collector).await;
+            }
+        });
+        let mut stderr_handle = tokio::spawn(async move {
+            if let Some(stderr) = stderr {
+                collect_shell_stream_bytes(stderr, stderr_collector).await;
+            }
+        });
+
+        let child = Arc::new(Mutex::new(child));
+        self.register_active_tool_process(thread_id, call_id, "code_search", child.clone())
+            .await;
+
+        let (exit_code, timed_out) =
+            match wait_for_child_with_timeout(&child, command.timeout_ms).await {
+                WaitChildResult::Exited(status) => (status.code().unwrap_or(-1), false),
+                WaitChildResult::TimedOut => {
+                    terminate_shell_child(&child).await;
+                    (124, true)
+                }
+                WaitChildResult::Failed(error) => {
+                    terminate_shell_child(&child).await;
+                    wait_for_shell_stream_task(&mut stdout_handle, 300).await;
+                    wait_for_shell_stream_task(&mut stderr_handle, 300).await;
+                    self.unregister_active_tool_process(thread_id, call_id)
+                        .await;
+                    let msg = format!("Failed to wait for code_search: {error}");
+                    self.emit_tool_end(app_handle, thread_id, call_id, "code_search", -1, &msg);
+                    return Ok(msg);
+                }
+            };
+
+        wait_for_shell_stream_task(&mut stdout_handle, 1_500).await;
+        wait_for_shell_stream_task(&mut stderr_handle, 1_500).await;
+        self.unregister_active_tool_process(thread_id, call_id)
+            .await;
+        let stdout = decode_command_output_bytes(&stdout_buffer.lock().await);
+        let stderr = decode_command_output_bytes(&stderr_buffer.lock().await);
+        let output = if timed_out {
+            format!(
+                "code_search timed out after {} ms for pattern `{}`.",
+                command.timeout_ms, args.pattern
+            )
+        } else {
+            format_code_search_output(
+                &args.pattern,
+                &command.search_root,
+                &self.cwd,
+                &stdout,
+                &stderr,
+                exit_code,
+                command.head_limit,
+            )
+        };
+        self.emit_tool_end(
+            app_handle,
+            thread_id,
+            call_id,
+            "code_search",
+            exit_code,
+            &output,
+        );
+        Ok(output)
+    }
+
 }

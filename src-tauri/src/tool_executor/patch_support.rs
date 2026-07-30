@@ -1,3 +1,4 @@
+use super::*;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
@@ -1719,4 +1720,72 @@ footer
         assert!(error.contains("    7 | current tree"));
         assert!(!error.contains("    1 | # Design"));
     }
+}
+
+impl ToolExecutor {
+    pub(crate) async fn exec_apply_patch(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        let patch = match extract_patch_argument(arguments) {
+            Ok(patch) => patch,
+            Err(error) => {
+                let msg = format!(
+                    "{error}\nUse Codex patch syntax: '*** Begin Patch', then '*** Update File: path', hunks beginning with '@@', and '*** End Patch'. Do not use classic context-diff headers or fall back to write_file for an existing file."
+                );
+                self.emit_tool_start(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "apply_patch",
+                    "invalid patch",
+                );
+                self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
+                return Err(crate::error::AppError::Custom(msg));
+            }
+        };
+
+        let display_label = patch_display_label(&patch);
+        info!("Applying patch: {}", display_label);
+        self.emit_tool_start(
+            app_handle,
+            thread_id,
+            call_id,
+            "apply_patch",
+            &display_label,
+        );
+        let progress_changes = parse_patch_actions(&patch)
+            .map(|actions| apply_patch_progress_changes(&actions))
+            .unwrap_or_default();
+
+        let result = match apply_patch_to_workspace(&self.cwd, &patch) {
+            Ok(report) => {
+                let msg = format_apply_patch_report(&report);
+                // 仅在真正写盘成功后再广播 progress，避免失败时 UI 误显示“已修改”。
+                if !progress_changes.is_empty() {
+                    self.emit_apply_patch_progress(
+                        app_handle,
+                        thread_id,
+                        call_id,
+                        &progress_changes,
+                    );
+                }
+                self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", 0, &msg);
+                msg
+            }
+            Err(err) => {
+                let msg = format!(
+                    "Error applying patch: {err}\nUse Codex patch headers such as '*** Update File: path' (not classic '*** path', '--- path', or '***************' context-diff headers). Do not fall back to write_file, Python, PowerShell, sed, or other whole-file editing. Correct the patch path or context and retry apply_patch so existing content and encoding are preserved."
+                );
+                self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
+                return Err(crate::error::AppError::Custom(msg));
+            }
+        };
+
+        Ok(result)
+    }
+
 }

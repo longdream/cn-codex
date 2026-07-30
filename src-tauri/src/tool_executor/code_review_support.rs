@@ -1,3 +1,4 @@
+use super::*;
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
@@ -549,4 +550,148 @@ fn combine_stdout_stderr(stdout: &str, stderr: &str) -> String {
         (true, false) => stderr.trim().to_string(),
         (false, false) => format!("{}\n[stderr]\n{}", stdout.trim(), stderr.trim()),
     }
+}
+
+impl ToolExecutor {
+    pub(crate) async fn exec_code_review(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        let args: CodeReviewArgs = match serde_json::from_str(arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let msg = format!("Invalid code_review args: {e}");
+                self.emit_tool_start(app_handle, thread_id, call_id, "code_review", "invalid");
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_review", -1, &msg);
+                return Ok(msg);
+            }
+        };
+
+        let scope = code_review_scope_label(&args);
+        self.emit_tool_start(app_handle, thread_id, call_id, "code_review", &scope);
+
+        let diff_ref = match validate_code_review_base_ref(args.base_ref.as_deref()) {
+            Ok(value) => value,
+            Err(msg) => {
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_review", -1, &msg);
+                return Ok(msg);
+            }
+        };
+        let paths = match validate_code_review_paths(args.paths.as_deref().unwrap_or(&[])) {
+            Ok(paths) => paths,
+            Err(msg) => {
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_review", -1, &msg);
+                return Ok(msg);
+            }
+        };
+        let max_diff_bytes = args
+            .max_diff_bytes
+            .unwrap_or(200_000)
+            .clamp(4_000, 1_000_000);
+
+        let status = self
+            .git_capture(&["status".to_string(), "--short".to_string()], 64_000)
+            .await
+            .unwrap_or_else(|e| GitCommandOutput {
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: e,
+            });
+        if status.exit_code != 0 {
+            let msg = format!(
+                "code_review requires a git repository. git status failed: {}",
+                combine_stdout_stderr(&status.stdout, &status.stderr)
+            );
+            self.emit_tool_end(app_handle, thread_id, call_id, "code_review", -1, &msg);
+            return Ok(msg);
+        }
+
+        let diff_args = code_review_git_args("diff", diff_ref.as_deref(), &paths);
+        let diff = match self.git_capture(&diff_args, max_diff_bytes).await {
+            Ok(output) => output,
+            Err(msg) => {
+                self.emit_tool_end(app_handle, thread_id, call_id, "code_review", -1, &msg);
+                return Ok(msg);
+            }
+        };
+        if diff.exit_code != 0 {
+            let msg = format!(
+                "git diff failed: {}",
+                combine_stdout_stderr(&diff.stdout, &diff.stderr)
+            );
+            self.emit_tool_end(app_handle, thread_id, call_id, "code_review", -1, &msg);
+            return Ok(msg);
+        }
+
+        let numstat_args = code_review_git_args("numstat", diff_ref.as_deref(), &paths);
+        let numstat = self
+            .git_capture(&numstat_args, 64_000)
+            .await
+            .unwrap_or_else(|e| GitCommandOutput {
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: e,
+            });
+        let name_status_args = code_review_git_args("name-status", diff_ref.as_deref(), &paths);
+        let name_status = self
+            .git_capture(&name_status_args, 64_000)
+            .await
+            .unwrap_or_else(|e| GitCommandOutput {
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: e,
+            });
+        let check_args = code_review_git_args("check", diff_ref.as_deref(), &paths);
+        let diff_check = self
+            .git_capture(&check_args, 64_000)
+            .await
+            .unwrap_or_else(|e| GitCommandOutput {
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: e,
+            });
+
+        let include_untracked = args.include_untracked.unwrap_or(true);
+        let untracked = if include_untracked {
+            code_review_untracked_paths(&status.stdout, &paths)
+        } else {
+            Vec::new()
+        };
+        let summary = analyze_code_review_diff(
+            &diff.stdout,
+            &numstat.stdout,
+            &diff_check,
+            &untracked,
+            diff.stdout.len() >= max_diff_bytes,
+        );
+        let output = format_code_review_output(
+            &scope,
+            &summary,
+            &name_status.stdout,
+            &status.stdout,
+            &untracked,
+            &diff_check,
+        );
+        self.emit_tool_end(app_handle, thread_id, call_id, "code_review", 0, &output);
+        Ok(output)
+    }
+
+
+    pub(crate) async fn git_capture(
+        &self,
+        args: &[String],
+        max_output_bytes: usize,
+    ) -> Result<GitCommandOutput, String> {
+        // 统一复用 git_service 的执行与截断逻辑，避免工具层与右侧 Git 面板重复实现。
+        let service = GitService::new(self.cwd.clone());
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        service
+            .run_allow_failure(&refs, max_output_bytes)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
 }
