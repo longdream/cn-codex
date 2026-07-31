@@ -66,6 +66,11 @@ REM Always disable incremental for this scripted release path.
 if not defined CARGO_INCREMENTAL set "CARGO_INCREMENTAL=0"
 if not defined CARGO_PROFILE_RELEASE_LTO set "CARGO_PROFILE_RELEASE_LTO=false"
 if not defined CARGO_PROFILE_RELEASE_CODEGEN_UNITS set "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8"
+REM Keep the release build within the memory budget of typical 16 GB Windows machines.
+REM Override CARGO_BUILD_JOBS when building on a larger machine.
+if not defined CARGO_BUILD_JOBS set "CARGO_BUILD_JOBS=1"
+echo [INFO] Cargo build jobs: %CARGO_BUILD_JOBS%
+echo [%date% %time%] Cargo build jobs=%CARGO_BUILD_JOBS% >> "%LOGFILE%"
 
 echo.
 echo [0/5] Checking disk space and cleaning bulky Rust cache...

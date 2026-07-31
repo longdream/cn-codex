@@ -461,6 +461,12 @@ impl AgentEngine {
         let mut patch_paths_requiring_refresh: HashSet<String> = HashSet::new();
         let mut failed_apply_patch_fingerprints: HashSet<u64> = HashSet::new();
         let mut apply_patch_failed_in_turn = false;
+        let mut failed_file_edit_attempts = 0_u32;
+        let mut successful_file_edit_attempts = 0_u32;
+        let mut file_edit_status_retry_count = 0_u32;
+        let mut last_read_only_tool_signature: Option<String> = None;
+        let mut suppressed_repetitive_tools: HashSet<String> = HashSet::new();
+        let mut last_logged_tool_names: Option<Vec<String>> = None;
         let mut turn_usage = TurnUsage::default();
         // 统计“本轮成功模型调用次数”：
         // - 每次 stream_completion 返回 Ok（无论是 Message 还是 ToolCalls）计 1 次；
@@ -681,9 +687,14 @@ impl AgentEngine {
         emit_and_broadcast(app_handle, "turn-started", turn_started_payload);
 
         let hook_runtime = HookRuntime::load(config, &self.cwd.join("codey"));
-        if let Some(cwd) = override_cwd {
-            self.tool_executor.write().await.set_cwd(cwd.to_path_buf());
-        }
+        // 每轮都强制同步 executor 的工作目录：
+        // executor 是跨 turn 共享的，若仅在 override_cwd 存在时设置，
+        // 上一轮"小程序编辑"设置的目录会在断线重连/切换线程后残留，
+        // 导致 write_file/apply_patch 把文件写进旧目录。
+        self.tool_executor
+            .write()
+            .await
+            .set_cwd(effective_cwd.clone());
         let mut mcp_servers = plugin_loader::list_plugin_mcp_servers(&self.cwd.join("codey"));
         for (name, server) in config.resolved_mcp_servers() {
             // 避免 config.toml 中错误的 computer-use-client 入口覆盖真实 MCP Server。
@@ -1103,6 +1114,25 @@ impl AgentEngine {
                         }));
                     }
 
+                    if !suppressed_repetitive_tools.is_empty() {
+                        tools.retain(|spec| {
+                            spec.pointer("/function/name")
+                                .and_then(|value| value.as_str())
+                                .map_or(true, |name| !suppressed_repetitive_tools.contains(name))
+                        });
+                    }
+                    let tool_names = tool_spec_names(&tools);
+                    if last_logged_tool_names.as_ref() != Some(&tool_names) {
+                        info!(
+                            "Tool schemas for turn {turn_id}: count={}, apply_patch_exposed={}, suppressed_repetitive={:?}, names={:?}",
+                            tool_names.len(),
+                            tool_names.iter().any(|name| name == "apply_patch"),
+                            suppressed_repetitive_tools,
+                            tool_names
+                        );
+                        last_logged_tool_names = Some(tool_names);
+                    }
+
                     let result = self
                         .stream_completion(
                             app_handle,
@@ -1282,7 +1312,30 @@ impl AgentEngine {
                                 continue;
                             }
 
-                            let content = if cleaned_text.is_empty() && iteration > 0 {
+                            let all_file_edits_failed =
+                                failed_file_edit_attempts > 0 && successful_file_edit_attempts == 0;
+                            if all_file_edits_failed && file_edit_status_retry_count == 0 {
+                                file_edit_status_retry_count = 1;
+                                let correction_msg = ThreadMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role: "system".to_string(),
+                                    content: "Every apply_patch/write_file call in this turn failed; no file edit was written successfully. Do not claim the modification succeeded. Retry apply_patch now if the task can still be completed, otherwise report the failure and its cause explicitly."
+                                        .to_string(),
+                                    timestamp: now_secs(),
+                                    tool_call_id: None,
+                                    tool_name: None,
+                                    tool_calls: None,
+                                    attachments: Vec::new(),
+                                };
+                                self.thread_store
+                                    .add_message(thread_id, correction_msg)
+                                    .await?;
+                                continue;
+                            }
+
+                            let content = if all_file_edits_failed {
+                                final_text_with_failed_file_edit_status(&cleaned_text)
+                            } else if cleaned_text.is_empty() && iteration > 0 {
                                 String::new()
                             } else {
                                 cleaned_text.clone()
@@ -1728,6 +1781,38 @@ impl AgentEngine {
 
                             for mut call in calls {
                                 info!("Tool call: {} args={}", call.name, call.arguments);
+                                if repeated_read_only_tool_call(
+                                    &mut last_read_only_tool_signature,
+                                    &call,
+                                ) {
+                                    suppressed_repetitive_tools.insert(call.name.clone());
+                                    let result_content = format!(
+                                        "Repeated {tool} call blocked: the immediately preceding call used the same arguments and its result is already in context. Do not search or read the same content again. Use the existing result; if the user requested a code change, call apply_patch now. The {tool} schema is disabled for the remainder of this turn to prevent an infinite read-only loop.",
+                                        tool = call.name
+                                    );
+                                    warn!(
+                                        "Blocked repeated read-only tool call: {} args={}",
+                                        call.name, call.arguments
+                                    );
+                                    results_json.push(serde_json::json!({
+                                        "id": call.id,
+                                        "tool": call.name,
+                                        "success": false,
+                                        "repeatedReadOnlyCall": true,
+                                    }));
+                                    let tool_msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "tool".to_string(),
+                                        content: result_content,
+                                        timestamp: now_secs(),
+                                        tool_call_id: Some(call.id.clone()),
+                                        tool_name: Some(call.name.clone()),
+                                        tool_calls: None,
+                                        attachments: Vec::new(),
+                                    };
+                                    self.thread_store.add_message(thread_id, tool_msg).await?;
+                                    continue;
+                                }
                                 if goal_completed_now {
                                     let skipped_call_id = call.id.clone();
                                     let skipped_tool_name = call.name.clone();
@@ -1850,6 +1935,10 @@ impl AgentEngine {
                                 if let Some(blocking_hook) =
                                     first_blocking_hook_result(&pre_tool_hook_results)
                                 {
+                                    if matches!(call.name.as_str(), "apply_patch" | "write_file") {
+                                        failed_file_edit_attempts =
+                                            failed_file_edit_attempts.saturating_add(1);
+                                    }
                                     let result_content =
                                         blocked_tool_call_output(&call.name, blocking_hook);
                                     results_json.push(serde_json::json!({
@@ -2062,11 +2151,46 @@ impl AgentEngine {
                                     match tool_result {
                                         Ok(output) => {
                                             let success = tool_result_success(&call.name, &output);
+                                            if success {
+                                                info!(
+                                                    "Tool call completed: {} call_id={} success=true",
+                                                    call.name, call.id
+                                                );
+                                            } else {
+                                                warn!(
+                                                    "Tool call completed: {} call_id={} success=false output={}",
+                                                    call.name,
+                                                    call.id,
+                                                    truncate_log_message(&output)
+                                                );
+                                            }
                                             (output, success)
                                         }
-                                        Err(e) => (format!("Tool execution error: {e}"), false),
+                                        Err(e) => {
+                                            warn!(
+                                                "Tool call failed: {} call_id={} error={}",
+                                                call.name,
+                                                call.id,
+                                                truncate_log_message(&e.to_string())
+                                            );
+                                            (format!("Tool execution error: {e}"), false)
+                                        }
                                     }
                                 };
+                                if matches!(call.name.as_str(), "apply_patch" | "write_file") {
+                                    // A real edit attempt is progress. Re-enable read-only tools so
+                                    // a failed patch can refresh context and a successful patch can
+                                    // be verified without carrying the loop breaker indefinitely.
+                                    suppressed_repetitive_tools.clear();
+                                    last_read_only_tool_signature = None;
+                                    if success {
+                                        successful_file_edit_attempts =
+                                            successful_file_edit_attempts.saturating_add(1);
+                                    } else {
+                                        failed_file_edit_attempts =
+                                            failed_file_edit_attempts.saturating_add(1);
+                                    }
+                                }
                                 if call.name == "read_file"
                                     && success
                                     && !result_content.starts_with("Error reading")
@@ -3018,7 +3142,7 @@ impl AgentEngine {
              - write_file: Create a new file. Rewriting an existing file requires overwrite=true and complete content, and destructive truncation is rejected.\n\
              - tool_search: Search available CN-Codex tools, skills, plugin skills, and discovered MCP tools, then activate matching non-core schemas for the next model call in this same turn. Default turns only expose a small core tool set; non-core tools (MCP/Playwright, memory, image generation, MCP helpers, agents, plugins, etc.) are lazy-loaded through this tool.\n\
              - code_review: Review current git changes or a diff against a base ref, reporting changed files, diff-check issues, and obvious risk patterns.\n\
-             - apply_patch: Apply Codex-style patches to add, update, delete, or move files. Prefer raw/freeform patch text when available; function-call providers may pass the same body as patch or command.\n\
+             - apply_patch: Edit files with a Codex patch. Pass the complete raw patch body in the required patch field.\n\
              - list_directory: List files and subdirectories in a directory.\n\
              - code_search: Search source code in the current workspace using CN-Codex's built-in search engine.\n\
              - update_plan: Update a concise multi-step task plan; keep at most one step in_progress.\n\
@@ -3061,7 +3185,8 @@ impl AgentEngine {
              FILE EDITING RULES:\n\
              1. Use `apply_patch` as the default for every edit to an existing text file, including single-file edits. It applies contextual diffs and avoids rewriting unrelated content.\n\
              2. Use `write_file` only to create a new file or when the user explicitly requests a complete file rewrite; existing files require overwrite=true. Never use it as a fallback after apply_patch fails.\n\
-             3. `apply_patch` supports single-file and multi-file add/update/delete/move operations. Read the relevant file content before constructing an update hunk. In every hunk body, prefix each removed line with `-`, each added line with `+`, and each unchanged context line with one space; never use `|-`, `+|`, `||`, or separate old/new blocks. Keep hunks small with about 3 exact context lines above and below each change. When text repeats, write an exact class/function/section source line after `@@` to anchor the search; use `*** End of File` when the hunk must target the file ending. If a hunk fails to match, immediately re-read that file and retry `apply_patch` with refreshed, smaller context; do not stop at the first patch error.\n\
+             3. For `apply_patch`, send one complete patch in the required `patch` field and prefer workspace-relative paths. \
+             Numbered `read_file` output includes a display gutter before file content; never copy its line number or separator into a patch. If a hunk fails, re-read the affected range and retry with smaller exact context.\n\
              4. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
                 Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
              5. Do not use python/PowerShell scripts to read or write files, and do not use shell loops such as Get-Content + ForEach-Object to dump line ranges. Use `read_file` (with line_offset/max_lines/end_line when needed), `apply_patch`, or (for new files) `write_file` instead.\n\

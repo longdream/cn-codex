@@ -1,6 +1,6 @@
 {
   "id": "miniapp-test-app",
-  "name": "测试小程序",
+  "name": "小程序1",
   "slug": "test-app",
   "description": "需要对供应商的相关信息来进行输入和查询还有统计",
   "databaseId": "52207d89-cb58-4d6e-bc03-0f8f4aec1ea7",

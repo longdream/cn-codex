@@ -15,7 +15,6 @@ import { useIntl } from "react-intl";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { SettingsPagination, usePagedItems } from "./SettingsPagination";
-import { LanKnowledgeShareSection } from "./LanKnowledgeShareSection";
 
 interface KnowledgeEntry {
   doc_id: string;
@@ -605,7 +604,6 @@ export function KnowledgePanel() {
           </div>
         )}
       </section>
-      <LanKnowledgeShareSection />
     </div>
   );
 }

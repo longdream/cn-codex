@@ -1,7 +1,8 @@
 import {
   IconAlertTriangle,
   IconExternalLink,
-  IconMessagePlus,
+  IconFolderOpen,
+  IconPencil,
   IconPlayerPlay,
   IconPlayerStop,
   IconRefresh,
@@ -18,7 +19,7 @@ import {
   type MiniAppRecord,
 } from "../../api/miniapp";
 import { standaloneThreadCreate } from "../../api/standalone";
-import { windowOpenBrowser } from "../../api/window";
+import { revealInExplorer, windowOpenBrowser } from "../../api/window";
 import { useAppStore } from "../../stores/appStore";
 
 function statusTone(status: MiniAppRecord["status"]): string {
@@ -47,7 +48,7 @@ function buildJoinConversationDraft(app: MiniAppRecord): string {
     `- MCP server 名：${app.slug}`,
     `- 路径：${rootPath}`,
     dataSource,
-    `当前工作目录已切换到该小程序根目录，请直接读取并修改包内文件。`,
+    `本对话已绑定到该小程序根目录作为专属工作目录，请直接读取并修改包内文件。`,
     `小程序必须保留可操作界面；需要查看时调用 open_page。只有已挂载数据库时才使用数据库能力。`,
     `需求：`,
   ].join("\n");
@@ -99,11 +100,24 @@ export function MiniAppSidePanel() {
     [load],
   );
 
-  const joinConversation = useCallback(
+  const editMiniapp = useCallback(
     async (app: MiniAppRecord) => {
       const workdir = app.rootPath?.trim();
       if (!workdir) {
         throw new Error(intl.formatMessage({ id: "miniapp.err.noRootPath" }));
+      }
+
+      const store = useAppStore.getState();
+      // 复用已绑定该小程序的编辑对话，避免重复创建。
+      const existingThreadId = Object.entries(store.threadPreferences).find(
+        ([, pref]) => pref?.miniappSlug === app.slug,
+      )?.[0];
+      if (existingThreadId && store.threads.some((t) => t.id === existingThreadId)) {
+        // 用 loadThread 而非 setCurrentThread：缓存未命中（如应用重启后）时
+        // 能从后端水合历史消息，避免复用对话打开为空白。
+        await store.loadThread(existingThreadId);
+        store.setShowSettings(false);
+        return;
       }
 
       const createResp = await standaloneThreadCreate();
@@ -112,9 +126,13 @@ export function MiniAppSidePanel() {
         throw new Error(intl.formatMessage({ id: "miniapp.err.threadFailed" }));
       }
 
-      const store = useAppStore.getState();
-      store.setWorkspaceCwd(workdir);
-      // 先切到新线程，再打开本地知识库，确保 preference 绑定到新 threadId。
+      // 线程级绑定小程序目录：仅该对话使用小程序根目录作为 cwd，
+      // 不再修改全局 workspaceCwd，普通对话的工作区不受影响。
+      store.bindThreadMiniapp(threadId, {
+        slug: app.slug,
+        name: app.name,
+        rootPath: workdir,
+      });
       store.setCurrentThread(threadId);
       store.setThreadSmartbrainEnabled(true);
       store.addThread({
@@ -128,6 +146,17 @@ export function MiniAppSidePanel() {
       });
       store.setShowSettings(false);
       store.queueComposerInsert(buildJoinConversationDraft(app));
+    },
+    [intl],
+  );
+
+  const openAppFolder = useCallback(
+    (app: MiniAppRecord) => {
+      const workdir = app.rootPath?.trim();
+      if (!workdir) {
+        return Promise.reject(new Error(intl.formatMessage({ id: "miniapp.err.noRootPath" })));
+      }
+      return revealInExplorer(workdir);
     },
     [intl],
   );
@@ -243,12 +272,26 @@ export function MiniAppSidePanel() {
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => void runAction(app.slug, () => joinConversation(app))}
+                    onClick={() => void runAction(app.slug, () => editMiniapp(app))}
                     className="app-button-secondary flex items-center gap-1 text-[11px] disabled:opacity-50"
-                    title={intl.formatMessage({ id: "miniapp.joinConversationHint" })}
+                    title={intl.formatMessage({ id: "miniapp.editHint" })}
                   >
-                    <IconMessagePlus size={12} stroke={1.8} />
-                    {intl.formatMessage({ id: "miniapp.joinConversation" })}
+                    <IconPencil size={12} stroke={1.8} />
+                    {intl.formatMessage({ id: "miniapp.edit" })}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !app.rootPath?.trim()}
+                    onClick={() => {
+                      void openAppFolder(app).catch((err) =>
+                        setError(typeof err === "string" ? err : (err as Error).message),
+                      );
+                    }}
+                    className="app-button-secondary flex items-center gap-1 text-[11px] disabled:opacity-50"
+                    title={intl.formatMessage({ id: "miniapp.openFolderHint" })}
+                  >
+                    <IconFolderOpen size={12} stroke={1.8} />
+                    {intl.formatMessage({ id: "miniapp.openFolder" })}
                   </button>
                   <button
                     type="button"

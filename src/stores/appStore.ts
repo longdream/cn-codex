@@ -424,7 +424,7 @@ function createDefaultThreadRuntimeState(): ThreadRuntimeState {
   };
 }
 
-export type RightPanelTab = "browser" | "project" | "terminal" | "git" | "lan" | "miniapp";
+export type RightPanelTab = "browser" | "project" | "terminal" | "git" | "miniapp";
 export type SidebarTab = "chats" | "projects";
 export interface SmartbrainExtractionProgress {
   current: number;
@@ -1144,12 +1144,18 @@ type PersistedProviderRecord = Omit<ProviderConfig, "models"> & {
   maxOutputTokens?: unknown;
 };
 
-/** 跨会话持久化的对话级偏好（模型覆盖 + 本地知识库/子智能体开关） */
+/** 跨会话持久化的对话级偏好（模型覆盖 + 本地知识库/子智能体开关 + 小程序绑定） */
 export interface ThreadPreference {
   overrideProviderId?: string | null;
   overrideModelId?: string | null;
   smartbrainEnabled?: boolean;
   subagentEnabled?: boolean;
+  /** 小程序编辑对话绑定：小程序 slug；非空表示该线程是小程序专属编辑对话 */
+  miniappSlug?: string | null;
+  /** 小程序显示名（用于侧边栏展示） */
+  miniappName?: string | null;
+  /** 小程序根目录：作为该线程的专属工作目录，优先级高于全局 workspaceCwd */
+  miniappRootPath?: string | null;
 }
 
 function normalizePositiveInt(value: unknown, fallback: number): number {
@@ -1598,6 +1604,17 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultModels: [{ id: "Baichuan4", label: "Baichuan 4", supportsVision: false, contextLength: 32768 }],
   },
   {
+    type: "codebuddy", name: "CodeBuddy", category: "china",
+    defaultBaseUrl: "https://copilot.tencent.com/v2", defaultWireApi: "chat", requiresOpenAIAuth: false,
+    signupUrl: "https://copilot.tencent.com/profile/keys",
+    defaultModels: [
+      { id: "deepseek-v3", label: "DeepSeek V3", supportsVision: false, contextLength: 128000 },
+      { id: "deepseek-r1", label: "DeepSeek R1", supportsVision: false, contextLength: 128000 },
+      { id: "glm-5.1", label: "GLM 5.1", supportsVision: false, contextLength: 128000 },
+      { id: "hy3", label: "Hunyuan Hy3", supportsVision: false, contextLength: 128000 },
+    ],
+  },
+  {
     type: "ollama", name: "Ollama", category: "local",
     defaultBaseUrl: "http://localhost:11434/v1", defaultWireApi: "chat", requiresOpenAIAuth: false,
     signupUrl: "https://ollama.com/download",
@@ -1736,12 +1753,27 @@ function buildThreadPreferencePatch(
       patch.subagentEnabled !== undefined
         ? patch.subagentEnabled
         : (existing?.subagentEnabled ?? false),
+    miniappSlug:
+      patch.miniappSlug !== undefined
+        ? patch.miniappSlug
+        : (existing?.miniappSlug ?? null),
+    miniappName:
+      patch.miniappName !== undefined
+        ? patch.miniappName
+        : (existing?.miniappName ?? null),
+    miniappRootPath:
+      patch.miniappRootPath !== undefined
+        ? patch.miniappRootPath
+        : (existing?.miniappRootPath ?? null),
   };
   const isEmpty =
     !next.overrideProviderId &&
     !next.overrideModelId &&
     !next.smartbrainEnabled &&
-    !next.subagentEnabled;
+    !next.subagentEnabled &&
+    !next.miniappSlug &&
+    !next.miniappName &&
+    !next.miniappRootPath;
   return isEmpty ? null : next;
 }
 
@@ -1992,6 +2024,11 @@ interface AppState {
   setThreadModelOverride: (providerId: string | null, modelId: string | null) => void;
   setThreadSmartbrainEnabled: (enabled: boolean) => void;
   setThreadSubagentEnabled: (enabled: boolean) => void;
+  /** 绑定/解绑线程的小程序编辑上下文（cwd 绑定到小程序根目录，线程级隔离）；传 null 解除绑定 */
+  bindThreadMiniapp: (
+    threadId: string,
+    binding: { slug: string; name: string; rootPath: string } | null,
+  ) => void;
   buildThreadChatProviderOverride: (
     providerId?: string | null,
     modelId?: string | null,
@@ -2865,9 +2902,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     saveThreadProjectMap(tpMap);
     // 清理该线程的运行时状态快照
     get().deleteThreadRuntimeState(threadId);
+    // 同步清理对话级偏好（含小程序绑定），避免线程删除后残留孤儿配置
+    const nextPrefs = { ...get().threadPreferences };
+    let prefsChanged = false;
+    if (nextPrefs[threadId]) {
+      delete nextPrefs[threadId];
+      prefsChanged = true;
+      saveThreadPreferences(nextPrefs);
+    }
     set({
       threads,
       threadProjectMap: tpMap,
+      ...(prefsChanged ? { threadPreferences: nextPrefs } : {}),
       ...(isCurrent
         ? {
           currentThreadId: null,
@@ -3245,6 +3291,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         subagentEnabled: enabled,
       }));
     }
+  },
+  bindThreadMiniapp: (threadId, binding) => {
+    const state = get();
+    const nextPrefs = { ...state.threadPreferences };
+    const nextPref = buildThreadPreferencePatch(nextPrefs[threadId], {
+      miniappSlug: binding?.slug ?? null,
+      miniappName: binding?.name ?? null,
+      miniappRootPath: binding?.rootPath ?? null,
+    });
+    if (nextPref) {
+      nextPrefs[threadId] = nextPref;
+    } else {
+      delete nextPrefs[threadId];
+    }
+    saveThreadPreferences(nextPrefs);
+    set({ threadPreferences: nextPrefs });
   },
   buildThreadChatProviderOverride: (providerId, modelId) => {
     const state = get();

@@ -309,6 +309,74 @@ async fn probe_streaming(
     Ok(false)
 }
 
+/// 以流式方式探测 tools/usage 能力。
+///
+/// 部分网关（如 CodeBuddy）仅支持流式请求，非流式 JSON 探测会直接 400；
+/// 此时用 stream:true 携带 tools 重新探测，按 SSE 事件聚合：
+/// 返回 Some((tool_call_count, usage_seen)) 表示探测成功，None 表示失败。
+async fn probe_streaming_tool_caps(
+    http: &reqwest::Client,
+    adapter: &dyn adapter::ProviderAdapter,
+    url: &str,
+    headers: &reqwest::header::HeaderMap,
+    body: &Value,
+) -> Option<(usize, bool)> {
+    let response = http
+        .post(url)
+        .headers(headers.clone())
+        .json(body)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut bytes = 0usize;
+    let mut tool_indexes = std::collections::HashSet::new();
+    let mut usage_seen = false;
+    let mut completed = false;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.ok()?;
+        bytes = bytes.saturating_add(chunk.len());
+        if bytes > 256 * 1024 {
+            break;
+        }
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(pos) = buffer.find('\n') {
+            let line = buffer[..pos].trim_end_matches('\r').to_string();
+            buffer.drain(..=pos);
+            if adapter.is_stream_done(&line) {
+                completed = true;
+                break;
+            }
+            for event in adapter.parse_stream_line(&line) {
+                match event {
+                    adapter::types::StreamEvent::ToolCallDelta { index, .. }
+                    | adapter::types::StreamEvent::ToolCallDone { index, .. } => {
+                        tool_indexes.insert(index);
+                    }
+                    adapter::types::StreamEvent::Usage(_) => usage_seen = true,
+                    adapter::types::StreamEvent::Done { .. } => completed = true,
+                    _ => {}
+                }
+            }
+            if completed {
+                break;
+            }
+        }
+        if completed {
+            break;
+        }
+    }
+    if completed || !tool_indexes.is_empty() || usage_seen {
+        Some((tool_indexes.len(), usage_seen))
+    } else {
+        None
+    }
+}
+
 #[tauri::command]
 pub async fn probe_model_capabilities(
     base_url: String,
@@ -342,15 +410,26 @@ pub async fn probe_model_capabilities(
     let adapter = adapter::get_adapter(&wire_api);
     let url = adapter.build_url(&base_url, &model);
     let headers = adapter.build_headers(&api_key);
-    let messages = vec![InternalMessage {
-        role: "user".to_string(),
-        content: text_content(
-            "Capability probe: call both supplied probe functions exactly once, in parallel if supported.",
-        ),
-        tool_calls: None,
-        tool_call_id: None,
-        name: None,
-    }];
+    // 部分网关（如 CodeBuddy）要求 messages 至少包含 2 条消息，
+    // 前置一条 system 消息以保证探测请求被接受（对所有 OpenAI 兼容供应商均无害）。
+    let messages = vec![
+        InternalMessage {
+            role: "system".to_string(),
+            content: text_content("You are a helpful assistant."),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+        InternalMessage {
+            role: "user".to_string(),
+            content: text_content(
+                "Capability probe: call both supplied probe functions exactly once, in parallel if supported.",
+            ),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        },
+    ];
     let tools = [
         capability_probe_tool("__cn_codex_capability_probe_a"),
         capability_probe_tool("__cn_codex_capability_probe_b"),
@@ -379,7 +458,25 @@ pub async fn probe_model_capabilities(
                 value.pointer("/usage").is_some() || value.pointer("/response/usage").is_some(),
             );
         }
-        Err(message) => error = Some(message),
+        Err(message) => {
+            // 部分网关（如 CodeBuddy）仅支持流式请求，非流式探测会直接报错；
+            // 此时回退到流式探测，成功则不视为探测失败。
+            let mut stream_tool_body =
+                adapter.build_body(&model, &messages, Some(&tools), Some(128));
+            if let Some(object) = stream_tool_body.as_object_mut() {
+                object.insert("stream".to_string(), Value::Bool(true));
+            }
+            match probe_streaming_tool_caps(&http, &*adapter, &url, &headers, &stream_tool_body)
+                .await
+            {
+                Some((count, usage_seen)) => {
+                    capabilities.structured_tools = Some(count > 0);
+                    capabilities.parallel_tool_calls = Some(count > 1);
+                    capabilities.usage = Some(usage_seen);
+                }
+                None => error = Some(message),
+            }
+        }
     }
 
     let mut stream_body = adapter.build_body(&model, &messages, None, Some(16));

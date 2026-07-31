@@ -9,4 +9,3 @@ export * from "./skill";
 export * from "./standalone";
 export * from "./window";
 export * from "./update";
-export * from "./lanCollab";

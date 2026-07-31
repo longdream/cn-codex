@@ -118,6 +118,41 @@ pub(crate) fn build_smartbrain_recall_context(
 }
 
 
+pub(crate) fn tool_spec_names(tools: &[serde_json::Value]) -> Vec<String> {
+    tools
+        .iter()
+        .filter_map(|spec| {
+            spec.pointer("/function/name")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+
+pub(crate) fn repeated_read_only_tool_call(
+    last_signature: &mut Option<String>,
+    call: &ToolCallRequest,
+) -> bool {
+    if !matches!(
+        call.name.as_str(),
+        "read_file" | "code_search" | "list_directory"
+    ) {
+        *last_signature = None;
+        return false;
+    }
+
+    let normalized_arguments = serde_json::from_str::<serde_json::Value>(&call.arguments)
+        .ok()
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .unwrap_or_else(|| call.arguments.trim().to_string());
+    let signature = format!("{}:{normalized_arguments}", call.name);
+    let repeated = last_signature.as_deref() == Some(signature.as_str());
+    *last_signature = Some(signature);
+    repeated
+}
+
+
 pub(crate) fn assistant_is_waiting_for_user(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {

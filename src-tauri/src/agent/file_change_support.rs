@@ -518,10 +518,33 @@ pub(crate) fn apply_patch_failure_requires_refresh(result: &str) -> bool {
 
 
 pub(crate) fn tool_result_success(tool_name: &str, output: &str) -> bool {
-    if tool_name == "apply_patch" {
-        return output.starts_with("Success. Applied patch.");
+    match tool_name {
+        "apply_patch" => output.starts_with("Success. Applied patch."),
+        "write_file" => output.starts_with("Successfully wrote "),
+        _ => true,
     }
-    true
+}
+
+
+pub(crate) fn truncate_log_message(message: &str) -> String {
+    const MAX_CHARS: usize = 500;
+    let mut chars = message.chars();
+    let prefix: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{prefix}... [truncated]")
+    } else {
+        prefix
+    }
+}
+
+
+pub(crate) fn final_text_with_failed_file_edit_status(text: &str) -> String {
+    const STATUS: &str = "File modification status: failed. No apply_patch/write_file call wrote a file successfully in this turn.";
+    if text.trim().is_empty() {
+        STATUS.to_string()
+    } else {
+        format!("{STATUS}\n\n{text}")
+    }
 }
 
 

@@ -732,20 +732,17 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "apply_patch",
-                    "description": "Default tool for editing existing text files, whether one file or many. Applies contextual diffs while preserving encoding and line endings, and supports add/update/delete/move in Codex apply_patch format. Read the current file before editing. Each update hunk starts with @@, optionally followed by an exact class, function, section, or other source line that anchors the search (for example: @@ function renderApp()). Every hunk body line must start with exactly one marker: '-' for removed lines, '+' for added lines, or one space for unchanged context. Do not use '|-', '+|', '||', or separate old/new blocks. Include about 3 exact context lines above and below each small change; use an anchor when the snippet repeats. Use *** End of File after a hunk that must match the file ending. If a hunk does not match, re-read that file and retry apply_patch with refreshed, smaller context. Relative paths are preferred; absolute paths must resolve inside the workspace. Prefer the raw/freeform patch body when supported; function-call providers may use JSON fields named patch or command. The patch must start with *** Begin Patch and end with *** End Patch.",
+                    "description": "Use apply_patch to edit files. Pass one complete Codex patch in the required patch field, from *** Begin Patch through *** End Patch. Do not wrap the patch in another JSON or shell command.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "patch": {
                                 "type": "string",
-                                "description": "Patch body using *** Add File, *** Update File, and *** Delete File sections."
-                            },
-                            "command": {
-                                "type": "string",
-                                "description": "Compatibility alias for a raw apply_patch command or patch body."
+                                "description": "Complete raw patch body using *** Add File, *** Update File, and *** Delete File sections."
                             }
                         },
-                        "required": []
+                        "required": ["patch"],
+                        "additionalProperties": false
                     }
                 }
             }),

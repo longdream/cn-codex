@@ -38,7 +38,6 @@ import type { ConfigEdit } from "../../types";
 import type { RemoteProviderModel } from "../../api";
 import { SettingsPagination, usePagedItems } from "./SettingsPagination";
 import { filterProviderModels } from "../../utils/chatModelSelection";
-import { LanModelShareSection } from "./LanModelShareSection";
 
 const LOCAL_OCR_FALLBACK_VALUE = "__local_ocr__";
 
@@ -501,9 +500,6 @@ export function ProviderPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <div className="shrink-0">
-        <LanModelShareSection />
-      </div>
       <div className="flex min-h-0 flex-1 gap-4">
       {/* 左侧：实例列表 */}
       <div className="flex w-60 flex-shrink-0 flex-col rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-3">

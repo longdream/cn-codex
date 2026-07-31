@@ -443,6 +443,17 @@ fn builtin_providers() -> HashMap<String, ModelProviderInfo> {
             ..Default::default()
         },
     );
+    map.insert(
+        "codebuddy".to_string(),
+        ModelProviderInfo {
+            name: Some("CodeBuddy".to_string()),
+            base_url: Some("https://copilot.tencent.com/v2".to_string()),
+            env_key: Some("CODEBUDDY_API_KEY".to_string()),
+            wire_api: Some("chat".to_string()),
+            requires_openai_auth: Some(false),
+            ..Default::default()
+        },
+    );
     map
 }
 
@@ -460,6 +471,7 @@ const RESERVED_PROVIDER_IDS: &[&str] = &[
     "baichuan",
     "ollama",
     "lmstudio",
+    "codebuddy",
     "amazon-bedrock",
 ];
 

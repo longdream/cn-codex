@@ -910,6 +910,45 @@ fn text_expresses_intent_detects_common_unfinished_work_phrases() {
 }
 
 #[test]
+fn repeated_read_only_tool_call_blocks_only_consecutive_identical_calls() {
+    let read = ToolCallRequest {
+        id: "read-1".to_string(),
+        name: "read_file".to_string(),
+        arguments: r#"{"path":"src/main.rs","line_offset":1}"#.to_string(),
+    };
+    let mut last_signature = None;
+
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &read));
+    assert!(repeated_read_only_tool_call(&mut last_signature, &read));
+
+    let patch = ToolCallRequest {
+        id: "patch-1".to_string(),
+        name: "apply_patch".to_string(),
+        arguments: "*** Begin Patch\n*** End Patch".to_string(),
+    };
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &patch));
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &read));
+}
+
+#[test]
+fn repeated_read_only_tool_call_distinguishes_different_ranges() {
+    let mut last_signature = None;
+    let first = ToolCallRequest {
+        id: "read-1".to_string(),
+        name: "read_file".to_string(),
+        arguments: r#"{"path":"src/main.rs","line_offset":1}"#.to_string(),
+    };
+    let second = ToolCallRequest {
+        id: "read-2".to_string(),
+        name: "read_file".to_string(),
+        arguments: r#"{"path":"src/main.rs","line_offset":201}"#.to_string(),
+    };
+
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &first));
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &second));
+}
+
+#[test]
 fn is_length_truncated_recognizes_provider_reasons() {
     assert!(is_length_truncated(Some("length")));
     assert!(is_length_truncated(Some("MAX_TOKENS")));
@@ -1288,6 +1327,23 @@ fn apply_patch_parse_errors_are_not_recorded_as_successful_edits() {
         "apply_patch",
         "Success. Applied patch.\n- modified src/i18n/zh-CN/common.json"
     ));
+    assert!(!tool_result_success(
+        "write_file",
+        "Error writing existing.md: access denied"
+    ));
+    assert!(tool_result_success(
+        "write_file",
+        "Successfully wrote 12 bytes to new.md"
+    ));
+}
+
+#[test]
+fn failed_file_edits_are_explicit_in_final_text() {
+    let text = final_text_with_failed_file_edit_status("The requested change is complete.");
+
+    assert!(text.starts_with("File modification status: failed."));
+    assert!(text.contains("No apply_patch/write_file call wrote a file successfully"));
+    assert!(text.contains("The requested change is complete."));
 }
 
 #[test]

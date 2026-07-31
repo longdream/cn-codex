@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MiniApp: 测试小程序 - 供应商管理
+ * MiniApp: 小程序1 - 供应商管理
  * - MCP stdio server (tools/list + tools/call)
  * - HTTP static server (web/) + REST API
  * - In-memory data store (demo 模式，数据可从宿主机同步)
@@ -22,7 +22,7 @@ function readManifest() {
     return JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
   } catch {
     return {
-      name: "测试小程序",
+      name: "小程序1",
       slug: "test-app",
       databaseId: process.env.MINIAPP_DATABASE_ID || "",
       pages: [
@@ -47,50 +47,34 @@ const sampleData = [
   { id: 5,  supplier_name: "百度",     contract_no: "HT-2026-0005",  amount: 5937.50,  quantity: 5,  unit_price: 1187.5,  is_paid: false, status: "signed", signed_date: "2026-01-05",  signed_time: "13:15:05",  signed_at: "2026-01-05T13:15:05",  remark: "测试合同数据#005：与百度签署金额5937.50",  created_ts: "2026-07-20T21:42:56" },
   { id: 6,  supplier_name: "京东",     contract_no: "HT-2026-0006",  amount: 7350.00,  quantity: 6,  unit_price: 1225,    is_paid: true,  status: "closed", signed_date: "2026-01-06",  signed_time: "14:18:06",  signed_at: "2026-01-06T14:18:06",  remark: "测试合同数据#006：与京东签署金额7350.00",  created_ts: "2026-07-20T21:42:57" },
   { id: 7,  supplier_name: "美团",     contract_no: "HT-2026-0007",  amount: 8837.50,  quantity: 7,  unit_price: 1262.5,  is_paid: false, status: "draft",  signed_date: "2026-01-07",  signed_time: "15:21:07",  signed_at: "2026-01-07T15:21:07",  remark: "测试合同数据#007：与美团签署金额8837.50",  created_ts: "2026-07-20T21:42:57" },
-  { id: 8,  supplier_name: "小米",     contract_no: "HT-2026-0008",  amount: 10400.00, quantity: 8,  unit_price: 1300,    is_paid: false, status: "signed", signed_date: "2026-01-08",  signed_time: "16:24:08",  signed_at: "2026-01-08T16:24:08",  remark: "测试合同数据#008：与小米签署金额10400.00", created_ts: "2026-07-20T21:42:57" },
-  { id: 9,  supplier_name: "网易",     contract_no: "HT-2026-0009",  amount: 12037.50, quantity: 9,  unit_price: 1337.5,  is_paid: true,  status: "closed", signed_date: "2026-01-09",  signed_time: "17:27:09",  signed_at: "2026-01-09T17:27:09",  remark: "测试合同数据#009：与网易签署金额12037.50", created_ts: "2026-07-20T21:42:57" },
-  { id: 10, supplier_name: "拼多多",   contract_no: "HT-2026-0010",  amount: 13750.00, quantity: 10, unit_price: 1375,    is_paid: false, status: "draft",  signed_date: "2026-01-10",  signed_time: "08:30:10",  signed_at: "2026-01-10T08:30:10",  remark: "测试合同数据#010：与拼多多签署金额13750.00", created_ts: "2026-07-20T21:42:57" },
-  { id: 11, supplier_name: "华为",     contract_no: "HT-2026-0011",  amount: 1412.50,  quantity: 1,  unit_price: 1412.5,  is_paid: false, status: "signed", signed_date: "2026-01-11",  signed_time: "09:33:11",  signed_at: "2026-01-11T09:33:11",  remark: "测试合同数据#011：与华为签署金额1412.50",  created_ts: "2026-07-20T21:42:57" },
-  { id: 12, supplier_name: "腾讯",     contract_no: "HT-2026-0012",  amount: 2900.00,  quantity: 2,  unit_price: 1450,    is_paid: true,  status: "closed", signed_date: "2026-01-12",  signed_time: "10:36:12",  signed_at: "2026-01-12T10:36:12",  remark: "测试合同数据#012：与腾讯签署金额2900.00",  created_ts: "2026-07-20T21:42:57" },
-  { id: 13, supplier_name: "阿里巴巴", contract_no: "HT-2026-0013",  amount: 4462.50,  quantity: 3,  unit_price: 1487.5,  is_paid: false, status: "draft",  signed_date: "2026-01-13",  signed_time: "11:39:13",  signed_at: "2026-01-13T11:39:13",  remark: "测试合同数据#013：与阿里巴巴签署金额4462.50", created_ts: "2026-07-20T21:42:57" },
-  { id: 14, supplier_name: "字节跳动", contract_no: "HT-2026-0014",  amount: 6100.00,  quantity: 4,  unit_price: 1525,    is_paid: false, status: "signed", signed_date: "2026-01-14",  signed_time: "12:42:14",  signed_at: "2026-01-14T12:42:14",  remark: "测试合同数据#014：与字节跳动签署金额6100.00", created_ts: "2026-07-20T21:42:57" },
-  { id: 15, supplier_name: "百度",     contract_no: "HT-2026-0015",  amount: 7812.50,  quantity: 5,  unit_price: 1562.5,  is_paid: true,  status: "closed", signed_date: "2026-01-15",  signed_time: "13:45:15",  signed_at: "2026-01-15T13:45:15",  remark: "测试合同数据#015：与百度签署金额7812.50",  created_ts: "2026-07-20T21:42:57" },
-  { id: 16, supplier_name: "京东",     contract_no: "HT-2026-0016",  amount: 9600.00,  quantity: 6,  unit_price: 1600,    is_paid: false, status: "draft",  signed_date: "2026-01-16",  signed_time: "14:48:16",  signed_at: "2026-01-16T14:48:16",  remark: "测试合同数据#016：与京东签署金额9600.00",  created_ts: "2026-07-20T21:42:57" },
-  { id: 17, supplier_name: "美团",     contract_no: "HT-2026-0017",  amount: 11462.50, quantity: 7,  unit_price: 1637.5,  is_paid: false, status: "signed", signed_date: "2026-01-17",  signed_time: "15:51:17",  signed_at: "2026-01-17T15:51:17",  remark: "测试合同数据#017：与美团签署金额11462.50", created_ts: "2026-07-20T21:42:57" },
-  { id: 18, supplier_name: "小米",     contract_no: "HT-2026-0018",  amount: 13400.00, quantity: 8,  unit_price: 1675,    is_paid: true,  status: "closed", signed_date: "2026-01-18",  signed_time: "16:54:18",  signed_at: "2026-01-18T16:54:18",  remark: "测试合同数据#018：与小米签署金额13400.00", created_ts: "2026-07-20T21:42:57" },
-  { id: 19, supplier_name: "网易",     contract_no: "HT-2026-0019",  amount: 15412.50, quantity: 9,  unit_price: 1712.5,  is_paid: false, status: "draft",  signed_date: "2026-01-19",  signed_time: "17:57:19",  signed_at: "2026-01-19T17:57:19",  remark: "测试合同数据#019：与网易签署金额15412.50", created_ts: "2026-07-20T21:42:57" },
-  { id: 20, supplier_name: "拼多多",   contract_no: "HT-2026-0020",  amount: 17500.00, quantity: 10, unit_price: 1750,    is_paid: false, status: "signed", signed_date: "2026-01-20",  signed_time: "08:00:20",  signed_at: "2026-01-20T08:00:20",  remark: "测试合同数据#020：与拼多多签署金额17500.00", created_ts: "2026-07-20T21:42:57" },
+  { id: 8,  supplier_name: "小米",     contract_no: "HT-2026-0008",  amount: 10400.00, quantity: 8,  unit_price: 1300,    is_paid: false, status: "signed", signed_date: "2026-01-08",  signed_time: "16:24:08",  signed_at: "2026-01-08T16:24:08",  remark: "测试合同数据#008：与小米签署金额10400.00",  created_ts: "2026-07-20T21:42:57" },
+  { id: 9,  supplier_name: "网易",     contract_no: "HT-2026-0009",  amount: 12112.50, quantity: 9,  unit_price: 1345.83, is_paid: true,  status: "closed", signed_date: "2026-01-09",  signed_time: "17:27:09",  signed_at: "2026-01-09T17:27:09",  remark: "测试合同数据#009：与网易签署金额12112.50",  created_ts: "2026-07-20T21:42:57" },
+  { id: 10, supplier_name: "滴滴",     contract_no: "HT-2026-0010",  amount: 13975.00, quantity: 10, unit_price: 1397.5,  is_paid: false, status: "draft",  signed_date: "2026-01-10",  signed_time: "18:30:10",  signed_at: "2026-01-10T18:30:10",  remark: "测试合同数据#010：与滴滴签署金额13975.00",  created_ts: "2026-07-20T21:42:57" },
 ];
-
 let suppliers = [...sampleData];
-let nextId = 101;
-
-// ─── Business logic ──────────────────────────────────────────
+let nextId = suppliers.length + 1;
 
 function nowISO() {
-  return new Date().toISOString().replace("T", " ").slice(0, 19);
-}
-function todayDate() {
-  return new Date().toISOString().slice(0, 10);
+  return new Date().toISOString().slice(0, 19);
 }
 
 function insertSupplier(args) {
   const { supplier_name, contract_no, amount, quantity, unit_price, is_paid, status, signed_date, signed_time, remark } = args;
-  if (!supplier_name || supplier_name.trim() === "") {
-    return { ok: false, code: "INVALID_PARAM", message: "供应商名称不能为空" };
+  if (!supplier_name || !String(supplier_name).trim()) {
+    return { ok: false, code: "VALIDATION_ERROR", message: "供应商名称不能为空" };
   }
   if (amount == null || isNaN(Number(amount)) || Number(amount) < 0) {
-    return { ok: false, code: "INVALID_PARAM", message: "金额无效" };
+    return { ok: false, code: "VALIDATION_ERROR", message: "合同金额必须为非负数字" };
   }
   const record = {
     id: nextId++,
-    supplier_name: supplier_name.trim(),
+    supplier_name: String(supplier_name).trim(),
     contract_no: contract_no || null,
     amount: Number(amount),
-    quantity: quantity != null ? Number(quantity) : 1,
-    unit_price: unit_price != null ? Number(unit_price) : null,
-    is_paid: is_paid === true || is_paid === "true" || is_paid === 1,
-    status: ["draft", "signed", "closed"].includes(status) ? status : "draft",
+    quantity: quantity ? Number(quantity) : 1,
+    unit_price: unit_price ? Number(unit_price) : null,
+    is_paid: !!is_paid,
+    status: status || "draft",
     signed_date: signed_date || null,
     signed_time: signed_time || null,
     signed_at: signed_date && signed_time ? `${signed_date}T${signed_time}` : null,

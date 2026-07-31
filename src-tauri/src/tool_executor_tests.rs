@@ -745,7 +745,7 @@ fn tool_specs_include_exec_session_tools() {
 }
 
 #[test]
-fn apply_patch_tool_spec_allows_freeform_compatible_wrappers() {
+fn apply_patch_tool_spec_requires_one_unambiguous_patch_field() {
     let executor = ToolExecutor::new(PathBuf::from("."));
     let tools = executor.tool_specs(false);
     let apply_patch = tools
@@ -757,19 +757,11 @@ fn apply_patch_tool_spec_allows_freeform_compatible_wrappers() {
         })
         .expect("apply_patch tool spec");
 
-    assert!(
-        apply_patch
-            .pointer("/function/description")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .contains("raw/freeform")
-    );
     let description = apply_patch
         .pointer("/function/description")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    assert!(description.contains("Default tool"));
-    assert!(description.contains("whether one file or many"));
+    assert!(description.starts_with("Use apply_patch to edit files."));
     assert!(
         apply_patch
             .pointer("/function/parameters/properties/patch")
@@ -778,13 +770,15 @@ fn apply_patch_tool_spec_allows_freeform_compatible_wrappers() {
     assert!(
         apply_patch
             .pointer("/function/parameters/properties/command")
-            .is_some()
+            .is_none()
     );
-    assert!(
-        apply_patch
-            .pointer("/function/parameters/required")
-            .and_then(serde_json::Value::as_array)
-            .is_none_or(Vec::is_empty)
+    assert_eq!(
+        apply_patch.pointer("/function/parameters/required"),
+        Some(&serde_json::json!(["patch"]))
+    );
+    assert_eq!(
+        apply_patch.pointer("/function/parameters/additionalProperties"),
+        Some(&serde_json::Value::Bool(false))
     );
 }
 
