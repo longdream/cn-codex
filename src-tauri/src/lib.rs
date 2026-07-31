@@ -12,7 +12,6 @@ pub mod external_browser;
 pub mod file_review;
 pub mod git_service;
 pub mod hook_runtime;
-pub mod lan_collab;
 pub mod local_pool;
 pub mod miniapp;
 pub mod mobile_server;
@@ -592,40 +591,6 @@ pub fn run() {
             commands::get_mobile_server_status,
             commands::get_mobile_server_url,
             commands::get_qrcode_svg,
-            // LAN collab (weak-center owner + P2P data plane)
-            lan_collab::lan_collab_status,
-            lan_collab::lan_collab_set_enabled,
-            lan_collab::lan_collab_set_display_name,
-            lan_collab::lan_collab_list_peers,
-            lan_collab::lan_collab_connect_peer,
-            lan_collab::lan_collab_refresh_scan,
-            lan_collab::lan_collab_create_group,
-            lan_collab::lan_collab_join_group,
-            lan_collab::lan_collab_list_groups,
-            lan_collab::lan_collab_send_message,
-            lan_collab::lan_collab_list_messages,
-            lan_collab::lan_collab_share_model,
-            lan_collab::lan_collab_unshare_model,
-            lan_collab::lan_collab_list_local_shared_models,
-            lan_collab::lan_collab_list_remote_shared_models,
-            lan_collab::lan_collab_share_knowledge,
-            lan_collab::lan_collab_unshare_knowledge,
-            lan_collab::lan_collab_list_local_shared_knowledge,
-            lan_collab::lan_collab_list_remote_shared_knowledge,
-            lan_collab::lan_collab_list_shareable_knowledge_docs,
-            lan_collab::lan_collab_search_remote_knowledge,
-            lan_collab::lan_collab_fetch_remote_knowledge,
-            lan_collab::lan_collab_share_skill,
-            lan_collab::lan_collab_unshare_skill,
-            lan_collab::lan_collab_list_local_shared_skills,
-            lan_collab::lan_collab_list_remote_shared_skills,
-            lan_collab::lan_collab_install_remote_skill,
-            lan_collab::lan_collab_share_workflow,
-            lan_collab::lan_collab_unshare_workflow,
-            lan_collab::lan_collab_list_local_shared_workflows,
-            lan_collab::lan_collab_list_remote_shared_workflows,
-            lan_collab::lan_collab_install_remote_workflow,
-            lan_collab::lan_collab_list_workflow_share_origins,
             // Recording & External Browser
             commands::launch_browser,
             commands::close_external_browser,

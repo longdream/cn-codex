@@ -1,4 +1,5 @@
 import {
+  IconApps,
   IconChevronDown,
   IconChevronRight,
   IconFolder,
@@ -43,6 +44,7 @@ export function Sidebar() {
   const initError = useAppStore((s) => s.initError);
   const retryInit = useAppStore((s) => s.retryInit);
   const threadProjectMap = useAppStore((s) => s.threadProjectMap);
+  const threadPreferences = useAppStore((s) => s.threadPreferences);
   const createThread = useAppStore((s) => s.createThread);
   const loadThread = useAppStore((s) => s.loadThread);
   const sidebarTab = useAppStore((s) => s.sidebarTab);
@@ -87,13 +89,19 @@ export function Sidebar() {
     }
   }, [creating, isGeneralMode, createThread]);
 
-  const { projectThreads, generalThreads } = useMemo(() => {
+  const { projectThreads, generalThreads, miniappThreads } = useMemo(() => {
     const map = new Map<string, typeof threads>();
     const general: typeof threads = [];
+    const miniapp: typeof threads = [];
     for (const p of projects) {
       map.set(p.id, []);
     }
     for (const t of threads) {
+      // 小程序编辑对话归入左侧独立区域，不与普通对话混合
+      if (threadPreferences[t.id]?.miniappSlug) {
+        miniapp.push(t);
+        continue;
+      }
       const pid = t.projectId ?? threadProjectMap[t.id];
       if (pid === GENERAL_PROJECT_ID) {
         general.push(t);
@@ -105,8 +113,21 @@ export function Sidebar() {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     }
     general.sort((a, b) => b.updatedAt - a.updatedAt);
-    return { projectThreads: map, generalThreads: general };
-  }, [projects, threads, threadProjectMap]);
+    miniapp.sort((a, b) => b.updatedAt - a.updatedAt);
+    return { projectThreads: map, generalThreads: general, miniappThreads: miniapp };
+  }, [projects, threads, threadProjectMap, threadPreferences]);
+
+  const filteredMiniappThreads = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return miniappThreads;
+    }
+    const q = searchQuery.toLowerCase();
+    return miniappThreads.filter(
+      (t) =>
+        (t.name?.toLowerCase().includes(q)) ||
+        t.preview.toLowerCase().includes(q),
+    );
+  }, [miniappThreads, searchQuery]);
 
   const { filteredProjectThreads, filteredGeneralThreads } = useMemo(() => {
     if (!searchQuery.trim()) {
@@ -220,6 +241,39 @@ export function Sidebar() {
         {sidebarTab === "chats" ? (
           /* Chats tab: flat list of general conversations */
           <div>
+            {/* 小程序编辑对话专属区域：工作目录绑定小程序根目录，与普通对话隔离 */}
+            {filteredMiniappThreads.length > 0 && (
+              <div className="mb-3">
+                <div className="mb-1 flex items-center gap-1 px-2">
+                  <IconApps size={12} stroke={1.8} className="text-[var(--text-faint)]" />
+                  <span className="text-[11px] font-medium text-[var(--text-faint)]">
+                    {intl.formatMessage({ id: "sidebar.miniappChats" })}
+                  </span>
+                </div>
+                <div className="space-y-0.5">
+                  {filteredMiniappThreads.map((thread) => {
+                    const title = thread.name || thread.preview || intl.formatMessage({ id: "chat.threadUntitled" });
+                    return (
+                      <ThreadItem
+                        key={thread.id}
+                        thread={thread}
+                        title={title}
+                        isCurrent={currentThreadId === thread.id}
+                        isRunning={isThreadRunning(thread.id)}
+                        locale={intl.locale}
+                        onClick={() => {
+                          if (!isGeneralMode) {
+                            useAppStore.getState().selectGeneralMode();
+                          }
+                          void loadThread(thread.id);
+                        }}
+                        onDelete={() => useAppStore.getState().deleteThread(thread.id)}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <div className="mb-1 flex items-center justify-between px-2">
               <span className="text-[11px] font-medium text-[var(--text-faint)]">
                 {intl.formatMessage({ id: "sidebar.generalChats" })}

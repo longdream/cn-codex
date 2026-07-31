@@ -1,4 +1,4 @@
-import { IconApps, IconBrowser, IconCheck, IconChevronLeft, IconChevronRight, IconExternalLink, IconFolderOpen, IconGitBranch, IconHome, IconMessagePlus, IconNetwork, IconPencil, IconRefresh, IconTerminal2, IconX } from "@tabler/icons-react";
+import { IconApps, IconBrowser, IconCheck, IconChevronLeft, IconChevronRight, IconExternalLink, IconFolderOpen, IconGitBranch, IconHome, IconMessagePlus, IconPencil, IconRefresh, IconTerminal2, IconX } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -8,7 +8,6 @@ import { browserApplyDomEdit, browserGetEditContext, browserGetNavigationState, 
 import { FileTree } from "./FileTree";
 import { GitPanel } from "./GitPanel";
 import { TerminalPanel } from "./TerminalPanel";
-import { LanCollabPanel } from "../lan/LanCollabPanel";
 import { MiniAppSidePanel } from "./MiniAppSidePanel";
 
 function latestBrowserToolCall(messages: ReturnType<typeof useAppStore.getState>["messages"]) {
@@ -869,7 +868,6 @@ export function RightPanel() {
   const projectTabLabel = intl.formatMessage({ id: "rightPanel.project" });
   const terminalTabLabel = intl.formatMessage({ id: "rightPanel.terminal" });
   const gitTabLabel = intl.formatMessage({ id: "rightPanel.git" });
-  const lanTabLabel = intl.formatMessage({ id: "rightPanel.lan" });
   const miniappTabLabel = intl.formatMessage({ id: "rightPanel.miniapp" });
   const canToggleEditMode = !browserDetached && (browserEditMode || Boolean(browserEditContext?.editable));
   const editModeTitle = browserEditMode
@@ -937,18 +935,6 @@ export function RightPanel() {
           aria-label={gitTabLabel}
         >
           <IconGitBranch size={14} stroke={1.8} />
-        </button>
-        <button
-          onClick={() => setRightPanelTab("lan")}
-          className={`flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] transition-colors ${
-            rightPanelTab === "lan"
-              ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-              : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-          }`}
-          title={lanTabLabel}
-          aria-label={lanTabLabel}
-        >
-          <IconNetwork size={14} stroke={1.8} />
         </button>
         <button
           onClick={() => setRightPanelTab("miniapp")}
@@ -1232,7 +1218,7 @@ const RightPanelSecondaryTab = memo(function RightPanelSecondaryTab({
   tab,
   workspaceCwd,
 }: {
-  tab: "project" | "terminal" | "git" | "browser" | "lan" | "miniapp";
+  tab: "project" | "terminal" | "git" | "browser" | "miniapp";
   workspaceCwd: string | null;
 }) {
   // 终端打开后保持挂载：切换到项目/Git 时只隐藏，避免 PTY 被卸载关闭。
@@ -1248,8 +1234,6 @@ const RightPanelSecondaryTab = memo(function RightPanelSecondaryTab({
     <>
       {tab === "git" ? (
         <GitPanel workspaceCwd={workspaceCwd} />
-      ) : tab === "lan" ? (
-        <LanCollabPanel />
       ) : tab === "miniapp" ? (
         <MiniAppSidePanel />
       ) : tab === "project" || tab === "browser" ? (

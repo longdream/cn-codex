@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>供应商查询 - 测试小程序</title>
+    <title>供应商查询 - 小程序1</title>
     <link rel="stylesheet" href="/common.css" />
   </head>
   <body>
@@ -95,19 +95,18 @@
       function renderStatus(status) {
         const map = { draft: "草稿", signed: "已签署", closed: "已关闭" };
         const cls = { draft: "badge-draft", signed: "badge-signed", closed: "badge-closed" };
-        return renderBadge(map[status] || status, cls[status] || "badge-draft");
+        return renderBadge(map[status] || status, cls[status] || "");
       }
 
-      function renderPaid(isPaid) {
-        return isPaid
-          ? renderBadge("已付款", "badge-paid")
-          : renderBadge("未付款", "badge-unpaid");
+      function renderPaid(is_paid) {
+        if (is_paid) return renderBadge("已付款", "badge-paid");
+        return renderBadge("未付款", "badge-unpaid");
       }
 
       function renderTable(data) {
         const el = document.getElementById("result");
-        if (!data.rows || data.rows.length === 0) {
-          el.innerHTML = '<div class="alert alert-info">📭 未找到匹配的记录</div>';
+        if (!data || !data.rows || data.rows.length === 0) {
+          el.innerHTML = '<div class="alert alert-info">没有找到匹配的记录</div>';
           return;
         }
 

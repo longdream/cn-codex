@@ -80,7 +80,12 @@ export function ChatPage() {
         return;
       }
 
-      const cwd = state.workspaceCwd || state.projectRoot || state.userHomeDir;
+      // 小程序编辑对话优先使用线程绑定的小程序根目录，与普通对话的工作区隔离，
+      // 避免"加入对话"把全局 workspaceCwd 改掉后文件写到错误目录。
+      const boundCwd = state.currentThreadId
+        ? state.threadPreferences[state.currentThreadId]?.miniappRootPath?.trim()
+        : undefined;
+      const cwd = boundCwd || state.workspaceCwd || state.projectRoot || state.userHomeDir;
       if (!cwd) return;
       let actualMode: ChatMode | "robot-create" | "robot-modify" = mode;
       if (options.robotCreateMode) {

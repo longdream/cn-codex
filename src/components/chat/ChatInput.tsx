@@ -68,7 +68,6 @@ import {
   formatPathRefLineRange,
   PATH_REF_MIME,
 } from "../../utils/pathRefSnippet";
-import { LanGroupChatLauncher } from "../lan/LanGroupChatLauncher";
 import { PlanExecutionProgress } from "./PlanExecutionProgress";
 
 /** 支持的文档 MIME 类型和扩展名 */
@@ -1594,8 +1593,6 @@ export function ChatInput({
             </span>
           )}
           </div>
-
-          <LanGroupChatLauncher />
           </div>
 
         {/* 附件预览区 */}

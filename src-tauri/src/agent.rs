@@ -799,9 +799,14 @@ impl AgentEngine {
         emit_and_broadcast(app_handle, "turn-started", turn_started_payload);
 
         let hook_runtime = HookRuntime::load(config, &self.cwd.join("codey"));
-        if let Some(cwd) = override_cwd {
-            self.tool_executor.write().await.set_cwd(cwd.to_path_buf());
-        }
+        // 每轮都强制同步 executor 的工作目录：
+        // executor 是跨 turn 共享的，若仅在 override_cwd 存在时设置，
+        // 上一轮"小程序编辑"设置的目录会在断线重连/切换线程后残留，
+        // 导致 write_file/apply_patch 把文件写进旧目录。
+        self.tool_executor
+            .write()
+            .await
+            .set_cwd(effective_cwd.clone());
         let mut mcp_servers = plugin_loader::list_plugin_mcp_servers(&self.cwd.join("codey"));
         for (name, server) in config.resolved_mcp_servers() {
             // 避免 config.toml 中错误的 computer-use-client 入口覆盖真实 MCP Server。

@@ -1,1 +1,1 @@
-{"modules": "approval,app_state,fileReview,git,hook,index,lanCollab,miniapp,plugin,recording,robot,skill,standalone,update,usage,window,workflow", "http_client": "native fetch", "has_interceptor": false, "base_url": "from Tauri invoke"}
+{"modules": "approval,app_state,fileReview,git,hook,index,miniapp,plugin,recording,robot,skill,standalone,update,usage,window,workflow", "http_client": "native fetch", "has_interceptor": false, "base_url": "from Tauri invoke"}
