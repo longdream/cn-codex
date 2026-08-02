@@ -6,7 +6,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
 
 use super::ProviderAdapter;
-use super::types::{InternalMessage, StreamEvent, UsageInfo};
+use super::types::{InternalMessage, StreamEvent, UsageInfo, safe_max_output_tokens};
 
 pub struct ChatCompletionsAdapter;
 
@@ -122,7 +122,7 @@ impl ProviderAdapter for ChatCompletionsAdapter {
         let mut body = serde_json::json!({
             "model": model,
             "messages": formatted_messages,
-            "max_tokens": max_tokens.unwrap_or(131072),
+            "max_tokens": safe_max_output_tokens(max_tokens),
             "stream": true,
             "stream_options": { "include_usage": true },
         });

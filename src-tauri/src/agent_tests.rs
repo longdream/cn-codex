@@ -392,6 +392,39 @@ fn retryable_stream_read_error_detects_transient_body_failures() {
 }
 
 #[test]
+fn oversized_model_response_is_identified_for_single_recovery_retry() {
+    assert!(is_oversized_model_response_error(
+        "Model response exceeded the 8000000-byte safety limit (received 8000123 bytes in 42.0s; parsed_text_bytes=0, tool_call_argument_bytes=7999000)."
+    ));
+    assert!(!is_oversized_model_response_error(
+        "Stream read error after 6671 bytes: connection reset by peer"
+    ));
+}
+
+#[test]
+fn effective_output_budget_respects_context_and_global_cap() {
+    let mut config = ConfigToml {
+        model_context_window: Some(128_000),
+        max_output_tokens: None,
+        ..ConfigToml::default()
+    };
+    let messages = vec![InternalMessage {
+        role: "user".to_string(),
+        content: Some(serde_json::Value::String("short request".to_string())),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    }];
+    assert_eq!(effective_max_output_tokens(&config, &messages), 32_768);
+
+    config.max_output_tokens = Some(64_000);
+    assert_eq!(effective_max_output_tokens(&config, &messages), 32_768);
+
+    config.model_context_window = Some(10_000);
+    assert!(effective_max_output_tokens(&config, &messages) < 10_000);
+}
+
+#[test]
 fn partial_stream_disconnect_is_retryable_not_successful_finish() {
     // Regression for the bug where a mid-stream disconnect with partial text
     // was treated as finish_reason=stream_error success and ended the turn.
@@ -1935,6 +1968,80 @@ fn smartbrain_runtime_prompt_includes_database_names_without_summary_injection()
     assert!(prompt.contains("不要再次向用户索要主机、端口、用户名、密码或完整连接串"));
     assert!(prompt.contains("密码已在配置中单独保存"));
     assert!(!prompt.contains("top-secret"));
+}
+
+#[test]
+fn smartbrain_runtime_prompt_is_empty_when_dialog_knowledge_base_is_off() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let workspace_config_dir = temp_dir.path().join("codey");
+    let experiences = workspace_config_dir
+        .join("memories")
+        .join("experiences");
+    let knowledge = workspace_config_dir.join("memories").join("knowledge");
+    std::fs::create_dir_all(&experiences).unwrap();
+    std::fs::create_dir_all(&knowledge).unwrap();
+    std::fs::write(
+        experiences.join("experience_summary.md"),
+        "prior experience that must not be injected while KB is off",
+    )
+    .unwrap();
+    std::fs::write(
+        knowledge.join("hierarchy.json"),
+        r#"{"domains":{"backend":["api"]}}"#,
+    )
+    .unwrap();
+
+    let prompt = render_smartbrain_runtime_prompt(
+        &workspace_config_dir,
+        &SmartBrainConfig {
+            enabled: false,
+            inject_summary: true,
+            knowledge_enabled: true,
+            ..SmartBrainConfig::default()
+        },
+    );
+
+    assert!(
+        prompt.is_empty(),
+        "disabled chat KB must not advertise smartbrain_search: {prompt}"
+    );
+}
+
+#[test]
+fn smartbrain_runtime_prompt_omits_search_guidance_when_knowledge_disabled() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let workspace_config_dir = temp_dir.path().join("codey");
+    let experiences = workspace_config_dir
+        .join("memories")
+        .join("experiences");
+    let knowledge = workspace_config_dir.join("memories").join("knowledge");
+    std::fs::create_dir_all(&experiences).unwrap();
+    std::fs::create_dir_all(&knowledge).unwrap();
+    std::fs::write(
+        experiences.join("experience_summary.md"),
+        "experience summary only",
+    )
+    .unwrap();
+    std::fs::write(
+        knowledge.join("hierarchy.json"),
+        r#"{"domains":{"backend":["api"]}}"#,
+    )
+    .unwrap();
+
+    let prompt = render_smartbrain_runtime_prompt(
+        &workspace_config_dir,
+        &SmartBrainConfig {
+            enabled: true,
+            inject_summary: true,
+            knowledge_enabled: false,
+            ..SmartBrainConfig::default()
+        },
+    );
+
+    assert!(
+        !prompt.contains("smartbrain_search"),
+        "knowledge_enabled=false must not push search tool: {prompt}"
+    );
 }
 
 #[test]

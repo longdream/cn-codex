@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>05 错因诊断与动态计划</title><link rel="stylesheet" href="prototype.css"></head>
+<body>
+<div class="screen-label">模拟数据 · 学员「小林」（演示）· 周一 20:45</div>
+<div class="app">
+  <div class="sidebar">
+    <h3>学习任务</h3>
+    <div class="task-item done"><span class="title">📄 《练习册》P18–19 图像与解析式</span><div class="meta">已完成 · 证据已入账</div></div>
+    <div class="task-item active">🔧 调整建议：周三任务<div class="meta">待你确认</div></div>
+    <div class="task-item">📄 《练习册》P20 综合小练<div class="meta">周五 20:00</div></div>
+  </div>
+  <div class="main">
+    <div class="topbar"><span class="title">错因诊断 → 动态计划建议</span><span class="sub">每条建议都有依据，可拒绝</span></div>
+    <div class="chat">
+      <div class="msg ai"><div class="tag">成长分析 Agent · L2</div>
+        结合你拍的 3 道题和你选的卡点，错因归类为：<b>把「对称轴」和「顶点」的关系混淆</b>（错因码 confuse_axis_with_vertex）。<br><br>
+        两步提示，先自己想：<br>
+        1️⃣ 对称轴 x = -b/2a，而顶点一定<b>在</b>对称轴上——先找轴，再定顶点；<br>
+        2️⃣ 把解析式配方成 y = a(x-h)²+k，图像的平移就一目了然。<br><br>
+        想看完整分步讲解可以点「讲一步」；材料教辅第 42 页也有对应解析。
+      </div>
+      <div class="msg ai"><div class="tag">干预策略 Agent · 动态计划建议（依据孪生快照 #T-0731 + 今晚 3 条证据）</div>
+        📋 建议把周三任务改为：<b>只订正同类 4 题（约 20 分钟），不扩新题</b>。<br>
+        理由：同类错因首次集中出现，先小步订正比加量更有效。
+      </div>
+      <div class="hint">💡 调整必须学员确认后才写回计划；拒绝则保持原计划，不会重复施压</div>
+    </div>
+    <div class="footer-input"><div class="box">输入消息…</div></div>
+  </div>
+  <div class="panel">
+    <div class="card">
+      <h4>数字孪生 · 覆盖度 <span class="cov">52% ↑</span></h4>
+      <div class="kv"><span>学习态度精神</span><span class="pill ok">生长中</span></div>
+      <div class="bar green"><i style="width:55%"></i></div>
+      <div class="kv"><span>知识掌握能力</span><span class="pill warn">函数·emerging</span></div>
+      <div class="bar amber"><i style="width:40%"></i></div>
+      <div class="kv"><span>math.function.graph_mapping</span><b>emerging</b></div>
+      <div class="note">完成 ≠ 掌握：单次练习后仅记 emerging，需多日证据才升级。</div>
+    </div>
+    <div class="card">
+      <h4>调整依据（可追溯）</h4>
+      <div class="timeline">
+        <div>作业照片 ×3（20:41）</div>
+        <div>卡点自评：图像↔解析式（20:43）</div>
+        <div>错因归类：轴/顶点混淆（20:44）</div>
+        <div>孪生快照 #T-0731</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-mask">
+  <div class="modal">
+    <h2>确认周三的调整吗？</h2>
+    <div class="purpose">用途：只有在你确认后，计划才会正式更新；此调整可回溯到上方证据。</div>
+    <div class="opt sel"><span class="radio"></span>✔ 接受：周三只订正同类 4 题（20 分钟）</div>
+    <div class="opt"><span class="radio"></span>✏️ 修改：保持原任务但缩短到 25 分钟</div>
+    <div class="opt"><span class="radio"></span>✖ 拒绝：保持原计划不变</div>
+    <div class="actions">
+      <button class="btn primary">确认</button>
+      <button class="btn text">稍后决定</button>
+    </div>
+    <div class="skip-row">拒绝不会有任何惩罚，也不会重复劝说。</div>
+  </div>
+</div>
+</body></html>

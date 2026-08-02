@@ -12,6 +12,7 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use super::ProviderAdapter;
 use super::types::{
     InternalMessage, StreamEvent, UsageInfo, content_as_text, content_to_gemini_parts,
+    safe_max_output_tokens,
 };
 
 pub struct GoogleAdapter;
@@ -139,7 +140,7 @@ impl ProviderAdapter for GoogleAdapter {
         }
 
         body["generationConfig"] = serde_json::json!({
-            "maxOutputTokens": max_tokens.unwrap_or(131072)
+            "maxOutputTokens": safe_max_output_tokens(max_tokens)
         });
 
         body

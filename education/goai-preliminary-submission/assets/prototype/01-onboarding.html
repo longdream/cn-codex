@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>01 建档</title><link rel="stylesheet" href="prototype.css"></head>
+<body>
+<div class="screen-label">模拟数据 · 学员「小林」（演示）</div>
+<div class="app">
+  <div class="sidebar">
+    <h3>学习任务</h3>
+    <div class="task-item active">🌱 认识你的学习教练<div class="meta">建档对话 · 约 2 分钟</div></div>
+    <div class="task-item">📚 盘点我的学习材料<div class="meta">待开始</div></div>
+    <div class="task-item">🗓️ 生成首周骨架计划<div class="meta">待开始</div></div>
+  </div>
+  <div class="main">
+    <div class="topbar"><span class="title">AI 自主学习教练</span><span class="sub">纸质主学 · 短时屏幕教练</span></div>
+    <div class="chat">
+      <div class="msg ai"><div class="tag">陪伴 Agent · L1</div>你好呀，小林 👋 我不是来考试的，是来帮你把学习安排得更顺手的教练。我们慢慢聊，任何问题你都可以说「先不聊这个」。</div>
+      <div class="msg user"><div class="tag">小林</div>好，我想数学能轻松一点。</div>
+      <div class="msg ai"><div class="tag">陪伴 Agent · L1</div>这个想法很不错。为了把后面的计划排得合你的节奏，我想先听听你的一个小愿望——只问一题，答不答都可以。</div>
+      <div class="hint">💡 心理学友好采集：问前说明用途 · 单轮一问 · 可跳过（跳过不会记差评）</div>
+    </div>
+    <div class="footer-input"><div class="box">输入消息…（正式选择请在弹窗中完成）</div></div>
+  </div>
+  <div class="panel">
+    <div class="card">
+      <h4>数字孪生 · 覆盖度 <span class="cov">12%</span></h4>
+      <div class="kv"><span>学习态度精神</span><span class="pill warn">了解中</span></div>
+      <div class="bar amber"><i style="width:15%"></i></div>
+      <div class="kv"><span>知识掌握能力</span><span class="pill">待了解</span></div>
+      <div class="bar"><i style="width:6%"></i></div>
+      <div class="note">孪生刚刚建立，可见、可更正；后面会在聊天和作业证据中慢慢生长。</div>
+    </div>
+    <div class="card">
+      <h4>你的权利</h4>
+      <div class="note">✔ 任何问题可跳过 / 稍后<br>✔ 画像内容可查看、可更正<br>✔ 更正后计划会跟着更新</div>
+    </div>
+  </div>
+</div>
+<div class="modal-mask">
+  <div class="modal">
+    <h2>一个小问题</h2>
+    <div class="purpose">用途：帮你把目标定成「看得见的第一步」，会写入孪生的目标层（可改）。</div>
+    <div style="font-size:13.5px;margin-bottom:12px;">如果只挑一件最想先变好的事，你会选哪一件？</div>
+    <div class="opt sel"><span class="radio"></span>数学：函数图像和解析式总是混在一起</div>
+    <div class="opt"><span class="radio"></span>数学：计算总出错，想更稳一点</div>
+    <div class="opt"><span class="radio"></span>先随便看看，我还没想好</div>
+    <div class="actions">
+      <button class="btn primary">确认</button>
+      <button class="btn text">跳过</button>
+      <button class="btn text">稍后再说</button>
+    </div>
+    <div class="skip-row">跳过仅记录「未提供」，不会产生任何负面评价。</div>
+  </div>
+</div>
+</body></html>

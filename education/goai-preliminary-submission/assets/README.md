@@ -24,3 +24,14 @@ assets/
 
 - 请使用模拟学生数据，避免真实未成年人隐私出镜
 - 截图中如含 API Key、本机绝对路径、真实手机号等请打码
+
+## 重新导出方案书 PDF
+
+`02-项目方案书.md` 更新后，在本目录上级（`goai-preliminary-submission/`）执行：
+
+```bat
+pandoc "02-项目方案书.md" -f markdown -t html5 -s --metadata title="AI 自主学习教练系统 · 项目方案书" -c "assets/pdf-style.css" -o "assets/02-项目方案书.html"
+"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --headless --disable-gpu --no-pdf-header-footer --print-to-pdf="02-项目方案书.pdf" "file:///绝对路径/assets/02-项目方案书.html"
+```
+
+说明：`pdf-style.css` 为中文排版样式表；Edge 打印需使用 file:// 绝对 URL（中文需 URL 编码）；生成后可删除中间 HTML。

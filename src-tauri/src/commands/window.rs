@@ -337,7 +337,7 @@ pub async fn window_open_browser(
         let mut guard = state.browser_active_root.write().await;
         *guard = normalize_workspace_root_hint(workspace_root);
     }
-    let _ = emit_browser_navigation_state(&app, &state, Some(info.url.as_str())).await;
+    schedule_browser_navigation_state_sync(&app, Some(info.url.clone()));
     Ok(info)
 }
 
@@ -389,7 +389,7 @@ pub async fn window_navigate_browser(
         let mut guard = state.browser_active_root.write().await;
         *guard = normalize_workspace_root_hint(workspace_root);
     }
-    let _ = emit_browser_navigation_state(&app, &state, Some(url.as_str())).await;
+    schedule_browser_navigation_state_sync(&app, Some(url.clone()));
     Ok(())
 }
 
@@ -437,7 +437,7 @@ pub async fn window_detach_browser(
         let mut guard = state.browser_last_url.write().await;
         *guard = Some(info.url.clone());
     }
-    let _ = emit_browser_navigation_state(&app, &state, Some(info.url.as_str())).await;
+    schedule_browser_navigation_state_sync(&app, Some(info.url.clone()));
     emit_browser_detached_state(&app, true, Some(info.url.clone()));
     Ok(info)
 }
@@ -487,7 +487,7 @@ pub async fn window_attach_browser(
         let mut guard = state.browser_active_root.write().await;
         *guard = normalize_workspace_root_hint(workspace_root);
     }
-    let _ = emit_browser_navigation_state(&app, &state, Some(info.url.as_str())).await;
+    schedule_browser_navigation_state_sync(&app, Some(info.url.clone()));
     emit_browser_detached_state(&app, false, Some(info.url.clone()));
     Ok(info)
 }
@@ -1779,6 +1779,30 @@ async fn emit_browser_navigation_state(
     }
     let _ = app.emit(BROWSER_NAVIGATION_CHANGED_EVENT, navigation.clone());
     Ok(navigation)
+}
+
+fn schedule_browser_navigation_state_sync(app: &AppHandle, preferred_url: Option<String>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // A newly-created WebView2 may need a short amount of time before its CDP
+        // endpoint exposes a page target. Do not make the open/navigation command
+        // wait for that startup race; update the UI as soon as the target is ready.
+        for attempt in 0..8u64 {
+            if app.get_webview(BROWSER_WEBVIEW_LABEL).is_none() {
+                return;
+            }
+
+            let state = app.state::<AppState>();
+            if emit_browser_navigation_state(&app, &state, preferred_url.as_deref())
+                .await
+                .is_ok()
+            {
+                return;
+            }
+
+            sleep(Duration::from_millis(80 + attempt * 80)).await;
+        }
+    });
 }
 
 async fn evaluate_browser_script(

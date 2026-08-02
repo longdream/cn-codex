@@ -55,7 +55,7 @@ use crate::adapter::{
     types::{
         CompletionOutput, InternalFunctionCall, InternalMessage, InternalToolCall,
         MAX_STREAMED_RESPONSE_BYTES, MAX_TOOL_CALLS_PER_RESPONSE, StreamEvent, UsageInfo,
-        text_content,
+        safe_max_output_tokens, text_content,
     },
 };
 
@@ -930,6 +930,8 @@ impl AgentEngine {
         let mut transient_llm_retry_count: u32 = 0;
         let mut empty_completion_retry_count: u32 = 0;
         let mut length_continuation_count: u32 = 0;
+        let mut oversized_response_retry_count: u32 = 0;
+        let mut output_tokens_override: Option<i64> = None;
         let mut tool_calls_executed = false;
         let mut terminated_by_error = false;
         let mut force_new_plan_on_next_emit =
@@ -1133,6 +1135,12 @@ impl AgentEngine {
                         last_logged_tool_names = Some(tool_names);
                     }
 
+                    let effective_output_tokens =
+                        effective_max_output_tokens(config, &internal_messages);
+                    let request_max_output_tokens = output_tokens_override
+                        .map(|value| value.min(effective_output_tokens))
+                        .unwrap_or(effective_output_tokens);
+
                     let result = self
                         .stream_completion(
                             app_handle,
@@ -1143,7 +1151,7 @@ impl AgentEngine {
                             &wire_api,
                             internal_messages,
                             if tools.is_empty() { None } else { Some(tools) },
-                            config.max_output_tokens,
+                            Some(request_max_output_tokens),
                             config.model_reasoning_effort.as_deref(),
                             iteration,
                             turn_mode == "plan",
@@ -1183,6 +1191,8 @@ impl AgentEngine {
                             stream_read_retry_count = 0;
                             upstream_retry_count = 0;
                             transient_llm_retry_count = 0;
+                            oversized_response_retry_count = 0;
+                            output_tokens_override = None;
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
                                 "Iteration {iteration}: Message ({} chars), finish_reason={:?}, usage={:?}",
@@ -1696,6 +1706,8 @@ impl AgentEngine {
                             stream_read_retry_count = 0;
                             upstream_retry_count = 0;
                             transient_llm_retry_count = 0;
+                            oversized_response_retry_count = 0;
+                            output_tokens_override = None;
                             tool_calls_executed = true;
                             llm_call_count = llm_call_count.saturating_add(1);
                             info!(
@@ -2388,6 +2400,42 @@ impl AgentEngine {
                         }
                         Err(e) => {
                             let error_message = e.to_string();
+                            if is_oversized_model_response_error(&error_message)
+                                && oversized_response_retry_count < 1
+                            {
+                                oversized_response_retry_count =
+                                    oversized_response_retry_count.saturating_add(1);
+                                let reduced_output_tokens = request_max_output_tokens
+                                    .saturating_div(4)
+                                    .max(1_024)
+                                    .min(request_max_output_tokens);
+                                output_tokens_override = Some(reduced_output_tokens);
+                                warn!(
+                                    "Iteration {iteration}: model response exceeded the byte guard; retrying once with max_output_tokens={reduced_output_tokens}"
+                                );
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "server-error",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "message": "The model response was unusually large. Retrying with a smaller output budget...",
+                                        "detail": error_message,
+                                        "retryable": true,
+                                        "attempt": oversized_response_retry_count,
+                                        "maxAttempts": 1,
+                                    }),
+                                );
+                                if !sleep_or_cancel(
+                                    Duration::from_millis(1_000),
+                                    cancel_flag.as_ref(),
+                                )
+                                .await
+                                {
+                                    terminated_by_error = true;
+                                    break 'goal_loop;
+                                }
+                                continue;
+                            }
                             if is_retryable_stream_read_error(&error_message)
                                 && stream_read_retry_count < MAX_STREAM_READ_RETRIES
                             {
@@ -2683,6 +2731,8 @@ impl AgentEngine {
                         summary_plan_context,
                         None,
                     );
+                    let summary_max_output_tokens =
+                        effective_max_output_tokens(config, &internal_messages);
                     let summary_result = self
                         .stream_completion(
                             app_handle,
@@ -2693,7 +2743,7 @@ impl AgentEngine {
                             &wire_api,
                             internal_messages,
                             None,
-                            config.max_output_tokens,
+                            Some(summary_max_output_tokens),
                             config.model_reasoning_effort.as_deref(),
                             u32::MAX,
                             false,
@@ -3099,6 +3149,11 @@ impl AgentEngine {
         };
         let smartbrain_instructions =
             render_smartbrain_runtime_prompt(&workspace_config_dir, &config.smartbrain_config());
+        let smartbrain_tool_line = if config.smartbrain_config().knowledge_is_active() {
+            "             - smartbrain_search: Search Local Knowledge Base (本地知识库) knowledge. For SQL (`smartbrain_sql_query`) and other non-core helpers, discover them with `tool_search` first (never invent Python/shell DB scripts; never re-ask saved passwords).\n"
+        } else {
+            ""
+        };
         let robot_runtime_instructions =
             render_robot_runtime_prompt(&workspace_config_dir, robot_id);
         let miniapp_instructions =
@@ -3150,7 +3205,7 @@ impl AgentEngine {
              - request_permissions: Ask the user for additional filesystem or network permissions and wait for their response.\n\
              - view_image: Inspect and preview local image files, returning format, dimensions, size, and path.\n\
              - browser_run: Run a browser session for page navigation, UI interaction, screenshots, and web app testing. Runtime is CN-Codex built-in Tauri WebView controlled by Rust-side JS Injection + CDP. Keep action batches focused and rely on screenshots/html/snapshot for verification.\n\
-             - smartbrain_search: Search Local Knowledge Base (本地知识库) knowledge. For SQL (`smartbrain_sql_query`) and other non-core helpers, discover them with `tool_search` first (never invent Python/shell DB scripts; never re-ask saved passwords).\n\
+             {smartbrain_tool_line}\
              - mcp_manage: Install, list, enable, disable, or uninstall MCP servers into codey/config.toml so Settings > Integration shows them. Use this instead of freeform config edits when the user asks to install an MCP server.\n\
              - skill_manage: Install, list, update, or uninstall local skills under codey/skills so Settings > Skills shows them. Use this instead of freeform file writes when the user asks to install a skill.\n\
              \n\
@@ -3167,6 +3222,10 @@ impl AgentEngine {
              IMPORTANT: Before using any tools, always briefly explain what you are about to do and why. \
              This helps the user understand your reasoning and plan.\n\
              \n\
+             IMPORTANT: Keep going until the user's request is completely resolved before ending your turn \
+             and yielding back to the user. Only stop when the work is done or you hit a real blocker. \
+             Autonomously use the available tools to finish the task; do not stop after only describing the next step.\n\
+             \n\
              IMPORTANT: When the user asks you to create files, write code, run commands, \
              modify projects, or perform any task that requires interacting with the file system \
              or running programs, you MUST use the appropriate tools. Do NOT just describe \
@@ -3181,6 +3240,9 @@ impl AgentEngine {
                 - Any issues encountered\n\
                 - Suggested next steps (if applicable)\n\
                 Never end silently after tool execution.\n\
+             3. Never claim that a file edit succeeded unless an `apply_patch` or `write_file` tool call \
+                in this turn returned success. Writing \"I have applied the patch\" / \"已完成修改\" in text \
+                is not a substitute for calling the tool. If edits are still required, call the tool before ending the turn.\n\
              \n\
              FILE EDITING RULES:\n\
              1. Use `apply_patch` as the default for every edit to an existing text file, including single-file edits. It applies contextual diffs and avoids rewriting unrelated content.\n\
@@ -3191,6 +3253,8 @@ impl AgentEngine {
                 Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
              5. Do not use python/PowerShell scripts to read or write files, and do not use shell loops such as Get-Content + ForEach-Object to dump line ranges. Use `read_file` (with line_offset/max_lines/end_line when needed), `apply_patch`, or (for new files) `write_file` instead.\n\
              6. Preserve the existing text encoding and line endings when editing. New source and web files must be UTF-8. Never use a shell fallback after an edit-tool error because PowerShell or shell defaults can corrupt non-ASCII text such as Chinese; fix the tool arguments and retry `apply_patch`.\n\
+             7. Do not waste tokens re-reading a file immediately after a successful `apply_patch` on it; \
+                the tool result already reports whether the write worked. If the tool failed, fix the patch and retry.\n\
              \n\
              Prefer paths relative to the working directory. Absolute paths are accepted only when they resolve inside the current workspace.\n\
              \n\
@@ -4022,7 +4086,9 @@ impl AgentEngine {
         let mut body = adapter.build_body(model, &messages, tools_slice, max_tokens);
         adapter::apply_reasoning_effort_to_body(&mut body, wire_api, model, reasoning_effort);
 
-        info!("LLM request: wire_api={wire_api}, url={url}, model={model}");
+        info!(
+            "LLM request: wire_api={wire_api}, url={url}, model={model}, max_output_tokens={max_tokens:?}"
+        );
         if let Some(ref logger) = self.conversation_logger {
             logger.log_request(
                 thread_id,
@@ -4214,8 +4280,19 @@ impl AgentEngine {
             };
             bytes_read += chunk.len();
             if bytes_read > MAX_STREAMED_RESPONSE_BYTES {
+                let tool_call_argument_bytes = tool_calls
+                    .iter()
+                    .map(|call| call.arguments.len())
+                    .sum::<usize>();
+                let elapsed_seconds = stream_start.elapsed().as_secs_f64();
+                warn!(
+                    "Model response exceeded byte guard: bytes_read={bytes_read}, elapsed={elapsed_seconds:.1}s, text_bytes={}, tool_call_argument_bytes={tool_call_argument_bytes}, tool_calls={}",
+                    full_text.len(),
+                    tool_calls.len(),
+                );
                 return Err(AppError::Custom(format!(
-                    "Model response exceeded the {MAX_STREAMED_RESPONSE_BYTES}-byte safety limit."
+                    "Model response exceeded the {MAX_STREAMED_RESPONSE_BYTES}-byte safety limit (received {bytes_read} bytes in {elapsed_seconds:.1}s; parsed_text_bytes={}, tool_call_argument_bytes={tool_call_argument_bytes}). The provider may be repeating the stream or ignoring max output tokens.",
+                    full_text.len(),
                 )));
             }
             utf8_decoder.push(&mut buffer, &chunk);

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>03 主动启动</title><link rel="stylesheet" href="prototype.css"></head>
+<body>
+<div class="screen-label">模拟数据 · 学员「小林」（演示）· 周一 20:00</div>
+<div class="app">
+  <div class="sidebar">
+    <h3>学习任务</h3>
+    <div class="task-item active">📄 《练习册》P18–19 图像与解析式<div class="meta">今天 20:00 · 约 35 分钟 · 纸笔</div></div>
+    <div class="task-item">📄 订正周一错题（同类 4 题）<div class="meta">周三 20:30</div></div>
+    <div class="task-item">📄 《练习册》P20 综合小练<div class="meta">周五 20:00</div></div>
+  </div>
+  <div class="main">
+    <div class="topbar"><span class="title">今日任务</span><span class="sub">到点主动提醒（每天最多 2 次，可随时静默）</span></div>
+    <div class="chat">
+      <div class="msg ai"><div class="tag">陪伴 Agent · L0+L1</div>到点啦。今晚的安排是《练习册》P18–19，纸笔完成，做完拍个照就行。想现在开始吗？</div>
+    </div>
+    <div class="footer-input"><div class="box">输入消息…</div></div>
+  </div>
+  <div class="panel">
+    <div class="card">
+      <h4>今日任务卡</h4>
+      <div class="kv"><span>材料</span><b>学校练习册 P18–19</b></div>
+      <div class="kv"><span>知识点</span><b>函数图像 ↔ 解析式</b></div>
+      <div class="kv"><span>预计</span><b>35 分钟（纸笔）</b></div>
+      <div class="kv"><span>屏时预算</span><b>≤ 5 分钟（确认+回传）</b></div>
+    </div>
+    <div class="card">
+      <h4>提醒偏好</h4>
+      <div class="note">每日主动消息 ≤ 2 次 · 「稍后/暂停/免打扰」立即生效</div>
+    </div>
+  </div>
+</div>
+<div class="modal-mask">
+  <div class="modal">
+    <h2>现在开始吗？</h2>
+    <div class="purpose">用途：确认后我会进入「等待回传」，你就可以离开屏幕去写纸质作业了。</div>
+    <div class="opt sel"><span class="radio"></span>▶ 现在开始（去写 P18–19）</div>
+    <div class="opt"><span class="radio"></span>🕗 稍后 30 分钟</div>
+    <div class="opt"><span class="radio"></span>📅 改期到明天</div>
+    <div class="opt"><span class="radio"></span>⏸ 今天暂停（不再提醒）</div>
+    <div class="actions">
+      <button class="btn primary">确认</button>
+      <button class="btn text">关闭提醒</button>
+    </div>
+    <div class="skip-row">暂停不会产生负面记录；未提交关闭弹窗不算答错。</div>
+  </div>
+</div>
+</body></html>

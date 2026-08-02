@@ -164,7 +164,9 @@ pub async fn run_webview_js_injection(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        session.navigate(url, DEFAULT_NAV_TIMEOUT_MS).await?;
+        session
+            .navigate_if_needed(url, DEFAULT_NAV_TIMEOUT_MS)
+            .await?;
     }
 
     if let Some(viewport) = payload.get("viewport") {
@@ -268,7 +270,9 @@ pub async fn run_external_browser(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        session.navigate(url, DEFAULT_NAV_TIMEOUT_MS).await?;
+        session
+            .navigate_if_needed(url, DEFAULT_NAV_TIMEOUT_MS)
+            .await?;
     }
 
     if let Some(viewport) = payload.get("viewport") {
@@ -363,7 +367,7 @@ async fn run_action(
         "goto" => {
             let url = required_string(action, "url")?;
             let timeout = action_timeout_ms(action, DEFAULT_NAV_TIMEOUT_MS);
-            session.navigate(&url, timeout).await?;
+            session.navigate_if_needed(&url, timeout).await?;
             let current_url = session.current_url().await.unwrap_or(url);
             Ok(action_result(
                 index,
@@ -1240,6 +1244,17 @@ impl BrowserSession {
         self.wait_document_ready(timeout_ms).await
     }
 
+    async fn navigate_if_needed(&mut self, url: &str, timeout_ms: u64) -> Result<(), String> {
+        let requested_url = normalize_navigation_url(url);
+        let current_url = self.current_url().await.unwrap_or_default();
+        if should_skip_navigation(&current_url, &requested_url) {
+            // open_browser_embedded may have already started this navigation while CDP was
+            // coming up. Wait for the same document instead of starting a second load.
+            return self.wait_document_ready(timeout_ms).await;
+        }
+        self.navigate(url, timeout_ms).await
+    }
+
     async fn reload(&mut self, timeout_ms: u64) -> Result<(), String> {
         self.command("Page.reload", json!({ "ignoreCache": false }))
             .await?;
@@ -2025,6 +2040,15 @@ fn action_timeout_ms(action: &serde_json::Value, default_value: u64) -> u64 {
         .clamp(1_000, MAX_WAIT_TIMEOUT_MS)
 }
 
+fn normalize_navigation_url(raw: &str) -> String {
+    raw.trim().trim_end_matches('/').to_string()
+}
+
+fn should_skip_navigation(current_url: &str, requested_url: &str) -> bool {
+    let requested_url = normalize_navigation_url(requested_url);
+    !requested_url.is_empty() && normalize_navigation_url(current_url) == requested_url
+}
+
 fn path_from_payload_or_default(
     payload: &serde_json::Value,
     key: &str,
@@ -2199,5 +2223,18 @@ mod tests {
             normalize_windows_verbatim_prefix(r"\\?\UNC\server\share\a.png"),
             r"\\server\share\a.png".to_string()
         );
+    }
+
+    #[test]
+    fn navigation_reuses_same_document_without_case_folding_paths() {
+        assert!(should_skip_navigation(
+            "https://example.com/page/",
+            " https://example.com/page"
+        ));
+        assert!(!should_skip_navigation(
+            "https://example.com/Page",
+            "https://example.com/page"
+        ));
+        assert!(!should_skip_navigation("about:blank", ""));
     }
 }

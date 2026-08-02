@@ -8,6 +8,17 @@ use serde_json::Value;
 /// from malformed provider indexes and unbounded streams.
 pub const MAX_TOOL_CALLS_PER_RESPONSE: usize = 64;
 pub const MAX_STREAMED_RESPONSE_BYTES: usize = 8_000_000;
+/// Keep provider defaults well below the byte guard. Some gateways ignore or
+/// mishandle very large output budgets and keep an SSE response open while
+/// repeating tool-call fragments.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: i64 = 32_768;
+
+pub fn safe_max_output_tokens(configured: Option<i64>) -> i64 {
+    configured
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
+        .min(DEFAULT_MAX_OUTPUT_TOKENS)
+}
 
 /// 单次请求中 LLM 返回的 token 用量信息
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

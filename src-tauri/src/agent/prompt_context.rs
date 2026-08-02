@@ -278,7 +278,14 @@ pub(crate) fn render_smartbrain_runtime_prompt(
     workspace_config_dir: &Path,
     smartbrain_config: &SmartBrainConfig,
 ) -> String {
+    // Composer/dialog gate: when Local Knowledge Base is off for this chat, do not
+    // advertise smartbrain_search or inject KB guidance (avoids failed tool calls).
+    if !smartbrain_config.is_active() {
+        return String::new();
+    }
+
     let mut parts = Vec::new();
+    let knowledge_active = smartbrain_config.knowledge_is_active();
 
     if smartbrain_config.inject_summary {
         if let Some(summary) = crate::smartbrain::load_summary(workspace_config_dir) {
@@ -289,20 +296,22 @@ pub(crate) fn render_smartbrain_runtime_prompt(
             ));
         }
 
-        if let Some(hierarchy) = crate::smartbrain::load_hierarchy(workspace_config_dir) {
-            let hier_text = hierarchy.summary_text();
-            if !hier_text.is_empty() {
-                parts.push(format!(
-                    "You also have access to a knowledge base with these categories:\n{hier_text}\n\n\
-                     Use `smartbrain_search` to find relevant knowledge first, then read with continuity: \
-                     always include previous/next sections around chunk hits and keep at least 30 lines overlap \
-                     to avoid cut-off context. If available, follow the `smartbrain-context-read` skill."
-                ));
+        if knowledge_active {
+            if let Some(hierarchy) = crate::smartbrain::load_hierarchy(workspace_config_dir) {
+                let hier_text = hierarchy.summary_text();
+                if !hier_text.is_empty() {
+                    parts.push(format!(
+                        "You also have access to a knowledge base with these categories:\n{hier_text}\n\n\
+                         Use `smartbrain_search` to find relevant knowledge first, then read with continuity: \
+                         always include previous/next sections around chunk hits and keep at least 30 lines overlap \
+                         to avoid cut-off context. If available, follow the `smartbrain-context-read` skill."
+                    ));
+                }
             }
         }
     }
 
-    if smartbrain_config.is_active() {
+    if knowledge_active {
         parts.push(
             "Knowledge retrieval policy: prefer `smartbrain_search` for large or structured knowledge queries. \
              Use `memory_read` pagination (`line_offset`, `max_lines`) for targeted reading with >=30-line overlap windows, and avoid \

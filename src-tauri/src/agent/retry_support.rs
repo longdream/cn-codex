@@ -52,6 +52,11 @@ pub(crate) fn is_retryable_stream_read_error(message: &str) -> bool {
         || lower.contains("incomplete message")
 }
 
+pub(crate) fn is_oversized_model_response_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("model response exceeded the") && lower.contains("safety limit")
+}
+
 
 pub(crate) fn stream_ended_without_terminal_marker(finish_reason: Option<&str>) -> bool {
     finish_reason.is_none()

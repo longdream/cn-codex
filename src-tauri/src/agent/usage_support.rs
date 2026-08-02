@@ -93,6 +93,31 @@ pub(crate) fn resolve_model_context_window_tokens(config: &ConfigToml) -> u64 {
     }
 }
 
+/// Bound each request by both the configured budget and the remaining model
+/// context. The old provider default was 131072 tokens, which is unsafe once a
+/// long tool-driven turn has consumed most of a 128K context window.
+pub(crate) fn effective_max_output_tokens(
+    config: &ConfigToml,
+    messages: &[InternalMessage],
+) -> i64 {
+    const CONTEXT_OUTPUT_RESERVE_TOKENS: u64 = 8_192;
+
+    let estimated_prompt_tokens = messages
+        .iter()
+        .filter_map(|message| serde_json::to_string(message).ok())
+        .map(|serialized| estimate_tokens(&serialized))
+        .sum::<u64>();
+    let context_window = resolve_model_context_window_tokens(config);
+    let remaining_context = context_window
+        .saturating_sub(estimated_prompt_tokens)
+        .saturating_sub(CONTEXT_OUTPUT_RESERVE_TOKENS);
+    let context_cap = remaining_context.max(1).min(i64::MAX as u64) as i64;
+
+    safe_max_output_tokens(config.max_output_tokens)
+        .min(context_cap)
+        .max(1)
+}
+
 
 /// 基于字符串内容估算 token 数（中英文混合约 2-4 chars/token，取 3 折中）
 pub(crate) fn estimate_tokens(text: &str) -> u64 {
@@ -118,5 +143,4 @@ pub(crate) fn truncate_chars_with_marker(value: &str, max_chars: usize) -> Strin
         .unwrap_or(0);
     format!("{}...(truncated)", &value[..end])
 }
-
 

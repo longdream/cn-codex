@@ -2,8 +2,8 @@
 title: Demo 验证清单
 type: checklist
 author: CN-Codex AI Assistant
-date: 2026-07-27
-version: 1.4
+date: 2026-08-02
+version: 1.6
 status: review
 audience: 产品、研发、评委
 ---
@@ -54,16 +54,16 @@ audience: 产品、研发、评委
 
 ---
 
-## 3. 验证范围
+## 3. 验证范围（对齐参赛手册附录 C 检查项）
 
-| 验证项 | 说明 / 证据位置 |
+| 检查项（手册附录 C） | 当前状态 | 说明 / 证据位置 |
 |---|---|---|
-| 可从零开始运行 Demo | 运行说明与样例数据 |
-| 完整任务链路 | 上述脚本 1–10 |
-| 样例数据与权限说明 | 见 `04-数据来源与合规说明.md` |
-| 失败与异常分支 | 暂停、稍后、L2 失败降级、拒绝建议 |
-| 输出结果可追溯 | 调整依据卡片与事件记录 |
-| 方案与 Demo 一致性 | 同一用户故事线 |
+| 可从零开始运行 Demo | ✅ 桌面端可运行 | 实现仓库 `cn-codex-edu`：`pnpm install && pnpm dev`（Web 预览）/ `pnpm tauri dev`（桌面应用）；`pnpm test` 运行 vitest 测试（教育 store、姿态/试卷筛选纯函数等） |
+| 至少有一个完整任务链路 | 🟡 主链路可运行 / 全链路原型可走查 | 可运行：建档向导→材料登记→页码任务→真实 LLM 教练对话→证据入账→成长面板；完整 1–10 脚本中的"拍照诊断→动态计划确认"仍为 HTML 原型（`assets/prototype/`），待工程闭环 |
+| 样例数据与权限说明清楚 | ✅ 已完成 | 见 `04-数据来源与合规说明.md` §3 模拟数据说明；实现侧为本地演示数据（`learningData.ts`） |
+| 失败与异常分支可解释 | ✅ 设计完成 / 🟡 部分可运行 | 暂停/稍后/拒绝建议在原型演示；L2 失败降级待工程实现，见本文 §4 |
+| 输出结果可追溯 | ✅ 设计完成 / 🟡 部分可运行 | 证据时间戳与成长面板已实现；调整依据卡片待动态计划落地 |
+| 路演材料与 Demo 一致 | 🟡 进行中 | 同一用户故事线（小林）；原型与截图已完成，视频待录制，需与最终 Demo 对齐 |
 
 ---
 
@@ -83,22 +83,31 @@ audience: 产品、研发、评委
 
 ## 5. 资产目录
 
-将实际文件放入 `assets/`：
+实际文件（2026-08-02 更新）：
 
 ```text
 assets/
-  screenshots/
-    01-onboarding.png
-    02-plan.png
-    03-proactive-modal.png
-    04-offline-feedback.png
-    05-intervention.png
-    06-weekly-review.png
-  video/
-    demo-3min.mp4          # 或网盘/官网可访问链接说明
-  prototype/
-    link.txt               # Figma/在线原型链接（如有）
+  screenshots/             # ✅ 已完成：HTML 原型截图（1440×900）
+    01-onboarding.png          # 心理学友好建档（含跳过/稍后出口）
+    02-plan.png                # 材料盘点 + 首周骨架计划（纸质页码任务）
+    03-proactive-modal.png     # 到点主动启动弹窗（开始/稍后/改期/暂停）
+    04-offline-feedback.png    # 作业拍照回传 + 卡点反馈
+    05-intervention.png        # 错因诊断 + 动态计划确认（含证据链）
+    06-weekly-review.png       # 周回顾 + 双主线孪生面板
+  prototype/               # ✅ 已完成：可打开的 HTML 交互原型（静态）
+    01-onboarding.html … 06-weekly-review.html + prototype.css
+  video/                 # ✅ 已完成：演示视频与可再生成素材
+    demo-3min.mp4            # 2分42秒 1080p：片头 + 6 屏运镜 + 步骤字幕 + 片尾边界声明
+    00-title.html/.png       # 片头卡
+    07-ending.html/.png      # 片尾边界声明卡
+    cap1-6.txt               # 各场景字幕文本
+    build-video.ps1          # 一键再生成脚本（ffmpeg 合成）
 ```
+
+再生成方法：
+
+- 原型截图：Edge 无头模式 `--screenshot --window-size=1440,900` 逐个截取 `prototype/*.html`（注意系统 DPI 缩放会使输出像素翻倍，视频脚本已兼容）；
+- 视频：运行 `assets/video/build-video.ps1`（需 ffmpeg），自动完成截图运镜、字幕烧录与拼接。
 
 ---
 

@@ -12,6 +12,7 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use super::ProviderAdapter;
 use super::types::{
     InternalMessage, StreamEvent, UsageInfo, content_as_text, content_to_anthropic_blocks,
+    safe_max_output_tokens,
 };
 
 /// Anthropic API 版本号
@@ -118,7 +119,7 @@ impl ProviderAdapter for AnthropicAdapter {
         let mut body = serde_json::json!({
             "model": model,
             "messages": api_messages,
-            "max_tokens": max_tokens.unwrap_or(131072),
+            "max_tokens": safe_max_output_tokens(max_tokens),
             "stream": true,
         });
 

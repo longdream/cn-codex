@@ -8,7 +8,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use super::ProviderAdapter;
 use super::types::{
     CompletionOutput, InternalMessage, StreamEvent, ToolCallResult, UsageInfo, content_as_text,
-    content_to_responses_content,
+    content_to_responses_content, safe_max_output_tokens,
 };
 
 pub struct ResponsesAdapter;
@@ -73,7 +73,7 @@ impl ProviderAdapter for ResponsesAdapter {
         let mut body = serde_json::json!({
             "model": model,
             "input": input,
-            "max_output_tokens": max_tokens.unwrap_or(131072),
+            "max_output_tokens": safe_max_output_tokens(max_tokens),
             "stream": true,
         });
 
