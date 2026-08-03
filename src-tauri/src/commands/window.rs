@@ -15,7 +15,7 @@ use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::error::{AppError, AppResult};
-use crate::state::{AppState, RunSummaryDiffPayload};
+use crate::state::{AppState, DocumentDetailSession, RunSummaryDiffPayload};
 
 const BROWSER_WEBVIEW_LABEL: &str = "cn-browser";
 const BROWSER_POPUP_WINDOW_LABEL: &str = "cn-browser-popup";
@@ -25,9 +25,11 @@ const BROWSER_DETACHED_CHANGED_EVENT: &str = "browser-detached-changed";
 const BROWSER_POPUP_CLOSED_EVENT: &str = "browser-popup-closed";
 const BROWSER_NAVIGATION_CHANGED_EVENT: &str = "browser-navigation-changed";
 const BROWSER_POPUP_WEBVIEW_TOP_GAP: f64 = 38.0;
-const DOCUMENT_DETAIL_WINDOW_LABEL: &str = "document-detail";
+const DOCUMENT_DETAIL_WINDOW_LABEL_PREFIX: &str = "document-detail";
 const DOCUMENT_DETAIL_OPEN_EVENT: &str = "document-detail-open";
 const DOCUMENT_DETAIL_INSERT_EVENT: &str = "document-detail-insert-snippet";
+const DOCUMENT_DETAIL_DEFAULT_WIDTH: f64 = 1060.0;
+const DOCUMENT_DETAIL_DEFAULT_HEIGHT: f64 = 760.0;
 const RUNSUMMARY_DIFF_WINDOW_LABEL: &str = "runsummary-diff";
 const RUNSUMMARY_DIFF_OPEN_EVENT: &str = "runsummary-diff-open";
 const COMPUTER_USE_OVERLAY_WINDOW_LABEL: &str = "computer-use-overlay";
@@ -795,6 +797,57 @@ pub async fn browser_navigate_home(
     emit_browser_navigation_state(&app, &state, Some(info.url.as_str())).await
 }
 
+fn is_document_detail_window_label(label: &str) -> bool {
+    label == DOCUMENT_DETAIL_WINDOW_LABEL_PREFIX
+        || label.starts_with(&format!("{DOCUMENT_DETAIL_WINDOW_LABEL_PREFIX}-"))
+}
+
+fn next_document_detail_window_label(app: &AppHandle) -> String {
+    // 递增寻找空闲 label，允许多个详情窗并存。
+    for index in 1u32..10_000 {
+        let label = format!("{DOCUMENT_DETAIL_WINDOW_LABEL_PREFIX}-{index}");
+        if app.get_webview_window(&label).is_none() {
+            return label;
+        }
+    }
+    format!(
+        "{DOCUMENT_DETAIL_WINDOW_LABEL_PREFIX}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    )
+}
+
+fn paths_equal_for_detail(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| {
+        let trimmed = value.trim().trim_end_matches(['/', '\\']);
+        if cfg!(windows) {
+            trimmed.replace('/', "\\").to_ascii_lowercase()
+        } else {
+            trimmed.replace('\\', "/").to_string()
+        }
+    };
+    normalize(left) == normalize(right)
+}
+
+async fn find_document_detail_label_by_path(
+    app: &AppHandle,
+    state: &AppState,
+    path: &str,
+) -> Option<String> {
+    let sessions = state.document_detail_sessions.read().await;
+    for (label, session) in sessions.iter() {
+        if !paths_equal_for_detail(&session.path, path) {
+            continue;
+        }
+        if app.get_webview_window(label).is_some() {
+            return Some(label.clone());
+        }
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn window_open_document_detail(
     app: AppHandle,
@@ -806,83 +859,84 @@ pub async fn window_open_document_detail(
     let (display_path, _) = resolve_existing_file_path(&path)?;
     let active_root = normalize_workspace_root_hint(workspace_root);
     let active_line = line.filter(|value| *value > 0);
-    {
-        // 先写入“当前目标路径”，保障详情窗首次启动时可通过 command 主动读取。
-        let mut guard = state.document_detail_active_path.write().await;
-        *guard = Some(display_path.clone());
-    }
-    {
-        let mut guard = state.document_detail_active_root.write().await;
-        *guard = active_root;
-    }
-    {
-        let mut guard = state.document_detail_active_line.write().await;
-        *guard = active_line;
-    }
+    let session = DocumentDetailSession {
+        path: display_path.clone(),
+        workspace_root: active_root.clone(),
+        line: active_line,
+    };
 
-    if let Some(window) = app.get_webview_window(DOCUMENT_DETAIL_WINDOW_LABEL) {
-        if !window.is_visible().unwrap_or(true) {
-            window.show()?;
+    // 同路径已打开：复用并聚焦，避免重复堆叠同一文件。
+    if let Some(existing_label) =
+        find_document_detail_label_by_path(&app, &state, &display_path).await
+    {
+        if let Some(window) = app.get_webview_window(&existing_label) {
+            {
+                let mut sessions = state.document_detail_sessions.write().await;
+                sessions.insert(existing_label.clone(), session);
+            }
+            if !window.is_visible().unwrap_or(true) {
+                window.show()?;
+            }
+            window.set_focus()?;
+            let _ = app.emit_to(
+                &existing_label,
+                DOCUMENT_DETAIL_OPEN_EVENT,
+                serde_json::json!({
+                    "path": display_path.clone(),
+                    "line": active_line,
+                }),
+            );
+            return Ok(DocumentDetailWindowInfo {
+                label: existing_label,
+                path: display_path,
+                created: false,
+            });
         }
-        window.set_focus()?;
-        let _ = app.emit_to(
-            DOCUMENT_DETAIL_WINDOW_LABEL,
-            DOCUMENT_DETAIL_OPEN_EVENT,
-            serde_json::json!({
-                "path": display_path.clone(),
-                "line": active_line,
-            }),
-        );
-        return Ok(DocumentDetailWindowInfo {
-            label: DOCUMENT_DETAIL_WINDOW_LABEL.to_string(),
-            path: display_path,
-            created: false,
-        });
+        // 会话表有残留但窗口已不在，清掉后继续新建。
+        let mut sessions = state.document_detail_sessions.write().await;
+        sessions.remove(&existing_label);
     }
 
-    let detail_window = WebviewWindowBuilder::new(
-        &app,
-        DOCUMENT_DETAIL_WINDOW_LABEL,
-        document_detail_window_url()?,
-    )
-    .title("文档详情")
-    .inner_size(1060.0, 760.0)
-    .min_inner_size(760.0, 520.0)
-    .resizable(true)
-    .decorations(false)
-    .build()?;
+    let label = next_document_detail_window_label(&app);
+    {
+        let mut sessions = state.document_detail_sessions.write().await;
+        sessions.insert(label.clone(), session);
+    }
 
-    // 允许用户最小化后再次打开时回到前台，保持“单实例复用”行为一致。
+    let open_count = {
+        let sessions = state.document_detail_sessions.read().await;
+        sessions.len().saturating_sub(1) as f64
+    };
+    let offset = (open_count % 8.0) * 28.0;
+
+    let detail_window = WebviewWindowBuilder::new(&app, &label, document_detail_window_url()?)
+        .title("文档详情")
+        .inner_size(DOCUMENT_DETAIL_DEFAULT_WIDTH, DOCUMENT_DETAIL_DEFAULT_HEIGHT)
+        .min_inner_size(760.0, 520.0)
+        .position(72.0 + offset, 56.0 + offset)
+        .resizable(true)
+        .maximizable(true)
+        .decorations(false)
+        .build()?;
+
     detail_window.show()?;
     detail_window.set_focus()?;
 
-    let active_path = state.document_detail_active_path.clone();
-    let active_root = state.document_detail_active_root.clone();
-    let active_line = state.document_detail_active_line.clone();
+    let sessions = state.document_detail_sessions.clone();
+    let closed_label = label.clone();
     detail_window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
-            let active_path = active_path.clone();
-            let active_root = active_root.clone();
-            let active_line = active_line.clone();
+            let sessions = sessions.clone();
+            let closed_label = closed_label.clone();
             tauri::async_runtime::spawn(async move {
-                {
-                    let mut guard = active_path.write().await;
-                    *guard = None;
-                }
-                {
-                    let mut guard = active_root.write().await;
-                    *guard = None;
-                }
-                {
-                    let mut guard = active_line.write().await;
-                    *guard = None;
-                }
+                let mut guard = sessions.write().await;
+                guard.remove(&closed_label);
             });
         }
     });
 
     Ok(DocumentDetailWindowInfo {
-        label: DOCUMENT_DETAIL_WINDOW_LABEL.to_string(),
+        label,
         path: display_path,
         created: true,
     })
@@ -890,37 +944,44 @@ pub async fn window_open_document_detail(
 
 #[tauri::command]
 pub async fn window_close_document_detail(
-    app: AppHandle,
+    window: Window,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
-    if let Some(window) = app.get_webview_window(DOCUMENT_DETAIL_WINDOW_LABEL) {
+    let label = window.label().to_string();
+    if is_document_detail_window_label(&label) {
         window.close()?;
-    }
-    {
-        let mut guard = state.document_detail_active_path.write().await;
-        *guard = None;
-    }
-    {
-        let mut guard = state.document_detail_active_root.write().await;
-        *guard = None;
-    }
-    {
-        let mut guard = state.document_detail_active_line.write().await;
-        *guard = None;
+        let mut sessions = state.document_detail_sessions.write().await;
+        sessions.remove(&label);
     }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn window_get_document_detail_path(
+    window: Window,
     state: State<'_, AppState>,
 ) -> AppResult<Option<String>> {
-    Ok(state.document_detail_active_path.read().await.clone())
+    let label = window.label().to_string();
+    Ok(state
+        .document_detail_sessions
+        .read()
+        .await
+        .get(&label)
+        .map(|session| session.path.clone()))
 }
 
 #[tauri::command]
-pub async fn window_get_document_detail_line(state: State<'_, AppState>) -> AppResult<Option<u32>> {
-    Ok(*state.document_detail_active_line.read().await)
+pub async fn window_get_document_detail_line(
+    window: Window,
+    state: State<'_, AppState>,
+) -> AppResult<Option<u32>> {
+    let label = window.label().to_string();
+    Ok(state
+        .document_detail_sessions
+        .read()
+        .await
+        .get(&label)
+        .and_then(|session| session.line))
 }
 
 #[tauri::command]

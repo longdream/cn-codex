@@ -955,6 +955,7 @@
   "docDetail.saveTitleEnabled": "保存回原文件",
   "docDetail.saveTitleEnabledShortcut": "保存回原文件（Ctrl+S）",
   "docDetail.minimize": "最小化",
+  "docDetail.maximize": "最大化",
   "docDetail.close": "关闭",
   "docDetail.closeShortcut": "关闭（Esc）",
   "docDetail.noFileSelected": "请在主窗文件树中打开一个文件",

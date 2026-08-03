@@ -25,7 +25,7 @@ import {
   IconTrash,
   IconX,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
 import {
   copyPathEntry,
@@ -181,6 +181,8 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
   const [searchTruncated, setSearchTruncated] = useState(false);
+  // 同一查询只自动跳一次；改关键词或按 Enter 可再次定位。
+  const lastAutoOpenedQueryRef = useRef<string | null>(null);
 
   const loadChildren = useCallback(async (path: string): Promise<TreeNode[]> => {
     const entries = await readDirectory(path);
@@ -507,7 +509,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   const contextMenuNode = contextMenu?.node;
   const contextMenuItems: ContextMenuEntry[] = contextMenu
     ? [
-        ...(contextMenuNode && !contextMenuNode.isDir
+        ...(contextMenuNode
           ? [
               {
                 id: "add-to-chat",
@@ -515,7 +517,8 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                 icon: <IconMessagePlus size={14} stroke={1.8} />,
                 onClick: () => {
                   const targetNode = contextMenuNode;
-                  if (!supportsPathRefRangeByName(targetNode.name)) {
+                  // 文件夹只挂路径 label；文件仍可按原规则挂路径/行号范围。
+                  if (targetNode.isDir || !supportsPathRefRangeByName(targetNode.name)) {
                     addAttachedFile(buildPathRefAttachment(targetNode.path, targetNode.name));
                     return;
                   }
@@ -536,7 +539,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
                     });
                 },
               } satisfies ContextMenuEntry,
-              ...(isWebPreviewFile(contextMenuNode.name)
+              ...(!contextMenuNode.isDir && isWebPreviewFile(contextMenuNode.name)
                 ? [
                     {
                       id: "open-in-browser",
@@ -624,13 +627,10 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     : [];
 
   const handleDragStart = useCallback((e: DragEvent, node: TreeNode) => {
-    if (node.isDir) {
-      e.preventDefault();
-      return;
-    }
+    // 文件/文件夹都只传路径标签；对话侧按 pathRef 注入，不上传目录内容。
     e.dataTransfer.setData(
       "application/x-cn-codex-file",
-      JSON.stringify({ path: node.path, name: node.name }),
+      JSON.stringify({ path: node.path, name: node.name, isDir: node.isDir }),
     );
     e.dataTransfer.effectAllowed = "copy";
   }, []);
@@ -640,7 +640,7 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
       if (node.isDir) return;
       setDetailOpenError(null);
       try {
-        // 文档详情窗由后端做“单实例复用”；内容搜索可额外带上目标行号。
+        // 文档详情支持多窗口；同路径会复用并跳转到目标行号。
         await windowOpenDocumentDetail(node.path, rootPath ?? undefined, line);
       } catch (err) {
         setDetailOpenError(String(err));
@@ -648,6 +648,43 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     },
     [rootPath],
   );
+
+  const openFirstSearchMatch = useCallback(() => {
+    const first =
+      contentMatches.find((item) => typeof item.line === "number" && item.line > 0) ??
+      contentMatches[0] ??
+      nameMatches[0];
+    if (!first) {
+      return;
+    }
+    void handleOpenFile(
+      {
+        name: first.name,
+        path: first.path,
+        isDir: false,
+        size: 0,
+        loaded: true,
+        expanded: false,
+      },
+      first.line,
+    );
+  }, [contentMatches, nameMatches, handleOpenFile]);
+
+  useEffect(() => {
+    if (!debouncedQuery) {
+      lastAutoOpenedQueryRef.current = null;
+      return;
+    }
+    if (searching || searchError || searchMatches.length === 0) {
+      return;
+    }
+    if (lastAutoOpenedQueryRef.current === debouncedQuery) {
+      return;
+    }
+    lastAutoOpenedQueryRef.current = debouncedQuery;
+    // 搜索命中后自动打开首个关键词位置（优先内容匹配行号）。
+    openFirstSearchMatch();
+  }, [debouncedQuery, searching, searchError, searchMatches, openFirstSearchMatch]);
 
   if (!rootPath) {
     return (
@@ -686,6 +723,14 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" || e.nativeEvent.isComposing) {
+                return;
+              }
+              e.preventDefault();
+              // Enter：强制再次定位第一个关键词（不依赖自动跳转去重）。
+              openFirstSearchMatch();
+            }}
             placeholder={intl.formatMessage({ id: "fileTree.searchPlaceholder" })}
             className="h-7 w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-panel)] py-1 pl-7 pr-7 text-[11px] text-[var(--text-base)] outline-none transition-colors placeholder:text-[var(--text-faint)] focus:border-[var(--accent)]"
           />
@@ -934,7 +979,7 @@ function FileTreeNode({
           }
         }}
         onContextMenu={(e) => onContextMenu(e, node)}
-        draggable={!node.isDir}
+        draggable
         onDragStart={(e) => onDragStart(e, node)}
         title={node.path}
       >

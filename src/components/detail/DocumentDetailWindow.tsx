@@ -31,6 +31,7 @@ import {
   windowGetDocumentDetailPath,
   windowGetDocumentDetailLine,
   windowMinimize,
+  windowToggleMaximize,
   writeTextFilePreview,
   type TextFilePreviewResult,
 } from "../../api/window";
@@ -38,6 +39,7 @@ import { formatCodeSnippet } from "../../utils/formatCodeSnippet";
 import { highlightCodeHtml } from "../../utils/highlightCode";
 import { exportMarkdownAsDocxBytes, exportMarkdownAsPdfBytes } from "../../utils/markdownExport";
 import { encodePathRefRangeSnippet, supportsPathRefRangeByName } from "../../utils/pathRefSnippet";
+import { computeDetailLineScrollTop } from "../../utils/detailLineScroll";
 
 interface SelectionMeta {
   text: string;
@@ -353,6 +355,8 @@ export function DocumentDetailWindow() {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editorScrollRef = useRef<HTMLDivElement>(null);
+  const pendingLineRef = useRef(pendingLine);
+  pendingLineRef.current = pendingLine;
   const isDirty = useMemo(
     () => Boolean(preview && draftContent !== normalizeEditorText(preview.content)),
     [preview, draftContent],
@@ -616,7 +620,8 @@ export function DocumentDetailWindow() {
       return;
     }
     const textarea = textareaRef.current;
-    if (!textarea) {
+    const scroller = editorScrollRef.current;
+    if (!textarea || !scroller) {
       return;
     }
 
@@ -637,12 +642,16 @@ export function DocumentDetailWindow() {
         textarea.setSelectionRange(offset, end);
         const style = window.getComputedStyle(textarea);
         const lineHeight = Number.parseFloat(style.lineHeight) || 20;
-        const targetTop = Math.max(0, (safeLine - 1) * lineHeight - textarea.clientHeight / 3);
-        const scroller = editorScrollRef.current;
-        if (scroller) {
-          scroller.scrollTop = targetTop;
-          scroller.scrollLeft = 0;
-        }
+        const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+        // textarea 绝对定位并随内容撑高，必须用滚动容器 clientHeight 才是可视区。
+        const targetTop = computeDetailLineScrollTop({
+          line: safeLine,
+          lineHeight,
+          paddingTop,
+          viewportHeight: scroller.clientHeight,
+        });
+        scroller.scrollTop = targetTop;
+        scroller.scrollLeft = 0;
       } finally {
         setPendingLine(null);
       }
@@ -661,13 +670,22 @@ export function DocumentDetailWindow() {
   ]);
 
   useEffect(() => {
+    // 仅在切换文件时重置预览/源码；不要在定位完成后把 markdown 又切回预览。
+    setMarkdownViewMode(
+      pendingLineRef.current
+        ? "source"
+        : languageLabel === "markdown"
+          ? "preview"
+          : "source",
+    );
+  }, [preview?.path, languageLabel]);
+
+  useEffect(() => {
     if (pendingLine) {
       // 内容搜索跳转时优先进入源码视图，确保行定位可用。
       setMarkdownViewMode("source");
-      return;
     }
-    setMarkdownViewMode(languageLabel === "markdown" ? "preview" : "source");
-  }, [preview?.path, languageLabel, pendingLine]);
+  }, [pendingLine]);
 
   useEffect(() => {
     if (!showMarkdownPreview) return;
@@ -790,6 +808,7 @@ export function DocumentDetailWindow() {
         <div
           data-tauri-drag-region
           className="flex min-w-0 flex-1 items-center gap-2 px-3"
+          onDoubleClick={() => runWindowAction(windowToggleMaximize, "toggle maximize")}
         >
           {isImage ? (
             <IconPhoto size={14} stroke={1.8} className="text-pink-400" />
@@ -860,6 +879,23 @@ export function DocumentDetailWindow() {
           >
             <svg width="10" height="1" viewBox="0 0 10 1" fill="currentColor">
               <rect width="10" height="1" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() => runWindowAction(windowToggleMaximize, "toggle maximize")}
+            className="flex h-full w-11 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-elevated)]"
+            title={intl.formatMessage({ id: "docDetail.maximize" })}
+          >
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 10 10"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1"
+            >
+              <rect x="0.5" y="0.5" width="9" height="9" />
             </svg>
           </button>
           <button

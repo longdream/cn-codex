@@ -18,6 +18,14 @@ use crate::usage::{PricingTable, UsageDb, UsageRecorder};
 
 const WORKSPACE_CONFIG_DIR: &str = "codey";
 
+/// 单个文档详情窗的启动上下文。
+#[derive(Debug, Clone)]
+pub struct DocumentDetailSession {
+    pub path: String,
+    pub workspace_root: Option<String>,
+    pub line: Option<u32>,
+}
+
 /// 用户批准/拒绝操作（保留以兼容 approval 前端组件）
 pub enum ApprovalAction {
     Resolve {
@@ -74,27 +82,13 @@ pub struct AppState {
     /// - key 由 `threadId + callId` 组合，保证同线程多次 apply_patch 不互相覆盖；
     /// - 由 tool_executor 写入，file_review 命令读取/更新/应用/取消。
     pub file_review_sessions: Arc<RwLock<HashMap<String, PendingPatchReview>>>,
-    /// 当前文档详情窗激活的文件路径。
+    /// 多实例文档详情窗会话（key = 窗口 label）。
     ///
     /// 说明：
-    /// - 该状态由 `window_open_document_detail` 更新；
-    /// - 详情窗初始化时读取该值，避免“窗口刚创建时事件尚未监听”造成首屏空白；
-    /// - 关闭详情窗后清空，防止主窗后续误读旧路径。
-    pub document_detail_active_path: Arc<RwLock<Option<String>>>,
-    /// 当前文档详情窗激活的工作区根目录（可选）。
-    ///
-    /// 说明：
-    /// - 右侧文件树可在“项目子目录”视角打开详情；
-    /// - 该状态用于详情页读写校验时放宽到该子目录根；
-    /// - 关闭详情窗后清空，避免后续会话复用旧根目录。
-    pub document_detail_active_root: Arc<RwLock<Option<String>>>,
-    /// 当前文档详情窗期望定位的行号（可选，1-based）。
-    ///
-    /// 说明：
-    /// - 内容搜索结果打开文件时可带上行号；
-    /// - 详情窗初始化时读取该值，避免首开窗口错过事件；
-    /// - 关闭详情窗后清空。
-    pub document_detail_active_line: Arc<RwLock<Option<u32>>>,
+    /// - 由 `window_open_document_detail` 写入；
+    /// - 详情窗首帧按自身 label 读取，避免创建瞬间错过事件；
+    /// - 窗口销毁时移除对应条目。
+    pub document_detail_sessions: Arc<RwLock<HashMap<String, DocumentDetailSession>>>,
     /// 当前 RunSummary Diff 独立窗口激活的载荷。
     ///
     /// 说明：
@@ -282,9 +276,7 @@ impl AppState {
             usage_db,
             pricing_table,
             file_review_sessions: Arc::new(RwLock::new(HashMap::new())),
-            document_detail_active_path: Arc::new(RwLock::new(None)),
-            document_detail_active_root: Arc::new(RwLock::new(None)),
-            document_detail_active_line: Arc::new(RwLock::new(None)),
+            document_detail_sessions: Arc::new(RwLock::new(HashMap::new())),
             runsummary_diff_payload: Arc::new(RwLock::new(None)),
             browser_last_url: Arc::new(RwLock::new(None)),
             browser_active_root: Arc::new(RwLock::new(None)),

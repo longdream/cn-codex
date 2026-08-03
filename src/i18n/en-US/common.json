@@ -955,6 +955,7 @@
   "docDetail.saveTitleEnabled": "Save to original file",
   "docDetail.saveTitleEnabledShortcut": "Save to original file (Ctrl+S)",
   "docDetail.minimize": "Minimize",
+  "docDetail.maximize": "Maximize",
   "docDetail.close": "Close",
   "docDetail.closeShortcut": "Close (Esc)",
   "docDetail.noFileSelected": "Open a file from the main window file tree",
