@@ -25,6 +25,10 @@ import {
   normalizeReportedFileChanges,
   normalizeReportedFilePath,
 } from "../utils/reportedFilePath";
+import {
+  shouldAcceptAgentMessageDelta,
+  type AgentTurnPhase,
+} from "../utils/agentMessageDelta";
 
 interface TurnEventPayload {
   threadId: string;
@@ -582,7 +586,7 @@ export function useTauriEvents() {
     const unlisten: UnlistenFn[] = [];
     const reasoningByThread = new Map<string, string>();
     const lastEventSeqByThread = new Map<string, number>();
-    const turnPhaseByThread = new Map<string, "created" | "sampling" | "toolRunning" | "completed">();
+    const turnPhaseByThread = new Map<string, AgentTurnPhase>();
     const handledTerminalTurnIdsByThread = new Map<string, Set<string>>();
 
     const claimTerminalTurn = (threadId: string, turnId: string | null): boolean => {
@@ -697,13 +701,13 @@ export function useTauriEvents() {
           const threadId = e.payload.threadId ?? store.currentThreadId;
           if (!threadId) return;
           if (!acceptSequencedEvent(e.payload, threadId)) return;
-          if (!store.isThreadStreaming(threadId)) {
+          if (!shouldAcceptAgentMessageDelta(
+            store.isThreadStreaming(threadId),
+            turnPhaseByThread.get(threadId),
+          )) {
             return;
           }
           const runtime = store.getThreadRuntimeState(threadId);
-          if (runtime?.currentGoal?.status === "complete") {
-            return;
-          }
           const currentLen = runtime?.streamingText.length ?? 0;
           if (currentLen === 0) {
             store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.generating" }));
@@ -912,9 +916,6 @@ export function useTauriEvents() {
           if (!threadId) return;
           const goal = e.payload.goal ?? null;
           store.setCurrentGoalForThread(threadId, goal);
-          if (goal?.status === "complete") {
-            store.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
-          }
         }),
 
         listen<ThreadGoalClearedPayload>("thread-goal-cleared", (e) => {

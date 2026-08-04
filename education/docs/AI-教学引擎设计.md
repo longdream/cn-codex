@@ -105,7 +105,7 @@ LearningTask
 
 > **所有需要用户做选择、做填写、做确认的动作，不得只依赖自由文本聊天框“自己组织答案格式”；必须使用交互式弹窗（Interactive Modal / Dialog），并等待用户提交后，主流程才继续。**
 
-这与 CN-Codex 已有 `ApprovalModal` / `request_user_input` 的产品直觉一致：  
+这与**中国 Codex 教育版**（CN-Codex）已有的 `ApprovalModal` / `request_user_input` 的产品直觉一致：
 **系统提问 → 弹层收集结构化输入 → 用户确认 → 再往下执行。**
 
 ### 2.3 任务必须真实可迁移
