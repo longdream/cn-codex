@@ -27,6 +27,7 @@ import {
   gitDiff,
   gitDiscard,
   gitFileDiffContents,
+  gitFetch,
   gitLog,
   gitMerge,
   gitMergeAbort,
@@ -40,6 +41,7 @@ import {
   gitUnstage,
   type GitActionResponse,
   type GitCommitFileEntry,
+  type GitBranchEntry,
   type GitLogEntry,
   type GitMergeMode,
   type GitStatusEntry,
@@ -104,7 +106,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   const [section, setSection] = useState<GitSection>("changes");
   const [status, setStatus] = useState<GitStatusResponse | null>(null);
   const [history, setHistory] = useState<GitLogEntry[]>([]);
-  const [branches, setBranches] = useState<Array<{ name: string; current: boolean; upstream?: string | null }>>([]);
+  const [branches, setBranches] = useState<GitBranchEntry[]>([]);
   const [selectedBranch, setSelectedBranch] = useState("");
   const [newBranchName, setNewBranchName] = useState("");
   const [mergeMode, setMergeMode] = useState<GitMergeMode>("default");
@@ -200,6 +202,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
     setLoading(true);
     setErrorText(null);
     try {
+      await gitFetch(workspaceCwd);
       const branchResp = await gitBranchList(workspaceCwd);
       setBranches(branchResp.branches);
       setSelectedBranch((prev) => {
@@ -616,8 +619,16 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
     if (!workspaceCwd || !selectedBranch) {
       return;
     }
-    await runAction(intl.formatMessage({ id: "git.checkout" }), () => gitCheckout(selectedBranch, false, workspaceCwd));
-  }, [intl, runAction, selectedBranch, workspaceCwd]);
+    const selected = branches.find((branch) => branch.name === selectedBranch);
+    await runAction(intl.formatMessage({ id: "git.checkout" }), async () => {
+      const result = await gitCheckout(selectedBranch, false, workspaceCwd, selected?.isRemote === true);
+      if (selected?.isRemote) {
+        const separator = selectedBranch.indexOf("/");
+        setSelectedBranch(separator >= 0 ? selectedBranch.slice(separator + 1) : selectedBranch);
+      }
+      return result;
+    });
+  }, [branches, intl, runAction, selectedBranch, workspaceCwd]);
 
   const handleCreateBranch = useCallback(async () => {
     if (!workspaceCwd) {
@@ -1231,7 +1242,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                   className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
                 >
                   {branches.map((branch) => (
-                    <option key={branch.name} value={branch.name}>
+                    <option key={`${branch.isRemote ? "remote" : "local"}:${branch.name}`} value={branch.name}>
                       {branch.name}
                     </option>
                   ))}
@@ -1285,7 +1296,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                     className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-xs text-[var(--text-base)]"
                   >
                     {branches.map((branch) => (
-                      <option key={`merge-${branch.name}`} value={branch.name}>
+                      <option key={`merge-${branch.isRemote ? "remote" : "local"}:${branch.name}`} value={branch.name}>
                         {branch.name}
                         {branch.current ? " *" : ""}
                       </option>

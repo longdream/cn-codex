@@ -94,6 +94,7 @@ pub struct GitBranchEntry {
     pub name: String,
     pub current: bool,
     pub upstream: Option<String>,
+    pub is_remote: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -353,11 +354,25 @@ pub async fn git_branch_list(
 ) -> AppResult<GitBranchListResponse> {
     let service = git_service_from_state(&state, cwd).await?;
     let args = [
-        "branch",
-        "--format=%(refname:short)|%(HEAD)|%(upstream:short)",
+        "for-each-ref",
+        "--format=%(refname)|%(refname:short)|%(HEAD)|%(upstream:short)|%(symref)",
+        "refs/heads",
+        "refs/remotes",
     ];
     let output = service.run(&args, DEFAULT_MAX_OUTPUT_BYTES).await?;
     Ok(parse_git_branch_list_output(&output.stdout))
+}
+
+#[tauri::command]
+pub async fn git_fetch(
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+) -> AppResult<GitActionResponse> {
+    let service = git_service_from_state(&state, cwd).await?;
+    let output = service
+        .run(&["fetch", "--all", "--prune"], DEFAULT_MAX_OUTPUT_BYTES)
+        .await?;
+    Ok(action_ok("Remote branches fetched successfully.", output))
 }
 
 #[tauri::command]
@@ -482,12 +497,17 @@ pub async fn git_checkout(
     cwd: Option<String>,
     branch: String,
     create: Option<bool>,
+    track: Option<bool>,
 ) -> AppResult<GitActionResponse> {
     let service = git_service_from_state(&state, cwd).await?;
     let branch = normalize_branch_name(&branch)?;
     let output = if create.unwrap_or(false) {
         service
             .run(&["checkout", "-b", &branch], DEFAULT_MAX_OUTPUT_BYTES)
+            .await?
+    } else if track.unwrap_or(false) {
+        service
+            .run(&["checkout", "--track", &branch], DEFAULT_MAX_OUTPUT_BYTES)
             .await?
     } else {
         service
@@ -1272,6 +1292,7 @@ fn parse_git_branch_list_output(stdout: &str) -> GitBranchListResponse {
             continue;
         }
         let mut parts = raw.split('|');
+        let ref_name = parts.next().unwrap_or("").trim();
         let name = parts.next().unwrap_or("").trim().to_string();
         if name.is_empty() {
             continue;
@@ -1282,6 +1303,13 @@ fn parse_git_branch_list_output(stdout: &str) -> GitBranchListResponse {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToString::to_string);
+        let symref = parts.next().unwrap_or("").trim();
+        let is_remote = ref_name.starts_with("refs/remotes/");
+        // refs/remotes/<remote>/HEAD is only the remote's symbolic default
+        // branch pointer, not a branch users can check out.
+        if is_remote && !symref.is_empty() {
+            continue;
+        }
         let is_current = head_marker == "*";
         if is_current {
             current = Some(name.clone());
@@ -1290,6 +1318,7 @@ fn parse_git_branch_list_output(stdout: &str) -> GitBranchListResponse {
             name,
             current: is_current,
             upstream,
+            is_remote,
         });
     }
 
@@ -1369,11 +1398,27 @@ mod tests {
 
     #[test]
     fn parse_git_branch_list_marks_current_branch() {
-        let output = "main|*|origin/main\nfeature/a||origin/feature/a\n";
+        let output = "refs/heads/main|main|*|origin/main|\nrefs/heads/feature/a|feature/a||origin/feature/a|\n";
         let parsed = parse_git_branch_list_output(output);
         assert_eq!(parsed.current.as_deref(), Some("main"));
         assert_eq!(parsed.branches.len(), 2);
         assert!(parsed.branches[0].current);
+        assert!(!parsed.branches[1].current);
+        assert!(!parsed.branches[0].is_remote);
+        assert!(!parsed.branches[1].is_remote);
+    }
+
+    #[test]
+    fn parse_git_branch_list_includes_remote_branches_and_skips_head_pointer() {
+        let output = concat!(
+            "refs/heads/main|main|*|origin/main|\n",
+            "refs/remotes/origin/HEAD|origin/HEAD|||refs/remotes/origin/main\n",
+            "refs/remotes/origin/feature/a|origin/feature/a|||\n",
+        );
+        let parsed = parse_git_branch_list_output(output);
+        assert_eq!(parsed.branches.len(), 2);
+        assert_eq!(parsed.branches[1].name, "origin/feature/a");
+        assert!(parsed.branches[1].is_remote);
         assert!(!parsed.branches[1].current);
     }
 }

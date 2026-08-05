@@ -562,6 +562,7 @@ pub fn run() {
             commands::git_file_diff_contents,
             commands::git_log,
             commands::git_branch_list,
+            commands::git_fetch,
             commands::git_stage,
             commands::git_unstage,
             commands::git_discard,

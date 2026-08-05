@@ -67,6 +67,7 @@ export interface GitBranchEntry {
   name: string;
   current: boolean;
   upstream?: string | null;
+  isRemote: boolean;
 }
 
 export interface GitBranchListResponse {
@@ -124,6 +125,10 @@ export async function gitBranchList(cwd?: string): Promise<GitBranchListResponse
   return invoke("git_branch_list", { cwd });
 }
 
+export async function gitFetch(cwd?: string): Promise<GitActionResponse> {
+  return invoke("git_fetch", { cwd });
+}
+
 export async function gitStage(paths: string[], cwd?: string): Promise<GitActionResponse> {
   return invoke("git_stage", { cwd, paths });
 }
@@ -156,8 +161,9 @@ export async function gitCheckout(
   branch: string,
   create?: boolean,
   cwd?: string,
+  track?: boolean,
 ): Promise<GitActionResponse> {
-  return invoke("git_checkout", { cwd, branch, create });
+  return invoke("git_checkout", { cwd, branch, create, track });
 }
 
 export async function gitPull(
