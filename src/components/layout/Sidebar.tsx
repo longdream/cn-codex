@@ -262,9 +262,6 @@ export function Sidebar() {
                         isRunning={isThreadRunning(thread.id)}
                         locale={intl.locale}
                         onClick={() => {
-                          if (!isGeneralMode) {
-                            useAppStore.getState().selectGeneralMode();
-                          }
                           void loadThread(thread.id);
                         }}
                         onDelete={() => useAppStore.getState().deleteThread(thread.id)}
@@ -306,9 +303,6 @@ export function Sidebar() {
                       isRunning={isThreadRunning(thread.id)}
                       locale={intl.locale}
                       onClick={() => {
-                        if (!isGeneralMode) {
-                          useAppStore.getState().selectGeneralMode();
-                        }
                         void loadThread(thread.id);
                       }}
                       onDelete={() => useAppStore.getState().deleteThread(thread.id)}
@@ -350,9 +344,6 @@ export function Sidebar() {
                     void createThread();
                   }}
                   onThreadClick={(threadId) => {
-                    if (currentProjectId !== project.id) {
-                      useAppStore.getState().selectProject(project.id);
-                    }
                     void loadThread(threadId);
                   }}
                   onThreadDelete={(threadId) => useAppStore.getState().deleteThread(threadId)}

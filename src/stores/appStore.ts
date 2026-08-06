@@ -2048,6 +2048,10 @@ interface AppState {
   triggerBrowserSync: () => void;
   setBrowserActive: (v: boolean) => void;
   setBrowserDetached: (v: boolean) => void;
+  /** 按 thread 解析执行 cwd：小程序绑定 > 所属项目 > 当前 UI 工作区 fallback */
+  resolveThreadCwd: (threadId: string | null) => string | null;
+  /** 打开对话时同步 UI 项目焦点（不清空 messages/runtime） */
+  syncWorkspaceForThread: (threadId: string) => void;
   createThread: () => Promise<string | null>;
   loadThreads: () => Promise<void>;
   loadThread: (threadId: string) => Promise<void>;
@@ -3355,14 +3359,55 @@ export const useAppStore = create<AppState>((set, get) => ({
   setBrowserActive: (v) => set({ browserActive: v }),
   setBrowserDetached: (v) => set({ browserDetached: v }),
 
+  resolveThreadCwd: (threadId) => {
+    const state = get();
+    if (threadId) {
+      const miniappCwd = state.threadPreferences[threadId]?.miniappRootPath?.trim();
+      if (miniappCwd) return miniappCwd;
+      const projectId = state.threadProjectMap[threadId];
+      if (projectId && projectId !== GENERAL_PROJECT_ID) {
+        const projectCwd = state.projects.find((p) => p.id === projectId)?.cwd?.trim();
+        if (projectCwd) return projectCwd;
+      }
+    }
+    return state.workspaceCwd || state.projectRoot || state.userHomeDir;
+  },
+
+  syncWorkspaceForThread: (threadId) => {
+    const state = get();
+    const projectId =
+      state.threadProjectMap[threadId] ??
+      state.threads.find((t) => t.id === threadId)?.projectId;
+    if (!projectId) return;
+    if (projectId === GENERAL_PROJECT_ID) {
+      const cwd = state.projectRoot ?? state.userHomeDir;
+      if (state.currentProjectId === GENERAL_PROJECT_ID && state.workspaceCwd === cwd) return;
+      saveActiveProject(GENERAL_PROJECT_ID, cwd);
+      set({
+        currentProjectId: GENERAL_PROJECT_ID,
+        workspaceCwd: cwd,
+      });
+      return;
+    }
+    const project = state.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    if (state.currentProjectId === projectId && state.workspaceCwd === project.cwd) return;
+    saveActiveProject(projectId, project.cwd);
+    set({
+      currentProjectId: projectId,
+      workspaceCwd: project.cwd,
+    });
+  },
+
   createThread: async () => {
     try {
       // 创建新线程前保存当前对话的运行时状态。
       get().saveCurrentThreadRuntimeState();
+      // await 前固化项目绑定，避免创建过程中切项目导致 thread 挂错目录。
+      const projectId = get().currentProjectId;
       const resp = await standaloneThreadCreate();
       const threadId = resp?.thread?.id ?? null;
       if (threadId) {
-        const projectId = get().currentProjectId;
         set({
           currentThreadId: threadId,
           messages: [],
@@ -3441,6 +3486,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadThread: async (threadId: string) => {
     // 切换前保存当前线程的运行时状态。
     get().saveCurrentThreadRuntimeState();
+    // 先按 thread→project 同步 UI 工作区，避免消息是 A、文件树仍是 B。
+    get().syncWorkspaceForThread(threadId);
 
     // 若该线程已有运行时状态快照（含后台事件更新），直接恢复，跳过后端加载。
     // 这保留了队列、流式文本、工具调用等在切换期间累积的上下文。

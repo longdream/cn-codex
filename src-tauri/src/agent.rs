@@ -190,7 +190,10 @@ pub struct AgentEngine {
     http: reqwest::Client,
     direct_http: reqwest::Client,
     thread_store: Arc<ThreadStore>,
-    tool_executor: Arc<RwLock<ToolExecutor>>,
+    /// 模板：仅用于 spawn_isolated（http / codey 配置根），不直接跑工具。
+    tool_executor_template: ToolExecutor,
+    /// 每对话线程一份完整 ToolExecutor（cwd / MCP / subagent / 进程表互不共享）。
+    tool_executors: Arc<RwLock<HashMap<String, Arc<RwLock<ToolExecutor>>>>>,
     cwd: PathBuf,
     usage_recorder: Option<Arc<UsageRecorder>>,
     conversation_logger: Option<Arc<crate::conversation_logger::ConversationLogger>>,
@@ -237,13 +240,42 @@ impl AgentEngine {
             http,
             direct_http,
             thread_store,
-            tool_executor: Arc::new(RwLock::new(tool_executor)),
+            tool_executor_template: tool_executor,
+            tool_executors: Arc::new(RwLock::new(HashMap::new())),
             cwd,
             usage_recorder: None,
             conversation_logger: None,
             cancel_flags: Arc::new(StdMutex::new(HashMap::new())),
             active_threads: Arc::new(StdMutex::new(HashSet::new())),
         })
+    }
+
+    /// 取得（或创建）指定对话线程的隔离 ToolExecutor。
+    async fn executor_for_thread(&self, thread_id: &str) -> Arc<RwLock<ToolExecutor>> {
+        {
+            let map = self.tool_executors.read().await;
+            if let Some(executor) = map.get(thread_id) {
+                return executor.clone();
+            }
+        }
+        let mut map = self.tool_executors.write().await;
+        if let Some(executor) = map.get(thread_id) {
+            return executor.clone();
+        }
+        let fresh = Arc::new(RwLock::new(self.tool_executor_template.spawn_isolated()));
+        map.insert(thread_id.to_string(), fresh.clone());
+        fresh
+    }
+
+    /// 删除对话时释放该线程的 executor（MCP / subagent / 进程）。
+    pub async fn drop_thread_executor(&self, thread_id: &str) {
+        let removed = {
+            let mut map = self.tool_executors.write().await;
+            map.remove(thread_id)
+        };
+        if let Some(executor) = removed {
+            executor.write().await.shutdown().await;
+        }
     }
 
     fn claim_thread_turn(&self, thread_id: &str) -> AppResult<ActiveThreadGuard> {
@@ -332,10 +364,27 @@ impl AgentEngine {
     /// - 该方法只负责“进程级中断”，不修改线程消息本身；
     /// - 返回命中的进程数量，供上层记录日志和验证。
     pub async fn interrupt_active_tools(&self, thread_id: Option<&str>) -> usize {
-        let executor = self.tool_executor.read().await;
         match thread_id {
-            Some(id) => executor.interrupt_active_tools(id).await,
-            None => executor.interrupt_all_active_tools().await,
+            Some(id) => {
+                let map = self.tool_executors.read().await;
+                let Some(executor) = map.get(id) else {
+                    return 0;
+                };
+                let executor = executor.clone();
+                drop(map);
+                executor.read().await.interrupt_active_tools(id).await
+            }
+            None => {
+                let executors = {
+                    let map = self.tool_executors.read().await;
+                    map.values().cloned().collect::<Vec<_>>()
+                };
+                let mut total = 0usize;
+                for executor in executors {
+                    total += executor.read().await.interrupt_all_active_tools().await;
+                }
+                total
+            }
         }
     }
 
@@ -346,7 +395,8 @@ impl AgentEngine {
         thread_id: &str,
         target: &str,
     ) -> AppResult<serde_json::Value> {
-        let executor = self.tool_executor.read().await;
+        let executor = self.executor_for_thread(thread_id).await;
+        let executor = executor.read().await;
         executor.close_subagent(app_handle, thread_id, target).await
     }
 
@@ -413,6 +463,9 @@ impl AgentEngine {
             .await?;
             return Ok(());
         }
+
+        // 本对话线程的隔离 executor：cwd / MCP / subagent / 进程表与其他 thread 互不共享。
+        let tool_executor = self.executor_for_thread(thread_id).await;
 
         let turn_mode = match mode {
             Some("goal") => "goal",
@@ -687,11 +740,9 @@ impl AgentEngine {
         emit_and_broadcast(app_handle, "turn-started", turn_started_payload);
 
         let hook_runtime = HookRuntime::load(config, &self.cwd.join("codey"));
-        // 每轮都强制同步 executor 的工作目录：
-        // executor 是跨 turn 共享的，若仅在 override_cwd 存在时设置，
-        // 上一轮"小程序编辑"设置的目录会在断线重连/切换线程后残留，
-        // 导致 write_file/apply_patch 把文件写进旧目录。
-        self.tool_executor
+        // 每轮都强制同步本线程 executor 的工作目录：
+        // 同一 thread 连续 turn 可能切换小程序目录；只影响本 thread，不污染其他对话。
+        tool_executor
             .write()
             .await
             .set_cwd(effective_cwd.clone());
@@ -711,7 +762,7 @@ impl AgentEngine {
         for (name, server) in crate::miniapp::list_miniapp_mcp_servers(&self.cwd.join("codey")) {
             mcp_servers.entry(name).or_insert(server);
         }
-        self.tool_executor
+        tool_executor
             .write()
             .await
             .set_mcp_servers(mcp_servers);
@@ -757,7 +808,7 @@ impl AgentEngine {
         {
             let system_prompt_prefix =
                 self.build_system_prompt(config, &effective_cwd, "chat", None);
-            self.tool_executor
+            tool_executor
                 .read()
                 .await
                 .set_subagent_provider_config(crate::tool_executor::SubagentProviderConfig {
@@ -1038,7 +1089,7 @@ impl AgentEngine {
                     let smartbrain_enabled = config.smartbrain_config().knowledge_is_active();
                     let subagent_enabled = config.subagent_enabled();
                     let tools = if turn_mode == "robot-create" || turn_mode == "robot-modify" {
-                        let mut executor = self.tool_executor.write().await;
+                        let mut executor = tool_executor.write().await;
                         executor.set_smartbrain_enabled_override(Some(smartbrain_enabled));
                         executor.set_subagent_enabled_override(Some(false));
                         executor
@@ -1064,7 +1115,7 @@ impl AgentEngine {
                             "web_search",
                             "web_fetch",
                         ];
-                        let mut executor = self.tool_executor.write().await;
+                        let mut executor = tool_executor.write().await;
                         executor.set_smartbrain_enabled_override(Some(smartbrain_enabled));
                         // Plan mode stays read-only: never expose mutating subagent tools.
                         executor.set_subagent_enabled_override(Some(false));
@@ -1078,7 +1129,7 @@ impl AgentEngine {
                             })
                             .collect()
                     } else {
-                        let mut executor = self.tool_executor.write().await;
+                        let mut executor = tool_executor.write().await;
                         executor.set_smartbrain_enabled_override(Some(smartbrain_enabled));
                         executor.set_subagent_enabled_override(Some(subagent_enabled));
                         // MCP discovery is intentionally deferred. A normal chat turn must
@@ -2147,8 +2198,7 @@ impl AgentEngine {
                                         false,
                                     )
                                 } else {
-                                    let tool_result = self
-                                        .tool_executor
+                                    let tool_result = tool_executor
                                         .read()
                                         .await
                                         .execute(

@@ -807,6 +807,58 @@ impl ToolExecutor {
         }
     }
 
+    /// 为独立对话线程创建隔离 executor：复用 http / codey 配置根，运行时状态全新空表。
+    /// 不共享 MCP / subagent / 进程表，避免跨项目互串。
+    pub fn spawn_isolated(&self) -> Self {
+        Self {
+            cwd: self.cwd.clone(),
+            http: self.http.clone(),
+            workspace_config_dir: self.workspace_config_dir.clone(),
+            mcp_servers: HashMap::new(),
+            mcp_tool_aliases: HashMap::new(),
+            mcp_tool_specs: HashMap::new(),
+            mcp_direct_tools_discovered: false,
+            mcp_discovery_retry_after: None,
+            activated_tools_by_thread: Arc::new(Mutex::new(HashMap::new())),
+            mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
+            mcp_http_sessions: Arc::new(Mutex::new(HashMap::new())),
+            mcp_sse_sessions: Arc::new(Mutex::new(HashMap::new())),
+            web_search_enabled: false,
+            smartbrain_enabled_override: None,
+            subagent_enabled_override: None,
+            // 运行时空表：跨 thread 不共享、不预载磁盘记录，避免 list_agents 串台。
+            subagents: Arc::new(Mutex::new(HashMap::new())),
+            subagent_handles: Arc::new(Mutex::new(HashMap::new())),
+            exec_sessions: Arc::new(Mutex::new(HashMap::new())),
+            next_exec_session_id: Arc::new(AtomicU64::new(1)),
+            permission_grants: Arc::new(Mutex::new(Vec::new())),
+            active_tool_processes: Arc::new(Mutex::new(HashMap::new())),
+            active_browser_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            subagent_provider_config: Arc::new(Mutex::new(SubagentProviderConfig::default())),
+        }
+    }
+
+    /// 释放本 executor 的 MCP / 工具进程 / subagent，供 thread 删除时调用。
+    pub async fn shutdown(&self) {
+        let _ = self.interrupt_all_active_tools().await;
+        {
+            let handles = {
+                let mut map = self.subagent_handles.lock().await;
+                map.drain().map(|(_, handle)| handle).collect::<Vec<_>>()
+            };
+            for handle in handles {
+                handle.cancel_flag.store(true, Ordering::SeqCst);
+            }
+        }
+        self.subagents.lock().await.clear();
+        self.exec_sessions.lock().await.clear();
+        self.permission_grants.lock().await.clear();
+        self.activated_tools_by_thread.lock().await.clear();
+        clear_mcp_sessions_async(self.mcp_sessions.clone());
+        clear_mcp_http_sessions_async(self.mcp_http_sessions.clone());
+        clear_mcp_sse_sessions_async(self.mcp_sse_sessions.clone());
+    }
+
     pub async fn set_subagent_provider_config(&self, config: SubagentProviderConfig) {
         *self.subagent_provider_config.lock().await = config;
     }

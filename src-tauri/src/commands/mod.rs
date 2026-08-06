@@ -94,6 +94,7 @@ pub async fn thread_archive(
     state: State<'_, AppState>,
     params: ThreadArchiveParams,
 ) -> AppResult<serde_json::Value> {
+    state.agent_engine.drop_thread_executor(&params.thread_id).await;
     state.thread_store.delete_thread(&params.thread_id).await?;
     Ok(serde_json::json!({ "status": "ok" }))
 }

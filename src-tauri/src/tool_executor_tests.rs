@@ -3828,3 +3828,20 @@ fn read_file_tool_spec_exposes_range_parameters() {
             || description.contains("numbered page")
     );
 }
+
+#[test]
+fn spawn_isolated_keeps_independent_cwd_and_runtime_tables() {
+    let base = ToolExecutor::new(std::path::PathBuf::from("/tmp/base"));
+    let mut a = base.spawn_isolated();
+    let mut b = base.spawn_isolated();
+    a.set_cwd(std::path::PathBuf::from("/tmp/project-a"));
+    b.set_cwd(std::path::PathBuf::from("/tmp/project-b"));
+    assert_eq!(a.cwd, std::path::PathBuf::from("/tmp/project-a"));
+    assert_eq!(b.cwd, std::path::PathBuf::from("/tmp/project-b"));
+    assert!(!std::sync::Arc::ptr_eq(&a.mcp_sessions, &b.mcp_sessions));
+    assert!(!std::sync::Arc::ptr_eq(&a.subagents, &b.subagents));
+    assert!(!std::sync::Arc::ptr_eq(
+        &a.active_tool_processes,
+        &b.active_tool_processes
+    ));
+}

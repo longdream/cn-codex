@@ -654,7 +654,7 @@ export function useTauriEvents() {
       const next = store.dequeueMessageForThread(threadId);
       if (!next) return;
 
-      const cwd = store.workspaceCwd || store.projectRoot || store.userHomeDir;
+      const cwd = store.resolveThreadCwd(threadId);
       if (!cwd) return;
 
       // 标记后台线程开始新的 turn

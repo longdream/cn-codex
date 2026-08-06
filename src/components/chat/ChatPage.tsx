@@ -80,13 +80,7 @@ export function ChatPage() {
         return;
       }
 
-      // 小程序编辑对话优先使用线程绑定的小程序根目录，与普通对话的工作区隔离，
-      // 避免"加入对话"把全局 workspaceCwd 改掉后文件写到错误目录。
-      const boundCwd = state.currentThreadId
-        ? state.threadPreferences[state.currentThreadId]?.miniappRootPath?.trim()
-        : undefined;
-      const cwd = boundCwd || state.workspaceCwd || state.projectRoot || state.userHomeDir;
-      if (!cwd) return;
+      // 执行 cwd 跟目标 thread 走，禁止裸读全局 workspaceCwd（切项目后会串台）。
       let actualMode: ChatMode | "robot-create" | "robot-modify" = mode;
       if (options.robotCreateMode) {
         actualMode = "robot-create" as ChatMode;
@@ -100,6 +94,8 @@ export function ChatPage() {
       const persistedAttachments = attachments.map((file) => ({ ...file }));
 
       let threadId = currentThreadId;
+      // await 前固化项目绑定，避免创建过程中切项目导致挂错目录。
+      const projectIdAtCreate = state.currentProjectId;
       const userMessage = {
         id: crypto.randomUUID(),
         role: "user" as const,
@@ -119,7 +115,7 @@ export function ChatPage() {
               // 新线程在创建当次就写入 preview，确保侧边栏能立即显示主题。
               preview: previewText.slice(0, 60),
               updatedAt: Date.now(),
-              projectId: useAppStore.getState().currentProjectId ?? undefined,
+              projectId: projectIdAtCreate ?? undefined,
             });
           }
         } catch (err) {
@@ -144,6 +140,9 @@ export function ChatPage() {
         }
       }
       if (!threadId) return;
+
+      const cwd = useAppStore.getState().resolveThreadCwd(threadId);
+      if (!cwd) return;
 
       const dispatchSeq = dispatchSeqRef.current + 1;
       dispatchSeqRef.current = dispatchSeq;
