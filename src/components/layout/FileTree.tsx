@@ -25,7 +25,7 @@ import {
   IconTrash,
   IconX,
 } from "@tabler/icons-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import { useIntl } from "react-intl";
 import {
   copyPathEntry,
@@ -181,8 +181,6 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchMatches, setSearchMatches] = useState<WorkspaceSearchMatch[]>([]);
   const [searchTruncated, setSearchTruncated] = useState(false);
-  // 同一查询只自动跳一次；改关键词或按 Enter 可再次定位。
-  const lastAutoOpenedQueryRef = useRef<string | null>(null);
 
   const loadChildren = useCallback(async (path: string): Promise<TreeNode[]> => {
     const entries = await readDirectory(path);
@@ -649,43 +647,6 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
     [rootPath],
   );
 
-  const openFirstSearchMatch = useCallback(() => {
-    const first =
-      contentMatches.find((item) => typeof item.line === "number" && item.line > 0) ??
-      contentMatches[0] ??
-      nameMatches[0];
-    if (!first) {
-      return;
-    }
-    void handleOpenFile(
-      {
-        name: first.name,
-        path: first.path,
-        isDir: false,
-        size: 0,
-        loaded: true,
-        expanded: false,
-      },
-      first.line,
-    );
-  }, [contentMatches, nameMatches, handleOpenFile]);
-
-  useEffect(() => {
-    if (!debouncedQuery) {
-      lastAutoOpenedQueryRef.current = null;
-      return;
-    }
-    if (searching || searchError || searchMatches.length === 0) {
-      return;
-    }
-    if (lastAutoOpenedQueryRef.current === debouncedQuery) {
-      return;
-    }
-    lastAutoOpenedQueryRef.current = debouncedQuery;
-    // 搜索命中后自动打开首个关键词位置（优先内容匹配行号）。
-    openFirstSearchMatch();
-  }, [debouncedQuery, searching, searchError, searchMatches, openFirstSearchMatch]);
-
   if (!rootPath) {
     return (
       <div className="flex flex-1 items-center justify-center p-4 text-xs text-[var(--text-faint)]">
@@ -723,14 +684,6 @@ export function FileTree({ rootPath, refreshKey }: FileTreeProps) {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter" || e.nativeEvent.isComposing) {
-                return;
-              }
-              e.preventDefault();
-              // Enter：强制再次定位第一个关键词（不依赖自动跳转去重）。
-              openFirstSearchMatch();
-            }}
             placeholder={intl.formatMessage({ id: "fileTree.searchPlaceholder" })}
             className="h-7 w-full rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-panel)] py-1 pl-7 pr-7 text-[11px] text-[var(--text-base)] outline-none transition-colors placeholder:text-[var(--text-faint)] focus:border-[var(--accent)]"
           />
