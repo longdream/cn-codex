@@ -235,7 +235,7 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "read_file",
-                    "description": "Read the contents of a file at the given path. Returns a numbered page by default (max_lines defaults to 200, hard cap 400). Use line_offset/end_line to page through large files. Prefer this over shell/python for reading source slices.",
+                    "description": "Read the contents of a file at the given path. Returns a numbered page by default (max_lines defaults to 400, hard cap 2000). Use line_offset/end_line to page through large files. Prefer this over shell/python for reading source slices.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -251,8 +251,8 @@ impl ToolExecutor {
                             "max_lines": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "maximum": 400,
-                                "description": "Maximum lines to return. Defaults to 200. Large files are always returned as a numbered page; use line_offset to continue."
+                                "maximum": 2000,
+                                "description": "Maximum lines to return. Defaults to 400. Large files are always returned as a numbered page; use line_offset to continue."
                             },
                             "end_line": {
                                 "type": "integer",

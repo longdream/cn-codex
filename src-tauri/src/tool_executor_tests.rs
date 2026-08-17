@@ -3758,31 +3758,31 @@ fn format_read_file_output_rejects_invalid_end_line() {
 
 #[test]
 fn format_read_file_output_defaults_to_paginated_window() {
-    let content = (1..=250)
-        .map(|idx| format!("line-{idx}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let output = format_read_file_output("src/demo.rs", &content, None, None, None, None);
-    assert!(output.contains("Lines: 1-200 / 250"));
-    assert!(output.contains("Next line_offset: 201"));
-    assert!(output.contains("1|line-1"));
-    assert!(output.contains("200|line-200"));
-    assert!(!output.contains("201|line-201"));
-}
-
-#[test]
-fn format_read_file_output_hard_caps_max_lines() {
     let content = (1..=500)
         .map(|idx| format!("line-{idx}"))
         .collect::<Vec<_>>()
         .join("\n");
 
-    let output =
-        format_read_file_output("src/demo.rs", &content, Some(1), Some(1000), None, None);
+    let output = format_read_file_output("src/demo.rs", &content, None, None, None, None);
     assert!(output.contains("Lines: 1-400 / 500"));
     assert!(output.contains("Next line_offset: 401"));
+    assert!(output.contains("1|line-1"));
+    assert!(output.contains("400|line-400"));
     assert!(!output.contains("401|line-401"));
+}
+
+#[test]
+fn format_read_file_output_hard_caps_max_lines() {
+    let content = (1..=2500)
+        .map(|idx| format!("line-{idx}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let output =
+        format_read_file_output("src/demo.rs", &content, Some(1), Some(3000), None, None);
+    assert!(output.contains("Lines: 1-2000 / 2500"));
+    assert!(output.contains("Next line_offset: 2001"));
+    assert!(!output.contains("2001|line-2001"));
 }
 
 #[test]
@@ -3822,7 +3822,7 @@ fn read_file_tool_spec_exposes_range_parameters() {
         .pointer("/max_lines/maximum")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or_default();
-    assert_eq!(max_lines, 400);
+    assert_eq!(max_lines, 2000);
     assert!(
         description.contains("Defaults to a numbered page")
             || description.contains("numbered page")
