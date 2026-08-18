@@ -1108,6 +1108,38 @@ fn build_internal_messages_keeps_system_messages_before_non_system_roles() {
 }
 
 #[test]
+fn system_prompt_limits_tool_preamble_to_the_first_batch() {
+    let workspace_dir =
+        std::env::temp_dir().join(format!("cn-codex-agent-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&workspace_dir).expect("create temp workspace");
+
+    let thread_store = Arc::new(ThreadStore::new(&workspace_dir.join("codey")));
+    let tool_executor = ToolExecutor::new(workspace_dir.clone());
+    let engine =
+        AgentEngine::new(thread_store, tool_executor, workspace_dir.clone()).expect("engine");
+
+    let prompt = engine.build_system_prompt(&ConfigToml::default(), &workspace_dir, "chat", None);
+
+    assert!(prompt.contains("Before the first tool call in a user turn"));
+    assert!(prompt.contains("do not restate or paraphrase the plan"));
+    assert!(prompt.contains("Never repeat a previous progress update"));
+    assert!(!prompt.contains("Before using any tools, always briefly explain"));
+}
+
+#[test]
+fn repetitive_progress_updates_detect_exact_and_paraphrased_text() {
+    let first = "数据库配置的存储和测试链路已经清楚了。我再核对状态读写、i18n 和 prompt 注入，然后按同样模式加上 SSH 多服务器配置。";
+    let paraphrase = "数据库配置的存储和测试链路已经清楚了。我再核对 prompt 注入和命令注册细节，然后按同一套模式加上 SSH 多服务器配置。";
+
+    assert!(progress_updates_are_repetitive(first, first));
+    assert!(progress_updates_are_repetitive(first, paraphrase));
+    assert!(!progress_updates_are_repetitive(
+        first,
+        "SSH 测试连接失败：当前构建缺少 russh feature。我会修正 Cargo 配置并重新编译。"
+    ));
+}
+
+#[test]
 fn sanitize_history_for_model_skips_orphan_tool_messages() {
     let history = vec![
         ThreadMessage {
@@ -1150,6 +1182,54 @@ fn sanitize_history_for_model_skips_orphan_tool_messages() {
     assert_eq!(sanitized.len(), 2);
     assert_eq!(sanitized[0].id, "assistant-call");
     assert_eq!(sanitized[1].id, "tool-ok");
+}
+
+#[test]
+fn sanitize_history_for_model_recombines_preamble_with_its_tool_calls() {
+    let history = vec![
+        ThreadMessage {
+            id: "assistant-preamble".to_string(),
+            role: "assistant".to_string(),
+            content: "I will inspect the relevant files.".to_string(),
+            timestamp: 7,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: None,
+            attachments: Vec::new(),
+        },
+        ThreadMessage {
+            id: "assistant-call".to_string(),
+            role: "assistant".to_string(),
+            content: String::new(),
+            timestamp: 7,
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: Some(vec![ToolCallInfo {
+                id: "call-read".to_string(),
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"src/lib.rs"}"#.to_string(),
+            }]),
+            attachments: Vec::new(),
+        },
+        ThreadMessage {
+            id: "tool-result".to_string(),
+            role: "tool".to_string(),
+            content: "file contents".to_string(),
+            timestamp: 8,
+            tool_call_id: Some("call-read".to_string()),
+            tool_name: Some("read_file".to_string()),
+            tool_calls: None,
+            attachments: Vec::new(),
+        },
+    ];
+
+    let sanitized = sanitize_history_for_model(&history);
+
+    assert_eq!(sanitized.len(), 2);
+    assert_eq!(sanitized[0].id, "assistant-call");
+    assert_eq!(sanitized[0].content, "I will inspect the relevant files.");
+    assert_eq!(sanitized[0].tool_calls.as_ref().unwrap().len(), 1);
+    assert_eq!(sanitized[1].id, "tool-result");
 }
 
 #[test]
