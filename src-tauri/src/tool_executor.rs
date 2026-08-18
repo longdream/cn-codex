@@ -235,15 +235,15 @@ const SHELL_TIMEOUT_DEFAULT_MS: u64 = 30_000;
 /// These keep prompt growth predictable without stripping critical head/tail context.
 const TOOL_OUTPUT_SHELL_MAX_CHARS: usize = 6_000;
 const TOOL_OUTPUT_SHELL_PARTIAL_MAX_CHARS: usize = 4_000;
-const TOOL_OUTPUT_READ_FILE_MAX_CHARS: usize = 8_000;
+const TOOL_OUTPUT_READ_FILE_MAX_CHARS: usize = 32_000;
 const TOOL_OUTPUT_BROWSER_MAX_CHARS: usize = 8_000;
 const TOOL_OUTPUT_SEARCH_MAX_CHARS: usize = 8_000;
 const TOOL_OUTPUT_MEMORY_MAX_CHARS: usize = 8_000;
 const TOOL_OUTPUT_SMARTBRAIN_MAX_CHARS: usize = 8_000;
 
 /// Default pagination window for `read_file` when no range is requested.
-const READ_FILE_DEFAULT_MAX_LINES: usize = 200;
-const READ_FILE_MAX_LINES_HARD_CAP: usize = 400;
+const READ_FILE_DEFAULT_MAX_LINES: usize = 400;
+const READ_FILE_MAX_LINES_HARD_CAP: usize = 2_000;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]

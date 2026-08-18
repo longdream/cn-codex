@@ -144,11 +144,12 @@ pub(crate) fn uniquify_tool_call_ids(
 
 
 pub(crate) fn sanitize_history_for_model(history: &[ThreadMessage]) -> Vec<ThreadMessage> {
+    let history = coalesce_assistant_tool_call_messages(history);
     let mut seen_tool_call_ids: HashSet<String> = HashSet::new();
     let mut pending_result_ids: BTreeMap<String, VecDeque<String>> = BTreeMap::new();
     let mut sanitized = Vec::with_capacity(history.len());
 
-    for msg in history {
+    for msg in &history {
         let filtered_tool_calls = msg.tool_calls.as_ref().map(|tool_calls| {
             tool_calls
                 .iter()
@@ -256,6 +257,47 @@ pub(crate) fn sanitize_history_for_model(history: &[ThreadMessage]) -> Vec<Threa
     }
 
     sanitized
+}
+
+
+/// The transcript stores visible preamble text and its tool calls separately so
+/// the UI can render them as distinct timeline items. They originated from one
+/// assistant response, however, and Chat Completions expects that response to be
+/// replayed as a single message containing both `content` and `tool_calls`.
+pub(crate) fn coalesce_assistant_tool_call_messages(
+    history: &[ThreadMessage],
+) -> Vec<ThreadMessage> {
+    let mut coalesced = Vec::with_capacity(history.len());
+    let mut index = 0;
+
+    while index < history.len() {
+        let current = &history[index];
+        let next = history.get(index + 1);
+        let can_merge = current.role == "assistant"
+            && !current.content.trim().is_empty()
+            && current.tool_calls.is_none()
+            && next.is_some_and(|message| {
+                message.role == "assistant"
+                    && message.content.trim().is_empty()
+                    && message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())
+                    && message.timestamp == current.timestamp
+            });
+
+        if can_merge {
+            let mut merged = next.expect("checked above").clone();
+            merged.content = current.content.clone();
+            if merged.attachments.is_empty() {
+                merged.attachments = current.attachments.clone();
+            }
+            coalesced.push(merged);
+            index += 2;
+        } else {
+            coalesced.push(current.clone());
+            index += 1;
+        }
+    }
+
+    coalesced
 }
 
 

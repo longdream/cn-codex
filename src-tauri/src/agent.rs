@@ -522,6 +522,7 @@ impl AgentEngine {
         let mut last_read_only_tool_signature: Option<String> = None;
         let mut consecutive_blocked_read_only_shell_calls = 0_u32;
         let mut suppressed_repetitive_tools: HashSet<String> = HashSet::new();
+        let mut recent_tool_preambles: VecDeque<String> = VecDeque::new();
         let mut last_logged_tool_names: Option<Vec<String>> = None;
         let mut turn_usage = TurnUsage::default();
         // 统计“本轮成功模型调用次数”：
@@ -1851,12 +1852,26 @@ impl AgentEngine {
                                 }
                             }
 
-                            if !preceding_text.is_empty() {
+                            let suppress_preceding_text = !preceding_text.trim().is_empty()
+                                && recent_tool_preambles.iter().any(|previous| {
+                                    progress_updates_are_repetitive(previous, &preceding_text)
+                                });
+                            let assistant_response_timestamp = now_secs();
+                            if suppress_preceding_text {
+                                info!(
+                                    "Suppressed repetitive tool preamble in turn {turn_id}: {} chars",
+                                    preceding_text.len()
+                                );
+                            } else if !preceding_text.is_empty() {
+                                recent_tool_preambles.push_back(preceding_text.clone());
+                                while recent_tool_preambles.len() > 4 {
+                                    recent_tool_preambles.pop_front();
+                                }
                                 let text_msg = ThreadMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     role: "assistant".to_string(),
-                                    content: preceding_text,
-                                    timestamp: now_secs(),
+                                    content: preceding_text.clone(),
+                                    timestamp: assistant_response_timestamp,
                                     tool_call_id: None,
                                     tool_name: None,
                                     tool_calls: None,
@@ -1883,7 +1898,7 @@ impl AgentEngine {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 role: "assistant".to_string(),
                                 content: String::new(),
-                                timestamp: now_secs(),
+                                timestamp: assistant_response_timestamp,
                                 tool_call_id: None,
                                 tool_name: None,
                                 tool_calls: Some(tc_infos),
@@ -1909,6 +1924,7 @@ impl AgentEngine {
                                 serde_json::json!({
                                     "threadId": thread_id,
                                     "calls": calls_json,
+                                    "suppressPrecedingText": suppress_preceding_text,
                                 }),
                             );
 
@@ -3389,7 +3405,7 @@ impl AgentEngine {
              You have access to the following tools:\n\
              - shell / shell_command: Execute short shell commands to run code, install packages, build projects, etc.; shell_command supports Codex-style workdir, timeout_ms, login, and sandbox permission request fields.\n\
              - exec_command / write_stdin / close_exec_session: Start a persistent command session for long-running or interactive commands, write stdin or poll output by session id, and close sessions that are no longer needed.\n\
-             - read_file: Read the contents of a file at the given path. Supports line_offset/max_lines/end_line for numbered ranged reads; prefer this over shell when inspecting large files or specific line windows. Defaults to a 200-line numbered page (hard cap 400).\n\
+             - read_file: Read the contents of a file at the given path. Supports line_offset/max_lines/end_line for numbered ranged reads; prefer this over shell when inspecting large files or specific line windows. Defaults to a 400-line numbered page (hard cap 2000).\n\
              - write_file: Create a new file. Rewriting an existing file requires overwrite=true and complete content, and destructive truncation is rejected.\n\
              - tool_search: Search available CN-Codex tools, skills, plugin skills, and discovered MCP tools, then activate matching non-core schemas for the next model call in this same turn. Default turns only expose a small core tool set; non-core tools (MCP/Playwright, memory, image generation, MCP helpers, agents, plugins, etc.) are lazy-loaded through this tool.\n\
              - code_review: Review current git changes or a diff against a base ref, reporting changed files, diff-check issues, and obvious risk patterns.\n\
@@ -3415,8 +3431,11 @@ impl AgentEngine {
              IMAGE TOOL RULE: When the user asks to generate/create/draw an image, use `tool_search` for `image_generate` if needed, then call it instead of only describing the image. \
              Use configured image-generation defaults unless the user explicitly asks for a different model or base URL.\n\
              \n\
-             IMPORTANT: Before using any tools, always briefly explain what you are about to do and why. \
-             This helps the user understand your reasoning and plan.\n\
+             TOOL PREAMBLE POLICY:\n\
+             - Before the first tool call in a user turn, briefly explain what you are about to do and why.\n\
+             - For later tool batches in the same turn, do not restate or paraphrase the plan and do not narrate routine reads/searches.\n\
+             - Send another progress update only when a finding materially changes the approach or a meaningful implementation/verification milestone is reached.\n\
+             - Never repeat a previous progress update merely to introduce another tool call.\n\
              \n\
              IMPORTANT: Keep going until the user's request is completely resolved before ending your turn \
              and yielding back to the user. Only stop when the work is done or you hit a real blocker. \

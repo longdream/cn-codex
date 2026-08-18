@@ -370,6 +370,32 @@ fn is_read_only_git_remote(arguments: &[String]) -> bool {
 }
 
 
+pub(crate) fn progress_updates_are_repetitive(previous: &str, current: &str) -> bool {
+    fn normalized_bigrams(value: &str) -> HashSet<(char, char)> {
+        let chars = value
+            .chars()
+            .filter(|ch| ch.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<Vec<_>>();
+        chars.windows(2).map(|pair| (pair[0], pair[1])).collect()
+    }
+
+    if previous.trim() == current.trim() && !current.trim().is_empty() {
+        return true;
+    }
+
+    let previous_bigrams = normalized_bigrams(previous);
+    let current_bigrams = normalized_bigrams(current);
+    if previous_bigrams.len() < 12 || current_bigrams.len() < 12 {
+        return false;
+    }
+
+    let shared = previous_bigrams.intersection(&current_bigrams).count();
+    let similarity = (2 * shared) as f64 / (previous_bigrams.len() + current_bigrams.len()) as f64;
+    similarity >= 0.62
+}
+
+
 pub(crate) fn assistant_is_waiting_for_user(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() {

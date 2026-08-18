@@ -1,4 +1,4 @@
-import { IconApps, IconBook2, IconBrain, IconDatabase, IconSettings2, IconSparkles } from "@tabler/icons-react";
+import { IconApps, IconBook2, IconBrain, IconDatabase, IconServer, IconSettings2, IconSparkles } from "@tabler/icons-react";
 import { useState } from "react";
 import { useIntl } from "react-intl";
 import { ExperiencePanel } from "./ExperiencePanel";
@@ -6,8 +6,9 @@ import { KnowledgePanel } from "./KnowledgePanel";
 import { MiniAppSettingsPanel } from "./MiniAppSettingsPanel";
 import { SmartbrainDatabasePanel } from "./SmartbrainDatabasePanel";
 import { SmartbrainDatabaseSettingsPanel } from "./SmartbrainDatabaseSettingsPanel";
+import { SmartbrainSshPanel } from "./SmartbrainSshPanel";
 
-type SmartbrainTab = "knowledge" | "experience" | "database" | "databaseSettings" | "miniapp";
+type SmartbrainTab = "knowledge" | "experience" | "database" | "ssh" | "databaseSettings" | "miniapp";
 
 export function SmartbrainPanel() {
   const intl = useIntl();
@@ -28,6 +29,11 @@ export function SmartbrainPanel() {
       id: "database",
       icon: <IconDatabase size={14} stroke={1.8} />,
       label: intl.formatMessage({ id: "settings.smartbrain.database" }),
+    },
+    {
+      id: "ssh",
+      icon: <IconServer size={14} stroke={1.8} />,
+      label: intl.formatMessage({ id: "settings.smartbrain.ssh" }),
     },
     {
       id: "databaseSettings",
@@ -85,6 +91,7 @@ export function SmartbrainPanel() {
       {tab === "knowledge" && <KnowledgePanel />}
       {tab === "experience" && <ExperiencePanel />}
       {tab === "database" && <SmartbrainDatabasePanel />}
+      {tab === "ssh" && <SmartbrainSshPanel />}
       {tab === "databaseSettings" && <SmartbrainDatabaseSettingsPanel />}
       {tab === "miniapp" && <MiniAppSettingsPanel />}
     </div>

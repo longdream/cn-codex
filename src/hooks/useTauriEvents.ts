@@ -993,6 +993,7 @@ export function useTauriEvents() {
         listen<{
           threadId: string;
           eventSeq?: number;
+          suppressPrecedingText?: boolean;
           calls: Array<{ id: string; name: string; arguments: string }>;
         }>("tool-calls-start", (e) => {
           const store = useAppStore.getState();
@@ -1007,12 +1008,14 @@ export function useTauriEvents() {
           const runtime = store.getThreadRuntimeState(threadId);
           const pendingText = runtime?.streamingText ?? "";
           if (pendingText) {
-            store.addMessageToThread(threadId, {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              content: pendingText,
-              timestamp: Date.now(),
-            });
+            if (!e.payload.suppressPrecedingText) {
+              store.addMessageToThread(threadId, {
+                id: crypto.randomUUID(),
+                role: "assistant",
+                content: pendingText,
+                timestamp: Date.now(),
+              });
+            }
             store.clearStreamingTextForThread(threadId);
           }
 
