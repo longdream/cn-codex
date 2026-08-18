@@ -117,7 +117,7 @@ impl ProviderAdapter for ChatCompletionsAdapter {
         // 1) system 只能出现在 messages 开头
         // 2) 通常只接受一条 system（多条 system 会被判定为“不在开头”）
         // 因此在序列化前合并所有 system，并保证其位于最前。
-        let formatted_messages = build_chat_completions_messages(messages);
+        let formatted_messages = build_chat_completions_messages(messages, model);
 
         let mut body = serde_json::json!({
             "model": model,
@@ -261,7 +261,7 @@ impl ProviderAdapter for ChatCompletionsAdapter {
 }
 
 /// 将 InternalMessage 转换为严格符合 Chat Completions API 格式的 JSON
-fn chat_completions_message(msg: &InternalMessage) -> serde_json::Value {
+fn chat_completions_message(msg: &InternalMessage, replay_reasoning: bool) -> serde_json::Value {
     match msg.role.as_str() {
         "system" => {
             serde_json::json!({
@@ -282,20 +282,20 @@ fn chat_completions_message(msg: &InternalMessage) -> serde_json::Value {
         }
         "assistant" => {
             let mut m = serde_json::json!({ "role": "assistant" });
-            // assistant content：有 tool_calls 时 content 可为 null，但某些 API 要求空字符串
+            // Keep text-less tool turns as "". DeepSeek and some compatible gateways reject null.
             match &msg.content {
                 Some(c) if !content_is_empty_value(c) => {
                     m["content"] = serde_json::Value::String(content_to_string(&msg.content));
                 }
                 _ => {
-                    if msg.tool_calls.is_some() {
-                        m["content"] = serde_json::Value::Null;
-                    } else {
-                        m["content"] = serde_json::Value::String(String::new());
-                    }
+                    m["content"] = serde_json::Value::String(String::new());
                 }
             }
             if let Some(ref tcs) = msg.tool_calls {
+                let reasoning_content = tcs
+                    .iter()
+                    .find_map(|tc| tc.reasoning_content.as_deref())
+                    .filter(|reasoning| !reasoning.is_empty());
                 let tool_calls: Vec<serde_json::Value> = tcs
                     .iter()
                     .map(|tc| {
@@ -310,6 +310,11 @@ fn chat_completions_message(msg: &InternalMessage) -> serde_json::Value {
                     })
                     .collect();
                 m["tool_calls"] = serde_json::Value::Array(tool_calls);
+                if replay_reasoning {
+                    if let Some(reasoning) = reasoning_content {
+                        m["reasoning_content"] = serde_json::Value::String(reasoning.to_string());
+                    }
+                }
             }
             m
         }
@@ -356,7 +361,10 @@ fn content_is_empty_value(val: &serde_json::Value) -> bool {
 /// - 合并全部 system 内容为一条，并放在数组最前面
 /// - 其余非 system 消息保持原有相对顺序
 /// - 过滤空 system 片段，避免发出无意义的 system 消息
-fn build_chat_completions_messages(messages: &[InternalMessage]) -> Vec<serde_json::Value> {
+fn build_chat_completions_messages(
+    messages: &[InternalMessage],
+    model: &str,
+) -> Vec<serde_json::Value> {
     let mut system_parts: Vec<String> = Vec::new();
     let mut non_system: Vec<serde_json::Value> = Vec::new();
 
@@ -368,7 +376,10 @@ fn build_chat_completions_messages(messages: &[InternalMessage]) -> Vec<serde_js
             }
             continue;
         }
-        non_system.push(chat_completions_message(msg));
+        non_system.push(chat_completions_message(
+            msg,
+            super::is_deepseek_model(model),
+        ));
     }
 
     let mut formatted = Vec::with_capacity(non_system.len() + 1);
@@ -385,7 +396,7 @@ fn build_chat_completions_messages(messages: &[InternalMessage]) -> Vec<serde_js
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::types::text_content;
+    use crate::adapter::types::{InternalFunctionCall, InternalToolCall, text_content};
 
     fn msg(role: &str, content: &str) -> InternalMessage {
         InternalMessage {
@@ -449,6 +460,42 @@ mod tests {
         assert_eq!(formatted[1]["role"], "assistant");
         assert_eq!(formatted[2]["role"], "tool");
         assert_eq!(formatted[2]["tool_call_id"], "call-1");
+    }
+
+    #[test]
+    fn build_body_replays_reasoning_on_deepseek_tool_call_turns() {
+        let adapter = ChatCompletionsAdapter;
+        let messages = vec![InternalMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![InternalToolCall {
+                id: "call-weather".to_string(),
+                call_type: "function".to_string(),
+                function: InternalFunctionCall {
+                    name: "get_weather".to_string(),
+                    arguments: r#"{"city":"Paris"}"#.to_string(),
+                },
+                reasoning_content: Some("provider thinking".to_string()),
+            }]),
+            tool_call_id: None,
+            name: None,
+        }];
+
+        let deepseek = adapter.build_body("c-deepseek-v4-flash", &messages, None, Some(1024));
+        let assistant = &deepseek["messages"][0];
+        assert_eq!(assistant["content"], "");
+        assert_eq!(assistant["reasoning_content"], "provider thinking");
+        assert_eq!(
+            assistant["tool_calls"][0]["function"]["name"],
+            "get_weather"
+        );
+
+        let other_model = adapter.build_body("qwen3.6-27b", &messages, None, Some(1024));
+        assert!(
+            other_model["messages"][0]
+                .get("reasoning_content")
+                .is_none()
+        );
     }
 
     #[test]

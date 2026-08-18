@@ -133,6 +133,10 @@ export async function gitStage(paths: string[], cwd?: string): Promise<GitAction
   return invoke("git_stage", { cwd, paths });
 }
 
+export async function gitStageAll(cwd?: string): Promise<GitActionResponse> {
+  return invoke("git_stage_all", { cwd });
+}
+
 export async function gitUnstage(paths: string[], cwd?: string): Promise<GitActionResponse> {
   return invoke("git_unstage", { cwd, paths });
 }

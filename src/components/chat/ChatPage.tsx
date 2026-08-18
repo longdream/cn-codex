@@ -173,7 +173,7 @@ export function ChatPage() {
           options.goalBudgetTokens,
           options.robotId,
           {
-            provider: latest.buildThreadChatProviderOverride(
+            provider: latest.buildEffectiveChatProviderOverride(
               overrideProviderId,
               overrideModelId,
             ),

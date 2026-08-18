@@ -32,6 +32,7 @@ pub struct SubagentConfig {
     pub timeout_ms: u64,
     pub max_iterations: usize,
     pub max_output_tokens: Option<i64>,
+    pub reasoning_effort: Option<String>,
 }
 
 /// Status update sent from the subagent task to the registry.
@@ -73,6 +74,8 @@ struct ToolCallInfo {
     id: String,
     name: String,
     arguments: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
 }
 
 enum CompletionResult {
@@ -83,6 +86,7 @@ enum CompletionResult {
     ToolCalls {
         calls: Vec<ToolCallRequest>,
         preceding_text: String,
+        reasoning_content: Option<String>,
     },
 }
 
@@ -261,6 +265,7 @@ async fn run_subagent_loop(
             Ok(CompletionResult::ToolCalls {
                 calls,
                 preceding_text,
+                reasoning_content,
             }) => {
                 info!(
                     "[subagent:{subagent_id}] iteration {iteration}: {} tool calls",
@@ -273,10 +278,16 @@ async fn run_subagent_loop(
 
                 let tc_infos: Vec<ToolCallInfo> = calls
                     .iter()
-                    .map(|c| ToolCallInfo {
+                    .enumerate()
+                    .map(|(index, c)| ToolCallInfo {
                         id: c.id.clone(),
                         name: c.name.clone(),
                         arguments: c.arguments.clone(),
+                        reasoning_content: if index == 0 {
+                            reasoning_content.clone()
+                        } else {
+                            None
+                        },
                     })
                     .collect();
                 messages.push(SubagentMessage {
@@ -365,6 +376,7 @@ fn build_internal_messages(messages: &[SubagentMessage]) -> Vec<InternalMessage>
                             name: tc.name.clone(),
                             arguments: tc.arguments.clone(),
                         },
+                        reasoning_content: tc.reasoning_content.clone(),
                     })
                     .collect()
             });
@@ -401,11 +413,17 @@ async fn stream_completion_internal(
     let url = adapter.build_url(&config.base_url, &config.model);
     let headers = adapter.build_headers(&config.api_key);
     let tools_slice = tools.as_deref();
-    let body = adapter.build_body(
+    let mut body = adapter.build_body(
         &config.model,
         &messages,
         tools_slice,
         config.max_output_tokens,
+    );
+    adapter::apply_reasoning_effort_to_body(
+        &mut body,
+        &config.wire_api,
+        &config.model,
+        config.reasoning_effort.as_deref(),
     );
 
     let request = http.post(&url).headers(headers).json(&body).send();
@@ -476,6 +494,7 @@ async fn stream_completion_internal(
     }
 
     let mut full_text = String::new();
+    let mut full_reasoning = String::new();
     let mut tool_calls: Vec<ToolCallAccumulator> = Vec::new();
     let mut finish_reason: Option<String> = None;
     let mut stream = response.bytes_stream();
@@ -543,8 +562,9 @@ async fn stream_completion_internal(
                     StreamEvent::TextDelta(text) => {
                         full_text.push_str(&text);
                     }
-                    StreamEvent::ReasoningDelta(_) => {
+                    StreamEvent::ReasoningDelta(reasoning) => {
                         // Subagent reasoning is intentionally not promoted to final text.
+                        full_reasoning.push_str(&reasoning);
                     }
                     StreamEvent::ToolCallDelta {
                         index,
@@ -646,6 +666,7 @@ async fn stream_completion_internal(
         Ok(CompletionResult::ToolCalls {
             calls: valid_tool_calls,
             preceding_text: full_text,
+            reasoning_content: (!full_reasoning.is_empty()).then_some(full_reasoning),
         })
     } else {
         Ok(CompletionResult::Message { text: full_text })
@@ -686,6 +707,7 @@ fn completion_output_to_result(output: CompletionOutput) -> AppResult<Completion
         Ok(CompletionResult::ToolCalls {
             calls: tool_calls,
             preceding_text: output.text,
+            reasoning_content: None,
         })
     }
 }
@@ -715,6 +737,16 @@ fn parse_non_streaming_response(body: &str) -> AppResult<CompletionResult> {
         .and_then(|c| c.as_str())
         .unwrap_or("")
         .to_string();
+    let reasoning_content = message
+        .and_then(|value| {
+            value
+                .get("reasoning_content")
+                .or_else(|| value.get("reasoning"))
+                .or_else(|| value.get("reasoning_text"))
+        })
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
     let tool_calls: Vec<ToolCallRequest> = message
         .and_then(|m| m.get("tool_calls"))
@@ -749,6 +781,7 @@ fn parse_non_streaming_response(body: &str) -> AppResult<CompletionResult> {
         Ok(CompletionResult::ToolCalls {
             calls: tool_calls,
             preceding_text: text,
+            reasoning_content,
         })
     } else {
         Ok(CompletionResult::Message { text })

@@ -496,6 +496,7 @@ mod tests {
                             id: "tc-1".to_string(),
                             name: "shell".to_string(),
                             arguments: "cargo check".to_string(),
+                            reasoning_content: None,
                         }]),
                         attachments: Vec::new(),
                     },

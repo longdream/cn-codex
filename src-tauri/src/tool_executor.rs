@@ -70,6 +70,7 @@ pub struct SubagentProviderConfig {
     pub wire_api: String,
     pub system_prompt_prefix: String,
     pub max_output_tokens: Option<i64>,
+    pub reasoning_effort: Option<String>,
 }
 
 pub struct ToolExecutor {
@@ -325,10 +326,16 @@ pub(crate) struct PlanUpdateArgs {
     plan: Vec<PlanItemArg>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct PlanItemArg {
+    #[serde(default, alias = "content", alias = "text", alias = "title")]
     step: String,
+    #[serde(default = "default_plan_item_status")]
     status: String,
+}
+
+fn default_plan_item_status() -> String {
+    "pending".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

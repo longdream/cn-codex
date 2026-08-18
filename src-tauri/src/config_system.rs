@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -984,19 +985,31 @@ pub fn url_looks_like_mcp_sse(url: &str) -> bool {
 #[derive(Clone)]
 pub struct ConfigManager {
     config_path: PathBuf,
+    access_lock: Arc<Mutex<()>>,
 }
 
 impl ConfigManager {
     pub fn new(config_path: PathBuf) -> Self {
-        Self { config_path }
+        Self {
+            config_path,
+            access_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     pub fn read(&self) -> AppResult<ConfigToml> {
+        let _guard = self
+            .access_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         ConfigToml::load(&self.config_path)
     }
 
     pub fn write(&self, edits: &[(String, serde_json::Value)]) -> AppResult<ConfigToml> {
-        let mut config = self.read()?;
+        let _guard = self
+            .access_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut config = ConfigToml::load(&self.config_path)?;
         for (key, value) in edits {
             config.apply_edit(key, value)?;
         }
@@ -1012,6 +1025,48 @@ impl ConfigManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+
+    #[test]
+    fn config_manager_clones_serialize_writes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let manager = ConfigManager::new(temp_dir.path().join("config.toml"));
+        let clone = manager.clone();
+        assert!(Arc::ptr_eq(&manager.access_lock, &clone.access_lock));
+
+        let held_guard = manager
+            .access_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal writer start");
+            let result = clone.write(&[(
+                "model".to_string(),
+                serde_json::json!("new-model"),
+            )]);
+            finished_tx.send(result).expect("signal writer finish");
+        });
+
+        started_rx.recv().expect("writer started");
+        assert!(matches!(
+            finished_rx.recv_timeout(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        drop(held_guard);
+
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("writer should finish after lock release")
+            .expect("write succeeds");
+        writer.join().expect("writer thread");
+        assert_eq!(
+            manager.read().expect("read config").model.as_deref(),
+            Some("new-model")
+        );
+    }
 
     #[test]
     fn web_search_enabled_requires_enabled_mode() {

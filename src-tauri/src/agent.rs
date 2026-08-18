@@ -149,6 +149,7 @@ pub(crate) enum RobotGoalCompletionOutcome {
 }
 
 const ROBOT_COMPACTION_COOLDOWN_CALLS: u32 = 8;
+const MAX_CONSECUTIVE_BLOCKED_READ_ONLY_SHELL_CALLS: u32 = 2;
 
 /// 记录单个文件在当前 turn 内的“修改前/修改后”文本快照。
 ///
@@ -513,11 +514,13 @@ impl AgentEngine {
         // It must read the file again before submitting another patch for that path.
         let mut patch_paths_requiring_refresh: HashSet<String> = HashSet::new();
         let mut failed_apply_patch_fingerprints: HashSet<u64> = HashSet::new();
+        let mut duplicate_failed_patch_count = 0_u32;
         let mut apply_patch_failed_in_turn = false;
         let mut failed_file_edit_attempts = 0_u32;
         let mut successful_file_edit_attempts = 0_u32;
         let mut file_edit_status_retry_count = 0_u32;
         let mut last_read_only_tool_signature: Option<String> = None;
+        let mut consecutive_blocked_read_only_shell_calls = 0_u32;
         let mut suppressed_repetitive_tools: HashSet<String> = HashSet::new();
         let mut last_logged_tool_names: Option<Vec<String>> = None;
         let mut turn_usage = TurnUsage::default();
@@ -818,6 +821,7 @@ impl AgentEngine {
                     wire_api: wire_api.clone(),
                     system_prompt_prefix,
                     max_output_tokens: config.max_output_tokens,
+                    reasoning_effort: config.model_reasoning_effort.clone(),
                 })
                 .await;
         }
@@ -959,6 +963,8 @@ impl AgentEngine {
         const MAX_LENGTH_CONTINUATIONS: u32 = 4;
         const MAX_RATE_LIMIT_RETRIES: u32 = 6;
         const MAX_STREAM_READ_RETRIES: u32 = 2;
+        const MAX_REPEATED_GOAL_STOP_RESPONSES: u32 = 2;
+        const MAX_DUPLICATE_FAILED_PATCH_CALLS: u32 = 2;
         // Keep periodic diagnostics for unusually long turns, but do not treat an
         // iteration count as proof of a loop. Browser automation and goal turns can
         // legitimately need hundreds of distinct tool calls.
@@ -985,6 +991,8 @@ impl AgentEngine {
         let mut output_tokens_override: Option<i64> = None;
         let mut tool_calls_executed = false;
         let mut terminated_by_error = false;
+        let mut last_goal_stop_response: Option<String> = None;
+        let mut repeated_goal_stop_response_count: u32 = 0;
         let mut force_new_plan_on_next_emit =
             turn_mode == "plan" && user_requested_new_plan_file(user_input);
         let mut active_plan_path: Option<String> = None;
@@ -1344,25 +1352,32 @@ impl AgentEngine {
                                 continue;
                             }
 
+                            let unapplied_patch_text = successful_file_edit_attempts == 0
+                                && text_contains_unapplied_patch(&cleaned_text)
+                                && !user_requested_patch_text_only(user_input);
                             if turn_mode != "plan"
                                 && !cleaned_text.is_empty()
                                 && iteration > 0
                                 && intent_retries < MAX_INTENT_RETRIES
-                                && text_expresses_intent(&cleaned_text)
+                                && (text_expresses_intent(&cleaned_text)
+                                    || unapplied_patch_text)
                             {
                                 intent_retries += 1;
-                                info!(
-                                    "Intent detected in text without tool calls, retry {intent_retries}/{MAX_INTENT_RETRIES}"
-                                );
+                                let correction = if unapplied_patch_text {
+                                    info!(
+                                        "Unapplied patch detected in assistant text, retry {intent_retries}/{MAX_INTENT_RETRIES}"
+                                    );
+                                    "You output a patch or diff in assistant text, but no file edit succeeded. Do not ask the user to apply it. Call apply_patch now with exactly one *** Begin Patch / *** End Patch wrapper. For multiple files, place multiple Update File sections inside that single wrapper, and include actual '-' and '+' lines in every update."
+                                } else {
+                                    info!(
+                                        "Intent detected in text without tool calls, retry {intent_retries}/{MAX_INTENT_RETRIES}"
+                                    );
+                                    "You expressed intent to perform an action but did not call any tools. Do NOT stop and wait for the user to say \"continue\". Immediately call the appropriate tool(s) now in this same turn instead of only describing what you plan to do."
+                                };
                                 let nudge_msg = ThreadMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     role: "system".to_string(),
-                                    content:
-                                        "You expressed intent to perform an action but did not \
-                                          call any tools. Do NOT stop and wait for the user to say \
-                                          \"continue\". Immediately call the appropriate tool(s) now \
-                                          in this same turn instead of only describing what you plan to do."
-                                            .to_string(),
+                                    content: correction.to_string(),
                                     timestamp: now_secs(),
                                     tool_call_id: None,
                                     tool_name: None,
@@ -1371,6 +1386,53 @@ impl AgentEngine {
                                 };
                                 self.thread_store.add_message(thread_id, nudge_msg).await?;
                                 continue;
+                            }
+
+                            if turn_mode == "goal"
+                                && repeated_goal_stop_response(
+                                    &mut last_goal_stop_response,
+                                    &cleaned_text,
+                                )
+                            {
+                                repeated_goal_stop_response_count =
+                                    repeated_goal_stop_response_count.saturating_add(1);
+                                if repeated_goal_stop_response_count
+                                    <= MAX_REPEATED_GOAL_STOP_RESPONSES
+                                {
+                                    warn!(
+                                        "Repeated goal stop response without tool progress; requesting tool action ({repeated_goal_stop_response_count}/{MAX_REPEATED_GOAL_STOP_RESPONSES})"
+                                    );
+                                    let nudge_msg = ThreadMessage {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        role: "system".to_string(),
+                                        content: "You repeated the same final response while the goal is still active. Do not repeat or merely describe a patch. If file changes are required, call apply_patch now. If the objective is already complete, call update_goal now."
+                                            .to_string(),
+                                        timestamp: now_secs(),
+                                        tool_call_id: None,
+                                        tool_name: None,
+                                        tool_calls: None,
+                                        attachments: Vec::new(),
+                                    };
+                                    self.thread_store.add_message(thread_id, nudge_msg).await?;
+                                    continue;
+                                }
+
+                                warn!(
+                                    "Stopping goal turn after {repeated_goal_stop_response_count} repeated final responses without tool progress"
+                                );
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "server-error",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "message": "The model repeated the same response without taking the required action. The goal was paused so the conversation remains usable.",
+                                        "retryable": false,
+                                    }),
+                                );
+                                terminated_by_error = true;
+                                break 'goal_loop;
+                            } else if turn_mode == "goal" {
+                                repeated_goal_stop_response_count = 0;
                             }
 
                             let all_file_edits_failed =
@@ -1749,9 +1811,14 @@ impl AgentEngine {
                         Ok(CompletionResult::ToolCalls {
                             calls,
                             preceding_text,
+                            reasoning_content,
                             usage,
                             ..
                         }) => {
+                            if turn_mode == "goal" {
+                                last_goal_stop_response = None;
+                                repeated_goal_stop_response_count = 0;
+                            }
                             let calls = uniquify_tool_call_ids(calls, &mut issued_tool_call_ids);
                             rate_limit_retry_count = 0;
                             stream_read_retry_count = 0;
@@ -1800,10 +1867,16 @@ impl AgentEngine {
 
                             let tc_infos: Vec<ToolCallInfo> = calls
                                 .iter()
-                                .map(|c| ToolCallInfo {
+                                .enumerate()
+                                .map(|(index, c)| ToolCallInfo {
                                     id: c.id.clone(),
                                     name: c.name.clone(),
                                     arguments: c.arguments.clone(),
+                                    reasoning_content: if index == 0 {
+                                        reasoning_content.clone()
+                                    } else {
+                                        None
+                                    },
                                 })
                                 .collect();
                             let assistant_tc_msg = ThreadMessage {
@@ -1841,27 +1914,51 @@ impl AgentEngine {
 
                             let mut results_json: Vec<serde_json::Value> = Vec::new();
                             let mut robot_node_advanced_now = false;
+                            let mut stop_after_duplicate_failed_patch = false;
+                            let mut stop_after_repeated_read_only_shell = false;
 
                             for mut call in calls {
                                 info!("Tool call: {} args={}", call.name, call.arguments);
+                                let read_only_shell_call = is_read_only_shell_tool_call(&call);
                                 if repeated_read_only_tool_call(
                                     &mut last_read_only_tool_signature,
                                     &call,
                                 ) {
-                                    suppressed_repetitive_tools.insert(call.name.clone());
-                                    let result_content = format!(
-                                        "Repeated {tool} call blocked: the immediately preceding call used the same arguments and its result is already in context. Do not search or read the same content again. Use the existing result; if the user requested a code change, call apply_patch now. The {tool} schema is disabled for the remainder of this turn to prevent an infinite read-only loop.",
-                                        tool = call.name
-                                    );
+                                    let result_content = if read_only_shell_call {
+                                        stop_after_repeated_read_only_shell =
+                                            blocked_read_only_shell_repeat_should_stop(
+                                                &mut consecutive_blocked_read_only_shell_calls,
+                                            );
+                                        if stop_after_repeated_read_only_shell {
+                                            "Repeated read-only shell command blocked again. Its successful result is already in context, and this turn will now stop to prevent an infinite command loop."
+                                                .to_string()
+                                        } else {
+                                            "Repeated read-only shell command blocked: the immediately preceding call used the same command and its result is already in context. Do not run it again. Continue from the existing output, make the requested change, or provide the final response. Shell remains available for a different command."
+                                                .to_string()
+                                        }
+                                    } else {
+                                        if !stop_after_repeated_read_only_shell {
+                                            consecutive_blocked_read_only_shell_calls = 0;
+                                        }
+                                        suppressed_repetitive_tools.insert(call.name.clone());
+                                        format!(
+                                            "Repeated {tool} call blocked: the immediately preceding call used the same arguments and its result is already in context. Do not search or read the same content again. Use the existing result; if the user requested a code change, call apply_patch now. The {tool} schema is disabled for the remainder of this turn to prevent an infinite read-only loop.",
+                                            tool = call.name
+                                        )
+                                    };
                                     warn!(
-                                        "Blocked repeated read-only tool call: {} args={}",
-                                        call.name, call.arguments
+                                        "Blocked repeated read-only tool call: {} args={} shell_repeat_count={} stop_turn={}",
+                                        call.name,
+                                        call.arguments,
+                                        consecutive_blocked_read_only_shell_calls,
+                                        stop_after_repeated_read_only_shell
                                     );
                                     results_json.push(serde_json::json!({
                                         "id": call.id,
                                         "tool": call.name,
                                         "success": false,
                                         "repeatedReadOnlyCall": true,
+                                        "turnWillStop": stop_after_repeated_read_only_shell,
                                     }));
                                     let tool_msg = ThreadMessage {
                                         id: uuid::Uuid::new_v4().to_string(),
@@ -1875,6 +1972,9 @@ impl AgentEngine {
                                     };
                                     self.thread_store.add_message(thread_id, tool_msg).await?;
                                     continue;
+                                }
+                                if !stop_after_repeated_read_only_shell {
+                                    consecutive_blocked_read_only_shell_calls = 0;
                                 }
                                 if goal_completed_now {
                                     let skipped_call_id = call.id.clone();
@@ -2047,6 +2147,18 @@ impl AgentEngine {
                                     apply_patch_fingerprint.is_some_and(|fingerprint| {
                                         failed_apply_patch_fingerprints.contains(&fingerprint)
                                     });
+                                let duplicate_failed_patch_limit_reached =
+                                    if call.name == "apply_patch" {
+                                        let reached = repeated_failed_patch_limit_reached(
+                                            &mut duplicate_failed_patch_count,
+                                            duplicate_failed_patch,
+                                            MAX_DUPLICATE_FAILED_PATCH_CALLS,
+                                        );
+                                        stop_after_duplicate_failed_patch = reached;
+                                        reached
+                                    } else {
+                                        false
+                                    };
                                 let blocked_write_file_fallback =
                                     should_block_write_file_after_patch_failure(
                                         &call.name,
@@ -2194,7 +2306,12 @@ impl AgentEngine {
                                     )
                                 } else if duplicate_failed_patch {
                                     (
-                                        "apply_patch was blocked because this exact patch already failed in this turn. Use the fresh context in the previous error or read_file, then construct a different patch.".to_string(),
+                                        if duplicate_failed_patch_limit_reached {
+                                            "apply_patch was blocked because this exact failed patch was repeated again. The turn will stop to prevent an edit loop. Start the next turn from fresh file context and construct a different Codex patch without Markdown fences or nested diff headers."
+                                        } else {
+                                            "apply_patch was blocked because this exact patch already failed in this turn. Reading the file does not make the same hunk valid; construct a different patch from the fresh context. Use only Codex patch directives and hunks, without Markdown fences or nested diff --git headers."
+                                        }
+                                        .to_string(),
                                         false,
                                     )
                                 } else {
@@ -2263,9 +2380,6 @@ impl AgentEngine {
                                         patch_paths_requiring_refresh.retain(|changed_path| {
                                             !paths_match(changed_path, &path)
                                         });
-                                        // A fresh read is the required recovery step after a stale
-                                        // patch. Allow the model to retry a previously rejected patch.
-                                        failed_apply_patch_fingerprints.clear();
                                     }
                                 }
                                 if call.name == "apply_patch" {
@@ -2378,6 +2492,38 @@ impl AgentEngine {
                                     "results": results_json,
                                 }),
                             );
+                            if stop_after_duplicate_failed_patch {
+                                warn!(
+                                    "Stopping turn after {duplicate_failed_patch_count} duplicate calls to an already failed apply_patch"
+                                );
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "server-error",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "message": "The model repeatedly submitted the same failed patch. The turn was stopped to prevent an edit loop.",
+                                        "retryable": false,
+                                    }),
+                                );
+                                terminated_by_error = true;
+                                break 'goal_loop;
+                            }
+                            if stop_after_repeated_read_only_shell {
+                                warn!(
+                                    "Stopping turn after {consecutive_blocked_read_only_shell_calls} consecutive blocked repetitions of the same read-only shell command"
+                                );
+                                emit_and_broadcast(
+                                    app_handle,
+                                    "server-error",
+                                    serde_json::json!({
+                                        "threadId": thread_id,
+                                        "message": "The model repeatedly ran the same read-only shell command. The turn was stopped to prevent an infinite command loop.",
+                                        "retryable": false,
+                                    }),
+                                );
+                                terminated_by_error = true;
+                                break 'goal_loop;
+                            }
                             // tool_search activates non-core schemas into the per-thread set.
                             // The next loop iteration rebuilds the lazy tool set,
                             // so activated schemas are available for the next model call in
@@ -3247,7 +3393,7 @@ impl AgentEngine {
              - write_file: Create a new file. Rewriting an existing file requires overwrite=true and complete content, and destructive truncation is rejected.\n\
              - tool_search: Search available CN-Codex tools, skills, plugin skills, and discovered MCP tools, then activate matching non-core schemas for the next model call in this same turn. Default turns only expose a small core tool set; non-core tools (MCP/Playwright, memory, image generation, MCP helpers, agents, plugins, etc.) are lazy-loaded through this tool.\n\
              - code_review: Review current git changes or a diff against a base ref, reporting changed files, diff-check issues, and obvious risk patterns.\n\
-             - apply_patch: Edit files with a Codex patch. Pass the complete raw patch body in the required patch field.\n\
+             - apply_patch: Edit files with a Codex patch. Pass exactly one raw *** Begin Patch ... *** End Patch wrapper in the required patch field. For multiple files, repeat only the Add/Update/Delete File sections inside that wrapper. Every Update File must contain actual '-' and '+' lines. Never nest another Begin Patch or include Markdown, context-diff, diff --git, timestamp, ---, or +++ envelopes.\n\
              - list_directory: List files and subdirectories in a directory.\n\
              - code_search: Search source code in the current workspace using CN-Codex's built-in search engine.\n\
              - update_plan: Update a concise multi-step task plan; keep at most one step in_progress.\n\
@@ -3297,7 +3443,7 @@ impl AgentEngine {
              FILE EDITING RULES:\n\
              1. Use `apply_patch` as the default for every edit to an existing text file, including single-file edits. It applies contextual diffs and avoids rewriting unrelated content.\n\
              2. Use `write_file` only to create a new file or when the user explicitly requests a complete file rewrite; existing files require overwrite=true. Never use it as a fallback after apply_patch fails.\n\
-             3. For `apply_patch`, send one complete patch in the required `patch` field and prefer workspace-relative paths. \
+             3. For `apply_patch`, send exactly one `*** Begin Patch` / `*** End Patch` wrapper in the required `patch` field and prefer workspace-relative paths. For multiple files, put multiple file sections inside that one wrapper; never start a second wrapper. \
              Numbered `read_file` output includes a display gutter before file content; never copy its line number or separator into a patch. If a hunk fails, re-read the affected range and retry with smaller exact context.\n\
              4. NEVER use shell commands (python, sed, echo, Set-Content, Out-File, etc.) to write or modify file contents. \
                 Shell tools are for running programs, building, testing, and other system commands — not for file editing.\n\
@@ -4065,6 +4211,7 @@ impl AgentEngine {
                             name: tc.name.clone(),
                             arguments: tc.arguments.clone(),
                         },
+                        reasoning_content: tc.reasoning_content.clone(),
                     })
                     .collect()
             });
@@ -4267,6 +4414,7 @@ impl AgentEngine {
 
         // 流式解析
         let mut full_text = String::new();
+        let mut full_reasoning = String::new();
         let mut tool_calls: Vec<ToolCallAccumulator> = Vec::new();
         let mut finish_reason: Option<String> = None;
         let mut usage_info: Option<UsageInfo> = None;
@@ -4433,6 +4581,7 @@ impl AgentEngine {
                         }
                         StreamEvent::ReasoningDelta(reasoning) => {
                             if !reasoning.is_empty() {
+                                full_reasoning.push_str(&reasoning);
                                 emit_and_broadcast(
                                     app_handle,
                                     "reasoning-text-delta",
@@ -4725,6 +4874,7 @@ impl AgentEngine {
             Ok(CompletionResult::ToolCalls {
                 calls: final_tool_calls,
                 preceding_text: full_text,
+                reasoning_content: (!full_reasoning.is_empty()).then_some(full_reasoning),
                 usage: usage_info,
                 finish_reason,
             })
@@ -4788,6 +4938,7 @@ impl AgentEngine {
             Ok(CompletionResult::ToolCalls {
                 calls: tool_calls,
                 preceding_text: output.text,
+                reasoning_content: None,
                 usage: output.usage,
                 finish_reason: None,
             })
@@ -4956,6 +5107,8 @@ impl AgentEngine {
             Ok(CompletionResult::ToolCalls {
                 calls: final_tool_calls,
                 preceding_text: text,
+                reasoning_content: (!provider_reasoning.is_empty())
+                    .then(|| provider_reasoning.to_string()),
                 usage: usage_info,
                 finish_reason: None,
             })
@@ -4989,6 +5142,7 @@ enum CompletionResult {
     ToolCalls {
         calls: Vec<ToolCallRequest>,
         preceding_text: String,
+        reasoning_content: Option<String>,
         usage: Option<UsageInfo>,
         #[allow(dead_code)]
         finish_reason: Option<String>,

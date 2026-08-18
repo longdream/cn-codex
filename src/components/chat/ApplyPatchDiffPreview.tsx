@@ -26,12 +26,7 @@ export function ApplyPatchDiffPreview({ patch }: ApplyPatchDiffPreviewProps) {
   );
 
   if (fileDiffs.length === 0) {
-    return (
-      <pre className="chat-tool-output max-h-[160px] overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 font-mono text-[var(--chat-prose)]">
-        {patch.slice(0, 800)}
-        {patch.length > 800 ? "..." : ""}
-      </pre>
-    );
+    return null;
   }
 
   return (

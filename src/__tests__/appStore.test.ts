@@ -1900,6 +1900,63 @@ describe("appStore", () => {
       expect(useAppStore.getState().buildThreadChatProviderOverride(null, null)).toBeNull();
     });
 
+    it("builds an effective global model snapshot for an immediate send", () => {
+      useAppStore.setState({
+        providers: [
+          {
+            id: "provider-deepseek",
+            type: "deepseek",
+            name: "DeepSeek",
+            category: "china",
+            baseUrl: "https://api.deepseek.com/v1",
+            apiKey: "sk-deepseek",
+            wireApi: "chat",
+            requiresOpenAIAuth: false,
+            models: [
+              {
+                id: "deepseek-chat",
+                label: "DeepSeek Chat",
+                supportsVision: false,
+                contextLength: 128000,
+                maxOutputTokens: 8192,
+              },
+            ],
+            isCustom: false,
+            createdAt: Date.now(),
+          },
+        ],
+        configuredModels: [],
+        activeModelId: null,
+        activeProviderId: "provider-deepseek",
+        currentModel: "deepseek-chat",
+        reasoningEffort: "high",
+        overrideProviderId: null,
+        overrideModelId: null,
+      });
+
+      expect(
+        useAppStore.getState().buildEffectiveChatProviderOverride(null, null),
+      ).toMatchObject({
+        providerKey: "deepseek",
+        baseUrl: "https://api.deepseek.com/v1",
+        modelId: "deepseek-chat",
+        reasoningEffort: "high",
+        modelContextWindow: 128000,
+        maxOutputTokens: 8192,
+      });
+
+      expect(
+        useAppStore.getState().buildEffectiveChatProviderOverride(
+          "deleted-provider",
+          "deleted-model",
+        ),
+      ).toMatchObject({
+        providerKey: "deepseek",
+        modelId: "deepseek-chat",
+        reasoningEffort: "high",
+      });
+    });
+
     it("writes local OCR fallback kind when provider is activated", async () => {
       useAppStore.setState({
         activeProviderId: null,

@@ -732,13 +732,13 @@ impl ToolExecutor {
                 "type": "function",
                 "function": {
                     "name": "apply_patch",
-                    "description": "Use apply_patch to edit files. Pass one complete Codex patch in the required patch field, from *** Begin Patch through *** End Patch. Do not wrap the patch in another JSON or shell command.",
+                    "description": "Use apply_patch to edit files. The patch must contain exactly one *** Begin Patch and one *** End Patch wrapper. For multiple files, repeat *** Update File sections inside that single wrapper. Every update must include actual '-' and '+' lines. Do not nest another Begin Patch or use Markdown, context-diff, diff --git, timestamp, ---, or +++ envelopes.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "patch": {
                                 "type": "string",
-                                "description": "Complete raw patch body using *** Add File, *** Update File, and *** Delete File sections."
+                                "description": "Complete raw patch body with one outer wrapper. Multiple files use multiple Add/Update/Delete File sections inside that wrapper, never multiple Begin/End markers."
                             }
                         },
                         "required": ["patch"],

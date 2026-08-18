@@ -265,6 +265,7 @@ export function MiniAppSettingsPanel() {
         undefined,
         undefined,
         {
+          provider: store.buildEffectiveChatProviderOverride(null, null),
           smartbrainEnabled: usesDatabase,
         },
         userMessage.id,

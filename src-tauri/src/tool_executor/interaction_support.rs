@@ -32,26 +32,42 @@ pub(crate) fn format_plan_update(explanation: Option<&str>, plan: &[PlanItemArg]
     }
 
     let mut in_progress = 0usize;
+    let mut normalized = Vec::with_capacity(plan.len());
     for item in plan {
         let step = item.step.trim();
         if step.is_empty() {
-            return Err("Error: plan item step must not be empty".to_string());
+            // Models sometimes re-insert a blank placeholder when revising a plan.
+            // Skip it instead of failing the whole update.
+            continue;
         }
-        match item.status.as_str() {
-            "pending" | "in_progress" | "completed" => {}
-            other => {
-                return Err(format!(
-                    "Error: invalid plan status '{other}'. Expected pending, in_progress, or completed"
-                ));
-            }
-        }
-        if item.status == "in_progress" {
+        let status = normalize_plan_status(&item.status);
+        if status == "in_progress" {
             in_progress += 1;
         }
+        normalized.push(PlanItemArg {
+            step: step.to_string(),
+            status,
+        });
+    }
+
+    if normalized.is_empty() {
+        return Err("Error: update_plan requires at least one plan item".to_string());
     }
 
     if in_progress > 1 {
-        return Err("Error: only one plan item can be in_progress".to_string());
+        // Keep the last in-progress item when the model re-inserts a step
+        // without first demoting the previous one.
+        let mut seen_in_progress = false;
+        for item in normalized.iter_mut().rev() {
+            if item.status != "in_progress" {
+                continue;
+            }
+            if seen_in_progress {
+                item.status = "pending".to_string();
+            } else {
+                seen_in_progress = true;
+            }
+        }
     }
 
     let mut output = String::from("Plan updated");
@@ -61,11 +77,21 @@ pub(crate) fn format_plan_update(explanation: Option<&str>, plan: &[PlanItemArg]
     }
     output.push('\n');
 
-    for item in plan {
-        output.push_str(&format!("- [{}] {}\n", item.status, item.step.trim()));
+    for item in &normalized {
+        output.push_str(&format!("- [{}] {}\n", item.status, item.step));
     }
 
     Ok(output.trim_end().to_string())
+}
+
+fn normalize_plan_status(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "completed" | "complete" | "done" | "finished" => "completed".to_string(),
+        "in_progress" | "in-progress" | "inprogress" | "active" | "doing" | "current" => {
+            "in_progress".to_string()
+        }
+        _ => "pending".to_string(),
+    }
 }
 
 

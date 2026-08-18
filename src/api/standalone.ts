@@ -25,10 +25,19 @@ export async function standaloneConfigRead(): Promise<{
   return invoke("standalone_config_read");
 }
 
+let configWriteTail: Promise<void> = Promise.resolve();
+
 export async function standaloneConfigWrite(
   edits: Array<{ keyPath: string; value: unknown; mergeStrategy?: string }>,
 ): Promise<{ status: string; filePath: string }> {
-  return invoke("standalone_config_write", { edits });
+  const write = configWriteTail.then(() =>
+    invoke<{ status: string; filePath: string }>("standalone_config_write", { edits }),
+  );
+  configWriteTail = write.then(
+    () => undefined,
+    () => undefined,
+  );
+  return write;
 }
 
 export interface RemoteProviderModel {
@@ -251,6 +260,7 @@ export interface StandaloneChatProviderOverride {
   wireApi?: string | null;
   requiresOpenAIAuth?: boolean | null;
   modelId?: string | null;
+  reasoningEffort?: string | null;
   modelContextWindow?: number | null;
   maxOutputTokens?: number | null;
   modelSupportsVision?: boolean | null;

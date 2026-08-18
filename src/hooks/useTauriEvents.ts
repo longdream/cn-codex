@@ -29,6 +29,7 @@ import {
   shouldAcceptAgentMessageDelta,
   type AgentTurnPhase,
 } from "../utils/agentMessageDelta";
+import { StreamingTextBatcher } from "../utils/streamingTextBatcher";
 
 interface TurnEventPayload {
   threadId: string;
@@ -584,10 +585,13 @@ export function useTauriEvents() {
   useEffect(() => {
     let cancelled = false;
     const unlisten: UnlistenFn[] = [];
-    const reasoningByThread = new Map<string, string>();
+    const reasoningByThread = new Map<string, string[]>();
     const lastEventSeqByThread = new Map<string, number>();
     const turnPhaseByThread = new Map<string, AgentTurnPhase>();
     const handledTerminalTurnIdsByThread = new Map<string, Set<string>>();
+    const streamingTextBatcher = new StreamingTextBatcher((threadId, text) => {
+      useAppStore.getState().appendStreamingTextForThread(threadId, text);
+    });
 
     const claimTerminalTurn = (threadId: string, turnId: string | null): boolean => {
       if (!turnId) {
@@ -630,11 +634,18 @@ export function useTauriEvents() {
       if (!acceptSequencedEvent(payload, threadId)) {
         return;
       }
-      const nextValue = `${reasoningByThread.get(threadId) ?? ""}${delta}`;
-      reasoningByThread.set(threadId, nextValue);
+      const chunks = reasoningByThread.get(threadId);
+      if (chunks) {
+        chunks.push(delta);
+      } else {
+        reasoningByThread.set(threadId, [delta]);
+      }
       // 仅活跃线程更新 streamingLabel（后台线程无需更新 UI）。
       if (threadId === store.currentThreadId && store.isStreaming) {
-        store.setStreamingLabel(`${intl.formatMessage({ id: "tool.reasoning" })}...`);
+        const reasoningLabel = `${intl.formatMessage({ id: "tool.reasoning" })}...`;
+        if (store.streamingLabel !== reasoningLabel) {
+          store.setStreamingLabel(reasoningLabel);
+        }
       }
     };
 
@@ -659,6 +670,7 @@ export function useTauriEvents() {
 
       // 标记后台线程开始新的 turn
       store.setStreamingForThread(threadId, true);
+      streamingTextBatcher.discard(threadId);
       store.clearStreamingTextForThread(threadId);
       store.setLiveTurnUsageForThread(threadId, null);
       store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.processing" }));
@@ -673,7 +685,7 @@ export function useTauriEvents() {
           next.options?.goalBudgetTokens,
           next.options?.robotId,
           {
-            provider: store.buildThreadChatProviderOverride(
+            provider: store.buildEffectiveChatProviderOverride(
               runtime.overrideProviderId ?? null,
               runtime.overrideModelId ?? null,
             ),
@@ -708,7 +720,8 @@ export function useTauriEvents() {
             return;
           }
           const runtime = store.getThreadRuntimeState(threadId);
-          const currentLen = runtime?.streamingText.length ?? 0;
+          const currentLen = (runtime?.streamingText.length ?? 0)
+            + streamingTextBatcher.pendingLength(threadId);
           if (currentLen === 0) {
             store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.generating" }));
           } else if (currentLen > 200 && currentLen <= 220) {
@@ -716,7 +729,7 @@ export function useTauriEvents() {
           } else if (currentLen > 800 && currentLen <= 820) {
             store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.summarizing" }));
           }
-          store.appendStreamingTextForThread(threadId, e.payload.delta);
+          streamingTextBatcher.append(threadId, e.payload.delta);
         }),
 
         listen<ReasoningDeltaPayload>("reasoning-text-delta", (e) => {
@@ -737,10 +750,11 @@ export function useTauriEvents() {
             turnPhaseByThread.set(threadId, "sampling");
             store.setCurrentTurnIdForThread(threadId, e.payload.turn?.id ?? null);
             store.setStreamingForThread(threadId, true);
+            streamingTextBatcher.discard(threadId);
             store.clearStreamingTextForThread(threadId);
             store.setLiveTurnUsageForThread(threadId, null);
             store.setStreamingLabelForThread(threadId, intl.formatMessage({ id: "streaming.processing" }));
-            reasoningByThread.set(threadId, "");
+            reasoningByThread.set(threadId, []);
             if ("goal" in e.payload) {
               store.setCurrentGoalForThread(threadId, e.payload.goal ?? null);
             }
@@ -804,9 +818,10 @@ export function useTauriEvents() {
             }
             if (!claimTerminalTurn(threadId, completedTurnId)) return;
             turnPhaseByThread.set(threadId, "completed");
+            streamingTextBatcher.flush(threadId);
 
             // 推理过程消息
-            const reasoningText = (reasoningByThread.get(threadId) ?? "").trim();
+            const reasoningText = (reasoningByThread.get(threadId) ?? []).join("").trim();
             if (reasoningText) {
               // 与本轮工具调用合并到同一张卡，避免再多出一张“工具调用”。
               store.appendToolCallsToThread(threadId, [
@@ -883,6 +898,7 @@ export function useTauriEvents() {
           if (terminalTurnId && activeTurnId && terminalTurnId !== activeTurnId) return;
           if (!claimTerminalTurn(threadId, terminalTurnId)) return;
           turnPhaseByThread.set(threadId, "completed");
+          streamingTextBatcher.flush(threadId);
           store.markRunningToolCallsInterruptedForThread(threadId, "Turn cancelled by user.");
           store.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
           store.setLiveTurnUsageForThread(threadId, null);
@@ -898,6 +914,7 @@ export function useTauriEvents() {
           if (terminalTurnId && activeTurnId && terminalTurnId !== activeTurnId) return;
           if (!claimTerminalTurn(threadId, terminalTurnId)) return;
           turnPhaseByThread.set(threadId, "completed");
+          streamingTextBatcher.flush(threadId);
           store.markRunningToolCallsInterruptedForThread(threadId, "Turn failed before completion.");
           store.flushAndStopStreamingForThread(threadId, { commitStreamingText: true });
           store.setLiveTurnUsageForThread(threadId, null);
@@ -986,6 +1003,7 @@ export function useTauriEvents() {
           const isActive = threadId === store.currentThreadId;
 
           // 提交待处理的流式文本
+          streamingTextBatcher.flush(threadId);
           const runtime = store.getThreadRuntimeState(threadId);
           const pendingText = runtime?.streamingText ?? "";
           if (pendingText) {
@@ -1292,6 +1310,33 @@ export function useTauriEvents() {
           }
         }),
 
+        listen<{ threadId: string; error?: string }>("compaction-failed", (e) => {
+          const store = useAppStore.getState();
+          const threadId = e.payload.threadId ?? store.currentThreadId;
+          if (!threadId) return;
+
+          const runtime = store.getThreadRuntimeState(threadId);
+          const compactingOnly = runtime?.isStreaming && !runtime.currentTurnId;
+          if (compactingOnly) {
+            store.flushAndStopStreamingForThread(threadId);
+          } else if (runtime?.isStreaming) {
+            store.setStreamingLabelForThread(
+              threadId,
+              intl.formatMessage({ id: "streaming.processing" }),
+            );
+          }
+
+          const error = e.payload.error?.trim();
+          if (error) {
+            store.addMessageToThread(threadId, {
+              id: crypto.randomUUID(),
+              role: "system",
+              content: `Error: ${error}`,
+              timestamp: Date.now(),
+            });
+          }
+        }),
+
         listen<SmartbrainExtractionStartedPayload>(
           "smartbrain-extraction-started",
           (e) => {
@@ -1355,7 +1400,9 @@ export function useTauriEvents() {
               store.setStreamingForThread(threadId, true);
               // Drop any truncated SSE text so the automatic reconnect does not
               // concatenate a fresh response onto the previous partial stream.
+              streamingTextBatcher.discard(threadId);
               store.clearStreamingTextForThread(threadId);
+              reasoningByThread.set(threadId, []);
               store.setStreamingLabelForThread(threadId, `服务暂时不可用，${waitSeconds}s 后重试${retrySuffix}`);
               return;
             }
@@ -1363,6 +1410,7 @@ export function useTauriEvents() {
               e.payload.message ??
               e.payload.error?.message ??
               JSON.stringify(e.payload);
+            streamingTextBatcher.discard(threadId);
             reasoningByThread.delete(threadId);
             store.setLiveTurnUsageForThread(threadId, null);
             store.markRunningToolCallsInterruptedForThread(threadId, msg);
@@ -1637,6 +1685,7 @@ export function useTauriEvents() {
 
     return () => {
       cancelled = true;
+      streamingTextBatcher.dispose();
       unlisten.forEach((fn) => fn());
     };
   }, [intl]);

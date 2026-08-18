@@ -390,6 +390,20 @@ pub async fn git_stage(
 }
 
 #[tauri::command]
+pub async fn git_stage_all(
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+) -> AppResult<GitActionResponse> {
+    let service = git_service_from_state(&state, cwd).await?;
+    // Do not turn the status list into pathspec arguments: this stages the
+    // repository as a whole and avoids command-line length and pathspec bugs.
+    let output = service
+        .run(&["add", "--all"], DEFAULT_MAX_OUTPUT_BYTES)
+        .await?;
+    Ok(action_ok("All files staged successfully.", output))
+}
+
+#[tauri::command]
 pub async fn git_unstage(
     state: State<'_, AppState>,
     cwd: Option<String>,

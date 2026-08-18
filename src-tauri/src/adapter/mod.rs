@@ -140,6 +140,22 @@ fn chat_model_supports_reasoning_effort(model: &str) -> bool {
     KEYS.iter().any(|key| m.contains(key))
 }
 
+pub(crate) fn is_deepseek_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("deepseek")
+}
+
+fn is_deepseek_v4_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase().replace('_', "-");
+    model.contains("deepseek-v4")
+}
+
+fn reasoning_effort_is_disabled(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "none" | "off" | "disable" | "disabled" | "false" | "0"
+    )
+}
+
 fn anthropic_model_supports_thinking(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
     m.contains("claude")
@@ -161,13 +177,45 @@ pub fn apply_reasoning_effort_to_body(
     model: &str,
     effort_raw: Option<&str>,
 ) {
-    let Some(effort) = normalize_reasoning_effort(effort_raw) else {
-        return;
-    };
     let Some(obj) = body.as_object_mut() else {
         return;
     };
     let wire = wire_api.trim().to_ascii_lowercase();
+
+    // DeepSeek V4 accepts only enabled/high, enabled/max, or disabled.
+    // Map the app's provider-neutral effort levels onto that legal wire shape.
+    let is_chat_compatible = !matches!(wire.as_str(), "responses" | "anthropic" | "gemini");
+    if is_chat_compatible && is_deepseek_v4_model(model) {
+        let Some(raw) = effort_raw.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        if reasoning_effort_is_disabled(raw) {
+            obj.insert(
+                "thinking".to_string(),
+                serde_json::json!({ "type": "disabled" }),
+            );
+            obj.remove("reasoning_effort");
+            return;
+        }
+        let effort = if normalize_reasoning_effort(Some(raw)).as_deref() == Some("xhigh") {
+            "max"
+        } else {
+            "high"
+        };
+        obj.insert(
+            "thinking".to_string(),
+            serde_json::json!({ "type": "enabled" }),
+        );
+        obj.insert(
+            "reasoning_effort".to_string(),
+            serde_json::Value::String(effort.to_string()),
+        );
+        return;
+    }
+
+    let Some(effort) = normalize_reasoning_effort(effort_raw) else {
+        return;
+    };
 
     match wire.as_str() {
         "responses" => {
@@ -312,6 +360,49 @@ mod tests {
         let mut plain_chat = serde_json::json!({"model":"gpt-4.1"});
         apply_reasoning_effort_to_body(&mut plain_chat, "chat", "gpt-4.1", Some("medium"));
         assert!(plain_chat.get("reasoning_effort").is_none());
+
+        let mut deepseek_v4 = serde_json::json!({"model":"c-deepseek-v4-flash"});
+        apply_reasoning_effort_to_body(
+            &mut deepseek_v4,
+            "chat",
+            "c-deepseek-v4-flash",
+            Some("medium"),
+        );
+        assert_eq!(
+            deepseek_v4
+                .pointer("/thinking/type")
+                .and_then(|v| v.as_str()),
+            Some("enabled")
+        );
+        assert_eq!(
+            deepseek_v4.get("reasoning_effort").and_then(|v| v.as_str()),
+            Some("high")
+        );
+
+        apply_reasoning_effort_to_body(
+            &mut deepseek_v4,
+            "chat",
+            "c-deepseek-v4-flash",
+            Some("xhigh"),
+        );
+        assert_eq!(
+            deepseek_v4.get("reasoning_effort").and_then(|v| v.as_str()),
+            Some("max")
+        );
+
+        apply_reasoning_effort_to_body(
+            &mut deepseek_v4,
+            "chat",
+            "c-deepseek-v4-flash",
+            Some("none"),
+        );
+        assert_eq!(
+            deepseek_v4
+                .pointer("/thinking/type")
+                .and_then(|v| v.as_str()),
+            Some("disabled")
+        );
+        assert!(deepseek_v4.get("reasoning_effort").is_none());
 
         let mut anthropic_body = serde_json::json!({"model":"claude-sonnet-4"});
         apply_reasoning_effort_to_body(

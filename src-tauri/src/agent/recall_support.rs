@@ -134,10 +134,11 @@ pub(crate) fn repeated_read_only_tool_call(
     last_signature: &mut Option<String>,
     call: &ToolCallRequest,
 ) -> bool {
-    if !matches!(
+    let is_builtin_read_only = matches!(
         call.name.as_str(),
-        "read_file" | "code_search" | "list_directory"
-    ) {
+        "read_file" | "code_search" | "code_review" | "list_directory"
+    );
+    if !is_builtin_read_only && !is_read_only_shell_tool_call(call) {
         *last_signature = None;
         return false;
     }
@@ -150,6 +151,222 @@ pub(crate) fn repeated_read_only_tool_call(
     let repeated = last_signature.as_deref() == Some(signature.as_str());
     *last_signature = Some(signature);
     repeated
+}
+
+
+pub(crate) fn is_read_only_shell_tool_call(call: &ToolCallRequest) -> bool {
+    matches!(
+        call.name.as_str(),
+        "shell" | "shell_command" | "exec_command"
+    ) && shell_command_from_args(&call.arguments)
+        .as_deref()
+        .is_some_and(is_read_only_shell_command)
+}
+
+
+pub(crate) fn blocked_read_only_shell_repeat_should_stop(repeat_count: &mut u32) -> bool {
+    *repeat_count = repeat_count.saturating_add(1);
+    *repeat_count >= MAX_CONSECUTIVE_BLOCKED_READ_ONLY_SHELL_CALLS
+}
+
+
+pub(crate) fn is_read_only_shell_command(command: &str) -> bool {
+    let Some(segments) = split_read_only_shell_segments(command) else {
+        return false;
+    };
+    !segments.is_empty()
+        && segments
+            .iter()
+            .all(|segment| is_read_only_shell_segment(segment))
+}
+
+
+fn split_read_only_shell_segments(command: &str) -> Option<Vec<String>> {
+    let chars = command.chars().collect::<Vec<_>>();
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut index = 0;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        match quote {
+            Some(marker) => {
+                if ch == marker {
+                    quote = None;
+                }
+                if marker == '"'
+                    && ((ch == '$' || ch == '@') && chars.get(index + 1) == Some(&'(')
+                        || ch == '`')
+                {
+                    return None;
+                }
+                current.push(ch);
+            }
+            None => {
+                if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                    current.push(ch);
+                } else if matches!(ch, '>' | '<' | '&' | '`' | '{' | '}' | '#')
+                    || ((ch == '$' || ch == '@') && chars.get(index + 1) == Some(&'('))
+                {
+                    return None;
+                } else if matches!(ch, ';' | '|' | '\n' | '\r') {
+                    let segment = current.trim();
+                    if segment.is_empty() {
+                        return None;
+                    }
+                    segments.push(segment.to_string());
+                    current.clear();
+                } else {
+                    current.push(ch);
+                }
+            }
+        }
+        index += 1;
+    }
+
+    if quote.is_some() {
+        return None;
+    }
+    let tail = current.trim();
+    if tail.is_empty() {
+        return None;
+    }
+    segments.push(tail.to_string());
+    Some(segments)
+}
+
+
+fn is_read_only_shell_segment(segment: &str) -> bool {
+    let tokens = shell_command_tokens(segment);
+    let Some(program) = tokens.first().map(|value| value.to_ascii_lowercase()) else {
+        return false;
+    };
+
+    match program.as_str() {
+        "git" | "git.exe" => is_read_only_git_invocation(&tokens[1..]),
+        "echo" | "printf" | "write-output" | "head" | "tail" | "cut" | "wc"
+        | "more" | "findstr" | "select-object" | "format-table" | "format-list"
+        | "format-wide" | "format-custom" | "out-string" | "measure-object" => true,
+        _ => false,
+    }
+}
+
+
+fn is_read_only_git_invocation(arguments: &[String]) -> bool {
+    let Some((subcommand, rest)) = arguments.split_first() else {
+        return false;
+    };
+    let subcommand = subcommand.to_ascii_lowercase();
+    if git_arguments_can_write_or_execute(rest) {
+        return false;
+    }
+
+    match subcommand.as_str() {
+        "status" | "log" | "diff" | "show" | "rev-parse" | "ls-files" | "ls-tree"
+        | "shortlog" | "describe" | "name-rev" | "merge-base" | "diff-tree"
+        | "diff-index" | "diff-files" | "for-each-ref" | "count-objects" => true,
+        "branch" => is_read_only_git_branch(rest),
+        "tag" => is_read_only_git_tag(rest),
+        "remote" => is_read_only_git_remote(rest),
+        "stash" => rest.first().is_some_and(|value| {
+            matches!(value.to_ascii_lowercase().as_str(), "list" | "show")
+        }),
+        "reflog" => rest.first().map_or(true, |value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "show" | "list" | "exists"
+            )
+        }),
+        "worktree" => rest
+            .first()
+            .is_some_and(|value| value.eq_ignore_ascii_case("list")),
+        _ => false,
+    }
+}
+
+
+fn git_arguments_can_write_or_execute(arguments: &[String]) -> bool {
+    arguments.iter().any(|argument| {
+        let lower = argument.to_ascii_lowercase();
+        matches!(lower.as_str(), "--output" | "--ext-diff" | "--textconv")
+            || lower.starts_with("--output=")
+            || lower.starts_with("--exec=")
+    })
+}
+
+
+fn is_read_only_git_branch(arguments: &[String]) -> bool {
+    arguments.is_empty()
+        || arguments.iter().all(|argument| {
+            let lower = argument.to_ascii_lowercase();
+            matches!(
+                lower.as_str(),
+                "--list"
+                    | "--all"
+                    | "-a"
+                    | "--remotes"
+                    | "-r"
+                    | "--show-current"
+                    | "--verbose"
+                    | "-v"
+                    | "-vv"
+                    | "--column"
+                    | "--no-column"
+                    | "--color"
+                    | "--no-color"
+                    | "--ignore-case"
+                    | "-i"
+            ) || [
+                "--format=",
+                "--sort=",
+                "--contains=",
+                "--no-contains=",
+                "--merged=",
+                "--no-merged=",
+                "--points-at=",
+                "--color=",
+                "--column=",
+            ]
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+        })
+}
+
+
+fn is_read_only_git_tag(arguments: &[String]) -> bool {
+    arguments.is_empty()
+        || arguments.iter().all(|argument| {
+            let lower = argument.to_ascii_lowercase();
+            matches!(lower.as_str(), "--list" | "-l" | "--ignore-case" | "-i")
+                || lower.starts_with("-n")
+                || [
+                    "--format=",
+                    "--sort=",
+                    "--contains=",
+                    "--no-contains=",
+                    "--merged=",
+                    "--no-merged=",
+                    "--points-at=",
+                    "--color=",
+                    "--column=",
+                ]
+                .iter()
+                .any(|prefix| lower.starts_with(prefix))
+        })
+}
+
+
+fn is_read_only_git_remote(arguments: &[String]) -> bool {
+    let Some((operation, rest)) = arguments.split_first() else {
+        return true;
+    };
+    let operation = operation.to_ascii_lowercase();
+    if matches!(operation.as_str(), "-v" | "--verbose") {
+        return rest.is_empty();
+    }
+    matches!(operation.as_str(), "get-url" | "show")
 }
 
 

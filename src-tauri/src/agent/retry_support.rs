@@ -88,6 +88,21 @@ pub(crate) fn should_continue_goal_loop(
 }
 
 
+pub(crate) fn repeated_goal_stop_response(
+    last_response: &mut Option<String>,
+    response: &str,
+) -> bool {
+    let normalized = response.trim();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let repeated = last_response.as_deref() == Some(normalized);
+    *last_response = Some(normalized.to_string());
+    repeated
+}
+
+
 /// Empty streams and header timeouts are retryable inside one agent loop, but once
 /// the inner loop has already marked the turn as terminated they must not restart
 /// Goal continuation. Otherwise the thread stays locked under `active_threads`
@@ -190,6 +205,37 @@ pub(crate) fn text_expresses_intent(text: &str) -> bool {
         "分析一下",
     ];
     intent_patterns.iter().any(|p| lower.contains(p))
+}
+
+
+pub(crate) fn text_contains_unapplied_patch(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("*** begin patch")
+        || lower.contains("*** update file:")
+        || lower.contains("```diff")
+        || lower.contains("```patch")
+}
+
+
+pub(crate) fn user_requested_patch_text_only(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let text_only_patterns = [
+        "只给补丁",
+        "只输出补丁",
+        "只展示补丁",
+        "不要应用",
+        "不要修改文件",
+        "不要改文件",
+        "don't apply",
+        "do not apply",
+        "patch only",
+        "show me the patch",
+        "show the patch",
+        "output the patch",
+    ];
+    text_only_patterns
+        .iter()
+        .any(|pattern| lower.contains(pattern))
 }
 
 

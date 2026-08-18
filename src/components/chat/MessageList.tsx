@@ -34,7 +34,7 @@ import {
   windowOpenRunSummaryDiff,
   type RunSummaryDiffPayload,
 } from "../../api/window";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -76,13 +76,7 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   const stickToBottomRef = useRef(true);
   const previousIsStreamingRef = useRef(isStreaming);
   const scrollRafRef = useRef<number | null>(null);
-  // 流式输出时不要每个 token 都完整重渲染 Markdown，否则段落/列表结构会反复重排导致抖动。
-  const [stableStreamingText, setStableStreamingText] = useState(streamingText);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const stableStreamingTextRef = useRef(streamingText);
-  const streamingFlushTimerRef = useRef<number | null>(null);
-  const latestStreamingTextRef = useRef(streamingText);
-  latestStreamingTextRef.current = streamingText;
 
   const isNearBottom = useCallback((el: HTMLDivElement) => {
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -140,44 +134,10 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   }, [scrollToBottom]);
 
   useEffect(() => {
-    if (!isStreaming || !streamingText) {
-      if (streamingFlushTimerRef.current != null) {
-        window.clearTimeout(streamingFlushTimerRef.current);
-        streamingFlushTimerRef.current = null;
-      }
-      // 结束或工具调用切段后清空旧文本，避免下一段首包短暂显示上一段内容。
-      if (stableStreamingTextRef.current) {
-        stableStreamingTextRef.current = "";
-        setStableStreamingText("");
-      }
-      return;
-    }
-
-    // 首包立刻显示；后续合并到约 100ms 一帧，减少 Markdown 结构抖动。
-    if (!stableStreamingTextRef.current) {
-      stableStreamingTextRef.current = streamingText;
-      setStableStreamingText(streamingText);
-      return;
-    }
-    if (streamingFlushTimerRef.current != null) return;
-    streamingFlushTimerRef.current = window.setTimeout(() => {
-      streamingFlushTimerRef.current = null;
-      const next = latestStreamingTextRef.current;
-      if (stableStreamingTextRef.current === next) return;
-      stableStreamingTextRef.current = next;
-      setStableStreamingText(next);
-    }, 100);
-  }, [isStreaming, streamingText]);
-
-  useEffect(() => {
     return () => {
       if (scrollRafRef.current != null) {
         window.cancelAnimationFrame(scrollRafRef.current);
         scrollRafRef.current = null;
-      }
-      if (streamingFlushTimerRef.current != null) {
-        window.clearTimeout(streamingFlushTimerRef.current);
-        streamingFlushTimerRef.current = null;
       }
     };
   }, []);
@@ -204,7 +164,7 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
     // 流式文本增长：仅在贴底时跟随，且不做 smooth。
     if (!isStreaming) return;
     scheduleScrollToBottom();
-  }, [stableStreamingText, isStreaming, scheduleScrollToBottom]);
+  }, [streamingText, isStreaming, scheduleScrollToBottom]);
 
   useEffect(() => {
     const content = contentRef.current;
@@ -289,7 +249,7 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
                 <IconChevronRight size={16} stroke={1.8} className="text-[var(--chat-faint)]" />
               </div>
               <div className="chat-prose chat-prose-streaming max-w-[980px]">
-                <StreamingMessageContent content={stableStreamingText || streamingText} />
+                <StreamingMessageContent content={streamingText} />
                 <span className="ml-1 inline-block h-3.5 w-1 animate-pulse rounded-sm bg-[var(--accent)] align-middle" />
               </div>
             </article>
@@ -332,7 +292,7 @@ export function MessageList({ messages, streamingText, streamingLabel, isStreami
   );
 }
 
-function MessageRow({
+const MessageRow = memo(function MessageRow({
   message,
   messageIndex,
   sourceMessages,
@@ -404,7 +364,7 @@ function MessageRow({
       <CopyButton text={message.content} />
     </article>
   );
-}
+});
 
 function EditableUserMessage({
   message,
@@ -2524,7 +2484,7 @@ const streamingMarkdownComponents: Components = {
   },
 };
 
-function StreamingMessageContent({ content }: { content: string }) {
+const StreamingMessageContent = memo(function StreamingMessageContent({ content }: { content: string }) {
   if (!content) return null;
 
   return (
@@ -2532,4 +2492,4 @@ function StreamingMessageContent({ content }: { content: string }) {
       {content}
     </ReactMarkdown>
   );
-}
+});

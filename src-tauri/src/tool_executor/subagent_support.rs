@@ -417,6 +417,7 @@ impl ToolExecutor {
             timeout_ms,
             max_iterations: 25,
             max_output_tokens: provider_config.max_output_tokens,
+            reasoning_effort: provider_config.reasoning_effort.clone(),
         };
 
         let tool_executor_for_subagent = Arc::new(tokio::sync::RwLock::new(
@@ -744,6 +745,7 @@ impl ToolExecutor {
             timeout_ms,
             max_iterations: 25,
             max_output_tokens: provider_config.max_output_tokens,
+            reasoning_effort: provider_config.reasoning_effort.clone(),
         };
 
         // Update status to running

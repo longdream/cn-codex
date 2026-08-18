@@ -76,10 +76,8 @@ enum PreparedPatchAction {
 
 pub(crate) fn extract_patch_argument(arguments: &str) -> Result<String, String> {
     let trimmed = arguments.trim();
-    if !(trimmed.starts_with('{') || trimmed.starts_with('['))
-        && let Ok(patch) = extract_embedded_patch_block(trimmed)
-    {
-        return Ok(patch);
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return extract_embedded_patch_block(trimmed);
     }
 
     let value: serde_json::Value =
@@ -93,6 +91,10 @@ pub(crate) fn extract_patch_argument(arguments: &str) -> Result<String, String> 
         })?;
 
     extract_embedded_patch_block(patch)
+}
+
+fn apply_patch_format_guidance() -> &'static str {
+    "Submit exactly one Codex patch wrapper. For multiple files, repeat only the file sections inside it:\n*** Begin Patch\n*** Update File: path/to/first\n@@\n-old\n+new\n*** Update File: path/to/second\n@@\n-old\n+new\n*** End Patch\nEvery Update File section must contain an actual '+' or '-' change. Do not add another Begin Patch, Markdown fences, diff --git, timestamp headers, or context-diff markers."
 }
 
 pub(crate) fn patch_display_label(patch: &str) -> String {
@@ -370,6 +372,7 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
             let mut hunks = Vec::new();
             let mut current: Option<PatchHunk> = None;
             let mut implicit_context_count = 0usize;
+            let mut fenced_unified_diff = false;
 
             while i < lines.len() && !is_patch_section_boundary(lines[i]) {
                 let line = lines[i];
@@ -399,8 +402,27 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
                 }
 
                 // Some providers wrap a standard unified diff inside a Codex
-                // Update File section. These headers identify the same file and
-                // are metadata, not deleted/added source lines.
+                // Update File section. Ignore only the recognized envelope so
+                // its metadata is never mistaken for source context.
+                if current.is_none() && matches!(line.trim(), "```diff" | "```patch") {
+                    fenced_unified_diff = true;
+                    i += 1;
+                    continue;
+                }
+
+                if fenced_unified_diff
+                    && current.is_none()
+                    && (line.starts_with("diff --git ") || line.starts_with("index "))
+                {
+                    i += 1;
+                    continue;
+                }
+
+                if fenced_unified_diff && line.trim() == "```" {
+                    i += 1;
+                    continue;
+                }
+
                 if current.is_none()
                     && line.starts_with("--- ")
                     && lines
@@ -476,8 +498,13 @@ pub(crate) fn parse_patch_actions(patch: &str) -> Result<Vec<ParsedPatchAction>,
                 hunks.push(finalize_parsed_hunk(hunk, implicit_context_count));
             }
             hunks = combine_implicit_replacement_pairs(hunks);
-            if hunks.is_empty() && move_to.is_none() {
-                return Err(format!("update for {path} contains no changes"));
+            let has_text_changes = hunks
+                .iter()
+                .any(|hunk| hunk.additions > 0 || hunk.deletions > 0);
+            if !has_text_changes && move_to.is_none() {
+                return Err(format!(
+                    "update for {path} contains no additions or deletions; include '-' and '+' lines or remove this Update File section"
+                ));
             }
             actions.push(ParsedPatchAction::Update {
                 path: path.trim().to_string(),
@@ -572,14 +599,47 @@ fn is_patch_section_boundary(line: &str) -> bool {
 fn extract_embedded_patch_block(input: &str) -> Result<String, String> {
     let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
     let lines: Vec<&str> = normalized.lines().collect();
-    let Some(begin) = lines.iter().position(|line| is_patch_begin_marker(line)) else {
+    let begin_markers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| is_patch_begin_marker(line).then_some(index))
+        .collect();
+    let Some(&begin) = begin_markers.first() else {
         return Err("patch must start with *** Begin Patch".to_string());
     };
-    let Some(end) = lines.iter().rposition(|line| is_patch_end_marker(line)) else {
+    if begin_markers.len() != 1 {
+        return Err(format!(
+            "patch must contain exactly one *** Begin Patch marker, found {}; use multiple file sections inside one wrapper",
+            begin_markers.len()
+        ));
+    }
+
+    let end_markers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| is_patch_end_marker(line).then_some(index))
+        .collect();
+    let Some(&end) = end_markers.first() else {
         return Err("patch must end with *** End Patch".to_string());
     };
+    if end_markers.len() != 1 {
+        return Err(format!(
+            "patch must contain exactly one *** End Patch marker, found {}; use multiple file sections inside one wrapper",
+            end_markers.len()
+        ));
+    }
     if end < begin {
         return Err("patch must end with *** End Patch".to_string());
+    }
+
+    if let Some(marker) = lines[begin + 1..end]
+        .iter()
+        .find(|line| is_classic_context_diff_marker(line))
+    {
+        return Err(format!(
+            "classic context-diff marker is not valid inside a Codex patch: {}",
+            marker.trim()
+        ));
     }
 
     Ok(lines[begin..=end]
@@ -587,6 +647,28 @@ fn extract_embedded_patch_block(input: &str) -> Result<String, String> {
         .map(|line| normalize_patch_directive_line(line))
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+fn is_classic_context_diff_marker(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed == "***************" {
+        return true;
+    }
+
+    let range = trimmed
+        .strip_prefix("*** ")
+        .and_then(|value| value.strip_suffix(" ****"))
+        .or_else(|| {
+            trimmed
+                .strip_prefix("--- ")
+                .and_then(|value| value.strip_suffix(" ----"))
+        });
+    range.is_some_and(|value| {
+        !value.is_empty()
+            && value
+                .chars()
+                .all(|character| character.is_ascii_digit() || character == ',' || character == ' ')
+    })
 }
 
 fn is_patch_begin_marker(line: &str) -> bool {
@@ -1171,6 +1253,82 @@ Error applying patch: patch must start with *** Begin Patch"#;
     }
 
     #[test]
+    fn extract_patch_argument_rejects_nested_patch_wrappers() {
+        let raw = r#"*** Begin Patch
+*** Update File: src/first.rs
+@@
+-old
++new
+*** Begin Patch
+*** Update File: src/second.rs
+@@
+-old
++new
+*** End Patch"#;
+
+        let error = extract_patch_argument(raw).unwrap_err();
+        assert!(error.contains("exactly one *** Begin Patch"));
+        assert!(error.contains("multiple file sections inside one wrapper"));
+    }
+
+    #[test]
+    fn extract_patch_argument_preserves_missing_begin_marker_error_for_raw_text() {
+        let raw = r#"*** Update File: src/app.rs
+@@
+-old
++new
+*** End of Patch"#;
+
+        let error = extract_patch_argument(raw).unwrap_err();
+        assert_eq!(error, "patch must start with *** Begin Patch");
+    }
+
+    #[test]
+    fn parse_patch_actions_rejects_classic_context_diff_markers() {
+        let raw = r#"*** Begin Patch
+*** Update File: src/app.rs
+***************
+*** 10,12 ****
+-old
+--- 10,12 ----
++new
+*** End Patch"#;
+
+        let error = parse_patch_actions(raw).unwrap_err();
+        assert!(error.contains("classic context-diff marker"));
+        assert!(error.contains("***************"));
+    }
+
+    #[test]
+    fn parse_patch_actions_rejects_update_sections_without_changes() {
+        let raw = r#"*** Begin Patch
+*** Update File: src/app.rs
+@@
+ unchanged
+*** End Patch"#;
+
+        let error = parse_patch_actions(raw).unwrap_err();
+        assert!(error.contains("contains no additions or deletions"));
+    }
+
+    #[test]
+    fn parse_patch_actions_accepts_multiple_files_in_one_wrapper() {
+        let raw = r#"*** Begin Patch
+*** Update File: src/first.rs
+@@
+-old first
++new first
+*** Update File: src/second.rs
+@@
+-old second
++new second
+*** End Patch"#;
+
+        let actions = parse_patch_actions(raw).unwrap();
+        assert_eq!(actions.len(), 2);
+    }
+
+    #[test]
     fn parse_patch_actions_accepts_trailing_stars_and_wrappers() {
         let raw = r#"src/App.tsx ***
 *** Begin Patch ***
@@ -1208,6 +1366,29 @@ done"#;
             ParsedPatchAction::Update { path, .. } => assert_eq!(path, "src/style.css"),
             other => panic!("expected update action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_patch_actions_ignores_fenced_unified_diff_envelope() {
+        let mut lines = vec!["before".to_string(), "old".to_string(), "after".to_string()];
+        let patch = r#"*** Begin Patch
+*** Update File: src/example.rs
+```diff
+diff --git a/src/example.rs b/src/example.rs
+index 1111111..2222222 100644
+--- a/src/example.rs
++++ b/src/example.rs
+@@ -1,3 +1,3 @@
+ before
+-old
++new
+ after
+```
+*** End Patch"#;
+
+        apply_parsed_update(&mut lines, patch, "src/example.rs");
+
+        assert_eq!(lines, vec!["before", "new", "after"]);
     }
 
     #[test]
@@ -1790,7 +1971,8 @@ impl ToolExecutor {
             Ok(patch) => patch,
             Err(error) => {
                 let msg = format!(
-                    "{error}\nUse Codex patch syntax: '*** Begin Patch', then '*** Update File: path', hunks beginning with '@@', and '*** End Patch'. Do not use classic context-diff headers or fall back to write_file for an existing file."
+                    "{error}\n{}",
+                    apply_patch_format_guidance()
                 );
                 self.emit_tool_start(
                     app_handle,
@@ -1834,7 +2016,8 @@ impl ToolExecutor {
             }
             Err(err) => {
                 let msg = format!(
-                    "Error applying patch: {err}\nUse Codex patch headers such as '*** Update File: path' (not classic '*** path', '--- path', or '***************' context-diff headers). Do not fall back to write_file, Python, PowerShell, sed, or other whole-file editing. Correct the patch path or context and retry apply_patch so existing content and encoding are preserved."
+                    "Error applying patch: {err}\n{}\nDo not fall back to write_file, Python, PowerShell, sed, or another whole-file editing method. Correct the patch and retry apply_patch so existing content and encoding are preserved.",
+                    apply_patch_format_guidance()
                 );
                 self.emit_tool_end(app_handle, thread_id, call_id, "apply_patch", -1, &msg);
                 return Err(crate::error::AppError::Custom(msg));

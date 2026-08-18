@@ -3,7 +3,6 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde::Serialize;
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::error::{AppError, AppResult};
@@ -103,51 +102,26 @@ impl GitService {
             .current_dir(&self.cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        command.kill_on_drop(true);
         #[cfg(windows)]
         command.no_console();
 
-        let mut child = command
+        let child = command
             .spawn()
             .map_err(|err| AppError::Custom(format!("Failed to spawn git: {err}")))?;
 
-        let child_stdout = child.stdout.take();
-        let child_stderr = child.stderr.take();
-        let stdout_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut out) = child_stdout {
-                let _ = out.read_to_end(&mut buf).await;
-            }
-            buf
-        });
-        let stderr_handle = tokio::spawn(async move {
-            let mut buf = Vec::new();
-            if let Some(mut err) = child_stderr {
-                let _ = err.read_to_end(&mut buf).await;
-            }
-            buf
-        });
-
-        match tokio::time::timeout(Duration::from_secs(30), child.wait()).await {
-            Ok(Ok(status)) => {
-                let stdout_bytes = stdout_handle.await.unwrap_or_default();
-                let stderr_bytes = stderr_handle.await.unwrap_or_default();
-                Ok(GitCommandOutput {
-                    exit_code: status.code().unwrap_or(-1),
-                    stdout: truncate_bytes_to_string(&stdout_bytes, max_output_bytes),
-                    stderr: truncate_bytes_to_string(&stderr_bytes, max_output_bytes / 2),
-                })
-            }
+        match tokio::time::timeout(Duration::from_secs(30), child.wait_with_output()).await {
+            Ok(Ok(output)) => Ok(GitCommandOutput {
+                exit_code: output.status.code().unwrap_or(-1),
+                stdout: truncate_bytes_to_string(&output.stdout, max_output_bytes),
+                stderr: truncate_bytes_to_string(&output.stderr, max_output_bytes / 2),
+            }),
             Ok(Err(err)) => Err(AppError::Custom(format!(
                 "Failed waiting git process: {err}"
             ))),
-            Err(_) => {
-                let _ = child.kill().await;
-                stdout_handle.abort();
-                stderr_handle.abort();
-                Err(AppError::Custom(
-                    "Git command timed out after 30 seconds".to_string(),
-                ))
-            }
+            Err(_) => Err(AppError::Custom(
+                "Git command timed out after 30 seconds".to_string(),
+            )),
         }
     }
 }
@@ -207,5 +181,43 @@ mod tests {
     fn truncate_bytes_marks_output_when_exceeding_limit() {
         let output = truncate_bytes_to_string("a".repeat(2048).as_bytes(), 10);
         assert!(output.contains("[truncated]"));
+    }
+
+    #[tokio::test]
+    async fn add_all_stages_repository_changes_from_a_nested_directory() {
+        let test_root =
+            std::env::temp_dir().join(format!("cn-codex-git-stage-all-{}", uuid::Uuid::new_v4()));
+        let nested_root = test_root.join("nested");
+        std::fs::create_dir_all(&nested_root).unwrap();
+
+        let root_service = GitService::new(test_root.clone());
+        root_service.run(&["init"], 8 * 1024).await.unwrap();
+        std::fs::write(test_root.join("root file.txt"), "root").unwrap();
+        std::fs::write(nested_root.join("nested file.txt"), "nested").unwrap();
+
+        let nested_service = GitService::new(nested_root);
+        nested_service
+            .run(&["add", "--all"], 8 * 1024)
+            .await
+            .unwrap();
+        let status = root_service
+            .run(&["status", "--porcelain"], 8 * 1024)
+            .await
+            .unwrap();
+
+        assert!(
+            status
+                .stdout
+                .lines()
+                .any(|line| line.contains("root file.txt"))
+        );
+        assert!(
+            status
+                .stdout
+                .lines()
+                .any(|line| line.contains("nested/nested file.txt"))
+        );
+
+        let _ = std::fs::remove_dir_all(test_root);
     }
 }

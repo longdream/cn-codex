@@ -592,6 +592,8 @@ pub struct ThreadChatProviderOverride {
     #[serde(default)]
     pub model_id: Option<String>,
     #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
     pub model_context_window: Option<i64>,
     #[serde(default)]
     pub max_output_tokens: Option<i64>,
@@ -1760,11 +1762,18 @@ pub(crate) fn apply_thread_chat_overrides(
         {
             config.model = Some(model_id.to_string());
         }
+        config.model_reasoning_effort = provider
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
 
         info!(
-            "[thread_chat_override] provider={:?}, model={:?}, base_url={:?}, wire_api={:?}, endpoints={}",
+            "[thread_chat_override] provider={:?}, model={:?}, reasoning_effort={:?}, base_url={:?}, wire_api={:?}, endpoints={}",
             config.model_provider,
             config.model,
+            config.model_reasoning_effort,
             provider.base_url.as_deref(),
             provider.wire_api.as_deref(),
             provider
@@ -2318,6 +2327,32 @@ mod tests {
 
         super::apply_thread_chat_overrides(&mut config, None, None, Some(false));
         assert!(!config.subagent_enabled());
+    }
+
+    #[test]
+    fn apply_thread_chat_overrides_snapshots_reasoning_effort() {
+        let mut config = crate::config_system::ConfigToml {
+            model_reasoning_effort: Some("low".to_string()),
+            ..Default::default()
+        };
+        let high: super::ThreadChatProviderOverride = serde_json::from_value(serde_json::json!({
+            "providerKey": "deepseek",
+            "modelId": "deepseek-reasoner",
+            "reasoningEffort": "high"
+        }))
+        .expect("deserialize provider override");
+
+        super::apply_thread_chat_overrides(&mut config, Some(&high), None, None);
+        assert_eq!(config.model_reasoning_effort.as_deref(), Some("high"));
+
+        let cleared: super::ThreadChatProviderOverride = serde_json::from_value(serde_json::json!({
+            "providerKey": "deepseek",
+            "modelId": "deepseek-chat",
+            "reasoningEffort": null
+        }))
+        .expect("deserialize provider override");
+        super::apply_thread_chat_overrides(&mut config, Some(&cleared), None, None);
+        assert_eq!(config.model_reasoning_effort, None);
     }
 
     #[test]

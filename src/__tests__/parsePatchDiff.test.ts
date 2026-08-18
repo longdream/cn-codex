@@ -59,4 +59,68 @@ describe("parsePatchDiffEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].paths).toEqual(["D:\\work\\old.ts", "D:\\work\\new.ts"]);
   });
+
+  it("rejects a patch without an outer Begin Patch marker", () => {
+    const patch = [
+      "*** Update File: src-tauri/src/tool_executor.rs",
+      "--- src-tauri/src/tool_executor.rs\t2025-04-05 10:00:00",
+      "***************",
+      "*** 963,976 ****",
+      " old",
+      "+new",
+      "*** End of Patch ***",
+    ].join("\n");
+
+    expect(parsePatchDiffEntries(patch)).toEqual([]);
+  });
+
+  it("rejects nested patch wrappers instead of merging files", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src-tauri/src/tool_executor.rs",
+      "@@",
+      " unchanged",
+      "*** Begin Patch",
+      "*** Update File: src-tauri/src/tool_executor_tests.rs",
+      "@@",
+      "-old",
+      "+new",
+      "*** End Patch",
+    ].join("\n");
+
+    expect(parsePatchDiffEntries(patch)).toEqual([]);
+  });
+
+  it("rejects update sections that contain no text changes", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src/app.ts",
+      "@@",
+      " unchanged",
+      "*** End Patch",
+    ].join("\n");
+
+    expect(parsePatchDiffEntries(patch)).toEqual([]);
+  });
+
+  it("parses multiple files inside one patch wrapper", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src/first.ts",
+      "@@",
+      "-old first",
+      "+new first",
+      "*** Update File: src/second.ts",
+      "@@",
+      "-old second",
+      "+new second",
+      "*** End Patch",
+    ].join("\n");
+
+    const entries = parsePatchDiffEntries(patch);
+    expect(entries.map((entry) => entry.paths)).toEqual([
+      ["src/first.ts"],
+      ["src/second.ts"],
+    ]);
+  });
 });

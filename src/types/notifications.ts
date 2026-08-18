@@ -216,6 +216,8 @@ export type ServerEventName =
   | "thread-unarchived"
   | "thread-closed"
   | "context-compacted"
+  | "compaction-started"
+  | "compaction-failed"
   | "guardian-review-started"
   | "guardian-review-completed"
   | "account-updated"

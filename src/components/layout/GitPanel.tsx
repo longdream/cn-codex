@@ -37,6 +37,7 @@ import {
   gitReset,
   gitRevert,
   gitStage,
+  gitStageAll,
   gitStatus,
   gitUnstage,
   type GitActionResponse,
@@ -149,8 +150,11 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
     () => unstagedEntries.filter((entry) => entry.status !== "conflicted" && !entry.untracked),
     [unstagedEntries],
   );
-  const allChangePaths = useMemo(() => uniqPaths(changes), [changes]);
   const stagedPaths = useMemo(() => uniqPaths(stagedEntries), [stagedEntries]);
+  const hasChangesToStage = useMemo(
+    () => changes.some((entry) => entry.unstaged || entry.untracked),
+    [changes],
+  );
 
   const refreshAll = useCallback(async () => {
     if (!workspaceCwd) {
@@ -187,6 +191,20 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
       });
     } catch (error) {
       setErrorText(normalizeError(error));
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceCwd]);
+
+  const refreshStatusOnly = useCallback(async () => {
+    if (!workspaceCwd) {
+      setStatus(null);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      setStatus(await gitStatus(workspaceCwd));
     } finally {
       setLoading(false);
     }
@@ -286,8 +304,13 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   }, [commitMenuOpen]);
 
   const runAction = useCallback(
-    async (actionLabel: string, action: () => Promise<GitActionResponse>, options?: { showProgress?: boolean }) => {
+    async (
+      actionLabel: string,
+      action: () => Promise<GitActionResponse>,
+      options?: { showProgress?: boolean; refresh?: "all" | "status" },
+    ) => {
       const showProgress = options?.showProgress === true;
+      const refreshAfterAction = options?.refresh === "status" ? refreshStatusOnly : refreshAll;
       setBusyAction(actionLabel);
       setActionPhase(showProgress ? actionLabel : null);
       setActionProgress(showProgress ? 12 : 0);
@@ -311,7 +334,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
           setActionProgress(82);
         }
         setNoticeText(formatActionNotice(result));
-        await refreshAll();
+        await refreshAfterAction();
         if (showProgress) {
           setActionProgress(100);
           await new Promise((resolve) => window.setTimeout(resolve, 220));
@@ -320,7 +343,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
         setErrorText(normalizeError(error));
         // 合并冲突等失败场景也要刷新，才能显示 mergeInProgress / conflicted 文件。
         try {
-          await refreshAll();
+          await refreshAfterAction();
         } catch {
           // ignore secondary refresh failures
         }
@@ -333,7 +356,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
         setActionProgress(0);
       }
     },
-    [refreshAll],
+    [refreshAll, refreshStatusOnly],
   );
 
   const handleSelectDiff = useCallback((path: string, mode: DiffMode) => {
@@ -479,11 +502,15 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   );
 
   const handleStageAll = useCallback(async () => {
-    if (!workspaceCwd || allChangePaths.length === 0) {
+    if (!workspaceCwd || !hasChangesToStage) {
       return;
     }
-    await runAction(intl.formatMessage({ id: "git.stageAll" }), () => gitStage(allChangePaths, workspaceCwd));
-  }, [allChangePaths, intl, runAction, workspaceCwd]);
+    await runAction(
+      intl.formatMessage({ id: "git.stageAll" }),
+      () => gitStageAll(workspaceCwd),
+      { showProgress: true, refresh: "status" },
+    );
+  }, [hasChangesToStage, intl, runAction, workspaceCwd]);
 
   const handleUnstageAll = useCallback(async () => {
     if (!workspaceCwd || stagedPaths.length === 0) {
@@ -952,7 +979,7 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
               <button
                 type="button"
                 onClick={() => void handleStageAll()}
-                disabled={busyAction !== null || allChangePaths.length === 0}
+                disabled={busyAction !== null || !hasChangesToStage}
                 className={`${iconButtonClass} shrink-0`}
                 title={intl.formatMessage({ id: "git.stageAll" })}
                 aria-label={intl.formatMessage({ id: "git.stageAll" })}

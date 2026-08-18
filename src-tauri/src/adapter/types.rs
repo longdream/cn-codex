@@ -124,6 +124,9 @@ pub struct InternalToolCall {
     #[serde(rename = "type")]
     pub call_type: String,
     pub function: InternalFunctionCall,
+    /// Internal assistant-turn metadata; adapters must not serialize it inside tool_calls.
+    #[serde(skip_serializing)]
+    pub reasoning_content: Option<String>,
 }
 
 /// 内部函数调用表示

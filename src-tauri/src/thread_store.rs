@@ -18,6 +18,9 @@ pub struct ToolCallInfo {
     pub id: String,
     pub name: String,
     pub arguments: String,
+    /// Provider-native reasoning that must be replayed with this assistant tool-call turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

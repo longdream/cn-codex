@@ -334,6 +334,25 @@ fn should_continue_goal_loop_stops_after_fatal_llm_error() {
 }
 
 #[test]
+fn repeated_goal_stop_response_detects_only_consecutive_nonempty_duplicates() {
+    let mut last_response = None;
+
+    assert!(!repeated_goal_stop_response(
+        &mut last_response,
+        "Patch prepared; apply it next."
+    ));
+    assert!(repeated_goal_stop_response(
+        &mut last_response,
+        "  Patch prepared; apply it next.  "
+    ));
+    assert!(!repeated_goal_stop_response(
+        &mut last_response,
+        "Applying the patch now."
+    ));
+    assert!(!repeated_goal_stop_response(&mut last_response, "   "));
+}
+
+#[test]
 fn empty_response_and_header_timeout_end_goal_turn_after_termination() {
     for message in [
         "LLM returned an empty response. The provider may have rejected the model or returned an incompatible stream format. Check the provider/model configuration and retry.",
@@ -943,6 +962,32 @@ fn text_expresses_intent_detects_common_unfinished_work_phrases() {
 }
 
 #[test]
+fn text_contains_unapplied_patch_detects_patch_shaped_final_answers() {
+    assert!(text_contains_unapplied_patch(
+        "下面是完整修改：\n```diff\n-old\n+new\n```"
+    ));
+    assert!(text_contains_unapplied_patch(
+        "*** Begin Patch\n*** Update File: src/app.rs\n*** End Patch"
+    ));
+    assert!(!text_contains_unapplied_patch(
+        "apply_patch 已成功执行，测试通过。"
+    ));
+}
+
+#[test]
+fn explicit_patch_text_only_requests_bypass_the_edit_guard() {
+    for request in [
+        "只展示补丁，不要应用",
+        "不要修改文件，只给补丁",
+        "Show me the patch, but do not apply it",
+        "Patch only",
+    ] {
+        assert!(user_requested_patch_text_only(request), "request={request}");
+    }
+    assert!(!user_requested_patch_text_only("请直接修改代码并运行测试"));
+}
+
+#[test]
 fn repeated_read_only_tool_call_blocks_only_consecutive_identical_calls() {
     let read = ToolCallRequest {
         id: "read-1".to_string(),
@@ -964,6 +1009,25 @@ fn repeated_read_only_tool_call_blocks_only_consecutive_identical_calls() {
 }
 
 #[test]
+fn repeated_read_only_tool_call_blocks_identical_code_reviews() {
+    let review = ToolCallRequest {
+        id: "review-1".to_string(),
+        name: "code_review".to_string(),
+        arguments: r#"{"base_ref":"HEAD","paths":["src/main.rs"]}"#.to_string(),
+    };
+    let mut last_signature = None;
+
+    assert!(!repeated_read_only_tool_call(
+        &mut last_signature,
+        &review
+    ));
+    assert!(repeated_read_only_tool_call(
+        &mut last_signature,
+        &review
+    ));
+}
+
+#[test]
 fn repeated_read_only_tool_call_distinguishes_different_ranges() {
     let mut last_signature = None;
     let first = ToolCallRequest {
@@ -979,6 +1043,100 @@ fn repeated_read_only_tool_call_distinguishes_different_ranges() {
 
     assert!(!repeated_read_only_tool_call(&mut last_signature, &first));
     assert!(!repeated_read_only_tool_call(&mut last_signature, &second));
+}
+
+#[test]
+fn repeated_read_only_tool_call_blocks_git_inspection_shell_pipeline() {
+    let command = "git status --short | head -20; echo '---LAST COMMIT---'; git log -1 --pretty=format:\"%h %s %ad\" --date=short";
+
+    for (tool_name, command_key) in [
+        ("shell", "command"),
+        ("shell_command", "command"),
+        ("exec_command", "cmd"),
+    ] {
+        let call = ToolCallRequest {
+            id: format!("{tool_name}-1"),
+            name: tool_name.to_string(),
+            arguments: serde_json::json!({ command_key: command }).to_string(),
+        };
+        let mut last_signature = None;
+
+        assert!(is_read_only_shell_tool_call(&call), "tool={tool_name}");
+        assert!(!repeated_read_only_tool_call(&mut last_signature, &call));
+        assert!(repeated_read_only_tool_call(&mut last_signature, &call));
+    }
+}
+
+#[test]
+fn repeated_read_only_shell_call_allows_a_different_git_query() {
+    let mut last_signature = None;
+    let status = ToolCallRequest {
+        id: "status-1".to_string(),
+        name: "shell".to_string(),
+        arguments: serde_json::json!({ "command": "git status --short" }).to_string(),
+    };
+    let log = ToolCallRequest {
+        id: "log-1".to_string(),
+        name: "shell".to_string(),
+        arguments: serde_json::json!({ "command": "git log -1 --oneline" }).to_string(),
+    };
+
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &status));
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &log));
+    assert!(repeated_read_only_tool_call(&mut last_signature, &log));
+}
+
+#[test]
+fn read_only_shell_detection_rejects_commands_with_side_effects() {
+    for command in [
+        "cargo test",
+        "git commit -am 'checkpoint'",
+        "git reset --hard HEAD~1",
+        "git branch new-branch",
+        "git diff --output=changes.patch",
+        "git status --short > status.txt",
+        "git status --short; Set-Content status.txt done",
+        "git status --short | Tee-Object status.txt",
+        "git status --short; $(Remove-Item status.txt)",
+    ] {
+        assert!(
+            !is_read_only_shell_command(command),
+            "unexpectedly classified as read-only: {command}"
+        );
+    }
+}
+
+#[test]
+fn file_edit_resets_repeated_read_only_shell_detection() {
+    let shell = ToolCallRequest {
+        id: "status-1".to_string(),
+        name: "shell".to_string(),
+        arguments: serde_json::json!({ "command": "git status --short" }).to_string(),
+    };
+    let patch = ToolCallRequest {
+        id: "patch-1".to_string(),
+        name: "apply_patch".to_string(),
+        arguments: "*** Begin Patch\n*** End Patch".to_string(),
+    };
+    let mut last_signature = None;
+
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &shell));
+    assert!(repeated_read_only_tool_call(&mut last_signature, &shell));
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &patch));
+    assert!(!repeated_read_only_tool_call(&mut last_signature, &shell));
+}
+
+#[test]
+fn repeated_read_only_shell_stops_after_two_blocked_repeats() {
+    let mut repeat_count = 0;
+
+    assert!(!blocked_read_only_shell_repeat_should_stop(
+        &mut repeat_count
+    ));
+    assert!(blocked_read_only_shell_repeat_should_stop(
+        &mut repeat_count
+    ));
+    assert_eq!(repeat_count, 2);
 }
 
 #[test]
@@ -1108,6 +1266,53 @@ fn build_internal_messages_keeps_system_messages_before_non_system_roles() {
 }
 
 #[test]
+fn build_internal_messages_keeps_reasoning_on_tool_call_turns() {
+    let workspace_dir =
+        std::env::temp_dir().join(format!("cn-codex-agent-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&workspace_dir).expect("create temp workspace");
+
+    let thread_store = Arc::new(ThreadStore::new(&workspace_dir.join("codey")));
+    let tool_executor = ToolExecutor::new(workspace_dir.clone());
+    let engine =
+        AgentEngine::new(thread_store, tool_executor, workspace_dir.clone()).expect("engine");
+    let config = ConfigToml::default();
+    let mut assistant = test_thread_message("a1", "assistant", "");
+    assistant.tool_calls = Some(vec![ToolCallInfo {
+        id: "call-weather".to_string(),
+        name: "get_weather".to_string(),
+        arguments: r#"{"city":"Paris"}"#.to_string(),
+        reasoning_content: Some("provider thinking".to_string()),
+    }]);
+    let mut tool = test_thread_message("t1", "tool", "sunny");
+    tool.tool_call_id = Some("call-weather".to_string());
+    tool.tool_name = Some("get_weather".to_string());
+
+    let messages = engine.build_internal_messages(
+        &config,
+        &[assistant, tool],
+        &workspace_dir,
+        "chat",
+        None,
+        None,
+        &[],
+        None,
+        None,
+        None,
+    );
+
+    let assistant = messages
+        .iter()
+        .find(|message| message.role == "assistant" && message.tool_calls.is_some())
+        .expect("assistant tool-call message");
+    let call = assistant
+        .tool_calls
+        .as_ref()
+        .and_then(|calls| calls.first())
+        .expect("tool call");
+    assert_eq!(call.reasoning_content.as_deref(), Some("provider thinking"));
+}
+
+#[test]
 fn sanitize_history_for_model_skips_orphan_tool_messages() {
     let history = vec![
         ThreadMessage {
@@ -1131,6 +1336,7 @@ fn sanitize_history_for_model_skips_orphan_tool_messages() {
                 id: "call-ok".to_string(),
                 name: "shell".to_string(),
                 arguments: "{}".to_string(),
+                reasoning_content: None,
             }]),
             attachments: Vec::new(),
         },
@@ -1165,6 +1371,7 @@ fn sanitize_history_for_model_adds_aborted_result_for_dangling_call() {
             id: "call-interrupted".to_string(),
             name: "shell".to_string(),
             arguments: "{}".to_string(),
+            reasoning_content: None,
         }]),
         attachments: Vec::new(),
     }];
@@ -1196,6 +1403,7 @@ fn sanitize_history_for_model_keeps_only_first_tool_result_per_call() {
                 id: "call-1".to_string(),
                 name: "shell".to_string(),
                 arguments: "{}".to_string(),
+                reasoning_content: None,
             }]),
             attachments: Vec::new(),
         },
@@ -1232,6 +1440,7 @@ fn sanitize_history_for_model_remaps_reused_tool_call_ids_in_order() {
         id: id.to_string(),
         name: "apply_patch".to_string(),
         arguments: arguments.to_string(),
+        reasoning_content: None,
     };
     let tool_result = |id: &str, content: &str, timestamp| ThreadMessage {
         id: format!("tool-{timestamp}"),
@@ -1425,6 +1634,28 @@ fn stale_hunk_failure_requires_a_file_refresh_before_retry() {
 }
 
 #[test]
+fn repeated_failed_patch_limit_allows_one_correction_then_stops() {
+    let mut duplicate_count = 0;
+
+    assert!(!repeated_failed_patch_limit_reached(
+        &mut duplicate_count,
+        true,
+        2,
+    ));
+    assert!(repeated_failed_patch_limit_reached(
+        &mut duplicate_count,
+        true,
+        2,
+    ));
+    assert!(!repeated_failed_patch_limit_reached(
+        &mut duplicate_count,
+        false,
+        2,
+    ));
+    assert_eq!(duplicate_count, 0);
+}
+
+#[test]
 fn sanitize_history_for_model_removes_empty_tool_call_ids_from_assistant_and_tool() {
     let history = vec![
         ThreadMessage {
@@ -1438,6 +1669,7 @@ fn sanitize_history_for_model_removes_empty_tool_call_ids_from_assistant_and_too
                 id: String::new(),
                 name: "list_directory".to_string(),
                 arguments: "{}".to_string(),
+                reasoning_content: None,
             }]),
             attachments: Vec::new(),
         },
@@ -1462,6 +1694,7 @@ fn sanitize_history_for_model_removes_empty_tool_call_ids_from_assistant_and_too
                 id: "call-ok".to_string(),
                 name: "list_directory".to_string(),
                 arguments: "{}".to_string(),
+                reasoning_content: None,
             }]),
             attachments: Vec::new(),
         },
@@ -1498,6 +1731,7 @@ fn apply_tool_result_sliding_window_keeps_recent_full_and_summarizes_older() {
                 id: format!("call-{idx}"),
                 name: "shell".to_string(),
                 arguments: "{}".to_string(),
+                reasoning_content: None,
             }]),
             attachments: Vec::new(),
         });
@@ -1605,6 +1839,7 @@ fn apply_tool_result_sliding_window_extends_high_value_results() {
                 id: format!("call-{idx}"),
                 name: tool_name.to_string(),
                 arguments: "{}".to_string(),
+                reasoning_content: None,
             }]),
             attachments: Vec::new(),
         });

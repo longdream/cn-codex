@@ -517,6 +517,21 @@ pub(crate) fn apply_patch_failure_requires_refresh(result: &str) -> bool {
 }
 
 
+pub(crate) fn repeated_failed_patch_limit_reached(
+    duplicate_count: &mut u32,
+    duplicate_failed_patch: bool,
+    max_duplicates: u32,
+) -> bool {
+    if !duplicate_failed_patch {
+        *duplicate_count = 0;
+        return false;
+    }
+
+    *duplicate_count = duplicate_count.saturating_add(1);
+    *duplicate_count >= max_duplicates.max(1)
+}
+
+
 pub(crate) fn tool_result_success(tool_name: &str, output: &str) -> bool {
     match tool_name {
         "apply_patch" => output.starts_with("Success. Applied patch."),
@@ -624,6 +639,8 @@ pub(crate) fn build_goal_continuation_prompt(goal: &ThreadGoal) -> String {
          <objective>\n{}\n</objective>\n\n\
          {budget_info}\n\n\
          Keep working through the available tools until the objective is genuinely handled.\n\
+         Do not repeat the previous final answer. If it described a code or file change that has not \
+         been made by a successful apply_patch/write_file call, call the editing tool now.\n\
          If the objective is achieved and no required work remains, call update_goal with \
          status \"complete\".\n\
          If the same blocking condition has repeated for at least three consecutive goal turns \

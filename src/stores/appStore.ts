@@ -1314,6 +1314,7 @@ function buildThreadChatProviderOverrideSnapshot(
   providers: ProviderConfig[],
   overrideProviderId: string | null | undefined,
   overrideModelId: string | null | undefined,
+  reasoningEffort?: string | null,
 ): {
   providerKey: string;
   baseUrl?: string | null;
@@ -1321,6 +1322,7 @@ function buildThreadChatProviderOverrideSnapshot(
   wireApi?: string | null;
   requiresOpenAIAuth?: boolean | null;
   modelId?: string | null;
+  reasoningEffort?: string | null;
   modelContextWindow?: number | null;
   maxOutputTokens?: number | null;
   modelSupportsVision?: boolean | null;
@@ -1351,6 +1353,7 @@ function buildThreadChatProviderOverrideSnapshot(
       ? {
           providerKey: providerId || "custom",
           modelId,
+          ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
         }
       : null;
   }
@@ -1369,6 +1372,7 @@ function buildThreadChatProviderOverrideSnapshot(
     wireApi: provider.wireApi || "chat",
     requiresOpenAIAuth: provider.requiresOpenAIAuth,
     modelId: selectedModel?.id ?? modelId,
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     modelContextWindow: modelContextLengthOrDefault(selectedModel),
     maxOutputTokens: modelMaxOutputTokensOrDefault(selectedModel),
     modelSupportsVision: visionFallback.modelSupportsVision,
@@ -2030,6 +2034,10 @@ interface AppState {
     binding: { slug: string; name: string; rootPath: string } | null,
   ) => void;
   buildThreadChatProviderOverride: (
+    providerId?: string | null,
+    modelId?: string | null,
+  ) => ReturnType<typeof buildThreadChatProviderOverrideSnapshot>;
+  buildEffectiveChatProviderOverride: (
     providerId?: string | null,
     modelId?: string | null,
   ) => ReturnType<typeof buildThreadChatProviderOverrideSnapshot>;
@@ -3319,6 +3327,46 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 仅在参数省略时回退到当前 override；显式 null 表示“不使用 override”。
       providerId === undefined ? state.overrideProviderId : providerId,
       modelId === undefined ? state.overrideModelId : modelId,
+      state.reasoningEffort,
+    );
+  },
+  buildEffectiveChatProviderOverride: (providerId, modelId) => {
+    const state = get();
+    const requestedProviderId = (
+      providerId === undefined ? state.overrideProviderId : providerId
+    )?.trim() || null;
+    const requestedModelId = (
+      modelId === undefined ? state.overrideModelId : modelId
+    )?.trim() || null;
+    const activeEntry = state.configuredModels.find(
+      (entry) => entry.id === state.activeModelId,
+    ) ?? null;
+    const findProvider = (id: string | null | undefined) => id
+      ? state.providers.find((item) => item.id === id || item.type === id) ?? null
+      : null;
+    const requestedProvider = findProvider(requestedProviderId);
+    const globalProviderId = state.activeProviderId || activeEntry?.provider || null;
+    const globalProvider = findProvider(globalProviderId);
+    const provider = requestedProvider || globalProvider;
+    const effectiveProviderId = provider?.id || requestedProviderId || globalProviderId;
+    const globalModelId = state.currentModel?.trim() || activeEntry?.model?.trim() || null;
+    const fellBackFromMissingProvider = Boolean(
+      requestedProviderId && !requestedProvider && globalProvider,
+    );
+    const candidateModelId = fellBackFromMissingProvider
+      ? globalModelId
+      : requestedModelId || (requestedProviderId ? null : globalModelId);
+    const effectiveModelId = provider
+      ? provider.models.find((item) => item.id === candidateModelId)?.id
+        ?? provider.models[0]?.id
+        ?? candidateModelId
+      : candidateModelId;
+
+    return buildThreadChatProviderOverrideSnapshot(
+      state.providers,
+      effectiveProviderId,
+      effectiveModelId,
+      state.reasoningEffort,
     );
   },
   setSmartbrainExtractionStatus: (state) =>

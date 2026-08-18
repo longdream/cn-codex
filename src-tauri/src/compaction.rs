@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::adapter::{
     self,
@@ -15,21 +15,51 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter};
 
 pub const SUMMARIZATION_PROMPT: &str = "\
-You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.
 
-Include:
-- Current progress and key decisions made
-- Important context, constraints, or user preferences
-- What remains to be done (clear next steps)
-- Any critical data, examples, or references needed to continue
+Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write \"(none)\" for an empty section — never drop a section.
 
-Be concise, structured, and focused on helping the next LLM seamlessly continue the work.";
+## Primary Request and Intent
+- [the user's original and evolving goals; quote verbatim where the exact wording matters]
+
+## Key Technical Concepts
+- [technologies, frameworks, patterns, and conventions in play]
+
+## Files and Code
+- [exact path: why it matters, key changes or snippets]
+
+## Errors and Fixes
+- [error: how it was resolved, plus any related user feedback]
+
+## Pending Jobs
+- [explicitly requested work not yet completed]
+
+## Current Work
+- [precisely what was in progress at this checkpoint]
+
+## Next Step
+- [the single next action, directly in line with the most recent request, or \"(none)\"]
+
+## Critical Context
+- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]
+
+Rules:
+- Write concise engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.
+- Capture user feedback and explicit instructions faithfully, especially corrections.
+- Do NOT mention this summarization request or that the context was compacted.
+- Output only the checkpoint text: do not call any tool or take any other action.
+- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.";
 
 pub const SUMMARY_PREFIX: &str = "\
 Another language model started to solve this problem and produced a summary of its thinking process. \
 You also have access to the state of the tools that were used by that language model. \
 Use this to build on the work that has already been done and avoid duplicating work. \
 Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
+
+const SUMMARY_OPEN_TAG: &str = "<compacted-summary>";
+const SUMMARY_CLOSE_TAG: &str = "</compacted-summary>";
+const CHECKPOINT_ACK: &str = "\
+Checkpoint recorded. I will continue from the next step without restating this summary.";
 
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 const COMPACTION_TOOL_RESULT_LIMIT: usize = 100;
@@ -124,16 +154,24 @@ pub fn should_compact(prompt_tokens: u64, config: &ConfigToml) -> bool {
 }
 
 pub fn is_summary_message(content: &str) -> bool {
-    content.starts_with(SUMMARY_PREFIX)
+    content.starts_with(SUMMARY_PREFIX) || content.contains(SUMMARY_OPEN_TAG)
 }
 
 fn collect_user_messages(history: &[ThreadMessage]) -> Vec<String> {
     history
         .iter()
         .filter(|m| m.role == "user")
-        .filter(|m| !is_summary_message(&m.content))
+        .filter(|m| is_original_user_goal(&m.content))
         .map(|m| m.content.clone())
         .collect()
+}
+
+fn is_original_user_goal(content: &str) -> bool {
+    let trimmed = content.trim();
+    !trimmed.is_empty()
+        && !is_summary_message(trimmed)
+        && trimmed != CHECKPOINT_ACK
+        && !trimmed.starts_with("[Recent command context]")
 }
 
 fn now_secs() -> i64 {
@@ -172,6 +210,44 @@ fn internal_message_tokens(message: &InternalMessage) -> usize {
         .unwrap_or_default()
 }
 
+fn push_compaction_message(messages: &mut Vec<InternalMessage>, role: &str, content: String) {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    if let Some(last) = messages.last_mut() {
+        if last.role == role
+            && let Some(existing) = last.content.as_ref().and_then(serde_json::Value::as_str)
+        {
+            last.content = text_content(format!("{existing}\n\n{trimmed}"));
+            return;
+        }
+    }
+
+    messages.push(InternalMessage {
+        role: role.to_string(),
+        content: text_content(trimmed.to_string()),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+    });
+}
+
+fn frame_compacted_summary(summary_text: &str) -> String {
+    let body = if summary_text.trim().is_empty() {
+        "(no summary available)"
+    } else {
+        summary_text.trim()
+    };
+    format!("{SUMMARY_PREFIX}\n\n{SUMMARY_OPEN_TAG}\n{body}\n{SUMMARY_CLOSE_TAG}")
+}
+
+fn emit_compaction_event(app_handle: &AppHandle, event: &str, payload: serde_json::Value) {
+    app_handle.emit(event, payload.clone()).ok();
+    crate::mobile_server::broadcast(event, payload);
+}
+
 fn build_compaction_messages(history: &[ThreadMessage], max_tokens: usize) -> Vec<InternalMessage> {
     let mut messages = Vec::with_capacity(history.len() + 1);
     messages.push(InternalMessage {
@@ -189,15 +265,13 @@ fn build_compaction_messages(history: &[ThreadMessage], max_tokens: usize) -> Ve
         if msg.role == "tool" {
             let tool_name = msg.tool_name.as_deref().unwrap_or("tool");
             let result = truncate_compaction_text(&msg.content, COMPACTION_TOOL_RESULT_MAX_CHARS);
-            messages.push(InternalMessage {
-                // Keep the compaction transcript protocol-neutral. A raw `tool` role
-                // would require a matching assistant tool-call message in the summary API.
-                role: "user".to_string(),
-                content: text_content(format!("[Command result: {tool_name}]\n{result}")),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
-            });
+            // Keep the compaction transcript protocol-neutral. A raw `tool` role
+            // would require a matching assistant tool-call message in the summary API.
+            push_compaction_message(
+                &mut messages,
+                "user",
+                format!("[Command result: {tool_name}]\n{result}"),
+            );
             continue;
         }
 
@@ -225,13 +299,12 @@ fn build_compaction_messages(history: &[ThreadMessage], max_tokens: usize) -> Ve
         if content.trim().is_empty() {
             continue;
         }
-        messages.push(InternalMessage {
-            role: msg.role.clone(),
-            content: text_content(content),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        });
+        let role = if msg.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
+        push_compaction_message(&mut messages, role, content);
     }
 
     let system = messages.remove(0);
@@ -310,65 +383,51 @@ pub fn build_compacted_history(
 ) -> Vec<ThreadMessage> {
     let summary_prefix = format!("{SUMMARY_PREFIX}\n");
     let summary_body_budget = max_tokens.saturating_sub(approx_token_count(&summary_prefix));
-    let summary_body_source = if summary_text.is_empty() {
-        "(no summary available)"
-    } else {
-        summary_text
-    };
-    let summary_body = truncate_to_token_budget(summary_body_source, summary_body_budget);
+    let framed_summary = frame_compacted_summary(summary_text);
+    let summary_body = framed_summary
+        .strip_prefix(&summary_prefix)
+        .unwrap_or(framed_summary.as_str());
+    let summary_body = truncate_to_token_budget(summary_body, summary_body_budget);
     let final_summary = format!("{summary_prefix}{summary_body}");
     let summary_tokens = approx_token_count(&final_summary);
     let remaining = max_tokens.saturating_sub(summary_tokens);
 
     let user_budget = COMPACT_USER_MESSAGE_MAX_TOKENS.min(remaining / 2);
     let selected_users = select_recent_texts(user_messages, user_budget);
-    let selected_user_tokens = selected_users
-        .iter()
-        .map(|message| approx_token_count(message))
-        .sum::<usize>();
+    let user_goal_text = if selected_users.is_empty() {
+        "Continue from the checkpoint below.".to_string()
+    } else {
+        selected_users.join("\n\n")
+    };
+    let selected_user_tokens = approx_token_count(&user_goal_text);
     let tool_budget = remaining.saturating_sub(selected_user_tokens);
     let selected_tool_context = select_recent_texts(recent_tool_context, tool_budget);
+    let tool_context_text = if selected_tool_context.is_empty() {
+        "Recent command results were folded into this checkpoint.".to_string()
+    } else {
+        selected_tool_context.join("\n\n")
+    };
 
     let mut messages: Vec<ThreadMessage> = Vec::new();
+    messages.push(thread_text_message("user", user_goal_text));
+    messages.push(thread_text_message("assistant", tool_context_text));
+    messages.push(thread_text_message("user", final_summary));
+    messages.push(thread_text_message("assistant", CHECKPOINT_ACK.to_string()));
 
-    for text in &selected_users {
-        messages.push(ThreadMessage {
-            id: uuid::Uuid::new_v4().to_string(),
-            role: "user".to_string(),
-            content: text.clone(),
-            timestamp: now_secs(),
-            tool_call_id: None,
-            tool_name: None,
-            tool_calls: None,
-            attachments: Vec::new(),
-        });
-    }
+    messages
+}
 
-    for context in &selected_tool_context {
-        messages.push(ThreadMessage {
-            id: uuid::Uuid::new_v4().to_string(),
-            role: "user".to_string(),
-            content: context.clone(),
-            timestamp: now_secs(),
-            tool_call_id: None,
-            tool_name: None,
-            tool_calls: None,
-            attachments: Vec::new(),
-        });
-    }
-
-    messages.push(ThreadMessage {
+fn thread_text_message(role: &str, content: String) -> ThreadMessage {
+    ThreadMessage {
         id: uuid::Uuid::new_v4().to_string(),
-        role: "user".to_string(),
-        content: final_summary,
+        role: role.to_string(),
+        content,
         timestamp: now_secs(),
         tool_call_id: None,
         tool_name: None,
         tool_calls: None,
         attachments: Vec::new(),
-    });
-
-    messages
+    }
 }
 
 fn select_recent_texts(items: &[String], max_tokens: usize) -> Vec<String> {
@@ -419,11 +478,56 @@ pub async fn run_compaction(
     info!("Starting context compaction for thread {thread_id}");
 
     let payload = serde_json::json!({ "threadId": thread_id });
-    app_handle.emit("compaction-started", payload.clone()).ok();
-    crate::mobile_server::broadcast("compaction-started", payload);
+    emit_compaction_event(app_handle, "compaction-started", payload);
 
+    let result = run_compaction_inner(
+        http,
+        app_handle,
+        config,
+        thread_store,
+        thread_id,
+        base_url,
+        api_key,
+        model,
+        wire_api,
+        cancel_flag,
+        query_params,
+        extra_headers,
+        compaction_start,
+    )
+    .await;
+    if let Err(error) = &result {
+        warn!("Context compaction failed for thread {thread_id}: {error}");
+        emit_compaction_event(
+            app_handle,
+            "compaction-failed",
+            serde_json::json!({
+                "threadId": thread_id,
+                "error": error.to_string(),
+            }),
+        );
+    }
+    result
+}
+
+async fn run_compaction_inner(
+    http: &reqwest::Client,
+    app_handle: &AppHandle,
+    config: &ConfigToml,
+    thread_store: &Arc<ThreadStore>,
+    thread_id: &str,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    wire_api: &str,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+    query_params: Option<&std::collections::HashMap<String, String>>,
+    extra_headers: Option<&std::collections::HashMap<String, String>>,
+    compaction_start: Instant,
+) -> AppResult<()> {
     let history = thread_store.get_model_history(thread_id).await;
     if history.is_empty() {
+        info!("Skipping compaction for empty thread {thread_id}");
         return Ok(());
     }
 
@@ -504,8 +608,12 @@ pub async fn run_compaction(
             }
 
             for event in adapter.parse_stream_line(&line) {
-                if let StreamEvent::TextDelta(delta) = event {
-                    summary_text.push_str(&delta);
+                match event {
+                    StreamEvent::TextDelta(delta) => summary_text.push_str(&delta),
+                    StreamEvent::Error(error) => {
+                        return Err(AppError::Custom(error));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -587,10 +695,7 @@ pub async fn run_compaction(
         "contextPromptTokens": compacted_prompt_tokens,
         "modelContextWindow": model_context_window,
     });
-    app_handle
-        .emit("context-compacted", compacted_payload.clone())
-        .ok();
-    crate::mobile_server::broadcast("context-compacted", compacted_payload);
+    emit_compaction_event(app_handle, "context-compacted", compacted_payload);
 
     info!("Context compaction applied for thread {thread_id}");
     Ok(())
@@ -629,6 +734,7 @@ mod tests {
             id: "call-1".to_string(),
             name: "read_file".to_string(),
             arguments: r#"{"path":"src/main.rs"}"#.to_string(),
+            reasoning_content: None,
         }]);
         let mut tool = message("tool", "src/main.rs:42 error: stale context");
         tool.tool_call_id = Some("call-1".to_string());
@@ -644,6 +750,28 @@ mod tests {
             message_text(message).contains("[Command result: read_file]")
                 && message_text(message).contains("stale context")
         }));
+    }
+
+    #[test]
+    fn compaction_transcript_merges_consecutive_same_role_messages() {
+        let history = vec![
+            message("user", "first request"),
+            message("user", "follow-up request"),
+            message("assistant", "first reply"),
+            message("assistant", "second reply"),
+        ];
+
+        let messages = build_compaction_messages(&history, 10_000);
+        let roles = messages
+            .iter()
+            .map(|message| message.role.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(roles, vec!["system", "user", "assistant"]);
+        assert!(message_text(&messages[1]).contains("first request"));
+        assert!(message_text(&messages[1]).contains("follow-up request"));
+        assert!(message_text(&messages[2]).contains("first reply"));
+        assert!(message_text(&messages[2]).contains("second reply"));
     }
 
     #[test]
@@ -725,17 +853,59 @@ mod tests {
         );
         let retained_contexts = compacted
             .iter()
-            .filter(|message| message.content.starts_with("[Recent command context]"))
+            .filter(|message| message.content.contains("[Recent command context]"))
             .count();
         assert!(retained_contexts > 0);
-        assert!(retained_contexts < COMPACTION_TOOL_RESULT_LIMIT);
+        assert_eq!(retained_contexts, 1);
         assert!(estimated_history_tokens(&compacted) <= history_budget);
         assert!(
             compacted
                 .iter()
                 .any(|message| message.content.contains("RESULT_179_"))
         );
-        assert!(is_summary_message(&compacted.last().unwrap().content));
+        assert!(compacted.iter().any(|message| is_summary_message(&message.content)));
+        assert_eq!(compacted.last().map(|message| message.content.as_str()), Some(CHECKPOINT_ACK));
+    }
+
+    #[test]
+    fn compacted_history_uses_alternating_roles_and_checkpoint_tags() {
+        let compacted = build_compacted_history(
+            &["keep the long task running".to_string()],
+            "handoff summary",
+            &["[Recent command context]\ncommand: shell\narguments: {}\nresult:\nok".to_string()],
+            2_000,
+        );
+
+        assert!(compacted
+            .iter()
+            .any(|message| message.role == "user" && message.content == "keep the long task running"));
+        assert!(compacted.iter().any(|message| {
+            message.role == "assistant" && message.content.starts_with("[Recent command context]")
+        }));
+        let summary = compacted
+            .iter()
+            .find(|message| is_summary_message(&message.content))
+            .expect("summary message");
+        assert_eq!(summary.role, "user");
+        assert!(summary.content.contains(SUMMARY_OPEN_TAG));
+        assert!(summary.content.contains("handoff summary"));
+        assert_eq!(compacted.last().map(|message| message.role.as_str()), Some("assistant"));
+        assert_eq!(compacted.last().map(|message| message.content.as_str()), Some(CHECKPOINT_ACK));
+        assert_eq!(
+            compacted
+                .iter()
+                .map(|message| message.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["user", "assistant", "user", "assistant"]
+        );
+
+        let mut previous_role = None;
+        for message in &compacted {
+            if let Some(role) = previous_role {
+                assert_ne!(role, message.role.as_str());
+            }
+            previous_role = Some(message.role.as_str());
+        }
     }
 
     #[test]
