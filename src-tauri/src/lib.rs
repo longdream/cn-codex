@@ -19,6 +19,7 @@ pub mod ocr;
 pub mod plugin_loader;
 pub mod protocol;
 pub mod recording;
+pub mod replay;
 pub mod relay_client;
 mod request_control;
 pub mod robot_loader;
@@ -602,6 +603,11 @@ pub fn run() {
             commands::recording_show_toggle,
             commands::recording_list_traces,
             commands::recording_read_trace,
+            commands::replay_generate_script,
+            commands::replay_list_scripts,
+            commands::replay_read_script,
+            commands::replay_run_script,
+            commands::replay_get_dir,
             // SmartBrain
             smartbrain::commands::smartbrain_list_experiences,
             smartbrain::commands::smartbrain_read_experience,

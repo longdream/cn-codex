@@ -424,7 +424,7 @@ function createDefaultThreadRuntimeState(): ThreadRuntimeState {
   };
 }
 
-export type RightPanelTab = "browser" | "project" | "terminal" | "git" | "miniapp";
+export type RightPanelTab = "browser" | "project" | "terminal" | "git" | "miniapp" | "replay";
 export type SidebarTab = "chats" | "projects";
 export interface SmartbrainExtractionProgress {
   current: number;
@@ -1156,6 +1156,12 @@ export interface ThreadPreference {
   miniappName?: string | null;
   /** 小程序根目录：作为该线程的专属工作目录，优先级高于全局 workspaceCwd */
   miniappRootPath?: string | null;
+  /** 回放修复对话绑定：脚本 id；非空表示该线程是回放脚本专属修复对话 */
+  replayScriptId?: string | null;
+  /** 回放脚本显示名（用于侧边栏展示） */
+  replayScriptName?: string | null;
+  /** 回放脚本目录：作为该线程的专属工作目录，优先级高于全局 workspaceCwd */
+  replayRootPath?: string | null;
 }
 
 function normalizePositiveInt(value: unknown, fallback: number): number {
@@ -1769,6 +1775,18 @@ function buildThreadPreferencePatch(
       patch.miniappRootPath !== undefined
         ? patch.miniappRootPath
         : (existing?.miniappRootPath ?? null),
+    replayScriptId:
+      patch.replayScriptId !== undefined
+        ? patch.replayScriptId
+        : (existing?.replayScriptId ?? null),
+    replayScriptName:
+      patch.replayScriptName !== undefined
+        ? patch.replayScriptName
+        : (existing?.replayScriptName ?? null),
+    replayRootPath:
+      patch.replayRootPath !== undefined
+        ? patch.replayRootPath
+        : (existing?.replayRootPath ?? null),
   };
   const isEmpty =
     !next.overrideProviderId &&
@@ -1777,7 +1795,10 @@ function buildThreadPreferencePatch(
     !next.subagentEnabled &&
     !next.miniappSlug &&
     !next.miniappName &&
-    !next.miniappRootPath;
+    !next.miniappRootPath &&
+    !next.replayScriptId &&
+    !next.replayScriptName &&
+    !next.replayRootPath;
   return isEmpty ? null : next;
 }
 
@@ -2032,6 +2053,11 @@ interface AppState {
   bindThreadMiniapp: (
     threadId: string,
     binding: { slug: string; name: string; rootPath: string } | null,
+  ) => void;
+  /** 绑定/解绑线程的回放修复上下文（cwd 绑定到回放脚本目录，线程级隔离）；传 null 解除绑定 */
+  bindThreadReplay: (
+    threadId: string,
+    binding: { scriptId: string; scriptName: string; rootPath: string } | null,
   ) => void;
   buildThreadChatProviderOverride: (
     providerId?: string | null,
@@ -3320,6 +3346,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     saveThreadPreferences(nextPrefs);
     set({ threadPreferences: nextPrefs });
   },
+  bindThreadReplay: (threadId, binding) => {
+    const state = get();
+    const nextPrefs = { ...state.threadPreferences };
+    const nextPref = buildThreadPreferencePatch(nextPrefs[threadId], {
+      replayScriptId: binding?.scriptId ?? null,
+      replayScriptName: binding?.scriptName ?? null,
+      replayRootPath: binding?.rootPath ?? null,
+    });
+    if (nextPref) {
+      nextPrefs[threadId] = nextPref;
+    } else {
+      delete nextPrefs[threadId];
+    }
+    saveThreadPreferences(nextPrefs);
+    set({ threadPreferences: nextPrefs });
+  },
   buildThreadChatProviderOverride: (providerId, modelId) => {
     const state = get();
     return buildThreadChatProviderOverrideSnapshot(
@@ -3412,6 +3454,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (threadId) {
       const miniappCwd = state.threadPreferences[threadId]?.miniappRootPath?.trim();
       if (miniappCwd) return miniappCwd;
+      const replayCwd = state.threadPreferences[threadId]?.replayRootPath?.trim();
+      if (replayCwd) return replayCwd;
       const projectId = state.threadProjectMap[threadId];
       if (projectId && projectId !== GENERAL_PROJECT_ID) {
         const projectCwd = state.projects.find((p) => p.id === projectId)?.cwd?.trim();

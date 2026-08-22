@@ -8,6 +8,7 @@ import {
   IconLoader2,
   IconMessage2,
   IconMessagePlus,
+  IconPlayerPlay,
   IconRefresh,
   IconSearch,
   IconSettings,
@@ -52,6 +53,12 @@ export function Sidebar() {
   const setSidebarTab = useAppStore((s) => s.setSidebarTab);
   const [creating, setCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  // 对话分组收缩状态（chats 页签下的小程序/回放/通用分组）。
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
 
   const handleAddProject = useCallback(async () => {
     try {
@@ -89,10 +96,11 @@ export function Sidebar() {
     }
   }, [creating, isGeneralMode, createThread]);
 
-  const { projectThreads, generalThreads, miniappThreads } = useMemo(() => {
+  const { projectThreads, generalThreads, miniappThreads, replayThreads } = useMemo(() => {
     const map = new Map<string, typeof threads>();
     const general: typeof threads = [];
     const miniapp: typeof threads = [];
+    const replay: typeof threads = [];
     for (const p of projects) {
       map.set(p.id, []);
     }
@@ -100,6 +108,11 @@ export function Sidebar() {
       // 小程序编辑对话归入左侧独立区域，不与普通对话混合
       if (threadPreferences[t.id]?.miniappSlug) {
         miniapp.push(t);
+        continue;
+      }
+      // 回放修复对话归入左侧独立区域
+      if (threadPreferences[t.id]?.replayScriptId) {
+        replay.push(t);
         continue;
       }
       const pid = t.projectId ?? threadProjectMap[t.id];
@@ -114,20 +127,33 @@ export function Sidebar() {
     }
     general.sort((a, b) => b.updatedAt - a.updatedAt);
     miniapp.sort((a, b) => b.updatedAt - a.updatedAt);
-    return { projectThreads: map, generalThreads: general, miniappThreads: miniapp };
+    replay.sort((a, b) => b.updatedAt - a.updatedAt);
+    return { projectThreads: map, generalThreads: general, miniappThreads: miniapp, replayThreads: replay };
   }, [projects, threads, threadProjectMap, threadPreferences]);
 
-  const filteredMiniappThreads = useMemo(() => {
-    if (!searchQuery.trim()) {
-      return miniappThreads;
-    }
-    const q = searchQuery.toLowerCase();
-    return miniappThreads.filter(
-      (t) =>
-        (t.name?.toLowerCase().includes(q)) ||
-        t.preview.toLowerCase().includes(q),
-    );
-  }, [miniappThreads, searchQuery]);
+  const filterThreadsByQuery = useCallback(
+    (list: typeof threads) => {
+      if (!searchQuery.trim()) {
+        return list;
+      }
+      const q = searchQuery.toLowerCase();
+      return list.filter(
+        (t) =>
+          (t.name?.toLowerCase().includes(q)) ||
+          t.preview.toLowerCase().includes(q),
+      );
+    },
+    [searchQuery],
+  );
+
+  const filteredMiniappThreads = useMemo(
+    () => filterThreadsByQuery(miniappThreads),
+    [filterThreadsByQuery, miniappThreads],
+  );
+  const filteredReplayThreads = useMemo(
+    () => filterThreadsByQuery(replayThreads),
+    [filterThreadsByQuery, replayThreads],
+  );
 
   const { filteredProjectThreads, filteredGeneralThreads } = useMemo(() => {
     if (!searchQuery.trim()) {
@@ -145,13 +171,9 @@ export function Sidebar() {
         filtered.set(pid, matching);
       }
     }
-    const filteredGeneral = generalThreads.filter(
-      (t) =>
-        (t.name?.toLowerCase().includes(q)) ||
-        t.preview.toLowerCase().includes(q),
-    );
+    const filteredGeneral = filterThreadsByQuery(generalThreads);
     return { filteredProjectThreads: filtered, filteredGeneralThreads: filteredGeneral };
-  }, [projectThreads, generalThreads, searchQuery]);
+  }, [projectThreads, generalThreads, filterThreadsByQuery]);
 
   const isThreadRunning = useCallback(
     (threadId: string) => {
@@ -239,51 +261,83 @@ export function Sidebar() {
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {sidebarTab === "chats" ? (
-          /* Chats tab: flat list of general conversations */
-          <div>
+          /* Chats tab: grouped, collapsible conversation lists */
+          <div className="space-y-3">
+            {/* 回放修复对话专属区域 */}
+            {filteredReplayThreads.length > 0 && (
+              <ChatGroupSection
+                title={intl.formatMessage({ id: "sidebar.replayChats" })}
+                count={filteredReplayThreads.length}
+                icon={<IconPlayerPlay size={12} stroke={1.8} />}
+                collapsed={Boolean(collapsedGroups["replay"])}
+                onToggle={() => toggleGroup("replay")}
+              >
+                {filteredReplayThreads.map((thread) => {
+                  const title = thread.name || thread.preview || intl.formatMessage({ id: "chat.threadUntitled" });
+                  return (
+                    <ThreadItem
+                      key={thread.id}
+                      thread={thread}
+                      title={title}
+                      isCurrent={currentThreadId === thread.id}
+                      isRunning={isThreadRunning(thread.id)}
+                      locale={intl.locale}
+                      onClick={() => {
+                        void loadThread(thread.id);
+                      }}
+                      onDelete={() => useAppStore.getState().deleteThread(thread.id)}
+                    />
+                  );
+                })}
+              </ChatGroupSection>
+            )}
+
             {/* 小程序编辑对话专属区域：工作目录绑定小程序根目录，与普通对话隔离 */}
             {filteredMiniappThreads.length > 0 && (
-              <div className="mb-3">
-                <div className="mb-1 flex items-center gap-1 px-2">
-                  <IconApps size={12} stroke={1.8} className="text-[var(--text-faint)]" />
-                  <span className="text-[11px] font-medium text-[var(--text-faint)]">
-                    {intl.formatMessage({ id: "sidebar.miniappChats" })}
-                  </span>
-                </div>
-                <div className="space-y-0.5">
-                  {filteredMiniappThreads.map((thread) => {
-                    const title = thread.name || thread.preview || intl.formatMessage({ id: "chat.threadUntitled" });
-                    return (
-                      <ThreadItem
-                        key={thread.id}
-                        thread={thread}
-                        title={title}
-                        isCurrent={currentThreadId === thread.id}
-                        isRunning={isThreadRunning(thread.id)}
-                        locale={intl.locale}
-                        onClick={() => {
-                          void loadThread(thread.id);
-                        }}
-                        onDelete={() => useAppStore.getState().deleteThread(thread.id)}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            <div className="mb-1 flex items-center justify-between px-2">
-              <span className="text-[11px] font-medium text-[var(--text-faint)]">
-                {intl.formatMessage({ id: "sidebar.generalChats" })}
-              </span>
-              <button
-                onClick={handleNewGeneralChat}
-                className="flex-shrink-0 text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
-                title={intl.formatMessage({ id: "sidebar.newGeneralChat" })}
+              <ChatGroupSection
+                title={intl.formatMessage({ id: "sidebar.miniappChats" })}
+                count={filteredMiniappThreads.length}
+                icon={<IconApps size={12} stroke={1.8} />}
+                collapsed={Boolean(collapsedGroups["miniapp"])}
+                onToggle={() => toggleGroup("miniapp")}
               >
-                <IconMessagePlus size={12} stroke={1.8} />
-              </button>
-            </div>
-            <div className="space-y-0.5">
+                {filteredMiniappThreads.map((thread) => {
+                  const title = thread.name || thread.preview || intl.formatMessage({ id: "chat.threadUntitled" });
+                  return (
+                    <ThreadItem
+                      key={thread.id}
+                      thread={thread}
+                      title={title}
+                      isCurrent={currentThreadId === thread.id}
+                      isRunning={isThreadRunning(thread.id)}
+                      locale={intl.locale}
+                      onClick={() => {
+                        void loadThread(thread.id);
+                      }}
+                      onDelete={() => useAppStore.getState().deleteThread(thread.id)}
+                    />
+                  );
+                })}
+              </ChatGroupSection>
+            )}
+
+            {/* 通用对话分组 */}
+            <ChatGroupSection
+              title={intl.formatMessage({ id: "sidebar.generalChats" })}
+              count={filteredGeneralThreads.length}
+              icon={<IconMessage2 size={12} stroke={1.8} />}
+              collapsed={Boolean(collapsedGroups["general"])}
+              onToggle={() => toggleGroup("general")}
+              action={
+                <button
+                  onClick={handleNewGeneralChat}
+                  className="flex-shrink-0 text-[var(--text-faint)] transition-colors hover:text-[var(--accent)]"
+                  title={intl.formatMessage({ id: "sidebar.newGeneralChat" })}
+                >
+                  <IconMessagePlus size={12} stroke={1.8} />
+                </button>
+              }
+            >
               {filteredGeneralThreads.length === 0 ? (
                 <button
                   onClick={handleNewGeneralChat}
@@ -310,7 +364,7 @@ export function Sidebar() {
                   );
                 })
               )}
-            </div>
+            </ChatGroupSection>
           </div>
         ) : (
           /* Projects tab: project groups with their threads */
@@ -529,6 +583,50 @@ function ProjectGroup({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ChatGroupSection({
+  title,
+  count,
+  icon,
+  collapsed,
+  onToggle,
+  action,
+  children,
+}: {
+  title: string;
+  count: number;
+  icon: React.ReactNode;
+  collapsed: boolean;
+  onToggle: () => void;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mb-3">
+      <div className="mb-1 flex items-center gap-1 px-1">
+        <button
+          onClick={onToggle}
+          className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-[var(--text-faint)] transition-colors hover:text-[var(--text-strong)]"
+        >
+          {collapsed ? (
+            <IconChevronRight size={12} stroke={2} />
+          ) : (
+            <IconChevronDown size={12} stroke={2} />
+          )}
+        </button>
+        <span className="flex-shrink-0 text-[var(--text-faint)]">{icon}</span>
+        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-[var(--text-faint)]">
+          {title}
+        </span>
+        <span className="flex-shrink-0 text-[11px] text-[var(--text-faint)] opacity-70">
+          {count}
+        </span>
+        {action}
+      </div>
+      {!collapsed && <div className="space-y-0.5">{children}</div>}
     </div>
   );
 }

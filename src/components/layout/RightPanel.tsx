@@ -1,4 +1,4 @@
-import { IconApps, IconBrowser, IconCheck, IconChevronLeft, IconChevronRight, IconExternalLink, IconFolderOpen, IconGitBranch, IconHome, IconMessagePlus, IconPencil, IconRefresh, IconTerminal2, IconX } from "@tabler/icons-react";
+import { IconApps, IconBrowser, IconCheck, IconChevronLeft, IconChevronRight, IconExternalLink, IconFolderOpen, IconGitBranch, IconHome, IconMessagePlus, IconPencil, IconPlayerPlay, IconRefresh, IconTerminal2, IconX } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -9,6 +9,7 @@ import { FileTree } from "./FileTree";
 import { GitPanel } from "./GitPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { MiniAppSidePanel } from "./MiniAppSidePanel";
+import { ReplaySidePanel } from "./ReplaySidePanel";
 
 function latestBrowserToolCall(messages: ReturnType<typeof useAppStore.getState>["messages"]) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -869,6 +870,7 @@ export function RightPanel() {
   const terminalTabLabel = intl.formatMessage({ id: "rightPanel.terminal" });
   const gitTabLabel = intl.formatMessage({ id: "rightPanel.git" });
   const miniappTabLabel = intl.formatMessage({ id: "rightPanel.miniapp" });
+  const replayTabLabel = intl.formatMessage({ id: "rightPanel.replay" });
   const canToggleEditMode = !browserDetached && (browserEditMode || Boolean(browserEditContext?.editable));
   const editModeTitle = browserEditMode
     ? intl.formatMessage({ id: "rightPanel.webEditDisable" })
@@ -947,6 +949,18 @@ export function RightPanel() {
           aria-label={miniappTabLabel}
         >
           <IconApps size={14} stroke={1.8} />
+        </button>
+        <button
+          onClick={() => setRightPanelTab("replay")}
+          className={`flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] transition-colors ${
+            rightPanelTab === "replay"
+              ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+              : "text-[var(--text-muted)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+          }`}
+          title={replayTabLabel}
+          aria-label={replayTabLabel}
+        >
+          <IconPlayerPlay size={14} stroke={1.8} />
         </button>
       </div>
 
@@ -1218,7 +1232,7 @@ const RightPanelSecondaryTab = memo(function RightPanelSecondaryTab({
   tab,
   workspaceCwd,
 }: {
-  tab: "project" | "terminal" | "git" | "browser" | "miniapp";
+  tab: "project" | "terminal" | "git" | "browser" | "miniapp" | "replay";
   workspaceCwd: string | null;
 }) {
   // 终端打开后保持挂载：切换到项目/Git 时只隐藏，避免 PTY 被卸载关闭。
@@ -1236,6 +1250,8 @@ const RightPanelSecondaryTab = memo(function RightPanelSecondaryTab({
         <GitPanel workspaceCwd={workspaceCwd} />
       ) : tab === "miniapp" ? (
         <MiniAppSidePanel />
+      ) : tab === "replay" ? (
+        <ReplaySidePanel />
       ) : tab === "project" || tab === "browser" ? (
         <ProjectTab workspaceCwd={workspaceCwd} />
       ) : null}

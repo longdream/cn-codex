@@ -72,6 +72,8 @@ export function useRecording(): UseRecordingReturn {
           setLastTrace(e.payload);
           setState("completed");
           stopTimer();
+          // 录制完成时后端已自动生成回放脚本，通知回放面板刷新。
+          window.dispatchEvent(new CustomEvent("cn-codex:replay-updated"));
         }),
       );
     };
