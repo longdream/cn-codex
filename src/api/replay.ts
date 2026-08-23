@@ -31,12 +31,6 @@ export interface ReplayReadResult {
   content: string;
 }
 
-export async function replayGenerateScript(
-  sessionId: string,
-): Promise<ReplayScriptMeta> {
-  return invoke<ReplayScriptMeta>("replay_generate_script", { sessionId });
-}
-
 export async function replayListScripts(): Promise<ReplayScriptMeta[]> {
   return invoke<ReplayScriptMeta[]>("replay_list_scripts");
 }
@@ -47,6 +41,14 @@ export async function replayReadScript(id: string): Promise<ReplayReadResult> {
 
 export async function replayRunScript(id: string): Promise<ReplayRunResult> {
   return invoke<ReplayRunResult>("replay_run_script", { id });
+}
+
+export async function replayStopScript(id: string): Promise<boolean> {
+  return invoke<boolean>("replay_stop_script", { id });
+}
+
+export async function replayDeleteScript(id: string): Promise<void> {
+  return invoke("replay_delete_script", { id });
 }
 
 export async function replayGetDir(): Promise<string> {

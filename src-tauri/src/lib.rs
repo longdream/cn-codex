@@ -603,10 +603,11 @@ pub fn run() {
             commands::recording_show_toggle,
             commands::recording_list_traces,
             commands::recording_read_trace,
-            commands::replay_generate_script,
             commands::replay_list_scripts,
             commands::replay_read_script,
             commands::replay_run_script,
+            commands::replay_stop_script,
+            commands::replay_delete_script,
             commands::replay_get_dir,
             // SmartBrain
             smartbrain::commands::smartbrain_list_experiences,

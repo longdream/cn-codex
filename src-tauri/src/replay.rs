@@ -1,18 +1,134 @@
-//! Record & Replay: turn a recorded browser trace into a resilient Playwright
-//! Python script, list saved scripts, and run them while capturing structured
-//! output for the main pipeline to inspect and repair.
+//! Record & Replay: list, read, run and delete Playwright replay scripts.
+//!
+//! Script generation is delegated to the main pipeline (the AI agent), which
+//! reads the recorded trace and writes a Python script with Chinese comments and
+//! per-step descriptions. This module only manages the script files on disk.
 
+use std::collections::HashMap;
+use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::process::Command;
+use tokio::sync::Mutex;
 
 use crate::recording::TraceFile;
 
 /// How long a single replay script run is allowed to take before it is killed.
 const RUN_TIMEOUT_SECS: u64 = 180;
+
+/// In-memory registry for replay processes. The UI can request a stop while
+/// `wait_with_output` is awaiting the child, so the process ID must live
+/// outside that future and be independently addressable.
+#[derive(Debug, Clone, Copy)]
+struct ActiveReplay {
+    pid: Option<u32>,
+    stop_requested: bool,
+}
+
+fn active_replays() -> &'static Mutex<HashMap<String, ActiveReplay>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, ActiveReplay>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn begin_replay(id: &str) -> Result<(), String> {
+    let mut registry = active_replays().lock().await;
+    if registry.contains_key(id) {
+        return Err(format!("Replay script is already running: {id}"));
+    }
+    registry.insert(
+        id.to_string(),
+        ActiveReplay {
+            pid: None,
+            stop_requested: false,
+        },
+    );
+    Ok(())
+}
+
+/// Register a spawned child and return whether a stop request raced with
+/// process startup.
+async fn set_replay_pid(id: &str, pid: u32) -> bool {
+    let mut registry = active_replays().lock().await;
+    let entry = registry.entry(id.to_string()).or_insert(ActiveReplay {
+        pid: Some(pid),
+        stop_requested: false,
+    });
+    entry.pid = Some(pid);
+    entry.stop_requested
+}
+
+async fn finish_replay(id: &str) -> bool {
+    active_replays()
+        .lock()
+        .await
+        .remove(id)
+        .map(|run| run.stop_requested)
+        .unwrap_or(false)
+}
+
+async fn replay_stop_requested(id: &str) -> bool {
+    active_replays()
+        .lock()
+        .await
+        .get(id)
+        .map(|run| run.stop_requested)
+        .unwrap_or(false)
+}
+
+async fn clear_replay_pid(id: &str) -> bool {
+    active_replays()
+        .lock()
+        .await
+        .get_mut(id)
+        .map(|run| {
+            run.pid = None;
+            run.stop_requested
+        })
+        .unwrap_or(false)
+}
+
+/// Kill a replay process and its browser children. `taskkill /T` is needed on
+/// Windows because Playwright may leave a browser child behind otherwise.
+async fn terminate_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .await;
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .output()
+            .await;
+    }
+}
+
+/// Request cancellation of a running script. Returning `false` means the
+/// script had already finished (or was never running), which is still a
+/// successful stop operation from the UI's perspective.
+pub async fn stop_script(id: &str) -> Result<bool, String> {
+    let pid = {
+        let mut registry = active_replays().lock().await;
+        let Some(run) = registry.get_mut(id) else {
+            return Ok(false);
+        };
+        run.stop_requested = true;
+        run.pid
+    };
+
+    if let Some(pid) = pid {
+        terminate_process_tree(pid).await;
+    }
+    Ok(true)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +154,7 @@ pub struct ReplayRunResult {
     pub stdout: String,
     pub stderr: String,
     pub duration_ms: u64,
-    /// Human-readable, structured failure summary extracted from the script output.
+    /// Human-readable failure summary extracted from the script output.
     pub error: Option<String>,
 }
 
@@ -68,159 +184,129 @@ fn is_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
-/// Merge raw recording events into resilient replay steps.
-fn build_steps(trace: &TraceFile) -> (String, Vec<serde_json::Value>) {
-    // Prefer the first real page the user visited when the initial tab is blank.
-    let start_url = if is_http_url(&trace.start_url) {
-        trace.start_url.clone()
-    } else {
-        trace
-            .events
-            .iter()
-            .find_map(|e| is_http_url(&e.url).then(|| e.url.clone()))
-            .unwrap_or_default()
-    };
-
-    let mut steps: Vec<serde_json::Value> = Vec::new();
-    for event in &trace.events {
-        let kind = match event.event_type.as_str() {
-            "click" => "click",
-            "type" => "type",
-            "select" => "select",
-            "submit" => "submit",
-            "navigate" => "navigate",
-            _ => continue,
-        };
-
-        // Intermediate keystrokes are captured as empty "type" events; skip them.
-        if kind == "type" {
-            let value = event.value.as_deref().unwrap_or("").trim();
-            if value.is_empty() {
-                continue;
-            }
-        }
-
-        let mut selectors: Vec<String> = if event.selector_candidates.is_empty() {
-            vec![event.selector.clone()]
-        } else {
-            event.selector_candidates.clone()
-        };
-        selectors.retain(|s| !s.trim().is_empty());
-        if selectors.is_empty() {
-            continue;
-        }
-
-        // Merge consecutive "type" steps on the same element & page into a single fill
-        // (the recorder emits one event per keystroke).
-        if kind == "type" {
-            if let Some(last) = steps.last_mut() {
-                let same_kind = last.get("kind").and_then(|v| v.as_str()) == Some("type");
-                let same_selectors = last
-                    .get("selectors")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
-                    == Some(selectors.iter().map(String::as_str).collect::<Vec<_>>());
-                let same_url =
-                    last.get("expected_url").and_then(|v| v.as_str()) == Some(event.url.as_str());
-                if same_kind && same_selectors && same_url {
-                    last["value"] = json!(event.value.clone().unwrap_or_default());
-                    continue;
-                }
-            }
-        }
-
-        steps.push(json!({
-            "kind": kind,
-            "selectors": selectors,
-            "value": event.value.clone().unwrap_or_default(),
-            "expected_url": event.url.clone(),
-        }));
+/// Pick the first meaningful start page for a recorded session.
+fn effective_start_url(trace: &TraceFile) -> String {
+    if is_http_url(&trace.start_url) {
+        return trace.start_url.clone();
     }
-
-    (start_url, steps)
+    trace
+        .events
+        .iter()
+        .find_map(|e| is_http_url(&e.url).then(|| e.url.clone()))
+        .unwrap_or_default()
 }
 
-/// Generate a self-contained Playwright Python script for the given trace.
-pub fn generate_script_content(trace: &TraceFile) -> Result<String, String> {
-    let (start_url, steps) = build_steps(trace);
-
-    let payload = json!({
-        "start_url": start_url,
-        "steps": steps,
-        "timeout_ms": 15_000,
-        "headless": false,
-    });
-    let payload_str = serde_json::to_string(&payload)
-        .map_err(|e| format!("Failed to serialize replay payload: {e}"))?;
-    let payload_b64 = general_purpose::STANDARD.encode(payload_str.as_bytes());
-
-    let script = PYTHON_TEMPLATE.replace("__PAYLOAD_B64__", &payload_b64);
-    Ok(script)
+fn push_unique_candidate(candidates: &mut Vec<String>, candidate: impl Into<String>) {
+    let candidate = candidate.into();
+    if !candidate.trim().is_empty() && !candidates.iter().any(|item| item == &candidate) {
+        candidates.push(candidate);
+    }
 }
 
-/// Generate and persist a replay script for a completed recording trace.
-pub async fn generate_and_save(
-    recordings_dir: &Path,
-    trace: &TraceFile,
-) -> Result<ReplayScriptMeta, String> {
-    let dir = scripts_dir(recordings_dir);
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| format!("Failed to create scripts dir: {e}"))?;
-
-    let script = generate_script_content(trace)?;
-    let id = trace.session_id.clone();
-    let path = dir.join(format!("{id}.py"));
-    tokio::fs::write(&path, &script)
-        .await
-        .map_err(|e| format!("Failed to write replay script: {e}"))?;
-
-    let name = if trace.session_name.trim().is_empty() {
-        format!("replay-{}", &id[..id.len().min(8)])
+fn add_python_install_candidate(
+    preferred: &mut Vec<String>,
+    fallback: &mut Vec<String>,
+    path: PathBuf,
+) {
+    if !path.is_file() {
+        return;
+    }
+    let value = path.to_string_lossy().to_string();
+    let has_playwright = path
+        .parent()
+        .map(|root| root.join("Lib/site-packages/playwright").is_dir())
+        .unwrap_or(false);
+    if has_playwright {
+        push_unique_candidate(preferred, value);
     } else {
-        trace.session_name.clone()
-    };
+        push_unique_candidate(fallback, value);
+    }
+}
 
-    // Preserve last run status across regeneration.
-    let mut last_status = None;
-    let mut last_error = None;
-    let mut last_run_at = None;
-    if let Ok(content) = tokio::fs::read_to_string(last_run_path(&dir, &id)).await {
-        if let Ok(last) = serde_json::from_str::<serde_json::Value>(&content) {
-            last_status = last
-                .get("last_status")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            last_error = last
-                .get("last_error")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            last_run_at = last
-                .get("last_run_at")
-                .and_then(serde_json::Value::as_i64);
+#[cfg(windows)]
+fn discover_python_installations(
+    preferred: &mut Vec<String>,
+    fallback: &mut Vec<String>,
+    root: &Path,
+) {
+    if root.join("python.exe").is_file() {
+        add_python_install_candidate(preferred, fallback, root.join("python.exe"));
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut dirs = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    dirs.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    for dir in dirs {
+        add_python_install_candidate(preferred, fallback, dir.join("python.exe"));
+    }
+}
+
+fn python_candidates(recordings_dir: &Path) -> Vec<String> {
+    let mut preferred = Vec::new();
+    let mut fallback = Vec::new();
+
+    for key in ["CN_CODEX_PYTHON", "PYTHON", "PYTHON3"] {
+        if let Some(value) = env::var_os(key) {
+            push_unique_candidate(&mut preferred, value.to_string_lossy().to_string());
         }
     }
 
-    let now = now_millis();
-    let (start_url, steps) = build_steps(trace);
-    let step_count = steps.len();
+    let workspace_dir = recordings_dir.parent().unwrap_or(recordings_dir);
+    for relative in [
+        ".venv/Scripts/python.exe",
+        "venv/Scripts/python.exe",
+        "python/python.exe",
+        "runtime/python.exe",
+    ] {
+        add_python_install_candidate(&mut preferred, &mut fallback, workspace_dir.join(relative));
+    }
 
-    Ok(ReplayScriptMeta {
-        id,
-        name,
-        path: path.to_string_lossy().to_string(),
-        trace_session_id: trace.session_id.clone(),
-        created_at: now,
-        updated_at: now,
-        step_count,
-        start_url,
-        last_status,
-        last_error,
-        last_run_at,
-    })
+    #[cfg(windows)]
+    {
+        for key in [
+            "LOCALAPPDATA",
+            "USERPROFILE",
+            "PROGRAMFILES",
+            "PROGRAMFILES(X86)",
+        ] {
+            if let Some(root) = env::var_os(key) {
+                let root = PathBuf::from(root);
+                discover_python_installations(
+                    &mut preferred,
+                    &mut fallback,
+                    &root.join("Programs/Python"),
+                );
+                discover_python_installations(&mut preferred, &mut fallback, &root.join("Python"));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    let commands = ["python", "py", "python3"];
+    #[cfg(not(windows))]
+    let commands = ["python3", "python"];
+    fallback.extend(commands.into_iter().map(str::to_string));
+
+    preferred.extend(fallback);
+    preferred
 }
 
-/// List all saved replay scripts, newest first.
+fn interpreter_unavailable(stdout: &str, stderr: &str) -> bool {
+    let output = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    output.contains("python was not found")
+        || output.contains("no module named 'playwright'")
+        || output.contains("no module named \"playwright\"")
+        || output.contains("no module named playwright")
+}
+
+/// List all saved replay scripts, newest first. Metadata (name / start URL /
+/// step count) is derived from the original recording trace when available.
 pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>, String> {
     let dir = scripts_dir(recordings_dir);
     if !dir.exists() {
@@ -241,10 +327,13 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
             continue;
         };
         let id = file_stem.to_string();
+
         let mut name = id.clone();
         let mut trace_session_id = id.clone();
+        let mut step_count = 0usize;
+        let mut start_url = String::new();
 
-        // Prefer the human-friendly session name from the original trace when available.
+        // Derive human-friendly metadata from the original recording trace.
         if let Ok(trace_content) =
             tokio::fs::read_to_string(recordings_dir.join(format!("{id}.trace.json"))).await
         {
@@ -253,6 +342,8 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
                     name = trace.session_name.clone();
                 }
                 trace_session_id = trace.session_id.clone();
+                step_count = trace.events.len();
+                start_url = effective_start_url(&trace);
             }
         }
 
@@ -267,30 +358,7 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
                     .get("last_error")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string);
-                last_run_at = last
-                    .get("last_run_at")
-                    .and_then(serde_json::Value::as_i64);
-            }
-        }
-
-        // Best-effort: extract metadata from the generated file header.
-        let (mut step_count, mut start_url) = (0usize, String::new());
-        if let Ok(content) = tokio::fs::read_to_string(&path).await {
-            if let Some(b64) = extract_payload_b64(&content) {
-                if let Ok(decoded) = general_purpose::STANDARD.decode(b64.as_bytes()) {
-                    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(&decoded)) {
-                        step_count = payload
-                            .get("steps")
-                            .and_then(serde_json::Value::as_array)
-                            .map(|a| a.len())
-                            .unwrap_or(0);
-                        start_url = payload
-                            .get("start_url")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                    }
-                }
+                last_run_at = last.get("last_run_at").and_then(serde_json::Value::as_i64);
             }
         }
 
@@ -321,19 +389,8 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
     Ok(metas)
 }
 
-fn extract_payload_b64(content: &str) -> Option<&str> {
-    let marker = "_PAYLOAD_B64 = \"";
-    let start = content.find(marker)? + marker.len();
-    let rest = &content[start..];
-    let end = rest.find('"')?;
-    Some(&rest[..end])
-}
-
 /// Read a script by id, returning its path and content.
-pub async fn read_script(
-    recordings_dir: &Path,
-    id: &str,
-) -> Result<ReplayReadResult, String> {
+pub async fn read_script(recordings_dir: &Path, id: &str) -> Result<ReplayReadResult, String> {
     let dir = scripts_dir(recordings_dir);
     let path = dir.join(format!("{id}.py"));
     let content = tokio::fs::read_to_string(&path)
@@ -346,61 +403,165 @@ pub async fn read_script(
     })
 }
 
+/// Delete a script (and its last-run sidecar) by id.
+pub async fn delete_script(recordings_dir: &Path, id: &str) -> Result<(), String> {
+    let dir = scripts_dir(recordings_dir);
+    let py_path = dir.join(format!("{id}.py"));
+    let last_path = last_run_path(&dir, id);
+
+    if py_path.exists() {
+        tokio::fs::remove_file(&py_path)
+            .await
+            .map_err(|e| format!("Failed to delete script {id}: {e}"))?;
+    }
+    if last_path.exists() {
+        let _ = tokio::fs::remove_file(&last_path).await;
+    }
+    Ok(())
+}
+
 /// Run a saved replay script via a Python interpreter, capturing stdout/stderr.
-pub async fn run_script(
-    recordings_dir: &Path,
-    id: &str,
-) -> Result<ReplayRunResult, String> {
+pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResult, String> {
     let dir = scripts_dir(recordings_dir);
     let path = dir.join(format!("{id}.py"));
     if !path.exists() {
         return Err(format!("Replay script not found: {id}"));
     }
 
-    let candidates: &[&str] = if cfg!(windows) {
-        &["python", "py", "python3"]
-    } else {
-        &["python3", "python"]
-    };
+    begin_replay(id).await?;
+
+    let candidates = python_candidates(recordings_dir);
 
     let started = std::time::Instant::now();
     let mut last_spawn_error: Option<String> = None;
 
     for exe in candidates {
-        let exe = *exe;
         let script_path = path.clone();
-        let fut = async move {
-            tokio::process::Command::new(exe)
-                .env("PYTHONIOENCODING", "utf-8")
-                .env("PYTHONUTF8", "1")
-                .arg(&script_path)
-                .output()
-                .await
-        };
-
-        match tokio::time::timeout(Duration::from_secs(RUN_TIMEOUT_SECS), fut).await {
-            Err(_) => {
-                last_spawn_error = Some(format!(
-                    "Replay script timed out after {RUN_TIMEOUT_SECS}s"
-                ));
+        let child = match Command::new(&exe)
+            .kill_on_drop(true)
+            .env("PYTHONIOENCODING", "utf-8")
+            .env("PYTHONUTF8", "1")
+            .arg(&script_path)
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                last_spawn_error = Some(format!("Failed to launch {exe}: {e}"));
+                if replay_stop_requested(id).await {
+                    let _ = finish_replay(id).await;
+                    let result = stopped_result(started, String::new(), String::new(), None);
+                    persist_last_run(&dir, id, &result).await;
+                    return Ok(result);
+                }
                 continue;
             }
+        };
+
+        let Some(pid) = child.id() else {
+            let stop_requested = finish_replay(id).await;
+            let result = if stop_requested {
+                stopped_result(started, String::new(), String::new(), None)
+            } else {
+                failed_result(
+                    started,
+                    String::new(),
+                    String::new(),
+                    None,
+                    format!("Failed to get process ID for {exe}"),
+                )
+            };
+            persist_last_run(&dir, id, &result).await;
+            return Ok(result);
+        };
+
+        let stop_raced_with_start = set_replay_pid(id, pid).await;
+        if stop_raced_with_start {
+            terminate_process_tree(pid).await;
+        }
+
+        let wait_result = tokio::time::timeout(
+            Duration::from_secs(RUN_TIMEOUT_SECS),
+            child.wait_with_output(),
+        )
+        .await;
+
+        if matches!(wait_result, Err(_)) {
+            // Dropping the timed-out future kills the child because
+            // `kill_on_drop(true)` is set; taskkill also handles descendants.
+            terminate_process_tree(pid).await;
+        }
+
+        match wait_result {
+            Err(_) => {
+                let stop_requested = finish_replay(id).await;
+                let result = if stop_requested {
+                    stopped_result(started, String::new(), String::new(), None)
+                } else {
+                    failed_result(
+                        started,
+                        String::new(),
+                        String::new(),
+                        None,
+                        format!("Replay script timed out after {RUN_TIMEOUT_SECS}s"),
+                    )
+                };
+                persist_last_run(&dir, id, &result).await;
+                return Ok(result);
+            }
             Ok(Err(e)) => {
-                last_spawn_error = Some(format!("Failed to launch {exe}: {e}"));
-                continue;
+                let stop_requested = finish_replay(id).await;
+                let result = if stop_requested {
+                    stopped_result(started, String::new(), e.to_string(), None)
+                } else {
+                    failed_result(started, String::new(), e.to_string(), None, e.to_string())
+                };
+                persist_last_run(&dir, id, &result).await;
+                return Ok(result);
             }
             Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let stop_requested_before_fallback = replay_stop_requested(id).await;
+
+                // Windows App Execution Aliases can spawn a `python.exe` that
+                // only prints "Python was not found". Likewise, a valid
+                // interpreter may not have Playwright installed. Try the next
+                // discovered interpreter before reporting that as the final
+                // replay error.
+                if !stop_requested_before_fallback
+                    && !output.status.success()
+                    && interpreter_unavailable(&stdout, &stderr)
+                {
+                    let detail = if stderr.trim().is_empty() {
+                        stdout.trim().to_string()
+                    } else {
+                        stderr.trim().to_string()
+                    };
+                    last_spawn_error = Some(detail);
+                    if clear_replay_pid(id).await {
+                        let _ = finish_replay(id).await;
+                        let result = stopped_result(started, stdout, stderr, output.status.code());
+                        persist_last_run(&dir, id, &result).await;
+                        return Ok(result);
+                    }
+                    continue;
+                }
+
+                let stop_requested = finish_replay(id).await;
                 let exit_code = output.status.code();
                 let duration_ms = started.elapsed().as_millis() as u64;
 
                 let parsed = parse_structured_output(&stdout);
-                let ok = parsed
-                    .as_ref()
-                    .and_then(|v| v.get("ok").and_then(serde_json::Value::as_bool))
-                    .unwrap_or_else(|| output.status.success());
-                let error = extract_error(parsed.as_ref(), &stdout, &stderr, !ok);
+                let ok = !stop_requested
+                    && parsed
+                        .as_ref()
+                        .and_then(|v| v.get("ok").and_then(serde_json::Value::as_bool))
+                        .unwrap_or_else(|| output.status.success());
+                let error = if stop_requested {
+                    Some("Replay script stopped by user".to_string())
+                } else {
+                    extract_error(parsed.as_ref(), &stdout, &stderr, !ok)
+                };
 
                 let result = ReplayRunResult {
                     ok,
@@ -417,32 +578,60 @@ pub async fn run_script(
         }
     }
 
+    let stop_requested = finish_replay(id).await;
     let error = last_spawn_error.unwrap_or_else(|| "No Python interpreter found".to_string());
-    let duration_ms = started.elapsed().as_millis() as u64;
-    let result = ReplayRunResult {
-        ok: false,
-        exit_code: None,
-        stdout: String::new(),
-        stderr: String::new(),
-        duration_ms,
-        error: Some(error),
+    let result = if stop_requested {
+        stopped_result(started, String::new(), String::new(), None)
+    } else {
+        failed_result(started, String::new(), String::new(), None, error)
     };
     persist_last_run(&dir, id, &result).await;
     Ok(result)
 }
 
-/// Parse the last JSON line emitted by the generated script.
+fn stopped_result(
+    started: std::time::Instant,
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+) -> ReplayRunResult {
+    ReplayRunResult {
+        ok: false,
+        exit_code,
+        stdout,
+        stderr,
+        duration_ms: started.elapsed().as_millis() as u64,
+        error: Some("Replay script stopped by user".to_string()),
+    }
+}
+
+fn failed_result(
+    started: std::time::Instant,
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+    error: String,
+) -> ReplayRunResult {
+    ReplayRunResult {
+        ok: false,
+        exit_code,
+        stdout,
+        stderr,
+        duration_ms: started.elapsed().as_millis() as u64,
+        error: Some(error),
+    }
+}
+
+/// Parse the last JSON line emitted by the script (best-effort). The script is
+/// generated by the main pipeline, so this only enriches the result when the
+/// agent chose to emit a structured error object.
 fn parse_structured_output(stdout: &str) -> Option<serde_json::Value> {
-    stdout
-        .lines()
-        .rev()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if !trimmed.starts_with('{') {
-                return None;
-            }
-            serde_json::from_str::<serde_json::Value>(trimmed).ok()
-        })
+    // Generated scripts often use pretty-printed JSON, so parsing individual
+    // lines misses the object entirely. Try each possible opening brace from
+    // the end; the outermost candidate is the first one that parses.
+    stdout.match_indices('{').rev().find_map(|(index, _)| {
+        serde_json::from_str::<serde_json::Value>(stdout[index..].trim()).ok()
+    })
 }
 
 fn extract_error(
@@ -478,7 +667,13 @@ fn extract_error(
         if !trimmed_err.is_empty() {
             return Some(trimmed_err.chars().take(2000).collect());
         }
-        let tail: String = stdout.trim_end().lines().rev().take(3).collect::<Vec<_>>().join("\n");
+        let tail: String = stdout
+            .trim_end()
+            .lines()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n");
         if !tail.is_empty() {
             return Some(tail.chars().take(2000).collect());
         }
@@ -497,267 +692,46 @@ async fn persist_last_run(dir: &Path, id: &str, result: &ReplayRunResult) {
     }
 }
 
-/// The generated Python program. `__PAYLOAD_B64__` is replaced with a base64
-/// JSON blob containing start_url / steps / timeouts.
-const PYTHON_TEMPLATE: &str = r#"# -*- coding: utf-8 -*-
-"""Auto-generated Playwright replay script (CN-Codex Record & Replay).
-
-Resilience built in:
-  * every action waits for its selector with multiple candidates and retries;
-  * navigation is settled before the next step;
-  * on failure a structured JSON error (step / url / title / screenshot) is
-    printed and the process exits non-zero so the main pipeline can inspect
-    the page and repair the script.
-"""
-import base64
-import json
-import os
-import sys
-import time
-import traceback
-
-_PAYLOAD_B64 = "__PAYLOAD_B64__"
-
-try:
-    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
-except Exception as _imp_err:  # pragma: no cover
-    print(json.dumps({
-        "ok": False,
-        "stage": "import",
-        "error": (
-            "playwright import failed: %s. "
-            "Install with: pip install playwright && playwright install chromium" % _imp_err
-        ),
-    }, ensure_ascii=False))
-    sys.exit(2)
-
-
-def _load_payload():
-    return json.loads(base64.b64decode(_PAYLOAD_B64).decode("utf-8"))
-
-
-def _log(level, msg, **extra):
-    record = {"level": level, "msg": msg}
-    record.update(extra)
-    print(json.dumps(record, ensure_ascii=False), flush=True)
-
-
-def _find(page, selectors, timeout_ms):
-    last_error = None
-    for sel in selectors:
-        if not sel:
-            continue
-        try:
-            loc = page.locator(sel).first
-            loc.wait_for(state="attached", timeout=timeout_ms)
-            return loc
-        except PWTimeoutError as exc:
-            last_error = exc
-    raise (last_error or RuntimeError("no selector matched: %r" % (selectors,)))
-
-
-def _settle(page, timeout_ms):
-    try:
-        page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 5000))
-    except Exception:
-        pass
-
-
-def _safe_title(page):
-    try:
-        return page.title()
-    except Exception:
-        return ""
-
-
-def _screenshot(page, screenshot_dir):
-    if not screenshot_dir:
-        return ""
-    try:
-        os.makedirs(screenshot_dir, exist_ok=True)
-        shot = os.path.join(screenshot_dir, "replay_fail_%d.png" % int(time.time() * 1000))
-        page.screenshot(path=shot, full_page=False)
-        return shot
-    except Exception:
-        return ""
-
-
-def _step_navigate(page, step, timeout_ms):
-    target = step.get("url") or step.get("value")
-    if not target or target in ("about:blank",):
-        return
-    page.goto(target, wait_until="domcontentloaded", timeout=timeout_ms)
-    _settle(page, timeout_ms)
-
-
-def _step_click(page, step, timeout_ms):
-    loc = _find(page, step.get("selectors") or [], timeout_ms)
-    try:
-        loc.wait_for(state="visible", timeout=timeout_ms)
-    except PWTimeoutError:
-        pass
-    loc.click(timeout=timeout_ms)
-
-
-def _step_type(page, step, timeout_ms):
-    loc = _find(page, step.get("selectors") or [], timeout_ms)
-    try:
-        loc.wait_for(state="visible", timeout=timeout_ms)
-    except PWTimeoutError:
-        pass
-    value = step.get("value") or ""
-    loc.fill("", timeout=timeout_ms)
-    if value:
-        loc.fill(value, timeout=timeout_ms)
-
-
-def _step_select(page, step, timeout_ms):
-    loc = _find(page, step.get("selectors") or [], timeout_ms)
-    loc.select_option(step.get("value") or "", timeout=timeout_ms)
-
-
-def _step_submit(page, step, timeout_ms):
-    loc = _find(page, step.get("selectors") or [], timeout_ms)
-    loc.press("Enter", timeout=timeout_ms)
-
-
-_RUNNERS = {
-    "navigate": _step_navigate,
-    "click": _step_click,
-    "type": _step_type,
-    "select": _step_select,
-    "submit": _step_submit,
-}
-
-
-def run(payload):
-    headless = bool(payload.get("headless", False))
-    timeout_ms = int(payload.get("timeout_ms", 15000))
-    steps = payload.get("steps") or []
-    start_url = payload.get("start_url") or ""
-    screenshot_dir = payload.get("screenshot_dir") or ""
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        try:
-            context = browser.new_context(viewport={"width": 1440, "height": 900})
-            page = context.new_page()
-            if start_url and start_url not in ("about:blank",):
-                _step_navigate(page, {"url": start_url}, timeout_ms)
-
-            for idx, step in enumerate(steps, start=1):
-                kind = step.get("kind")
-                runner = _RUNNERS.get(kind)
-                if runner is None:
-                    _log("warn", "unknown_step_kind", step=idx, kind=kind)
-                    continue
-
-                ok = False
-                last_err = None
-                for attempt in range(1, 4):
-                    try:
-                        runner(page, step, timeout_ms)
-                        ok = True
-                        break
-                    except PWTimeoutError as exc:
-                        last_err = exc
-                        time.sleep(0.6)
-                    except Exception as exc:
-                        last_err = exc
-                        break
-
-                if not ok:
-                    shot = _screenshot(page, screenshot_dir)
-                    return {
-                        "ok": False,
-                        "step": idx,
-                        "kind": kind,
-                        "error": str(last_err),
-                        "url": page.url,
-                        "title": _safe_title(page),
-                        "screenshot": shot,
-                        "selectors": step.get("selectors"),
-                    }
-
-                expected_url = step.get("expected_url")
-                if expected_url and expected_url.startswith(("http://", "https://")):
-                    try:
-                        page.wait_for_url(expected_url, timeout=min(timeout_ms, 8000))
-                    except PWTimeoutError:
-                        _log("warn", "expected_url_not_reached", step=idx,
-                             expected=expected_url, actual=page.url)
-                _settle(page, timeout_ms)
-                _log("info", "step_ok", step=idx, kind=kind, url=page.url)
-
-            return {"ok": True, "steps": len(steps), "url": page.url}
-        finally:
-            browser.close()
-
-
-if __name__ == "__main__":
-    payload = _load_payload()
-    started = time.time()
-    try:
-        result = run(payload)
-    except Exception as exc:
-        result = {"ok": False, "error": str(exc), "traceback": traceback.format_exc()}
-    result["ok"] = bool(result.get("ok"))
-    result["duration_ms"] = int((time.time() - started) * 1000)
-    _log("info", "replay_finished", **result)
-    sys.exit(0 if result["ok"] else 1)
-"#;
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recording::RecordingEvent;
 
-    fn event(event_type: &str, url: &str, selector: &str, value: Option<&str>) -> RecordingEvent {
-        RecordingEvent {
-            event_type: event_type.to_string(),
-            timestamp: 0,
-            url: url.to_string(),
-            selector: selector.to_string(),
-            selector_candidates: if selector.is_empty() {
-                vec![]
-            } else {
-                vec![selector.to_string()]
-            },
-            tag_name: String::new(),
-            value: value.map(str::to_string),
-            screenshot: None,
-        }
+    #[test]
+    fn parse_structured_output_accepts_pretty_printed_json() {
+        let stdout = r#"步骤 1：开始
+❌ 回放失败
+{
+  "step": 2,
+  "url": "https://example.test/login",
+  "title": "登录",
+  "error": "等待跳转超时"
+}
+"#;
+        let parsed = parse_structured_output(stdout).expect("structured JSON should parse");
+        assert_eq!(parsed["step"], 2);
+        assert_eq!(parsed["error"], "等待跳转超时");
     }
 
     #[test]
-    fn generates_valid_script_and_merges_type_events() {
-        let trace = TraceFile {
-            session_id: "sess-1".to_string(),
-            session_name: "demo".to_string(),
-            start_url: "about:blank".to_string(),
-            started_at: String::new(),
-            stopped_at: String::new(),
-            events: vec![
-                event("type", "https://example.com/", "#q", Some("hello")),
-                event("type", "https://example.com/", "#q", Some("hello world")),
-                event("click", "https://example.com/", "#submit", None),
-            ],
-        };
+    fn extract_error_includes_context_from_structured_output() {
+        let parsed = serde_json::json!({
+            "step": 4,
+            "url": "https://example.test/login",
+            "error": "元素未出现"
+        });
+        let error = extract_error(Some(&parsed), "", "", true).expect("error should be extracted");
+        assert!(error.contains("元素未出现"));
+        assert!(error.contains("step=4"));
+        assert!(error.contains("url=https://example.test/login"));
+    }
 
-        let script = generate_script_content(&trace).expect("generate script");
-        assert!(script.contains("sync_playwright"));
-        assert!(!script.contains("__PAYLOAD_B64__"));
-
-        let b64 = extract_payload_b64(&script).expect("payload marker");
-        let decoded = general_purpose::STANDARD.decode(b64).expect("decode");
-        let payload: serde_json::Value = serde_json::from_slice(&decoded).expect("parse payload");
-
-        let steps = payload["steps"].as_array().expect("steps");
-        // Two consecutive type events on the same selector collapse into one.
-        assert_eq!(steps.len(), 2);
-        assert_eq!(steps[0]["kind"], "type");
-        assert_eq!(steps[0]["value"], "hello world");
-        assert_eq!(steps[1]["kind"], "click");
-        assert_eq!(payload["start_url"], "https://example.com/");
+    #[test]
+    fn interpreter_unavailable_detects_windows_alias_and_missing_playwright() {
+        assert!(interpreter_unavailable("Python was not found", ""));
+        assert!(interpreter_unavailable(
+            "",
+            "ModuleNotFoundError: No module named 'playwright'"
+        ));
+        assert!(!interpreter_unavailable("", "Timeout waiting for selector"));
     }
 }

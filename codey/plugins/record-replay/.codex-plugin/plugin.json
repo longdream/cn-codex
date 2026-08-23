@@ -1,7 +1,7 @@
 {
   "name": "record-replay",
   "version": "0.1.0",
-  "description": "Record & Replay skill generator.\n\nAliases: @record-replay, @rr, record, replay, skill recorder.\n\nUse Record & Replay when the user asks to record a workflow, capture a process, create a reusable skill from a demonstration, or replay a previously recorded skill.\n\nThis plugin launches an external Chrome browser, records user actions via CDP, and generates reusable skills that can be replayed via browser_run.",
+  "description": "Record & Replay 录制回放。\n\nAliases: @record-replay, @rr, record, replay, 录制, 回放.\n\nUse Record & Replay when the user asks to record a workflow, capture a process, or replay a recorded workflow. This plugin launches an external Chrome browser, records user actions via CDP, and automatically generates a Playwright Python replay script that can be run from the right-side Replay panel.",
   "author": {
     "name": "CN-Codex"
   },
@@ -10,7 +10,8 @@
     "record",
     "replay",
     "rpa",
-    "skill",
+    "playwright",
+    "script",
     "automation",
     "workflow",
     "macro"
@@ -18,8 +19,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Record & Replay",
-    "shortDescription": "Record a workflow once, replay it as an Agent Skill forever",
-    "longDescription": "Record & Replay launches an external Chrome/Edge browser, lets you demonstrate a workflow while recording your actions via Chrome DevTools Protocol, then uses AI to generate reusable skills. Skills can be replayed by the agent through CDP to automate the same workflow.",
+    "shortDescription": "Record once, replay as a Playwright script",
+    "longDescription": "Record & Replay launches an external Chrome/Edge browser, lets you demonstrate a workflow while recording your actions via Chrome DevTools Protocol, then automatically generates a Playwright Python replay script. The script is listed in the right-side Replay panel where you can run it with one click; failures are routed to the main pipeline for automatic repair.",
     "developerName": "CN-Codex",
     "category": "Automation",
     "capabilities": [
@@ -28,7 +29,7 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Record my workflow and turn it into a reusable skill"
+      "Record my workflow and generate a replay script"
     ],
     "brandColor": "#E53935"
   }

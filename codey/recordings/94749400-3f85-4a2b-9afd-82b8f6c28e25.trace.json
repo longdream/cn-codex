@@ -1,0 +1,44 @@
+{
+  "sessionId": "94749400-3f85-4a2b-9afd-82b8f6c28e25",
+  "sessionName": "recording-94749400",
+  "startUrl": "https://www.modelscope.cn/models",
+  "startedAt": "2026-08-22T14:21:07.835911400+00:00",
+  "stoppedAt": "2026-08-22T14:21:52.219347200+00:00",
+  "events": [
+    {
+      "type": "click",
+      "timestamp": 1787408479291,
+      "url": "https://www.modelscope.cn/models",
+      "selector": "span.ms-title-font.acss-dwyc50",
+      "selectorCandidates": [
+        "span.ms-title-font.acss-dwyc50",
+        "text=\"千问3.8-27B\""
+      ],
+      "tagName": "span",
+      "value": null,
+      "screenshot": null
+    },
+    {
+      "type": "click",
+      "timestamp": 1787408484946,
+      "url": "https://www.modelscope.cn/models/Qwen/Qwen3.8-27B",
+      "selector": "text=\"登录 / 注册\"",
+      "selectorCandidates": [
+        "text=\"登录 / 注册\""
+      ],
+      "tagName": "span",
+      "value": null,
+      "screenshot": null
+    },
+    {
+      "type": "click",
+      "timestamp": 1787408505169,
+      "url": "https://www.modelscope.cn/models/Qwen/Qwen3.8-27B",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "svg",
+      "value": null,
+      "screenshot": null
+    }
+  ]
+}

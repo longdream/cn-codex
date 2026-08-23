@@ -1,0 +1,22 @@
+{
+  "sessionId": "b33a5d36-38ee-499f-b985-0f946b32d7ac",
+  "sessionName": "recording-b33a5d36",
+  "startUrl": "chrome://new-tab-page/",
+  "startedAt": "2026-08-23T01:47:20.734133200+00:00",
+  "stoppedAt": "2026-08-23T01:48:40.077501500+00:00",
+  "events": [
+    {
+      "type": "click",
+      "timestamp": 1787449657023,
+      "url": "https://www.modelscope.cn/home",
+      "selector": "div.acss-1rubtx0",
+      "selectorCandidates": [
+        "div.acss-1rubtx0",
+        "text=\"模型库\""
+      ],
+      "tagName": "div",
+      "value": null,
+      "screenshot": null
+    }
+  ]
+}

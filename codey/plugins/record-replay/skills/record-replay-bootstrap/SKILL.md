@@ -1,134 +1,90 @@
 ---
 name: record-replay
-description: "Record user browser operations and generate reusable skills. Use when the user asks to record, capture, or demonstrate a browser workflow. Also use to replay previously recorded skills."
+description: "Record user browser operations and generate a Playwright Python replay script that can be run from the right-side Replay panel. Use when the user asks to record, capture, or demonstrate a browser workflow."
 ---
 
-# Record & Replay — External Chrome
+# Record & Replay — 录制浏览器操作并生成回放脚本
 
 This skill enables two modes:
 
-1. **Record mode** — Launch an external Chrome browser, let the user operate it while recording actions, then generate a reusable skill from the recording.
-2. **Replay mode** — Execute a previously generated skill by operating the external Chrome via `browser_run`.
+1. **Record mode** — 启动外部 Chrome 浏览器，让用户操作并录制。用户点击「停止录制」后，系统自动把录制记录转换成 Playwright Python 回放脚本（带选择器回退、等待与断言容错）。
+2. **Replay mode** — 在右侧「回放」面板查看并运行回放脚本；运行失败时自动接入主链路修复（最多重试 5 次，最后一次总结失败原因）。
 
-## Recording a User Demonstration
+## 录制用户操作
 
-### Step 1: Launch browser and show recording toggle
+### Step 1: 启动浏览器并显示录制按钮
 
-When the user says "录制" / "record" / "帮我录制操作" / "record my workflow":
+当用户说"录制" / "record" / "帮我录制操作" / "record my workflow" 时：
 
 ```
 recording_control: {"action": "launch_browser"}
 ```
 
-This launches an external Chrome window and shows the recording toggle in the CN-Codex UI. Tell the user:
+这会启动外部 Chrome 窗口，并在 CN-Codex 界面显示录制按钮。告诉用户：
 
-> "已打开 Chrome 浏览器，请在 CN-Codex 界面右上角点击「开始录制」按钮，然后在 Chrome 中执行您的操作。操作完成后点击「停止录制」。"
+> "已打开 Chrome 浏览器，请在 CN-Codex 界面点击「开始录制」，然后在 Chrome 中执行您的操作。操作完成后点击「停止录制」。"
 
-### Step 2: Wait for the user to finish
+### Step 2: 等待用户完成录制
 
-Wait for the user to tell you they have finished recording. The recording is controlled by the floating toggle button in the CN-Codex UI — the user clicks "Start Recording", operates Chrome, then clicks "Stop Recording".
+等待用户告诉你录制完成。录制由 CN-Codex 界面上的悬浮按钮控制：用户点击「开始录制」→ 在 Chrome 中操作 → 点击「停止录制」。
 
-Do NOT perform any `browser_run` actions during recording. The user operates Chrome directly.
+录制过程中不要执行任何 `browser_run` 操作，用户直接在 Chrome 中操作。
 
-### Step 3: Read the recording trace
+### Step 3: 停止录制后回放脚本已自动生成
 
-After the user says "done" / "完成" / "录好了" / "已停止录制":
-
-First list available traces to find the latest one:
+用户点击「停止录制」后，系统会自动生成 Playwright Python 回放脚本，无需你手动生成。如需确认，可列出录制记录：
 
 ```
 recording_control: {"action": "list_traces"}
 ```
 
-Then read the specific trace:
+如需查看某次录制内容：
 
 ```
 recording_control: {"action": "read_trace", "session_id": "<session-id>"}
 ```
 
-### Step 4: Generate skills from the trace
+回放脚本存放在 `codey/recordings/scripts/` 目录下，文件名与录制 session 对应。
 
-Analyze the trace data and generate one or more SKILL.md files. For each logical workflow in the trace:
+### Step 4: 让用户在右侧「回放」面板运行脚本
 
-1. Identify the goal/intent (e.g., "Login to application", "Search for products")
-2. Create a SKILL.md file at `codey/skills/<slug>/SKILL.md`
-3. The SKILL.md should contain:
-   - A clear name and description
-   - Step-by-step instructions using `browser_run` actions
-   - Variable placeholders for user-specific data (emails, passwords, search terms)
+告诉用户：
 
-Example generated skill structure:
+> "录制已停止，回放脚本已自动生成。请在右侧面板点击「回放」图标，找到对应脚本，点击「运行」即可回放。"
 
-```markdown
----
-name: login-to-example
-description: "Log in to example.com with provided credentials."
----
+不要再说"生成技能/skill"——正确的产物是回放脚本，且在右侧面板使用。
 
-# Login to Example.com
+### Step 5: 汇报结果
 
-## Variables
-- `email` — Login email address
-- `password` — Login password
+向用户说明：
+- 回放脚本已自动生成（位置：`codey/recordings/scripts/`）
+- 脚本可在右侧「回放」面板查看并点击「运行」
+- 如果运行失败，会自动接入主链路修复（最多 5 次）
 
-## Steps
+## 回放脚本失败时的自动修复
 
-1. Navigate to the login page:
-   browser_run: {"url": "https://example.com/login", "actions": []}
+当用户点击「运行」失败时，前端会创建/复用独立的「回放修复」对话并接入主链路：
 
-2. Enter email:
-   browser_run: {"actions": [{"type": "fill", "selector": "input[name='email']", "text": "{{email}}"}]}
+1. 前端把脚本路径、错误输出、页面 URL / 截图等信息发送到该对话。
+2. 主链路用 `read_file` 读取脚本、`apply_patch` 修改脚本（保持选择器回退、等待与断言容错），必要时用 `browser_run` 打开页面核对。
+3. 修复后前端重新运行脚本验证，成功则结束。
+4. 运行或修复过程中，右侧面板的「停止回放」会终止当前 Python 回放、浏览器子进程和主链路请求，不再启动下一轮修复。
+5. 最多重试 5 次；超过上限时主链路总结失败根因并显示在该对话中。
 
-3. Enter password:
-   browser_run: {"actions": [{"type": "fill", "selector": "input[name='password']", "text": "{{password}}"}]}
+在修复过程中，你只负责读取脚本、检查错误与页面并修改脚本文件，不需要自己执行回放脚本。
 
-4. Click login button:
-   browser_run: {"actions": [{"type": "click", "selector": "button[type='submit']"}]}
+## 回放脚本结构（供修复时参考）
 
-5. Verify login succeeded:
-   browser_run: {"actions": [{"type": "wait_for_selector", "selector": ".dashboard"}]}
-```
+生成的脚本使用 Playwright sync API，内置：
 
-### Step 5: Report to user
+- 每个步骤等待目标选择器，支持多个候选选择器回退；
+- 每步最多重试 3 次；
+- 导航后等待页面稳定；
+- 失败时输出结构化 JSON（step / kind / url / title / screenshot）并退出非 0。
 
-Tell the user:
-- What skills were generated
-- What each skill does
-- How to trigger replay (e.g., "执行'登录'skill" / "run the login skill")
+## Selector Priority
 
-## Replaying a Skill
-
-When the user wants to replay a skill:
-
-1. Read the skill file to get the steps
-2. Ensure the external Chrome is launched:
-   ```
-   recording_control: {"action": "launch_browser"}
-   ```
-3. Execute each step using `browser_run`
-4. Replace variable placeholders with actual values (ask user if needed)
-5. Verify each step's outcome before proceeding
-
-## browser_run Action Reference
-
-The `browser_run` tool supports these action types for replay:
-
-| type | Description | Key fields |
-|------|------------|------------|
-| `goto` | Navigate to URL | `url` |
-| `click` | Click element | `selector` or `x,y` |
-| `fill` | Clear and fill input | `selector`, `text` |
-| `type` | Append text to input | `selector`, `text` |
-| `press` | Press keyboard key | `key`, optional `selector` |
-| `hover` | Hover over element | `selector` |
-| `select_option` | Select dropdown option | `selector`, `value`/`label` |
-| `wait_for_selector` | Wait for element | `selector` |
-| `screenshot` | Capture screenshot | optional `path` |
-| `snapshot` | Get page accessibility snapshot | — |
-
-## Selector Priority for Replay
-
-When the trace provides multiple selector candidates, prefer them in this order:
+录制事件会提供多个候选选择器，回放时优先顺序：
 1. `#id` — most stable
 2. `[data-testid="..."]` — explicit test attribute
 3. `[name="..."]` or `[aria-label="..."]` — semantic

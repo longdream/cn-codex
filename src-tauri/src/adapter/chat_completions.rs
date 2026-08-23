@@ -304,7 +304,10 @@ fn chat_completions_message(msg: &InternalMessage, replay_reasoning: bool) -> se
                             "type": "function",
                             "function": {
                                 "name": tc.function.name,
-                                "arguments": tc.function.arguments,
+                                "arguments": sanitize_arguments_for_wire(
+                                    tc.function.arguments.as_str(),
+                                    tc.function.name.as_str(),
+                                ),
                             }
                         })
                     })
@@ -391,6 +394,89 @@ fn build_chat_completions_messages(
     }
     formatted.extend(non_system);
     formatted
+}
+
+/// 将 tool call 的 arguments 规范化为合法的 JSON 字符串。
+///
+/// Chat Completions API 要求 assistant 消息中每个 `tool_call` 的
+/// `function.arguments` 必须是合法的 JSON 字符串。但某些模型（如 Qwen
+/// 系列）在流式输出时可能产生：
+/// - 空字符串
+/// - 纯文本（如 apply_patch 的裸 patch 文本）
+/// - 被 markdown 围栏或前后杂文本包裹的 JSON
+/// - 被截断/不完整的片段
+///
+/// 这些内容在工具执行层通常是允许的，但一旦作为历史回传给严格校验的
+/// 网关，就会以 400 拒绝（"arguments must be valid JSON"）。因此这里在
+/// 序列化回传前做一次容错修复。
+fn sanitize_arguments_for_wire(arguments: &str, tool_name: &str) -> String {
+    let trimmed = arguments.trim();
+    if trimmed.is_empty() {
+        return "{}".to_string();
+    }
+
+    // 已经是合法 JSON，原样返回。
+    if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        return trimmed.to_string();
+    }
+
+    // apply_patch 支持裸 patch 文本，包装成 {"patch": "..."} 以同时满足
+    // 合法 JSON 要求与工具 schema。
+    if tool_name == "apply_patch" {
+        return serde_json::json!({ "patch": arguments }).to_string();
+    }
+
+    // 尝试从杂文本中提取首个平衡的 JSON 对象/数组（去掉围栏、前缀等）。
+    if let Some(json) = extract_balanced_json(trimmed) {
+        return json;
+    }
+
+    // 兜底：把原文整体当作一个字符串参数，保证一定产出合法 JSON。
+    serde_json::json!({ "input": arguments }).to_string()
+}
+
+/// 从文本中提取首个平衡的 `{...}` 或 `[...]` JSON 片段。
+///
+/// 使用字节级扫描并正确处理字符串字面量中的转义与括号，避免被
+/// 内容里的 `{`、`}` 干扰。
+fn extract_balanced_json(text: &str) -> Option<String> {
+    let start = text.find(['{', '['])?;
+    let bytes = text.as_bytes();
+
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let candidate = &text[start..=i];
+                    return serde_json::from_str::<serde_json::Value>(candidate)
+                        .ok()
+                        .map(|_| candidate.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -575,5 +661,45 @@ mod tests {
         );
 
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn sanitize_arguments_keeps_valid_json_unchanged() {
+        assert_eq!(
+            sanitize_arguments_for_wire(r#"{"city":"Paris"}"#, "get_weather"),
+            r#"{"city":"Paris"}"#
+        );
+    }
+
+    #[test]
+    fn sanitize_arguments_wraps_empty_and_plain_text() {
+        assert_eq!(sanitize_arguments_for_wire("   ", "shell"), "{}");
+        assert_eq!(
+            sanitize_arguments_for_wire("not json", "shell"),
+            r#"{"input":"not json"}"#
+        );
+    }
+
+    #[test]
+    fn sanitize_arguments_wraps_apply_patch_plain_text() {
+        let patch = "*** Begin Patch\n*** End Patch";
+        let out = sanitize_arguments_for_wire(patch, "apply_patch");
+        let value: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(value["patch"], patch);
+    }
+
+    #[test]
+    fn sanitize_arguments_extracts_fenced_json() {
+        let raw = "```json\n{\"cmd\":\"ls\"}\n```";
+        assert_eq!(sanitize_arguments_for_wire(raw, "shell"), r#"{"cmd":"ls"}"#);
+    }
+
+    #[test]
+    fn sanitize_arguments_extracts_json_with_prefix_suffix() {
+        let raw = "here it is {\"a\":{\"b\":1}} trailing";
+        assert_eq!(
+            sanitize_arguments_for_wire(raw, "shell"),
+            r#"{"a":{"b":1}}"#
+        );
     }
 }
