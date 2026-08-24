@@ -1,0 +1,25 @@
+{
+  "sessionId": "b3bf78d9-4353-4bde-ae31-ccb987ec8f41",
+  "sessionName": "recording-b3bf78d9",
+  "startUrl": "https://ipsapro.isoftstone.com/SCMS/InfoQuery",
+  "startedAt": "2026-08-24T14:30:07.106985+00:00",
+  "stoppedAt": "2026-08-24T14:30:24.417455700+00:00",
+  "events": [
+    {
+      "type": "hover",
+      "timestamp": 1787581822246,
+      "url": "https://ipsapro.isoftstone.com/SCMS/InfoQuery",
+      "selector": "div.ivu-dropdown-rel",
+      "selectorCandidates": [
+        "div.ivu-dropdown-rel",
+        "div.ivu-dropdown",
+        "div.ivu-dropdown div",
+        "div.user-avatar-dropdown",
+        "div.user-avatar-dropdown div",
+        "div.custom-content-con",
+        "div.custom-content-con div"
+      ],
+      "tagName": "div"
+    }
+  ]
+}

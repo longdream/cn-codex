@@ -957,13 +957,12 @@ fn evaluate_run_outcome(
         || !stdout.trim().is_empty()
         || !stderr.trim().is_empty();
     if !has_diagnostics {
+        // 脚本失败但没有输出也可能是脚本本身的问题（例如空脚本、启动即崩溃），
+        // 仍值得反馈给主链路分析修复，而不是直接跳过。
         return (
             false,
-            Some(
-                "回放进程已结束但没有输出。若步骤已全部完成，通常是关闭浏览器导致的，不需要修复脚本。"
-                    .to_string(),
-            ),
-            false,
+            Some("回放进程已结束但没有输出，脚本可能未正确执行。".to_string()),
+            true,
         );
     }
     (false, error, true)
@@ -1091,10 +1090,10 @@ REPLAY_RESULT {"ok": true, "step": "done", "url": "https://example.test/portal",
     }
 
     #[test]
-    fn evaluate_run_outcome_empty_output_is_not_fixable() {
+    fn evaluate_run_outcome_empty_output_is_fixable() {
         let (ok, error, fixable) = evaluate_run_outcome(false, false, "", "");
         assert!(!ok);
-        assert!(!fixable);
+        assert!(fixable);
         assert!(error.unwrap().contains("没有输出"));
     }
 

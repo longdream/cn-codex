@@ -257,6 +257,8 @@ impl ToolExecutor {
             action: String,
             #[serde(default)]
             session_id: Option<String>,
+            #[serde(default)]
+            script_id: Option<String>,
         }
 
         let args: Args = match serde_json::from_str(arguments) {
@@ -371,6 +373,31 @@ impl ToolExecutor {
                 let recordings_dir = self.workspace_config_dir.join("recordings");
                 match crate::recording::Recorder::list_traces(&recordings_dir).await {
                     Ok(traces) => serde_json::json!({ "ok": true, "traces": traces }).to_string(),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+                }
+            }
+            "run_replay" => {
+                let script_id = match &args.script_id {
+                    Some(id) => id.clone(),
+                    None => {
+                        let msg = "script_id is required for run_replay action";
+                        self.emit_tool_end(
+                            app_handle,
+                            thread_id,
+                            call_id,
+                            "recording_control",
+                            -1,
+                            msg,
+                        );
+                        return Ok(msg.to_string());
+                    }
+                };
+                let recordings_dir = self.workspace_config_dir.join("recordings");
+                match crate::replay::run_script(&recordings_dir, &script_id).await {
+                    Ok(result) => serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
+                        serde_json::json!({ "ok": false, "error": "Failed to serialize run result" })
+                            .to_string()
+                    }),
                     Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
                 }
             }

@@ -1762,18 +1762,22 @@ impl ToolExecutor {
             "type": "function",
             "function": {
                 "name": "recording_control",
-                "description": "Control browser recording for the Record & Replay workflow. Use action='launch_browser' to open an external Chrome, 'show_toggle' to display the recording UI so the user can start/stop recording, 'read_trace' to read a completed recording trace, or 'list_traces' to list all saved recordings.",
+                "description": "Control browser recording and replay for the Record & Replay workflow. Use action='launch_browser' to open an external Chrome, 'show_toggle' to display the recording UI so the user can start/stop recording, 'read_trace' to read a completed recording trace, 'list_traces' to list all saved recordings, or 'run_replay' to run a saved replay script and get its pass/fail result for self-testing and fixing.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["launch_browser", "show_toggle", "hide_toggle", "status", "read_trace", "list_traces"],
+                            "enum": ["launch_browser", "show_toggle", "hide_toggle", "status", "read_trace", "list_traces", "run_replay"],
                             "description": "The recording control action to perform."
                         },
                         "session_id": {
                             "type": "string",
                             "description": "Session ID of the trace to read (required for read_trace action)."
+                        },
+                        "script_id": {
+                            "type": "string",
+                            "description": "Replay script ID to run (required for run_replay action). This is the script file name without the .py extension."
                         }
                     },
                     "required": ["action"]

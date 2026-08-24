@@ -56,17 +56,12 @@ function isRunning(state: RunState | undefined): state is { running: true } {
   return Boolean(state && "running" in state);
 }
 
-function hasReplayDiagnostics(result: ReplayRunResult): boolean {
-  return [result.error, result.stderr, result.stdout].some(
-    (value) => typeof value === "string" && value.trim().length > 0,
-  );
-}
-
 function shouldAutoFix(result: ReplayRunResult): boolean {
-  if (result.ok || result.fixable === false) {
+  if (result.ok) {
     return false;
   }
-  return hasReplayDiagnostics(result);
+  // 用户主动停止（fixable=false）不自动修复；其余失败（含无输出）都反馈主链路分析修复。
+  return result.fixable !== false;
 }
 
 function formatRecordTime(seconds: number): string {
@@ -111,6 +106,12 @@ function buildGenerateMessage(sessionId: string, sessionName: string): string {
     `8. 断言：关键操作后校验元素可见或 URL 变化；`,
     `9. 成功时必须在关闭浏览器之前打印一行 REPLAY_RESULT JSON（ok: true, step, url, title）；失败时同样打印（ok: false, error）并以非 0 退出。browser.close()/context.close() 必须包在 try/except 中：用户手动关闭浏览器窗口不得当作回放失败。`,
     `10. 写入完成后必须重新读取脚本并做 Python 语法自检（至少确认 try/for/函数缩进完整；环境可用时运行 py_compile）；发现 SyntaxError 或 IndentationError 必须先修复并覆盖写入。`,
+    ``,
+    `写完脚本后请自行测试并修复（不要只写完就结束）：`,
+    `1. 用 recording_control 工具的 run_replay 动作运行脚本（script_id 传 ${sessionId}），拿到返回的 ok/error/stderr/stdout；`,
+    `2. 若 ok=false，根据 error/stderr/stdout 定位失败步骤，用 apply_patch 修改脚本后再次 run_replay；`,
+    `3. 反复「运行 → 修复 → 再运行」，直到 ok=true，或已连续修复 5 次仍未通过；`,
+    `4. 最终汇报：是否通过、修复了哪些问题；若仍未通过，说明根因和剩余问题。`,
   ].join("\n");
 }
 
@@ -198,6 +199,8 @@ export function ReplaySidePanel() {
   const [selectedScript, setSelectedScript] = useState<ReplayScriptMeta | null>(null);
   const [scriptContent, setScriptContent] = useState<string | null>(null);
   const [scriptContentLoading, setScriptContentLoading] = useState(false);
+  // 步骤列表展开：点击「步骤数」才显示，避免 hover 时展开遮挡操作按钮
+  const [expandedStepsId, setExpandedStepsId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -876,13 +879,24 @@ export function ReplaySidePanel() {
                 <div className="truncate font-mono text-[10px] text-[var(--text-faint)]">
                   {selectedScript.id}
                 </div>
-                <div className="group text-[11px] text-[var(--text-muted)]">
-                  {intl.formatMessage(
-                    { id: "replay.stepCount" },
-                    { count: selectedScript.stepCount },
-                  )}
-                  {(selectedScript.steps ?? []).length > 0 ? (
-                    <ol className="mt-1.5 hidden max-h-56 space-y-1 overflow-auto rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-1.5 group-hover:block">
+                <div className="text-[11px] text-[var(--text-muted)]">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedStepsId((prev) =>
+                        prev === selectedScript.id ? null : selectedScript.id,
+                      )
+                    }
+                    className="text-left text-[11px] text-[var(--text-muted)] hover:underline"
+                  >
+                    {intl.formatMessage(
+                      { id: "replay.stepCount" },
+                      { count: selectedScript.stepCount },
+                    )}
+                  </button>
+                  {(selectedScript.steps ?? []).length > 0 &&
+                  expandedStepsId === selectedScript.id ? (
+                    <ol className="mt-1.5 max-h-56 space-y-1 overflow-auto rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-1.5">
                       {(selectedScript.steps ?? []).map((step, index) => (
                         <li
                           key={`${selectedScript.id}-detail-step-${index}`}
@@ -1037,14 +1051,22 @@ export function ReplaySidePanel() {
                     </div>
                   </div>
                   <div className="text-[11px] text-[var(--text-muted)]">
-                    <span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedStepsId((prev) =>
+                          prev === script.id ? null : script.id,
+                        )
+                      }
+                      className="text-left text-[11px] text-[var(--text-muted)] hover:underline"
+                    >
                       {intl.formatMessage(
                         { id: "replay.stepCount" },
                         { count: script.stepCount },
                       )}
-                    </span>
-                    {steps.length > 0 ? (
-                      <ol className="mt-1.5 hidden max-h-56 space-y-1 overflow-auto rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-1.5 group-hover:block">
+                    </button>
+                    {steps.length > 0 && expandedStepsId === script.id ? (
+                      <ol className="mt-1.5 max-h-56 space-y-1 overflow-auto rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-1.5">
                         {steps.map((step, index) => (
                           <li
                             key={`${script.id}-step-${index}`}

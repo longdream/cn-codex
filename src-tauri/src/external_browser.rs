@@ -20,6 +20,8 @@ struct BrowserState {
     child: Option<Child>,
     cdp_port: u16,
     user_data_dir: Option<tempfile::TempDir>,
+    /// 已就绪的 CDP endpoint，无论浏览器是本进程启动的（child）还是复用的外部实例。
+    endpoint: Option<String>,
 }
 
 impl ExternalBrowser {
@@ -29,6 +31,7 @@ impl ExternalBrowser {
                 child: None,
                 cdp_port: DEFAULT_CDP_PORT,
                 user_data_dir: None,
+                endpoint: None,
             })),
         }
     }
@@ -48,6 +51,7 @@ impl ExternalBrowser {
 
         if state.child.is_some() {
             if is_cdp_ready(http, &endpoint).await {
+                state.endpoint = Some(endpoint.clone());
                 return Ok(endpoint);
             }
             warn!("External browser process exists but CDP is not responsive; relaunching");
@@ -58,6 +62,7 @@ impl ExternalBrowser {
         if is_cdp_ready(http, &endpoint).await {
             info!("Found existing CDP endpoint at {endpoint}, reusing");
             state.cdp_port = port;
+            state.endpoint = Some(endpoint.clone());
             return Ok(endpoint);
         }
 
@@ -100,6 +105,7 @@ impl ExternalBrowser {
         state.user_data_dir = Some(temp_dir);
 
         wait_for_cdp_ready(http, &endpoint).await?;
+        state.endpoint = Some(endpoint.clone());
 
         info!("External browser CDP ready at {endpoint}");
         Ok(endpoint)
@@ -114,7 +120,8 @@ impl ExternalBrowser {
     /// Check if the browser is currently running and CDP is accessible.
     pub async fn is_running(&self, http: &reqwest::Client) -> bool {
         let state = self.inner.lock().await;
-        if state.child.is_none() {
+        // 本进程启动的（child）或复用的外部浏览器（endpoint）都算“在运行”。
+        if state.child.is_none() && state.endpoint.is_none() {
             return false;
         }
         let endpoint = format!("http://127.0.0.1:{}", state.cdp_port);
@@ -124,6 +131,9 @@ impl ExternalBrowser {
     /// Get the CDP endpoint URL if browser is available.
     pub async fn get_cdp_endpoint(&self) -> Option<String> {
         let state = self.inner.lock().await;
+        if let Some(endpoint) = &state.endpoint {
+            return Some(endpoint.clone());
+        }
         if state.child.is_some() {
             Some(format!("http://127.0.0.1:{}", state.cdp_port))
         } else {
@@ -156,6 +166,7 @@ async fn shutdown_child(state: &mut BrowserState) {
     }
     state.child = None;
     state.user_data_dir = None;
+    state.endpoint = None;
 }
 
 async fn is_cdp_ready(http: &reqwest::Client, endpoint: &str) -> bool {
