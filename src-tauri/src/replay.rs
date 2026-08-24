@@ -4,7 +4,7 @@
 //! reads the recorded trace and writes a Python script with Chinese comments and
 //! per-step descriptions. This module only manages the script files on disk.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate::recording::TraceFile;
+use crate::recording::{RecordingEvent, TraceFile};
 
 /// How long a single replay script run is allowed to take before it is killed.
 const RUN_TIMEOUT_SECS: u64 = 180;
@@ -140,6 +140,8 @@ pub struct ReplayScriptMeta {
     pub created_at: i64,
     pub updated_at: i64,
     pub step_count: usize,
+    #[serde(default)]
+    pub steps: Vec<String>,
     pub start_url: String,
     pub last_status: Option<String>,
     pub last_error: Option<String>,
@@ -156,6 +158,10 @@ pub struct ReplayRunResult {
     pub duration_ms: u64,
     /// Human-readable failure summary extracted from the script output.
     pub error: Option<String>,
+    /// When false, the UI must not send this result to the main pipeline for auto-fix
+    /// (user stop, empty output after closing the browser, teardown noise).
+    #[serde(default)]
+    pub fixable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,12 +182,178 @@ fn last_run_path(scripts_dir: &Path, id: &str) -> PathBuf {
     scripts_dir.join(format!("{id}.last.json"))
 }
 
+fn meta_path(scripts_dir: &Path, id: &str) -> PathBuf {
+    scripts_dir.join(format!("{id}.meta.json"))
+}
+
+fn validate_script_id(id: &str) -> Result<(), String> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err("Invalid script id".to_string());
+    }
+    Ok(())
+}
+
+fn sanitize_script_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Script name cannot be empty".to_string());
+    }
+    if trimmed.chars().count() > 80 {
+        return Err("Script name is too long".to_string());
+    }
+    if trimmed.chars().any(|ch| ch.is_control()) {
+        return Err("Script name contains invalid characters".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 fn now_millis() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
 fn is_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
+}
+
+fn strip_step_title_noise(title: &str) -> String {
+    title
+        .trim()
+        .trim_end_matches("……")
+        .trim_end_matches("...")
+        .trim_end_matches(" —— 完成")
+        .trim_end_matches("——完成")
+        .trim_end_matches('"')
+        .trim_end_matches('\'')
+        .trim_end_matches(')')
+        .trim()
+        .to_string()
+}
+
+fn parse_step_heading(line: &str) -> Option<(u32, String)> {
+    let line = line.trim().trim_start_matches('#').trim();
+    let line = line
+        .trim_start_matches("print(")
+        .trim_start_matches("print (")
+        .trim_start_matches('f')
+        .trim_start_matches(['"', '\'']);
+    let rest = line.strip_prefix("步骤")?.trim_start();
+    let mut digits = String::new();
+    let mut chars = rest.chars();
+    for ch in chars.by_ref() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+        } else if ch == '：' || ch == ':' {
+            break;
+        } else {
+            return None;
+        }
+    }
+    let num = digits.parse().ok()?;
+    let title = strip_step_title_noise(&chars.collect::<String>());
+    if title.is_empty() {
+        return None;
+    }
+    Some((num, title))
+}
+
+fn parse_run_step_call(line: &str) -> Option<(u32, String)> {
+    let rest = line.trim().strip_prefix("run_step(")?.trim_start();
+    let mut digits = String::new();
+    let mut chars = rest.chars().peekable();
+    while let Some(ch) = chars.peek().copied() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    let num = digits.parse().ok()?;
+    let rest: String = chars.collect();
+    let rest = rest.trim().trim_start_matches(',').trim();
+    let quote = rest.chars().next().filter(|ch| *ch == '"' || *ch == '\'')?;
+    let title = rest[quote.len_utf8()..].split(quote).next()?.trim();
+    if title.is_empty() {
+        return None;
+    }
+    Some((num, title.to_string()))
+}
+
+fn extract_script_steps(content: &str) -> Vec<String> {
+    let mut by_num = BTreeMap::new();
+    for raw in content.lines() {
+        if let Some((num, title)) = parse_step_heading(raw).or_else(|| parse_run_step_call(raw)) {
+            by_num.entry(num).or_insert(title);
+        }
+    }
+    by_num
+        .into_iter()
+        .map(|(num, title)| format!("步骤 {num}：{title}"))
+        .collect()
+}
+
+fn summarize_trace_steps(events: &[RecordingEvent]) -> Vec<String> {
+    let mut steps = Vec::new();
+    for event in events {
+        let label = match event.event_type.as_str() {
+            "navigate" => {
+                if matches!(
+                    event.cause.as_deref(),
+                    Some("redirect" | "link" | "form")
+                ) {
+                    continue;
+                }
+                let url = event.value.as_deref().unwrap_or(event.url.as_str());
+                if url.is_empty() {
+                    continue;
+                }
+                format!("打开 {url}")
+            }
+            "click" => {
+                let target = if event.selector.is_empty() {
+                    event.tag_name.as_str()
+                } else {
+                    event.selector.as_str()
+                };
+                if target.is_empty() {
+                    continue;
+                }
+                format!("点击 {target}")
+            }
+            "type" => {
+                if event
+                    .input_type
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with("delete"))
+                {
+                    continue;
+                }
+                let value = event.value.as_deref().unwrap_or("").trim();
+                if value.is_empty() {
+                    continue;
+                }
+                format!("输入 {value}")
+            }
+            "key" => {
+                let key = event.key.as_deref().unwrap_or("").trim();
+                if key.is_empty() {
+                    continue;
+                }
+                format!("按键 {key}")
+            }
+            "select" => format!("选择 {}", event.value.as_deref().unwrap_or("")),
+            "submit" => "提交表单".to_string(),
+            _ => continue,
+        };
+        if !steps.iter().any(|existing| existing == &label) {
+            steps.push(label);
+        }
+    }
+    steps
 }
 
 /// Pick the first meaningful start page for a recorded session.
@@ -330,8 +502,8 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
 
         let mut name = id.clone();
         let mut trace_session_id = id.clone();
-        let mut step_count = 0usize;
         let mut start_url = String::new();
+        let mut steps = Vec::new();
 
         // Derive human-friendly metadata from the original recording trace.
         if let Ok(trace_content) =
@@ -342,8 +514,28 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
                     name = trace.session_name.clone();
                 }
                 trace_session_id = trace.session_id.clone();
-                step_count = trace.events.len();
                 start_url = effective_start_url(&trace);
+                steps = summarize_trace_steps(&trace.events);
+            }
+        }
+
+        if let Ok(script_content) = tokio::fs::read_to_string(&path).await {
+            let script_steps = extract_script_steps(&script_content);
+            if !script_steps.is_empty() {
+                steps = script_steps;
+            }
+        }
+
+        if let Ok(content) = tokio::fs::read_to_string(meta_path(&dir, &id)).await {
+            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(custom_name) = meta
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    name = custom_name.to_string();
+                }
             }
         }
 
@@ -370,6 +562,8 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
             .map(|d| d.as_millis() as i64)
             .unwrap_or_else(now_millis);
 
+        let step_count = if steps.is_empty() { 0 } else { steps.len() };
+
         metas.push(ReplayScriptMeta {
             id,
             name,
@@ -378,6 +572,7 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
             created_at: modified,
             updated_at: modified,
             step_count,
+            steps,
             start_url,
             last_status,
             last_error,
@@ -405,9 +600,11 @@ pub async fn read_script(recordings_dir: &Path, id: &str) -> Result<ReplayReadRe
 
 /// Delete a script (and its last-run sidecar) by id.
 pub async fn delete_script(recordings_dir: &Path, id: &str) -> Result<(), String> {
+    validate_script_id(id)?;
     let dir = scripts_dir(recordings_dir);
     let py_path = dir.join(format!("{id}.py"));
     let last_path = last_run_path(&dir, id);
+    let custom_meta_path = meta_path(&dir, id);
 
     if py_path.exists() {
         tokio::fs::remove_file(&py_path)
@@ -417,7 +614,50 @@ pub async fn delete_script(recordings_dir: &Path, id: &str) -> Result<(), String
     if last_path.exists() {
         let _ = tokio::fs::remove_file(&last_path).await;
     }
+    if custom_meta_path.exists() {
+        let _ = tokio::fs::remove_file(&custom_meta_path).await;
+    }
     Ok(())
+}
+
+/// Persist a user-visible display name for a replay script card.
+pub async fn rename_script(
+    recordings_dir: &Path,
+    id: &str,
+    name: &str,
+) -> Result<String, String> {
+    validate_script_id(id)?;
+    let name = sanitize_script_name(name)?;
+    let dir = scripts_dir(recordings_dir);
+    let py_path = dir.join(format!("{id}.py"));
+    if !py_path.exists() {
+        return Err(format!("Replay script not found: {id}"));
+    }
+
+    let custom_meta_path = meta_path(&dir, id);
+    let mut meta = if let Ok(content) = tokio::fs::read_to_string(&custom_meta_path).await {
+        serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+    meta["name"] = json!(name);
+    let encoded = serde_json::to_string_pretty(&meta)
+        .map_err(|e| format!("Failed to serialize script name: {e}"))?;
+    tokio::fs::write(&custom_meta_path, encoded)
+        .await
+        .map_err(|e| format!("Failed to save script name: {e}"))?;
+
+    let trace_path = recordings_dir.join(format!("{id}.trace.json"));
+    if let Ok(content) = tokio::fs::read_to_string(&trace_path).await {
+        if let Ok(mut trace) = serde_json::from_str::<TraceFile>(&content) {
+            trace.session_name = name.clone();
+            if let Ok(encoded) = serde_json::to_string_pretty(&trace) {
+                let _ = tokio::fs::write(&trace_path, encoded).await;
+            }
+        }
+    }
+
+    Ok(name)
 }
 
 /// Run a saved replay script via a Python interpreter, capturing stdout/stderr.
@@ -441,6 +681,7 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
             .kill_on_drop(true)
             .env("PYTHONIOENCODING", "utf-8")
             .env("PYTHONUTF8", "1")
+            .env("PYTHONUNBUFFERED", "1")
             .arg(&script_path)
             .spawn()
         {
@@ -550,18 +791,12 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
                 let stop_requested = finish_replay(id).await;
                 let exit_code = output.status.code();
                 let duration_ms = started.elapsed().as_millis() as u64;
-
-                let parsed = parse_structured_output(&stdout);
-                let ok = !stop_requested
-                    && parsed
-                        .as_ref()
-                        .and_then(|v| v.get("ok").and_then(serde_json::Value::as_bool))
-                        .unwrap_or_else(|| output.status.success());
-                let error = if stop_requested {
-                    Some("Replay script stopped by user".to_string())
-                } else {
-                    extract_error(parsed.as_ref(), &stdout, &stderr, !ok)
-                };
+                let (ok, error, fixable) = evaluate_run_outcome(
+                    stop_requested,
+                    output.status.success(),
+                    &stdout,
+                    &stderr,
+                );
 
                 let result = ReplayRunResult {
                     ok,
@@ -570,6 +805,7 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
                     stderr,
                     duration_ms,
                     error,
+                    fixable,
                 };
 
                 persist_last_run(&dir, id, &result).await;
@@ -602,6 +838,7 @@ fn stopped_result(
         stderr,
         duration_ms: started.elapsed().as_millis() as u64,
         error: Some("Replay script stopped by user".to_string()),
+        fixable: false,
     }
 }
 
@@ -619,19 +856,117 @@ fn failed_result(
         stderr,
         duration_ms: started.elapsed().as_millis() as u64,
         error: Some(error),
+        fixable: true,
     }
 }
 
-/// Parse the last JSON line emitted by the script (best-effort). The script is
-/// generated by the main pipeline, so this only enriches the result when the
-/// agent chose to emit a structured error object.
+fn looks_like_replay_payload(value: &serde_json::Value) -> bool {
+    value.get("ok").is_some() || value.get("error").is_some()
+}
+
+fn parse_json_object(raw: &str) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(raw.trim())
+        .ok()
+        .filter(looks_like_replay_payload)
+}
+
+/// Parse the last `REPLAY_RESULT` JSON emitted by the script (best-effort).
 fn parse_structured_output(stdout: &str) -> Option<serde_json::Value> {
+    for line in stdout.lines().rev() {
+        let line = line.trim();
+        let payload = line
+            .strip_prefix("REPLAY_RESULT")
+            .map(|rest| rest.trim_start_matches(':').trim())
+            .unwrap_or(line);
+        if payload.starts_with('{') {
+            if let Some(parsed) = parse_json_object(payload) {
+                return Some(parsed);
+            }
+        }
+    }
     // Generated scripts often use pretty-printed JSON, so parsing individual
     // lines misses the object entirely. Try each possible opening brace from
-    // the end; the outermost candidate is the first one that parses.
+    // the end; keep only objects that look like a replay result.
     stdout.match_indices('{').rev().find_map(|(index, _)| {
-        serde_json::from_str::<serde_json::Value>(stdout[index..].trim()).ok()
+        parse_json_object(&stdout[index..])
     })
+}
+
+fn stdout_indicates_success(stdout: &str) -> bool {
+    stdout.lines().rev().take(20).any(|line| {
+        let text = line.trim();
+        text.contains("[OK]")
+            || text.contains("回放成功")
+            || text.contains("\"ok\": true")
+            || text.contains("\"ok\":true")
+    })
+}
+
+fn looks_like_browser_closed(stdout: &str, stderr: &str) -> bool {
+    let blob = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    blob.contains("targetclosed")
+        || blob.contains("target closed")
+        || blob.contains("browser has been closed")
+        || blob.contains("context has been closed")
+        || blob.contains("has been closed")
+        || blob.contains("connection closed")
+        || blob.contains("browser closed")
+}
+
+/// Decide success / error / whether the UI should auto-fix.
+///
+/// Closing the Playwright window after the flow finished often kills Python
+/// with an empty pipe or a teardown exception. That is not a script bug.
+fn evaluate_run_outcome(
+    stop_requested: bool,
+    exit_success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> (bool, Option<String>, bool) {
+    if stop_requested {
+        return (
+            false,
+            Some("Replay script stopped by user".to_string()),
+            false,
+        );
+    }
+
+    let parsed = parse_structured_output(stdout);
+    let structured_ok = parsed
+        .as_ref()
+        .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool));
+    let success_text = stdout_indicates_success(stdout);
+    let browser_closed = looks_like_browser_closed(stdout, stderr);
+
+    let ok = match structured_ok {
+        Some(true) => true,
+        Some(false) => false,
+        None => success_text || exit_success,
+    };
+    if ok {
+        return (true, None, false);
+    }
+    if success_text && browser_closed {
+        return (true, None, false);
+    }
+
+    let error = extract_error(parsed.as_ref(), stdout, stderr, true);
+    let has_diagnostics = error
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || !stdout.trim().is_empty()
+        || !stderr.trim().is_empty();
+    if !has_diagnostics {
+        return (
+            false,
+            Some(
+                "回放进程已结束但没有输出。若步骤已全部完成，通常是关闭浏览器导致的，不需要修复脚本。"
+                    .to_string(),
+            ),
+            false,
+        );
+    }
+    (false, error, true)
 }
 
 fn extract_error(
@@ -733,5 +1068,91 @@ mod tests {
             "ModuleNotFoundError: No module named 'playwright'"
         ));
         assert!(!interpreter_unavailable("", "Timeout waiting for selector"));
+    }
+
+    #[test]
+    fn parse_structured_output_prefers_replay_result_line() {
+        let stdout = r#"步骤 1：打开页面
+viewport={"width": 1440}
+REPLAY_RESULT {"ok": true, "step": "done", "url": "https://example.test/portal", "error": null}
+"#;
+        let parsed = parse_structured_output(stdout).expect("REPLAY_RESULT should parse");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["step"], "done");
+    }
+
+    #[test]
+    fn evaluate_run_outcome_treats_success_text_as_ok_even_if_exit_failed() {
+        let stdout = "[OK] 回放成功：已进入门户\n";
+        let (ok, error, fixable) = evaluate_run_outcome(false, false, stdout, "");
+        assert!(ok);
+        assert!(error.is_none());
+        assert!(!fixable);
+    }
+
+    #[test]
+    fn evaluate_run_outcome_empty_output_is_not_fixable() {
+        let (ok, error, fixable) = evaluate_run_outcome(false, false, "", "");
+        assert!(!ok);
+        assert!(!fixable);
+        assert!(error.unwrap().contains("没有输出"));
+    }
+
+    #[test]
+    fn evaluate_run_outcome_browser_closed_after_success_is_ok() {
+        let stdout = "步骤 13：等待进入门户页面 —— 完成\n[OK] 回放成功：已进入 IPSA Pro 门户\n";
+        let stderr = "playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed";
+        let (ok, error, fixable) = evaluate_run_outcome(false, false, stdout, stderr);
+        assert!(ok);
+        assert!(error.is_none());
+        assert!(!fixable);
+    }
+
+    #[test]
+    fn evaluate_run_outcome_structured_failure_is_fixable() {
+        let stdout = r#"REPLAY_RESULT {"ok": false, "step": 4, "error": "未找到账号输入框"}"#;
+        let (ok, error, fixable) = evaluate_run_outcome(false, false, stdout, "");
+        assert!(!ok);
+        assert!(fixable);
+        assert!(error.unwrap().contains("未找到账号输入框"));
+    }
+
+    #[test]
+    fn evaluate_run_outcome_user_stop_is_not_fixable() {
+        let (ok, error, fixable) = evaluate_run_outcome(true, false, "步骤 1", "");
+        assert!(!ok);
+        assert!(!fixable);
+        assert_eq!(error.as_deref(), Some("Replay script stopped by user"));
+    }
+
+    #[test]
+    fn extract_script_steps_deduplicates_and_keeps_order() {
+        let content = r#"
+print("步骤 1：打开入口页面……", flush=True)
+print("步骤 1：打开入口页面 —— 完成", flush=True)
+# 步骤 2：输入账号
+print("步骤 2：输入账号……")
+run_step(3, "勾选协议", fn)
+"#;
+        assert_eq!(
+            extract_script_steps(content),
+            vec![
+                "步骤 1：打开入口页面".to_string(),
+                "步骤 2：输入账号".to_string(),
+                "步骤 3：勾选协议".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn sanitize_script_name_rejects_empty_and_keeps_trimmed() {
+        assert!(sanitize_script_name("   ").is_err());
+        assert_eq!(sanitize_script_name("  登录门户  ").unwrap(), "登录门户");
+    }
+
+    #[test]
+    fn validate_script_id_rejects_path_fragments() {
+        assert!(validate_script_id("../secret").is_err());
+        assert!(validate_script_id("e708fc40-fb28-40f0-b811-5151cced293a").is_ok());
     }
 }

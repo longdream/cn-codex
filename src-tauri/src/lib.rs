@@ -608,6 +608,7 @@ pub fn run() {
             commands::replay_run_script,
             commands::replay_stop_script,
             commands::replay_delete_script,
+            commands::replay_rename_script,
             commands::replay_get_dir,
             // SmartBrain
             smartbrain::commands::smartbrain_list_experiences,

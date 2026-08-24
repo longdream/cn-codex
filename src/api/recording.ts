@@ -22,6 +22,14 @@ export interface RecordingEvent {
   tagName: string;
   value?: string;
   screenshot?: string;
+  /** navigate: user | redirect | reload | link | form */
+  cause?: string;
+  navigationReason?: string;
+  key?: string;
+  inputType?: string;
+  previousValue?: string;
+  modifiers?: string;
+  data?: string;
 }
 
 export interface TraceFile {

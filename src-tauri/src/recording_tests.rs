@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 #[test]
@@ -102,8 +104,7 @@ fn trace_file_roundtrip() {
                 selector: "#btn".to_string(),
                 selector_candidates: vec!["#btn".to_string(), "button.primary".to_string()],
                 tag_name: "button".to_string(),
-                value: None,
-                screenshot: None,
+                ..Default::default()
             },
             RecordingEvent {
                 event_type: "type".to_string(),
@@ -113,7 +114,7 @@ fn trace_file_roundtrip() {
                 selector_candidates: vec!["#input".to_string()],
                 tag_name: "input".to_string(),
                 value: Some("hello".to_string()),
-                screenshot: None,
+                ..Default::default()
             },
         ],
     };
@@ -163,8 +164,7 @@ fn recording_event_uses_type_key_not_event_type() {
         selector: "#x".to_string(),
         selector_candidates: vec![],
         tag_name: "div".to_string(),
-        value: None,
-        screenshot: None,
+        ..Default::default()
     };
 
     let json_value: serde_json::Value = serde_json::to_value(&event).unwrap();
@@ -251,8 +251,7 @@ async fn list_traces_reads_valid_trace_files() {
             selector: "#btn".to_string(),
             selector_candidates: vec!["#btn".to_string()],
             tag_name: "button".to_string(),
-            value: None,
-            screenshot: None,
+            ..Default::default()
         }],
     };
 
@@ -289,4 +288,141 @@ fn recorder_inject_js_is_well_formed() {
     assert!(RECORDER_INJECT_JS.contains("submit"));
     assert!(RECORDER_INJECT_JS.contains("popstate"));
     assert!(RECORDER_INJECT_JS.contains("hashchange"));
+    assert!(RECORDER_INJECT_JS.contains("Backspace"));
+    assert!(RECORDER_INJECT_JS.contains("deleteContentBackward") || RECORDER_INJECT_JS.contains("previousValue"));
+    assert!(RECORDER_INJECT_JS.contains("isTextField"));
+    assert!(RECORDER_INJECT_JS.contains("compositionend"));
+}
+
+#[test]
+fn recording_event_deserializes_keyboard_and_delete_details() {
+    let json_value = serde_json::json!({
+        "type": "type",
+        "timestamp": 1750000003000u64,
+        "url": "https://example.com/login",
+        "selector": "#account_input",
+        "selectorCandidates": ["#account_input"],
+        "tagName": "input",
+        "value": "junlong",
+        "previousValue": "junlongx",
+        "inputType": "deleteContentBackward",
+        "data": ""
+    });
+    let event: RecordingEvent = serde_json::from_value(json_value).unwrap();
+    assert_eq!(event.event_type, "type");
+    assert_eq!(event.value.as_deref(), Some("junlong"));
+    assert_eq!(event.previous_value.as_deref(), Some("junlongx"));
+    assert_eq!(event.input_type.as_deref(), Some("deleteContentBackward"));
+}
+
+#[test]
+fn recording_event_deserializes_key_backspace() {
+    let json_value = serde_json::json!({
+        "type": "key",
+        "timestamp": 1750000003001u64,
+        "url": "https://example.com/login",
+        "selector": "#account_input",
+        "tagName": "input",
+        "key": "Backspace",
+        "value": "junlong",
+        "previousValue": "junlongx",
+        "modifiers": ""
+    });
+    let event: RecordingEvent = serde_json::from_value(json_value).unwrap();
+    assert_eq!(event.event_type, "key");
+    assert_eq!(event.key.as_deref(), Some("Backspace"));
+    assert_eq!(event.value.as_deref(), Some("junlong"));
+}
+
+#[test]
+fn recording_event_deserializes_navigate_cause() {
+    let json_value = serde_json::json!({
+        "type": "navigate",
+        "timestamp": 1750000004000u64,
+        "url": "https://passport.example.com/sso",
+        "value": "https://passport.example.com/sso",
+        "cause": "redirect",
+        "navigationReason": "httpHeaderRefresh"
+    });
+    let event: RecordingEvent = serde_json::from_value(json_value).unwrap();
+    assert_eq!(event.event_type, "navigate");
+    assert_eq!(event.cause.as_deref(), Some("redirect"));
+    assert_eq!(event.navigation_reason.as_deref(), Some("httpHeaderRefresh"));
+}
+
+#[test]
+fn classify_navigation_http_redirect_is_redirect() {
+    assert_eq!(
+        classify_navigation_cause(true, None, 2000, 1000, 500),
+        "redirect"
+    );
+}
+
+#[test]
+fn classify_navigation_script_and_meta_are_redirect() {
+    assert_eq!(
+        classify_navigation_cause(false, Some("scriptInitiated"), 2000, 0, 0),
+        "redirect"
+    );
+    assert_eq!(
+        classify_navigation_cause(false, Some("metaTagRefresh"), 2000, 0, 0),
+        "redirect"
+    );
+    assert_eq!(
+        classify_navigation_cause(false, Some("httpHeaderRefresh"), 2000, 0, 0),
+        "redirect"
+    );
+}
+
+#[test]
+fn classify_navigation_address_bar_is_user() {
+    assert_eq!(
+        classify_navigation_cause(false, None, 1000, 0, 0),
+        "user"
+    );
+}
+
+#[test]
+fn classify_navigation_sso_chain_without_user_action_is_redirect() {
+    // First hop was user (address bar). Next hop 491ms later, no click/type since.
+    assert_eq!(
+        classify_navigation_cause(false, None, 1491, 1000, 0),
+        "redirect"
+    );
+}
+
+#[test]
+fn classify_navigation_after_user_click_is_not_redirect_chain() {
+    // User clicked after arriving on the login page, then a new navigation starts.
+    assert_eq!(
+        classify_navigation_cause(false, None, 3000, 1000, 2500),
+        "user"
+    );
+}
+
+#[test]
+fn classify_navigation_link_and_form_and_reload() {
+    assert_eq!(
+        classify_navigation_cause(false, Some("anchorClick"), 2000, 0, 1000),
+        "link"
+    );
+    assert_eq!(
+        classify_navigation_cause(false, Some("formSubmissionPost"), 2000, 0, 1000),
+        "form"
+    );
+    assert_eq!(
+        classify_navigation_cause(false, Some("reload"), 2000, 0, 0),
+        "reload"
+    );
+}
+
+#[test]
+fn take_redirect_url_matches_trailing_slash() {
+    let mut urls = HashSet::new();
+    urls.insert("https://example.com/portal".to_string());
+    assert!(take_redirect_url(
+        &mut urls,
+        "https://example.com/portal/"
+    ));
+    assert!(urls.is_empty());
 }

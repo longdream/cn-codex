@@ -10,6 +10,7 @@ export interface ReplayScriptMeta {
   createdAt: number;
   updatedAt: number;
   stepCount: number;
+  steps?: string[];
   startUrl: string;
   lastStatus?: ReplayLastStatus | null;
   lastError?: string | null;
@@ -23,6 +24,8 @@ export interface ReplayRunResult {
   stderr: string;
   durationMs: number;
   error?: string | null;
+  /** When false, do not send this result to the main pipeline for auto-fix. */
+  fixable?: boolean;
 }
 
 export interface ReplayReadResult {
@@ -49,6 +52,10 @@ export async function replayStopScript(id: string): Promise<boolean> {
 
 export async function replayDeleteScript(id: string): Promise<void> {
   return invoke("replay_delete_script", { id });
+}
+
+export async function replayRenameScript(id: string, name: string): Promise<string> {
+  return invoke<string>("replay_rename_script", { id, name });
 }
 
 export async function replayGetDir(): Promise<string> {

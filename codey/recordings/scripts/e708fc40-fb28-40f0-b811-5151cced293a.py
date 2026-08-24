@@ -42,7 +42,13 @@ import sys
 import time
 from typing import Callable, List, Optional, Tuple
 
-from playwright.sync_api import PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import sync_playwright
+
+# Playwright 异常兼容：1.62 版本起 PlaywrightTimeoutError 重命名为 TimeoutError
+try:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+except ImportError:  # pragma: no cover - 旧版本兼容
+    from playwright.sync_api import PlaywrightTimeoutError  # type: ignore[no-redef]
 
 # ====================================================================
 # 可配置常量（可通过环境变量覆盖）
@@ -75,29 +81,40 @@ TIMEOUT = int(os.environ.get("REPLAY_TIMEOUT_MS", "30000"))
 
 # 登录表单
 LOGIN_FORM = [
-    "form.arco-form.arco-form-vertical",
+    "form.arco-form",
     "form",
     "#account_input",
+    "div.container_ntEtTuSM",
 ]
 
 # 账号输入框
 ACCOUNT_INPUT = [
     "#account_input",
     "[placeholder='请输入账号']",
-    "input.arco-input",
+    "input[type='text'][placeholder='请输入账号']",
+    "input[type='text']",
 ]
 
 # 密码输入框
 PASSWORD_INPUT = [
     "#password_input",
     "[placeholder='请输入密码']",
+    "input[type='password'][placeholder='请输入密码']",
     "input[type='password']",
+]
+
+# 账号密码登录入口（"更多登录方式"中的图标，点击后展开账号密码表单）
+ACCOUNT_LOGIN_ENTRY = [
+    ".content_5klQOEKn > .item_oFCaWe7B:nth-child(2)",
+    ".item_oFCaWe7B:nth-child(2)",
+    ".item_oFCaWe7B",
 ]
 
 # 顶部提示工具条项目（录制中为 div.item_oFCaWe7B.arco-tooltip-open，容错步骤）
 TOOLTIP_ITEM = [
     "div.item_oFCaWe7B.arco-tooltip-open",
     "div.item_oFCaWe7B",
+    ".container_SzPl3lwf .item_oFCaWe7B",
 ]
 
 # 协议复选框（Arco Design 组件）
@@ -110,9 +127,10 @@ CHECKBOX = [
 
 # 登录按钮
 LOGIN_BUTTON = [
-    "button.arco-btn.arco-btn-primary",
-    "button:has-text('登录')",
     "button:has-text('登 录')",
+    "button:has-text('登录')",
+    "button.arco-btn.arco-btn-primary:not(:has-text('一键登录'))",
+    "button.arco-btn.arco-btn-primary",
     "button[type='submit']",
 ]
 
@@ -199,12 +217,17 @@ def click_first(page, selectors: List[str], timeout: int = 0) -> str:
 
 
 def fill_first(page, selectors: List[str], value: str, timeout: int = 0) -> str:
-    """从候选选择器中向第一个可见输入框填入文本；全部不可用时抛出 RuntimeError。"""
+    """从候选选择器中向第一个可见输入框填入文本；填入前先 click 聚焦。全部不可用时抛出 RuntimeError。"""
     timeout = timeout or TIMEOUT
     for sel in selectors:
         try:
             loc = page.locator(sel).first
             loc.wait_for(state="visible", timeout=timeout)
+            # 先点击聚焦，再填入文本（确保 type/fill 前有 click/focus）
+            try:
+                loc.click(timeout=timeout)
+            except Exception:
+                pass
             loc.fill(value, timeout=timeout)
             return sel
         except Exception:
@@ -363,29 +386,42 @@ def run_flow(page) -> None:
     print(f"  当前 URL：{page.url}", flush=True)
 
     # ------------------------------------------------------------------
-    # 步骤 3：等待登录表单完整渲染，断言位于登录域名
+    # 步骤 3：等待登录页面加载完成，断言位于飞连登录域名
+    #   注意：页面默认显示"一键登录"模式，账号密码表单尚未出现
     # ------------------------------------------------------------------
     def _check_login_form():
-        # 等待表单容器和账号输入框都可见
-        wait_any(page, LOGIN_FORM, timeout=TIMEOUT)
-        wait_any(page, ACCOUNT_INPUT, timeout=TIMEOUT)
+        # 等待页面基本结构渲染（复选框或一键登录按钮作为页面就绪标志）
+        try:
+            page.wait_for_selector("div.arco-checkbox-mask", state="visible", timeout=TIMEOUT)
+        except PlaywrightTimeoutError:
+            # 退化：等待 body 可见即可
+            page.locator("body").first.wait_for(state="visible", timeout=TIMEOUT)
         # 断言仍在飞连登录域
         assert_url_contains(page, "feilian.isoftstone.com")
 
-    run_step(3, "等待登录表单出现并校验（form + 账号输入框可见）", _check_login_form)
+    run_step(3, "等待登录页面加载并校验（飞连登录域名）", _check_login_form)
 
     # ------------------------------------------------------------------
-    # 步骤 4：点击顶部提示工具条项目（录制中的 tooltip 项，容错）
-    #   录制中 div.item_oFCaWe7B.arco-tooltip-open 可见时点击
+    # 步骤 4：切换到账号密码登录模式
+    #   飞连登录页默认显示"一键登录"，需要点击"更多登录方式"中的
+    #   账号密码登录图标才能展开账号密码输入表单
     # ------------------------------------------------------------------
-    try:
-        run_step(
-            4,
-            "点击顶部提示工具条项目（容错）",
-            lambda: click_first(page, TOOLTIP_ITEM, timeout=8000),
-        )
-    except Exception as e:
-        print(f"  步骤 4 已跳过（tooltip 项未出现）：{type(e).__name__}: {e}", flush=True)
+    def _switch_to_account_login():
+        # 检查账号输入框是否已可见（可能页面默认就是账号密码模式）
+        try:
+            acct = page.locator("#account_input").first
+            if acct.is_visible(timeout=3000):
+                print("  账号密码登录表单已可见，无需切换", flush=True)
+                return
+        except Exception:
+            pass
+        # 点击"更多登录方式"中的账号密码登录图标
+        click_first(page, ACCOUNT_LOGIN_ENTRY, timeout=10000)
+        # 等待账号输入框出现
+        wait_any(page, ACCOUNT_INPUT, timeout=TIMEOUT)
+        time.sleep(1.0)  # 等待表单动画完成
+
+    run_step(4, "切换到账号密码登录模式", _switch_to_account_login)
 
     # ------------------------------------------------------------------
     # 步骤 5：点击账号输入框以聚焦
@@ -411,13 +447,16 @@ def run_flow(page) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 步骤 8：输入密码（录制中分两次输入，回放直接填入最终值）
+    # 步骤 8：点击密码输入框聚焦，然后输入密码
+    #   录制中分两次输入，回放直接填入最终值
     # ------------------------------------------------------------------
-    run_step(
-        8,
-        "输入密码（回放直接填入最终值，不打印明文）",
-        lambda: fill_first(page, PASSWORD_INPUT, PASSWORD),
-    )
+    def _fill_password():
+        # 先点击密码输入框以聚焦（确保 type/fill 前有 click/focus）
+        click_first(page, PASSWORD_INPUT)
+        time.sleep(0.3)
+        fill_first(page, PASSWORD_INPUT, PASSWORD)
+
+    run_step(8, "点击密码输入框聚焦并输入密码", _fill_password)
 
     # ------------------------------------------------------------------
     # 步骤 9：校验密码输入框内容
@@ -497,14 +536,28 @@ def run_flow(page) -> None:
 
 def main() -> int:
     """主入口：启动浏览器，执行回放，返回退出码。"""
-    with sync_playwright() as p:
-        # 启动 Chromium（忽略 HTTPS 证书错误，适用于内网自签名证书）
-        browser = p.chromium.launch(
-            headless=HEADLESS,
-            ignore_https_errors=True,
-        )
-        # 创建上下文：中文环境，宽屏视口
+    # 确保 stdout/stderr 支持 UTF-8 输出，避免 GBK 无法编码 emoji 等 Unicode 字符
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+    playwright = None
+    browser = None
+    context = None
+    page = None
+    exit_code = 1
+    try:
+        playwright = sync_playwright().start()
+        # 启动 Chromium
+        browser = playwright.chromium.launch(headless=HEADLESS)
+        # 创建上下文：中文环境，宽屏视口，忽略 HTTPS 证书错误（适用于内网自签名证书）
         context = browser.new_context(
+            ignore_https_errors=True,
             viewport={"width": 1440, "height": 900},
             locale="zh-CN",
         )
@@ -513,9 +566,24 @@ def main() -> int:
 
         try:
             run_flow(page)
-            print("✅ 回放成功：已进入 IPSA Pro 门户", flush=True)
+            print("[OK] 回放成功：已进入 IPSA Pro 门户", flush=True)
+            print(
+                "REPLAY_RESULT "
+                + json.dumps(
+                    {
+                        "ok": True,
+                        "recording": RECORDING_NAME,
+                        "step": "done",
+                        "url": _safe(lambda: page.url),
+                        "title": _safe(lambda: page.title()),
+                        "error": None,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            exit_code = 0
         except Exception as e:  # noqa: BLE001
-            # 构造结构化失败 JSON
             payload = {
                 "ok": False,
                 "recording": RECORDING_NAME,
@@ -526,8 +594,6 @@ def main() -> int:
                 "error": f"{type(e).__name__}: {e}",
             }
             print("REPLAY_RESULT:" + json.dumps(payload, ensure_ascii=False), flush=True)
-
-            # 尽力保存失败截图（不阻塞退出）
             try:
                 page.screenshot(
                     path=f"{RECORDING_NAME}-failure.png",
@@ -535,12 +601,41 @@ def main() -> int:
                 )
             except Exception:
                 pass
-
-            browser.close()
-            return 1
-
-        browser.close()
-        return 0
+            exit_code = 1
+    except Exception as e:  # noqa: BLE001
+        # 启动或拆浏览器阶段异常：若流程已成功打印结果，仍按成功退出。
+        if exit_code == 0:
+            return 0
+        print(
+            "REPLAY_RESULT:"
+            + json.dumps(
+                {
+                    "ok": False,
+                    "recording": RECORDING_NAME,
+                    "step": _CURRENT["step"],
+                    "step_desc": _CURRENT["desc"],
+                    "url": "",
+                    "title": "",
+                    "error": f"{type(e).__name__}: {e}",
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return 1
+    finally:
+        for closer in (
+            getattr(context, "close", None),
+            getattr(browser, "close", None),
+            getattr(playwright, "stop", None),
+        ):
+            if closer is None:
+                continue
+            try:
+                closer()
+            except Exception:
+                pass
+    return exit_code
 
 
 if __name__ == "__main__":

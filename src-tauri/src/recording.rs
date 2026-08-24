@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -99,28 +99,142 @@ const RECORDER_INJECT_JS: &str = r#"
     } catch(_) {}
   }
 
+  function isTextField(el) {
+    if (!el) return false;
+    var tag = (el.tagName || '').toLowerCase();
+    if (tag === 'textarea') return true;
+    if (el.isContentEditable) return true;
+    if (tag !== 'input') return false;
+    var t = (el.type || 'text').toLowerCase();
+    return t === 'text' || t === 'password' || t === 'search' || t === 'email'
+      || t === 'tel' || t === 'url' || t === 'number' || t === '';
+  }
+
+  function fieldValue(el) {
+    if (!el) return '';
+    if (el.isContentEditable) return String(el.innerText || el.textContent || '').slice(0, 2000);
+    return el.value || '';
+  }
+
+  function isModifierOnly(key) {
+    return key === 'Control' || key === 'Shift' || key === 'Alt' || key === 'Meta';
+  }
+
+  function modifiersOf(e) {
+    var parts = [];
+    if (e.metaKey && !e.ctrlKey) parts.push('Meta');
+    else if (e.ctrlKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    return parts.join('+');
+  }
+
+  var SPECIAL_KEYS = {
+    Enter: 1, NumpadEnter: 1, Tab: 1, Escape: 1,
+    Backspace: 1, Delete: 1,
+    ArrowLeft: 1, ArrowRight: 1, ArrowUp: 1, ArrowDown: 1,
+    Home: 1, End: 1, PageUp: 1, PageDown: 1
+  };
+
+  var lastFieldValue = new WeakMap();
+  function rememberValue(el) {
+    if (el) lastFieldValue.set(el, fieldValue(el));
+  }
+  function prevValue(el) {
+    return lastFieldValue.has(el) ? lastFieldValue.get(el) : fieldValue(el);
+  }
+
+  var inputState = new WeakMap();
+  var pendingEls = [];
+  function trackPending(el) {
+    if (pendingEls.indexOf(el) < 0) pendingEls.push(el);
+  }
+  function emitType(el, extra) {
+    rec('type', el, extra);
+    rememberValue(el);
+  }
+  function flushInput(el) {
+    var st = inputState.get(el);
+    if (!st) return;
+    if (st.timer) clearTimeout(st.timer);
+    inputState.delete(el);
+    if (st.extra) emitType(el, st.extra);
+  }
+  function flushAllPending() {
+    var els = pendingEls.slice();
+    pendingEls = [];
+    for (var i = 0; i < els.length; i++) flushInput(els[i]);
+  }
+  function queueType(el, extra, delay) {
+    var prev = inputState.get(el);
+    if (prev && prev.timer) clearTimeout(prev.timer);
+    if (delay <= 0) {
+      inputState.delete(el);
+      emitType(el, extra);
+      return;
+    }
+    trackPending(el);
+    var timer = setTimeout(function() {
+      inputState.delete(el);
+      emitType(el, extra);
+    }, delay);
+    inputState.set(el, { timer: timer, extra: extra });
+  }
+
   document.addEventListener('click', function(e) {
+    flushAllPending();
     if (e.target) rec('click', e.target);
   }, true);
 
-  var inputTimers = new WeakMap();
-  document.addEventListener('input', function(e) {
-    var el = e.target;
-    if (!el) return;
-    if (inputTimers.has(el)) clearTimeout(inputTimers.get(el));
-    inputTimers.set(el, setTimeout(function() {
-      rec('type', el, { value: el.value || '' });
-      inputTimers.delete(el);
-    }, 500));
+  document.addEventListener('focusin', function(e) {
+    if (e.target) rememberValue(e.target);
   }, true);
 
-  // 键盘：记录回车键（搜索 / 登录提交）
+  document.addEventListener('input', function(e) {
+    var el = e.target;
+    if (!isTextField(el)) return;
+    var inputType = e.inputType || '';
+    var extra = {
+      value: fieldValue(el),
+      previousValue: prevValue(el),
+      inputType: inputType,
+      data: e.data || ''
+    };
+    var isDelete = inputType.indexOf('delete') === 0;
+    queueType(el, extra, isDelete ? 0 : 200);
+    rememberValue(el);
+  }, true);
+
+  document.addEventListener('compositionend', function(e) {
+    var el = e.target;
+    if (!isTextField(el)) return;
+    flushInput(el);
+    rec('type', el, {
+      value: fieldValue(el),
+      previousValue: prevValue(el),
+      inputType: 'compositionend',
+      data: e.data || ''
+    });
+    rememberValue(el);
+  }, true);
+
   document.addEventListener('keydown', function(e) {
     var el = e.target;
-    if (!el) return;
-    if (e.key === 'Enter' || e.key === 'NumpadEnter') {
-      rec('key', el, { key: 'Enter', value: el.value || '' });
-    }
+    if (!el || isModifierOnly(e.key)) return;
+    var mods = modifiersOf(e);
+    var special = !!SPECIAL_KEYS[e.key];
+    var shortcut = mods === 'Ctrl' || mods.indexOf('Ctrl+') === 0
+      || mods === 'Meta' || mods.indexOf('Meta+') === 0
+      || mods === 'Alt' || mods.indexOf('Alt+') === 0;
+    if (!special && !shortcut) return;
+    if (isTextField(el)) flushInput(el);
+    var extra = {
+      key: e.key === 'NumpadEnter' ? 'Enter' : e.key,
+      value: fieldValue(el),
+      previousValue: prevValue(el)
+    };
+    if (mods) extra.modifiers = mods;
+    rec('key', el, extra);
   }, true);
 
   // 鼠标悬停：停留 300ms 才记录 hover（过滤快速划过）
@@ -140,25 +254,41 @@ const RECORDER_INJECT_JS: &str = r#"
   }, true);
 
   document.addEventListener('submit', function(e) {
+    flushAllPending();
     if (e.target) rec('submit', e.target);
   }, true);
 
   document.addEventListener('change', function(e) {
     var el = e.target;
-    if (el && el.tagName && el.tagName.toLowerCase() === 'select') {
+    if (!el || !el.tagName) return;
+    var tag = el.tagName.toLowerCase();
+    if (tag === 'select') {
       rec('select', el, { value: el.value || '' });
+      return;
+    }
+    if (isTextField(el)) {
+      flushInput(el);
     }
   }, true);
 
   var lastUrl = location.href;
   function checkNav() {
     if (location.href !== lastUrl) {
-      rec('navigate', document.documentElement, { value: location.href });
+      flushAllPending();
+      rec('navigate', document.documentElement, {
+        value: location.href,
+        cause: 'user',
+        navigationReason: 'history'
+      });
       lastUrl = location.href;
     }
   }
   window.addEventListener('popstate', checkNav);
   window.addEventListener('hashchange', checkNav);
+  window.addEventListener('pagehide', flushAllPending);
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'hidden') flushAllPending();
+  });
 
   window.__rr_isActive = function() { return true; };
 })();
@@ -172,7 +302,7 @@ pub enum RecordingStatus {
     Processing,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingEvent {
     #[serde(rename = "type")]
@@ -185,10 +315,31 @@ pub struct RecordingEvent {
     pub selector_candidates: Vec<String>,
     #[serde(default)]
     pub tag_name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
+    /// navigate: user | redirect | reload | link | form
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
+    /// CDP Page.frameRequestedNavigation reason, or "history" for popstate/hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub navigation_reason: Option<String>,
+    /// Keyboard key for `key` events (Enter, Backspace, Delete, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// InputEvent.inputType: insertText, deleteContentBackward, insertFromPaste, ...
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+    /// Field value before this edit (used to detect deletions vs KEYIN).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_value: Option<String>,
+    /// Ctrl / Meta / Alt / Shift combo, e.g. "Ctrl+Shift".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modifiers: Option<String>,
+    /// InputEvent.data: inserted characters, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -478,6 +629,12 @@ struct CdpReader {
     /// Page sessions already injected with the recorder script.
     injected_sessions: Arc<Mutex<HashSet<String>>>,
     last_page_session: Arc<Mutex<Option<String>>>,
+    /// frameId → Page.frameRequestedNavigation reason (pending until frameNavigated).
+    nav_pending: HashMap<String, String>,
+    /// Main-document URLs that arrived via HTTP redirect (Network.requestWillBeSent).
+    redirect_urls: HashSet<String>,
+    last_user_action_ms: u64,
+    last_navigate_ms: u64,
 }
 
 struct CdpConnection;
@@ -512,6 +669,10 @@ impl CdpConnection {
             events: Arc::new(Mutex::new(Vec::new())),
             injected_sessions: Arc::new(Mutex::new(HashSet::new())),
             last_page_session,
+            nav_pending: HashMap::new(),
+            redirect_urls: HashSet::new(),
+            last_user_action_ms: 0,
+            last_navigate_ms: 0,
         };
 
         Ok((writer, reader))
@@ -630,6 +791,14 @@ async fn inject_recorder(reader: &CdpReader, session_id: &str) {
     let _ = fire_and_forget(
         &reader.sink,
         &reader.next_id,
+        "Network.enable",
+        json!({}),
+        Some(session_id),
+    )
+    .await;
+    let _ = fire_and_forget(
+        &reader.sink,
+        &reader.next_id,
         "Runtime.enable",
         json!({}),
         Some(session_id),
@@ -735,8 +904,45 @@ async fn cdp_event_reader(mut reader: CdpReader) {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("");
                     if let Ok(event) = serde_json::from_str::<RecordingEvent>(payload_str) {
+                        if is_interactive_recording_event(&event.event_type) {
+                            reader.last_user_action_ms =
+                                event.timestamp.max(reader.last_user_action_ms);
+                        }
                         let mut guard = reader.events.lock().await;
                         guard.push(event);
+                    }
+                }
+            }
+            "Page.frameRequestedNavigation" => {
+                let frame_id = parsed
+                    .pointer("/params/frameId")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let reason = parsed
+                    .pointer("/params/reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if !frame_id.is_empty() && !reason.is_empty() {
+                    reader
+                        .nav_pending
+                        .insert(frame_id.to_string(), reason.to_string());
+                }
+            }
+            "Network.requestWillBeSent" => {
+                let resource_type = parsed
+                    .pointer("/params/type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if resource_type == "Document"
+                    && parsed.pointer("/params/redirectResponse").is_some()
+                {
+                    if let Some(url) = parsed
+                        .pointer("/params/request/url")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        if is_http_url(url) {
+                            reader.redirect_urls.insert(url.to_string());
+                        }
                     }
                 }
             }
@@ -749,21 +955,39 @@ async fn cdp_event_reader(mut reader: CdpReader) {
                     .pointer("/params/frame/parentId")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("");
+                let frame_id = parsed
+                    .pointer("/params/frame/id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
 
                 // Only record top-level (main-frame) navigations to real pages.
                 if parent_id.is_empty() && is_http_url(url) {
                     if let Some(sid) = parsed.get("sessionId").and_then(serde_json::Value::as_str) {
                         *reader.last_page_session.lock().await = Some(sid.to_string());
                     }
+                    let reason = if frame_id.is_empty() {
+                        None
+                    } else {
+                        reader.nav_pending.remove(frame_id)
+                    };
+                    let is_http_redirect = take_redirect_url(&mut reader.redirect_urls, url);
+                    let timestamp = now_millis();
+                    let cause = classify_navigation_cause(
+                        is_http_redirect,
+                        reason.as_deref(),
+                        timestamp,
+                        reader.last_navigate_ms,
+                        reader.last_user_action_ms,
+                    );
+                    reader.last_navigate_ms = timestamp;
                     let event = RecordingEvent {
                         event_type: "navigate".to_string(),
-                        timestamp: now_millis(),
+                        timestamp,
                         url: url.to_string(),
-                        selector: String::new(),
-                        selector_candidates: Vec::new(),
-                        tag_name: String::new(),
                         value: Some(url.to_string()),
-                        screenshot: None,
+                        cause: Some(cause.to_string()),
+                        navigation_reason: reason,
+                        ..Default::default()
                     };
                     let mut guard = reader.events.lock().await;
                     guard.push(event);
@@ -845,6 +1069,68 @@ async fn get_active_tab_url(http: &reqwest::Client, cdp_endpoint: &str) -> Resul
 
 fn is_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
+}
+
+fn is_interactive_recording_event(event_type: &str) -> bool {
+    matches!(event_type, "click" | "type" | "key" | "submit" | "select")
+}
+
+fn strip_trailing_slash(url: &str) -> &str {
+    url.strip_suffix('/').unwrap_or(url)
+}
+
+fn take_redirect_url(redirects: &mut HashSet<String>, url: &str) -> bool {
+    if redirects.remove(url) {
+        return true;
+    }
+    let stripped = strip_trailing_slash(url);
+    if stripped != url && redirects.remove(stripped) {
+        return true;
+    }
+    let with_slash = format!("{stripped}/");
+    if with_slash != url {
+        return redirects.remove(&with_slash);
+    }
+    false
+}
+
+/// Classify a top-level navigation so replay can `page.goto` only user-entered URLs.
+///
+/// - `user`: address bar / bookmark / unknown browser-chrome navigation
+/// - `redirect`: HTTP 3xx, JS/meta refresh, or a hop in an automatic chain
+/// - `reload`: explicit reload
+/// - `link`: `<a>` click (already covered by a click event)
+/// - `form`: form submit navigation (already covered by click/submit)
+fn classify_navigation_cause(
+    is_http_redirect: bool,
+    renderer_reason: Option<&str>,
+    now_ms: u64,
+    last_navigate_ms: u64,
+    last_user_action_ms: u64,
+) -> &'static str {
+    if is_http_redirect {
+        return "redirect";
+    }
+    if let Some(reason) = renderer_reason {
+        return match reason {
+            "httpHeaderRefresh" | "scriptInitiated" | "metaTagRefresh"
+            | "pageBlockInterstitial" => "redirect",
+            "reload" => "reload",
+            "anchorClick" => "link",
+            "formSubmissionGet" | "formSubmissionPost" => "form",
+            _ => "user",
+        };
+    }
+    // No renderer reason: typically the omnibox. A follow-up hop with no user
+    // action in between is still an automatic redirect (SSO / 302 chain).
+    const REDIRECT_CHAIN_MS: u64 = 3000;
+    if last_navigate_ms > 0
+        && now_ms.saturating_sub(last_navigate_ms) < REDIRECT_CHAIN_MS
+        && last_user_action_ms <= last_navigate_ms
+    {
+        return "redirect";
+    }
+    "user"
 }
 
 fn now_millis() -> u64 {

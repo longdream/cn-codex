@@ -209,6 +209,19 @@ pub async fn replay_delete_script(state: State<'_, AppState>, id: String) -> App
         .map_err(crate::error::AppError::Custom)
 }
 
+/// Rename the display name of a replay script card.
+#[tauri::command]
+pub async fn replay_rename_script(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> AppResult<String> {
+    let recordings_dir = state.workspace_config_dir.join("recordings");
+    crate::replay::rename_script(&recordings_dir, &id, &name)
+        .await
+        .map_err(crate::error::AppError::Custom)
+}
+
 /// Return the directory where replay scripts are stored (used to bind the
 /// dedicated repair conversation's working directory).
 #[tauri::command]

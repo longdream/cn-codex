@@ -5,6 +5,7 @@ import {
   IconFolderOpen,
   IconLoader2,
   IconMessage2,
+  IconPencil,
   IconPlayerPlay,
   IconPlayerRecord,
   IconPlayerStop,
@@ -26,6 +27,7 @@ import {
   replayGetDir,
   replayListScripts,
   replayReadScript,
+  replayRenameScript,
   replayRunScript,
   replayStopScript,
   type ReplayRunResult,
@@ -54,6 +56,19 @@ function isRunning(state: RunState | undefined): state is { running: true } {
   return Boolean(state && "running" in state);
 }
 
+function hasReplayDiagnostics(result: ReplayRunResult): boolean {
+  return [result.error, result.stderr, result.stdout].some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+}
+
+function shouldAutoFix(result: ReplayRunResult): boolean {
+  if (result.ok || result.fixable === false) {
+    return false;
+  }
+  return hasReplayDiagnostics(result);
+}
+
 function formatRecordTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
@@ -69,11 +84,19 @@ function buildGenerateMessage(sessionId: string, sessionName: string): string {
     `- 录制名称：${sessionName}`,
     ``,
     `录制事件类型说明（据此生成对应动作）：`,
-    `- navigate：页面跳转 → page.goto(url)`,
+    `- navigate：页面跳转。必须看 cause 字段，禁止把自动跳转写成顺序 page.goto：`,
+    `  - cause=user：用户在地址栏输入/收藏夹打开 → 仅此时使用 page.goto(url)`,
+    `  - cause=redirect：HTTP 302 / JS / meta / SSO 自动跳转 → 禁止 page.goto，应 wait_for_url 或等待目标页元素出现`,
+    `  - cause=link / form：由前面的 click/submit 触发 → 禁止再 goto，等待导航完成即可`,
+    `  - cause=reload → page.reload()`,
     `- click：鼠标点击 → element.click()`,
-    `- type：文本输入（含用户名/密码，value 即输入内容）→ 先 click/focus 同一输入框，再 page.fill(selector, value)`,
+    `- type：输入框内容变化。value 是变化后的框内容，previousValue 是变化前，inputType 区分插入/删除：`,
+    `  - insertText / insertFromPaste / insertCompositionText / compositionend → 输入（KEYIN）`,
+    `  - deleteContentBackward / deleteContentForward / deleteByCut / deleteContent → 删除，不是新的 KEYIN`,
+    `  - 同一输入框的连续 type/key 是一次编辑过程，合并为最终稳定 value 再 fill，不要对 ju、junlong 等中间值依次 fill`,
     `- hover：鼠标悬停 → page.hover(selector)，点击下拉菜单项前先 hover 触发菜单`,
-    `- key：键盘按键（如 Enter 搜索/提交）→ page.press(selector, "Enter")`,
+    `- key：键盘按键细节（Enter/Tab/Escape/Backspace/Delete/方向键/Ctrl 快捷键）→ page.press(selector, key)`,
+    `  - Backspace/Delete 是删除，不要当成输入；Ctrl+A / Ctrl+V 等按 modifiers 拼成 "Control+A"`,
     `- select：下拉选择 → page.select_option(selector, value)`,
     `- submit：表单提交 → 通常可忽略，或点击提交按钮`,
     ``,
@@ -82,11 +105,11 @@ function buildGenerateMessage(sessionId: string, sessionName: string): string {
     `2. 每个步骤都要有中文注释，说明「步骤 N：做什么」；`,
     `3. 运行时打印每个步骤的提示，例如 print("步骤 N：...")；`,
     `4. 容错：等待选择器、多候选选择器回退、每步重试、导航后等待页面稳定；不要把空 selector 传给 Playwright，也不要用 page.click("")；`,
-    `5. 对每个 type 事件必须先点击/聚焦输入框再 fill；即使 trace 没有对应 click，也必须根据 selectorCandidates 或后续 type 事件补一个 click；连续 type 事件合并为一次最终值；`,
+    `5. 每个输入框只 fill 最终稳定值：先 click/focus 再 fill；即使 trace 没有对应 click，也必须根据 selectorCandidates 补一个 click；中间 KEYIN/删除/退格全部合并，禁止对每个 type 依次 fill；`,
     `6. click 事件 selector 为空时，优先使用 selectorCandidates、tagName 和相邻事件推断可点击祖先；若仍无法定位则跳过该事件并记录提示，不得生成无目标点击；`,
-    `7. 仅对 trace 中真实的 HTTP(S) URL 使用 page.goto；登录/SSO 跳转不要断言脆弱的完整 URL，使用宽松的 host/path 片段和最终页面元素校验；`,
+    `7. 仅对 cause=user 的 HTTP(S) URL 使用 page.goto；SSO/登录自动跳转（cause=redirect/form/link）只用宽松 host/path 片段等待；navigate 紧跟 click/submit 时即使 cause 缺失也不要再 goto；不要断言带 code/state 的完整回调 URL；`,
     `8. 断言：关键操作后校验元素可见或 URL 变化；`,
-    `9. 失败时打印一行 REPLAY_RESULT JSON（含 step/url/title/error）并以非 0 退出码结束。`,
+    `9. 成功时必须在关闭浏览器之前打印一行 REPLAY_RESULT JSON（ok: true, step, url, title）；失败时同样打印（ok: false, error）并以非 0 退出。browser.close()/context.close() 必须包在 try/except 中：用户手动关闭浏览器窗口不得当作回放失败。`,
     `10. 写入完成后必须重新读取脚本并做 Python 语法自检（至少确认 try/for/函数缩进完整；环境可用时运行 py_compile）；发现 SyntaxError 或 IndentationError 必须先修复并覆盖写入。`,
   ].join("\n");
 }
@@ -156,6 +179,9 @@ export function ReplaySidePanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [automatingId, setAutomatingId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const [runStates, setRunStates] = useState<Record<string, RunState>>({});
   const nextAutomationTokenRef = useRef(0);
   const activeAutomationRef = useRef<ActiveAutomation | null>(null);
@@ -283,6 +309,7 @@ export function ReplaySidePanel() {
         threadId: null,
       };
       cancelledAutomationTokenRef.current = null;
+      setAutomatingId(sessionId);
       const script: ReplayScriptMeta = {
         id: sessionId,
         name: sessionName || sessionId,
@@ -291,6 +318,7 @@ export function ReplaySidePanel() {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         stepCount: 0,
+        steps: [],
         startUrl: "",
       };
       setGenerating(true);
@@ -321,6 +349,7 @@ export function ReplaySidePanel() {
         if (activeAutomationRef.current?.token === token) {
           activeAutomationRef.current = null;
           cancelledAutomationTokenRef.current = null;
+          setAutomatingId(null);
           setGenerating(false);
         }
       }
@@ -412,6 +441,7 @@ export function ReplaySidePanel() {
       };
       cancelledAutomationTokenRef.current = null;
       setBusyId(script.id);
+      setAutomatingId(script.id);
       setRunStates((prev) => ({ ...prev, [script.id]: { running: true } }));
 
       try {
@@ -429,6 +459,15 @@ export function ReplaySidePanel() {
           return;
         }
 
+        if (!shouldAutoFix(result)) {
+          setError(
+            result.error?.trim()
+              || intl.formatMessage({ id: "replay.skipFixNoOutput" }),
+          );
+          await load();
+          return;
+        }
+
         const threadId = await ensureReplayThread(script);
         if (
           cancelledAutomationTokenRef.current === token ||
@@ -441,6 +480,7 @@ export function ReplaySidePanel() {
           return;
         }
         activeRun.threadId = threadId;
+        setRunStates((prev) => ({ ...prev, [script.id]: { running: true } }));
         for (let attempt = 1; attempt <= MAX_FIX_ATTEMPTS; attempt += 1) {
           if (cancelledAutomationTokenRef.current === token) {
             return;
@@ -465,6 +505,15 @@ export function ReplaySidePanel() {
             await load();
             return;
           }
+          if (!shouldAutoFix(result)) {
+            setError(
+              result.error?.trim()
+                || intl.formatMessage({ id: "replay.skipFixNoOutput" }),
+            );
+            await load();
+            return;
+          }
+          setRunStates((prev) => ({ ...prev, [script.id]: { running: true } }));
         }
 
         if (cancelledAutomationTokenRef.current === token) {
@@ -488,11 +537,13 @@ export function ReplaySidePanel() {
                 stderr: "",
                 durationMs: 0,
                 error: intl.formatMessage({ id: "replay.stoppedByUser" }),
+                fixable: false,
               },
             }));
           }
           activeAutomationRef.current = null;
           cancelledAutomationTokenRef.current = null;
+          setAutomatingId(null);
           setBusyId(null);
         }
       }
@@ -578,9 +629,46 @@ export function ReplaySidePanel() {
     [intl, load, selectedScript?.id],
   );
 
+  const beginRename = useCallback((script: ReplayScriptMeta) => {
+    setRenamingId(script.id);
+    setRenameDraft(script.name);
+  }, []);
+
+  const cancelRename = useCallback(() => {
+    setRenamingId(null);
+    setRenameDraft("");
+  }, []);
+
+  const commitRename = useCallback(
+    async (script: ReplayScriptMeta) => {
+      const nextName = renameDraft.trim();
+      if (!nextName || nextName === script.name) {
+        cancelRename();
+        return;
+      }
+      setBusyId(script.id);
+      setError(null);
+      try {
+        const saved = await replayRenameScript(script.id, nextName);
+        setScripts((prev) =>
+          prev.map((item) => (item.id === script.id ? { ...item, name: saved } : item)),
+        );
+        setSelectedScript((prev) =>
+          prev && prev.id === script.id ? { ...prev, name: saved } : prev,
+        );
+        cancelRename();
+      } catch (err) {
+        setError(typeof err === "string" ? err : (err as Error).message);
+      } finally {
+        setBusyId((prev) => (prev === script.id ? null : prev));
+      }
+    },
+    [cancelRename, renameDraft],
+  );
+
   const renderStatus = (script: ReplayScriptMeta) => {
     const runState = runStates[script.id];
-    const running = isRunning(runState);
+    const running = automatingId === script.id || isRunning(runState);
     const lastResult = runState && !isRunning(runState) ? runState : null;
     const status = lastResult
       ? lastResult.ok
@@ -594,28 +682,30 @@ export function ReplaySidePanel() {
   const renderScriptActions = (script: ReplayScriptMeta, compact = false) => {
     const busy = busyId === script.id;
     const { running } = renderStatus(script);
+    const otherBusy = Boolean(automatingId && automatingId !== script.id);
     return (
       <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
-          disabled={!running && busy}
-          onClick={() => void (running ? stopAutomation() : runWithAutoFix(script))}
-          className={`app-button-secondary flex items-center gap-1 text-[11px] disabled:opacity-50 ${
-            running ? "text-red-300" : ""
-          }`}
-          title={
-            running
-              ? intl.formatMessage({ id: "replay.stop" })
-              : intl.formatMessage({ id: "replay.run" })
-          }
+          disabled={running || busy || otherBusy}
+          onClick={() => void runWithAutoFix(script)}
+          className="app-button-secondary flex items-center gap-1 text-[11px] disabled:opacity-50"
+          title={intl.formatMessage({ id: "replay.run" })}
         >
-          {running ? (
-            <IconPlayerStop size={12} stroke={1.8} />
-          ) : (
-            <IconPlayerPlay size={12} stroke={1.8} />
-          )}
-          {intl.formatMessage({ id: running ? "replay.stop" : "replay.run" })}
+          <IconPlayerPlay size={12} stroke={1.8} />
+          {intl.formatMessage({ id: "replay.run" })}
         </button>
+        {running ? (
+          <button
+            type="button"
+            onClick={() => void stopAutomation()}
+            className="app-button-secondary flex items-center gap-1 text-[11px] text-red-300"
+            title={intl.formatMessage({ id: "replay.stopHint" })}
+          >
+            <IconPlayerStop size={12} stroke={1.8} />
+            {intl.formatMessage({ id: "replay.stop" })}
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={busy}
@@ -639,7 +729,7 @@ export function ReplaySidePanel() {
         )}
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || running}
           onClick={() => void deleteScript(script)}
           className="app-button-secondary flex items-center gap-1 text-[11px] text-red-300 disabled:opacity-50"
           title={intl.formatMessage({ id: "replay.delete" })}
@@ -651,8 +741,7 @@ export function ReplaySidePanel() {
     );
   };
 
-  const automationActive =
-    generating || Object.values(runStates).some((state) => isRunning(state));
+  const automationActive = generating || automatingId !== null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -667,9 +756,40 @@ export function ReplaySidePanel() {
             >
               <IconArrowLeft size={14} stroke={1.8} />
             </button>
-            <span className="min-w-0 flex-1 truncate text-xs font-semibold text-[var(--text-strong)]">
-              {selectedScript.name}
-            </span>
+            {renamingId === selectedScript.id ? (
+              <input
+                autoFocus
+                value={renameDraft}
+                maxLength={80}
+                onChange={(event) => setRenameDraft(event.target.value)}
+                onBlur={() => void commitRename(selectedScript)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void commitRename(selectedScript);
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    cancelRename();
+                  }
+                }}
+                className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--surface-elevated)] px-1.5 py-0.5 text-xs font-semibold text-[var(--text-strong)] outline-none"
+                aria-label={intl.formatMessage({ id: "replay.rename" })}
+              />
+            ) : (
+              <div className="flex min-w-0 flex-1 items-center gap-1">
+                <span className="min-w-0 truncate text-xs font-semibold text-[var(--text-strong)]">
+                  {selectedScript.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => beginRename(selectedScript)}
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+                  title={intl.formatMessage({ id: "replay.rename" })}
+                >
+                  <IconPencil size={11} stroke={1.8} />
+                </button>
+              </div>
+            )}
             {automationActive && (
               <button
                 type="button"
@@ -756,11 +876,23 @@ export function ReplaySidePanel() {
                 <div className="truncate font-mono text-[10px] text-[var(--text-faint)]">
                   {selectedScript.id}
                 </div>
-                <div className="text-[11px] text-[var(--text-muted)]">
+                <div className="group text-[11px] text-[var(--text-muted)]">
                   {intl.formatMessage(
                     { id: "replay.stepCount" },
                     { count: selectedScript.stepCount },
                   )}
+                  {(selectedScript.steps ?? []).length > 0 ? (
+                    <ol className="mt-1.5 hidden max-h-56 space-y-1 overflow-auto rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-1.5 group-hover:block">
+                      {(selectedScript.steps ?? []).map((step, index) => (
+                        <li
+                          key={`${selectedScript.id}-detail-step-${index}`}
+                          className="break-words text-[11px] leading-snug text-[var(--text-base)]"
+                        >
+                          {step}
+                        </li>
+                      ))}
+                    </ol>
+                  ) : null}
                 </div>
               </div>
               {(() => {
@@ -831,21 +963,55 @@ export function ReplaySidePanel() {
           ) : (
             scripts.map((script) => {
               const { running, status, statusError } = renderStatus(script);
+              const steps = script.steps ?? [];
+              const renaming = renamingId === script.id;
               return (
                 <div
                   key={script.id}
-                  className="space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--surface-main)] px-3 py-2.5"
+                  className="group space-y-2 rounded-md border border-[var(--border-subtle)] bg-[var(--surface-main)] px-3 py-2.5"
                 >
-                  <button
-                    type="button"
-                    onClick={() => void openScriptDetail(script)}
-                    className="flex w-full items-start justify-between gap-2 text-left"
-                    title={intl.formatMessage({ id: "replay.viewScript" })}
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-xs font-semibold text-[var(--text-strong)]">
-                        {script.name}
-                      </div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      {renaming ? (
+                        <input
+                          autoFocus
+                          value={renameDraft}
+                          maxLength={80}
+                          onChange={(event) => setRenameDraft(event.target.value)}
+                          onBlur={() => void commitRename(script)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void commitRename(script);
+                            } else if (event.key === "Escape") {
+                              event.preventDefault();
+                              cancelRename();
+                            }
+                          }}
+                          className="w-full rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--surface-elevated)] px-1.5 py-0.5 text-xs font-semibold text-[var(--text-strong)] outline-none"
+                          aria-label={intl.formatMessage({ id: "replay.rename" })}
+                        />
+                      ) : (
+                        <div className="flex min-w-0 items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => void openScriptDetail(script)}
+                            className="min-w-0 truncate text-left text-xs font-semibold text-[var(--text-strong)] hover:underline"
+                            title={intl.formatMessage({ id: "replay.viewScript" })}
+                          >
+                            {script.name}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyId === script.id}
+                            onClick={() => beginRename(script)}
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-50"
+                            title={intl.formatMessage({ id: "replay.rename" })}
+                          >
+                            <IconPencil size={11} stroke={1.8} />
+                          </button>
+                        </div>
+                      )}
                       <div className="truncate font-mono text-[10px] text-[var(--text-faint)]">
                         {script.id}
                       </div>
@@ -869,12 +1035,26 @@ export function ReplaySidePanel() {
                             ? intl.formatMessage({ id: "replay.status.failed" })
                             : intl.formatMessage({ id: "replay.status.idle" })}
                     </div>
-                  </button>
+                  </div>
                   <div className="text-[11px] text-[var(--text-muted)]">
-                    {intl.formatMessage(
-                      { id: "replay.stepCount" },
-                      { count: script.stepCount },
-                    )}
+                    <span>
+                      {intl.formatMessage(
+                        { id: "replay.stepCount" },
+                        { count: script.stepCount },
+                      )}
+                    </span>
+                    {steps.length > 0 ? (
+                      <ol className="mt-1.5 hidden max-h-56 space-y-1 overflow-auto rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-1.5 group-hover:block">
+                        {steps.map((step, index) => (
+                          <li
+                            key={`${script.id}-step-${index}`}
+                            className="break-words text-[11px] leading-snug text-[var(--text-base)]"
+                          >
+                            {step}
+                          </li>
+                        ))}
+                      </ol>
+                    ) : null}
                   </div>
                   {script.startUrl ? (
                     <div className="truncate text-[11px] text-[var(--text-faint)]">

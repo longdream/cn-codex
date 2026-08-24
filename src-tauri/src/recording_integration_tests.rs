@@ -126,6 +126,9 @@ fn recorder_js_contains_key_functions() {
     assert!(js.contains("__rr_isActive"));
     assert!(js.contains("__rr_initialized"));
     assert!(js.contains("initRecorder"));
+    assert!(js.contains("Backspace"));
+    assert!(js.contains("previousValue"));
+    assert!(js.contains("isTextField"));
 }
 
 /// Test browser relaunch after shutdown.
