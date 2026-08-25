@@ -1,0 +1,20 @@
+{
+  "sessionId": "2992c3fd-0c41-41c5-9e83-83b1ca921817",
+  "sessionName": "recording-2992c3fd",
+  "startUrl": "chrome://newtab/",
+  "startedAt": "2026-08-25T05:54:23.611557600+00:00",
+  "stoppedAt": "2026-08-25T05:54:35.162111800+00:00",
+  "events": [
+    {
+      "type": "hover",
+      "timestamp": 1787637265815,
+      "url": "chrome://new-tab-page/",
+      "selector": "html.focus-outline-visible",
+      "selectorCandidates": [
+        "html.focus-outline-visible",
+        "html.focus-outline-visible ntp-app"
+      ],
+      "tagName": "ntp-app"
+    }
+  ]
+}

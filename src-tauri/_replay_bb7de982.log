@@ -1,0 +1,59 @@
+步骤 1: 打开 IPSA 门户
+  URL: https://ipsapro.isoftstone.com/
+步骤 2: 等待 SSO 跳转...
+  URL: https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbl
+  未找到账号输入框: Page.wait_for_selector: Timeout 30000ms exceeded.
+Call log:
+  - waiting for locator("[placeholder=\"请输入账号\"], #account_input, #account, input[placeholder*='账号']") to be visible
+
+步骤 3: 点击登录方式切换
+  ✓ 点击: div.item_oFCaWe7B (切换登录方式)
+  ✗ 账号输入框未出现（可能已在账号密码模式）
+步骤 4: 输入账号
+  ✗ 填充失败: junlong
+  ✗ 账号输入失败: Locator.click: Timeout 30000ms exceeded.
+Call log:
+  - waiting for locator("[placeholder=\"请输入账号\"]").first
+
+步骤 5: Tab 切换
+步骤 6: 输入密码
+  ✗ 填充失败: 49718751L!abcd
+  ✗ 密码输入失败: Locator.click: Timeout 30000ms exceeded.
+Call log:
+  - waiting for locator("[placeholder=\"请输入密码\"]").first
+
+步骤 7: 勾选协议复选框
+  ✗ 勾选协议异常: Locator.click: Timeout 6000ms exceeded.
+Call log:
+  - waiting for locator("label.arco-checkbox").first
+    - locator resolved to <label class="arco-checkbox">…</label>
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div tabindex="-1" class="arco-modal-wrapper arco-modal-wrapper-align-center">…</div> from <div>…</div> subtree intercepts pointer events
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div tabindex="-1" class="arco-modal-wrapper arco-modal-wrapper-align-center">…</div> from <div>…</div> subtree intercepts pointer events
+    - retrying click action
+      - waiting 100ms
+    11 × waiting for element to be visible, enabled and stable
+       - element is visible, enabled and stable
+       - scrolling into view if needed
+       - done scrolling
+       - <div tabindex="-1" class="arco-modal-wrapper arco-modal-wrapper-align-center">…</div> from <div>…</div> subtree intercepts pointer events
+     - retrying click action
+       - waiting 500ms
+
+步骤 8: 点击登录按钮
+  ✗ 点击失败: 登录
+  ✗ 登录按钮未找到/点击失败
+  已触发登录提交
+步骤 9: 等待 SSO 回调 & 门户加载...
+  ✗ 登录后未跳转到门户。当前 URL: https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbl 
+REPLAY_RESULT: {"ok": false, "step": 9, "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D", "title": "", "error": "登录后仍停留在登录页 "}

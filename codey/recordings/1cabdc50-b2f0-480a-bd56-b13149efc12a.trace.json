@@ -1,0 +1,614 @@
+{
+  "sessionId": "1cabdc50-b2f0-480a-bd56-b13149efc12a",
+  "sessionName": "登录IPSA",
+  "startUrl": "chrome://newtab/",
+  "startedAt": "2026-08-25T05:54:52.365944500+00:00",
+  "stoppedAt": "2026-08-25T05:55:42.934952+00:00",
+  "events": [
+    {
+      "type": "hover",
+      "timestamp": 1787637294848,
+      "url": "chrome://new-tab-page/",
+      "selector": "html.focus-outline-visible",
+      "selectorCandidates": [
+        "html.focus-outline-visible",
+        "html.focus-outline-visible ntp-app"
+      ],
+      "tagName": "ntp-app"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787637305559,
+      "url": "https://ipsapro.isoftstone.com/",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "https://ipsapro.isoftstone.com/",
+      "cause": "user"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787637305901,
+      "url": "https://passport.isoftstone.com/?DomainUrl=https://ipsapro.isoftstone.com&ReturnUrl=%2fportal",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "https://passport.isoftstone.com/?DomainUrl=https://ipsapro.isoftstone.com&ReturnUrl=%2fportal",
+      "cause": "redirect",
+      "navigationReason": "metaTagRefresh"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787637306416,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "cause": "redirect",
+      "navigationReason": "scriptInitiated"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787637311425,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "div.item_oFCaWe7B.arco-tooltip-open",
+      "selectorCandidates": [
+        "div.item_oFCaWe7B.arco-tooltip-open",
+        "div.item_oFCaWe7B.arco-tooltip-open img",
+        "div.content_5klQOEKn",
+        "div.content_5klQOEKn img",
+        "div.container_SzPl3lwf",
+        "div.container_SzPl3lwf img"
+      ],
+      "tagName": "img"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787637312473,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#account_input",
+      "selectorCandidates": [
+        "#account_input",
+        "[placeholder=\"请输入账号\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "div.arco-form-item-control-children",
+        "div.arco-form-item-control-children input",
+        "#account",
+        "#account input",
+        "div.arco-form-item-control",
+        "div.arco-form-item-control input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787637312487,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#account_input",
+      "selectorCandidates": [
+        "#account_input",
+        "[placeholder=\"请输入账号\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "div.arco-form-item-control-children",
+        "div.arco-form-item-control-children input",
+        "#account",
+        "#account input",
+        "div.arco-form-item-control",
+        "div.arco-form-item-control input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787637313161,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#account_input",
+      "selectorCandidates": [
+        "#account_input",
+        "[placeholder=\"请输入账号\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "div.arco-form-item-control-children",
+        "div.arco-form-item-control-children input",
+        "#account",
+        "#account input",
+        "div.arco-form-item-control",
+        "div.arco-form-item-control input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637314601,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#account_input",
+      "selectorCandidates": [
+        "#account_input",
+        "[placeholder=\"请输入账号\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "div.arco-form-item-control-children",
+        "div.arco-form-item-control-children input",
+        "#account",
+        "#account input",
+        "div.arco-form-item-control",
+        "div.arco-form-item-control input"
+      ],
+      "tagName": "input",
+      "value": "jun",
+      "inputType": "insertText",
+      "previousValue": "ju",
+      "data": "n"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637315279,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#account_input",
+      "selectorCandidates": [
+        "#account_input",
+        "[placeholder=\"请输入账号\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "div.arco-form-item-control-children",
+        "div.arco-form-item-control-children input",
+        "#account",
+        "#account input",
+        "div.arco-form-item-control",
+        "div.arco-form-item-control input"
+      ],
+      "tagName": "input",
+      "value": "junlong",
+      "inputType": "insertText",
+      "previousValue": "junlon",
+      "data": "g"
+    },
+    {
+      "type": "key",
+      "timestamp": 1787637315398,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#account_input",
+      "selectorCandidates": [
+        "#account_input",
+        "[placeholder=\"请输入账号\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "div.arco-form-item-control-children",
+        "div.arco-form-item-control-children input",
+        "#account",
+        "#account input",
+        "div.arco-form-item-control",
+        "div.arco-form-item-control input"
+      ],
+      "tagName": "input",
+      "value": "junlong",
+      "key": "Tab",
+      "previousValue": "junlong"
+    },
+    {
+      "type": "key",
+      "timestamp": 1787637315996,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "span.arco-icon-hover.arco-input-clear-icon",
+      "selectorCandidates": [
+        "span.arco-icon-hover.arco-input-clear-icon",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-default span",
+        "div.arco-form-item-control-children",
+        "div.arco-form-item-control-children span",
+        "#account",
+        "#account span",
+        "div.arco-form-item-control",
+        "div.arco-form-item-control span"
+      ],
+      "tagName": "span",
+      "value": "",
+      "key": "Tab",
+      "previousValue": ""
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637316965,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "4",
+      "inputType": "insertText",
+      "previousValue": "",
+      "data": "4"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637317200,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "49",
+      "inputType": "insertText",
+      "previousValue": "4",
+      "data": "9"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637317750,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "49718",
+      "inputType": "insertText",
+      "previousValue": "4971",
+      "data": "8"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637317967,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "497187",
+      "inputType": "insertText",
+      "previousValue": "49718",
+      "data": "7"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637318534,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "49718751",
+      "inputType": "insertText",
+      "previousValue": "4971875",
+      "data": "1"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637319175,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "49718751L",
+      "inputType": "insertText",
+      "previousValue": "49718751",
+      "data": "L"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637319485,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "49718751L!",
+      "inputType": "insertText",
+      "previousValue": "49718751L",
+      "data": "!"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637319901,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "49718751L!ab",
+      "inputType": "insertText",
+      "previousValue": "49718751L!a",
+      "data": "b"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637320126,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "49718751L!abc",
+      "inputType": "insertText",
+      "previousValue": "49718751L!ab",
+      "data": "c"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787637320357,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "#password_input",
+      "selectorCandidates": [
+        "#password_input",
+        "[placeholder=\"请输入密码\"]",
+        "input.arco-input.arco-input-size-default",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus",
+        "span.arco-input-inner-wrapper.arco-input-inner-wrapper-focus input",
+        "span.arco-input-group",
+        "span.arco-input-group input",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default",
+        "div.arco-input-group-wrapper.arco-input-group-wrapper-default input"
+      ],
+      "tagName": "input",
+      "value": "49718751L!abcd",
+      "inputType": "insertText",
+      "previousValue": "49718751L!abc",
+      "data": "d"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787637322040,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "div.arco-checkbox-mask",
+      "selectorCandidates": [
+        "div.arco-checkbox-mask",
+        "span.arco-icon-hover.arco-checkbox-icon-hover",
+        "span.arco-icon-hover.arco-checkbox-icon-hover div",
+        "label.arco-checkbox",
+        "label.arco-checkbox div",
+        "div.agreement-container_yz9CPok6.agreement_account_eCIwXega",
+        "div.agreement-container_yz9CPok6.agreement_account_eCIwXega div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787637322041,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "label.arco-checkbox",
+      "selectorCandidates": [
+        "label.arco-checkbox",
+        "label.arco-checkbox input",
+        "div.agreement-container_yz9CPok6.agreement_account_eCIwXega",
+        "div.agreement-container_yz9CPok6.agreement_account_eCIwXega input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787637322072,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "div.arco-checkbox-mask",
+      "selectorCandidates": [
+        "div.arco-checkbox-mask",
+        "span.arco-icon-hover.arco-checkbox-icon-hover",
+        "span.arco-icon-hover.arco-checkbox-icon-hover div",
+        "label.arco-checkbox.arco-checkbox-checked",
+        "label.arco-checkbox.arco-checkbox-checked div",
+        "div.agreement-container_yz9CPok6.agreement_account_eCIwXega",
+        "div.agreement-container_yz9CPok6.agreement_account_eCIwXega div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787637322844,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "text=\"登 录\"",
+      "selectorCandidates": [
+        "text=\"登 录\"",
+        "button.arco-btn.arco-btn-primary",
+        "button.arco-btn.arco-btn-primary span",
+        "form.arco-form.arco-form-vertical",
+        "form.arco-form.arco-form-vertical span",
+        "div.container_0E1gQosL",
+        "div.container_0E1gQosL span"
+      ],
+      "tagName": "span"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787637322896,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "text=\"登 录\"",
+      "selectorCandidates": [
+        "text=\"登 录\"",
+        "button.arco-btn.arco-btn-primary",
+        "button.arco-btn.arco-btn-primary span",
+        "form.arco-form.arco-form-vertical",
+        "form.arco-form.arco-form-vertical span",
+        "div.container_0E1gQosL",
+        "div.container_0E1gQosL span"
+      ],
+      "tagName": "span"
+    },
+    {
+      "type": "submit",
+      "timestamp": 1787637322897,
+      "url": "https://feilian.isoftstone.com:10443/login?next=%2Fapi%2Foidc%2Fauthorize%3Fclient_id%3DcuhsYmdcwpEQrYjjckMArnOaEjZuIqbltJnxPVvA%26redirect_uri%3Dhttps%253A%252F%252Fpassport.isoftstone.com%253A443%252Fcorplink%252Fagw%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%26state%3DeyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "form.arco-form.arco-form-vertical",
+      "selectorCandidates": [
+        "form.arco-form.arco-form-vertical",
+        "div.container_0E1gQosL",
+        "div.container_0E1gQosL form",
+        "div.fixed-height-content_NmrOX3gk",
+        "div.fixed-height-content_NmrOX3gk form"
+      ],
+      "tagName": "form"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787637324275,
+      "url": "https://passport.isoftstone.com/corplink/agw/callback?code=fNpTFYPjvpzfzWHGghSMnnOrDapTKsnWIUjOCtLE&state=eyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "https://passport.isoftstone.com/corplink/agw/callback?code=fNpTFYPjvpzfzWHGghSMnnOrDapTKsnWIUjOCtLE&state=eyJhY2Nlc3NfdXJsIjoiaHR0cHM6Ly9wYXNzcG9ydC5pc29mdHN0b25lLmNvbTo0NDMvP0RvbWFpblVybD1odHRwczovL2lwc2Fwcm8uaXNvZnRzdG9uZS5jb21cdTAwMjZSZXR1cm5Vcmw9JTJmcG9ydGFsYWd3X3VybF9oYXNodGFnIn0%3D",
+      "cause": "redirect",
+      "navigationReason": "scriptInitiated"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787637325873,
+      "url": "https://ipsapro.isoftstone.com/portal",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "https://ipsapro.isoftstone.com/portal",
+      "cause": "redirect",
+      "navigationReason": "scriptInitiated"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787637327407,
+      "url": "https://ipsapro.isoftstone.com/portal",
+      "selector": "#g_loading",
+      "selectorCandidates": [
+        "#g_loading",
+        "div.modal-backdrop",
+        "html.js.flexbox",
+        "html.js.flexbox div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787637329620,
+      "url": "https://ipsapro.isoftstone.com/portal",
+      "selector": "div.row-fluid",
+      "selectorCandidates": [
+        "div.row-fluid",
+        "#g_wrapper",
+        "#g_wrapper div",
+        "div.container-fluid",
+        "div.container-fluid div",
+        "html.js.flexbox",
+        "html.js.flexbox div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787637334920,
+      "url": "https://ipsapro.isoftstone.com/portal",
+      "selector": "#ActivArea",
+      "selectorCandidates": [
+        "#ActivArea",
+        "div.span12",
+        "div.row-fluid",
+        "div.row-fluid div",
+        "#g_content",
+        "#g_content div",
+        "div.span6",
+        "div.span6 div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787637336937,
+      "url": "https://ipsapro.isoftstone.com/portal",
+      "selector": "div.navbar",
+      "selectorCandidates": [
+        "div.navbar",
+        "div.row-fluid",
+        "div.row-fluid div",
+        "#g_footer",
+        "#g_footer div",
+        "div.container-fluid",
+        "div.container-fluid div"
+      ],
+      "tagName": "div"
+    }
+  ]
+}
