@@ -4,7 +4,7 @@
 //! reads the recorded trace and writes a Python script with Chinese comments and
 //! per-step descriptions. This module only manages the script files on disk.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -159,6 +159,10 @@ pub struct ReplayScriptMeta {
     pub last_status: Option<String>,
     pub last_error: Option<String>,
     pub last_run_at: Option<i64>,
+    #[serde(default)]
+    pub report_count: usize,
+    #[serde(default)]
+    pub last_report_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,6 +179,9 @@ pub struct ReplayRunResult {
     /// (user stop, empty output after closing the browser, teardown noise).
     #[serde(default)]
     pub fixable: bool,
+    /// Most recent generated test report (also written to disk).
+    #[serde(default)]
+    pub report: Option<ReplayReportMeta>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,6 +190,629 @@ pub struct ReplayReadResult {
     pub id: String,
     pub path: String,
     pub content: String,
+}
+
+/// Metadata for one persisted replay test report (`*.md` + sidecar json).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayReportMeta {
+    /// Report file stem (creation timestamp in milliseconds).
+    pub id: String,
+    pub script_id: String,
+    pub path: String,
+    pub created_at: i64,
+    pub ok: bool,
+    pub summary: String,
+}
+
+/// How a single replay step ended during the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepStatus {
+    Passed,
+    Failed,
+    Skipped,
+    Unknown,
+}
+
+impl StepStatus {
+    fn label(self) -> &'static str {
+        match self {
+            StepStatus::Passed => "通过",
+            StepStatus::Failed => "失败",
+            StepStatus::Skipped => "未执行",
+            StepStatus::Unknown => "未知",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            StepStatus::Passed => "✅",
+            StepStatus::Failed => "❌",
+            StepStatus::Skipped => "⏭️",
+            StepStatus::Unknown => "❓",
+        }
+    }
+}
+
+/// One expected step and how it went during the last run.
+struct StepAnalysis {
+    num: u32,
+    title: String,
+    status: StepStatus,
+    note: Option<String>,
+}
+
+/// Minimal aggregate counters derived from `analyze_step_results`.
+struct StepTotals {
+    total: usize,
+    passed: usize,
+    failed: usize,
+    skipped: usize,
+    unknown: usize,
+}
+
+/// One numbered-step reference observed in the run output, in output order.
+struct StepRecord {
+    num: u32,
+    /// The same output line (or a closely following line) confirmed completion.
+    marked_done: bool,
+}
+
+/// What the parser learned about progress from the replay process output.
+struct OutputScan {
+    records: Vec<StepRecord>,
+    /// An explicit whole-run success marker such as `[OK]` / `回放成功` appeared.
+    final_success: bool,
+}
+
+impl OutputScan {
+    /// Distinct step numbers seen in the output, in first-seen order.
+    #[allow(dead_code)]
+    fn started_nums(&self) -> Vec<u32> {
+        let mut nums = Vec::new();
+        for record in &self.records {
+            if !nums.contains(&record.num) {
+                nums.push(record.num);
+            }
+        }
+        nums
+    }
+
+    /// Whether the given step emitted an explicit completion marker.
+    fn contains_done(&self, num: u32) -> bool {
+        self.records
+            .iter()
+            .any(|record| record.num == num && record.marked_done)
+    }
+
+    /// Whether every observed step completed explicitly.
+    fn all_completed(&self) -> bool {
+        self.records.iter().all(|record| record.marked_done)
+    }
+
+    /// Last observed-but-incomplete step; the most plausible failure point.
+    fn last_unfinished_num(&self) -> Option<u32> {
+        self.records
+            .iter()
+            .rev()
+            .find(|record| !record.marked_done)
+            .map(|record| record.num)
+    }
+}
+
+/// Parse `"步骤 N：标题"` entries produced by `extract_script_steps`.
+fn parse_expected_step_label(label: &str) -> Option<(u32, String)> {
+    let rest = label.trim().strip_prefix("步骤")?.trim_start();
+    let mut digits = String::new();
+    let mut chars = rest.chars();
+    for ch in chars.by_ref() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+        } else {
+            break;
+        }
+    }
+    let num = digits.parse().ok()?;
+    let remainder = chars.as_str().trim_start();
+    let title = remainder.strip_prefix('：').unwrap_or(remainder).trim();
+    Some((num, title.to_string()))
+}
+
+/// Locate a `步骤 N` token anywhere in the line and return `(num, rest-of-line)`.
+fn find_step_token(line: &str) -> Option<(u32, &str)> {
+    const STEP_TOKEN: &str = "步骤";
+    const STEP_TOKEN_LEN: usize = STEP_TOKEN.len();
+    let mut search_from = 0usize;
+    while let Some(rel_pos) = line[search_from..].find(STEP_TOKEN) {
+        let token_start = search_from + rel_pos;
+        let after = line[token_start + STEP_TOKEN_LEN..]
+            .trim_start_matches(|ch: char| ch == ' ')
+            .trim_start_matches('#');
+        let digit_len = after
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .map(|ch: char| ch.len_utf8())
+            .sum::<usize>();
+        if digit_len > 0 {
+            if let Ok(num) = after[..digit_len].parse::<u32>() {
+                return Some((num, &after[digit_len..]));
+            }
+        }
+        search_from = token_start + STEP_TOKEN_LEN;
+    }
+    None
+}
+
+/// Scan raw run output for per-step progress and overall success markers.
+///
+/// Generated scripts print progress like `步骤 2：输入账号……` before acting and
+/// `步骤 2：输入账号 —— 完成` afterwards; they finish with `[OK]` / `回放成功`
+/// (or a `REPLAY_RESULT` JSON handled separately). Any progress line printed
+/// after the flow finished is attributed to real progress only via `seen`,
+/// so late teardown echoes cannot fake completion.
+fn scan_output_steps(stdout: &str) -> OutputScan {
+    let mut records: Vec<StepRecord> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut final_success = false;
+
+    for raw_line in stdout.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((num, rest)) = find_step_token(line) {
+            let rest_lower = rest.to_ascii_lowercase();
+            let line_lower = line.to_ascii_lowercase();
+            let marked_done = rest_lower.contains("完成")
+                || rest_lower.contains("[ok]")
+                || line_lower.contains("[ok]")
+                || line.contains('✔');
+            if seen.insert(num) {
+                records.push(StepRecord {
+                    num,
+                    marked_done,
+                });
+            } else if marked_done {
+                for record in records.iter_mut() {
+                    if record.num == num {
+                        record.marked_done = true;
+                    }
+                }
+            }
+            continue;
+        }
+
+        let lowered = line.to_ascii_lowercase();
+        if lowered.contains("[ok]") || lowered.contains("回放成功") {
+            final_success = true;
+        }
+        // A trailing bare completion line confirms the most recent step.
+        if line.contains("完成") {
+            if let Some(record) = records.iter_mut().rev().find(|r| !r.marked_done) {
+                record.marked_done = true;
+            }
+        }
+    }
+
+    if final_success {
+        for record in records.iter_mut() {
+            record.marked_done = true;
+        }
+    }
+
+    OutputScan {
+        records,
+        final_success,
+    }
+}
+
+/// Numeric `step` reported by the script's `REPLAY_RESULT` JSON, if any.
+fn resolved_failed_step_from_structured(
+    parsed: Option<&serde_json::Value>,
+) -> Option<u32> {
+    let step_value = parsed?.get("step")?;
+    match step_value {
+        serde_json::Value::Number(number) => number
+            .as_u64()
+            .filter(|value| *value > 0 && *value <= u32::MAX as u64)
+            .map(|value| value as u32),
+        _ => None,
+    }
+}
+
+/// Combine every signal into one concrete failure attribution.
+fn combine_status_markers(
+    structured_step: Option<u32>,
+    scan: &OutputScan,
+) -> Option<u32> {
+    if structured_step.is_some() {
+        return structured_step;
+    }
+    let output_suggests_failure =
+        !scan.all_completed() || scan.records.is_empty();
+    if !output_suggests_failure || scan.final_success {
+        return None;
+    }
+    scan.last_unfinished_num()
+}
+
+fn analyze_step_results(
+    expected_labels: &[String],
+    scan: &OutputScan,
+    structured_error: Option<&serde_json::Value>,
+    overall_ok: bool,
+) -> Vec<StepAnalysis> {
+    let expected_pairs = expected_labels
+        .iter()
+        .filter_map(|label| parse_expected_step_label(label))
+        .collect::<Vec<_>>();
+    let structured_failed_step = resolved_failed_step_from_structured(structured_error);
+    let failure_num = if overall_ok {
+        None
+    } else {
+        combine_status_markers(structured_failed_step, scan)
+    };
+
+    let mut analyses = Vec::new();
+    for (num, title) in &expected_pairs {
+        let status = if scan.contains_done(*num) {
+            StepStatus::Passed
+        } else if scan.final_success {
+            StepStatus::Passed
+        } else if failure_num == Some(*num) {
+            StepStatus::Failed
+        } else if let Some(failed_num) = failure_num {
+            if *num < failed_num {
+                StepStatus::Unknown
+            } else {
+                StepStatus::Skipped
+            }
+        } else {
+            StepStatus::Unknown
+        };
+        let note = if status == StepStatus::Failed {
+            structured_error
+                .and_then(|value| value.get("error"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        } else {
+            None
+        };
+        analyses.push(StepAnalysis {
+            num: *num,
+            title: title.clone(),
+            status,
+            note,
+        });
+    }
+
+    let expected_nums = expected_pairs
+        .iter()
+        .map(|(num, _)| *num)
+        .collect::<HashSet<_>>();
+    for record in &scan.records {
+        if expected_nums.contains(&record.num) {
+            continue;
+        }
+        analyses.push(StepAnalysis {
+            num: record.num,
+            title: "(脚本内出现但未登记)".to_string(),
+            status: if record.marked_done {
+                StepStatus::Passed
+            } else {
+                StepStatus::Unknown
+            },
+            note: None,
+        });
+    }
+
+    analyses.sort_by_key(|analysis| analysis.num);
+    analyses
+}
+
+fn count_step_statuses(analyses: &[StepAnalysis]) -> StepTotals {
+    let mut totals = StepTotals {
+        total: analyses.len(),
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        unknown: 0,
+    };
+    for analysis in analyses {
+        match analysis.status {
+            StepStatus::Passed => totals.passed += 1,
+            StepStatus::Failed => totals.failed += 1,
+            StepStatus::Skipped => totals.skipped += 1,
+            StepStatus::Unknown => totals.unknown += 1,
+        }
+    }
+    totals
+}
+
+fn build_report_summary(
+    _analyses: &[StepAnalysis],
+    totals: &StepTotals,
+    overall_ok: bool,
+) -> String {
+    if totals.total == 0 {
+        return if overall_ok {
+            "回放完成（脚本未提供可解析的步骤清单）".to_string()
+        } else {
+            "回放失败（脚本未提供可解析的步骤清单）".to_string()
+        };
+    }
+    if overall_ok && totals.failed == 0 && totals.unknown == 0 {
+        return format!("{} 个步骤：全部通过", totals.total);
+    }
+    let mut parts = vec![format!("通过 {}", totals.passed)];
+    if totals.failed > 0 {
+        parts.push(format!("失败 {}", totals.failed));
+    }
+    if totals.skipped > 0 {
+        parts.push(format!("未执行 {}", totals.skipped));
+    }
+    if totals.unknown > 0 {
+        parts.push(format!("未知 {}", totals.unknown));
+    }
+    format!("{} 个步骤：{}", totals.total, parts.join(" · "))
+}
+
+/// Escape a cell value for a GitHub-flavored Markdown table.
+fn escape_md_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\r', " ").replace('\n', " ")
+}
+
+fn format_duration_ms(duration_ms: u64) -> String {
+    if duration_ms >= 60_000 {
+        let minutes = duration_ms / 60_000;
+        let seconds = (duration_ms % 60_000) / 1000;
+        format!("{minutes} 分 {seconds} 秒")
+    } else if duration_ms >= 1_000 {
+        format!("{:.1} 秒", duration_ms as f64 / 1000.0)
+    } else {
+        format!("{duration_ms} ms")
+    }
+}
+
+/// Best-effort `(session_name, start_url)` from the original recording trace.
+async fn load_trace_info(recordings_dir: &Path, id: &str) -> (String, String) {
+    let Ok(content) = tokio::fs::read_to_string(recordings_dir.join(format!("{id}.trace.json")))
+        .await
+    else {
+        return (String::new(), String::new());
+    };
+    let Ok(trace) = serde_json::from_str::<TraceFile>(&content) else {
+        return (String::new(), String::new());
+    };
+    (
+        trace.session_name.clone(),
+        effective_start_url(&trace),
+    )
+}
+
+fn trim_run_output(output: &str, max_chars: usize) -> String {
+    if output.chars().count() <= max_chars {
+        return output.to_string();
+    }
+    let kept: String = output.chars().skip(output.chars().count() - max_chars).collect();
+    format!("…（已截断，仅保留末尾内容）\n{kept}")
+}
+
+fn render_report_markdown(context: &ReportBuildContext) -> String {
+    let ReportBuildContext {
+        id,
+        script_name,
+        start_url,
+        script_path,
+        ok,
+        stopped_by_user,
+        duration_label,
+        timestamp_label,
+        analyses,
+        totals: _totals,
+        summary,
+        result,
+    } = context;
+    let status_icon = if *ok { "✅" } else { "❌" };
+    let status_label = if *stopped_by_user {
+        "已由用户停止"
+    } else if *ok {
+        "成功"
+    } else {
+        "失败"
+    };
+    let display_name = if script_name.trim().is_empty() {
+        id
+    } else {
+        script_name
+    };
+
+    let mut md = String::new();
+    md.push_str("# 回放测试报告\n\n");
+    md.push_str(&format!(
+        "- **脚本名称**：{}\n",
+        escape_md_cell(display_name)
+    ));
+    md.push_str(&format!("- **脚本 ID**：`{}`\n", escape_md_cell(id)));
+    if !start_url.is_empty() {
+        md.push_str(&format!(
+            "- **起始页面**：{}\n",
+            escape_md_cell(start_url)
+        ));
+    }
+    if !script_path.is_empty() {
+        md.push_str(&format!(
+            "- **脚本路径**：`{}`\n",
+            escape_md_cell(script_path)
+        ));
+    }
+    md.push_str(&format!("- **运行时间**：{timestamp_label}\n"));
+    md.push_str(&format!("- **总耗时**：{duration_label}\n"));
+    md.push_str(&format!(
+        "- **整体结果**：{status_icon} {status_label}\n"
+    ));
+    md.push_str(&format!("- **步骤统计**：{summary}\n"));
+    if *stopped_by_user {
+        md.push_str("\n> 本次回放在结束前被用户手动停止。\n");
+    }
+
+    if !analyses.is_empty() {
+        md.push_str("\n## 步骤检查结果\n\n");
+        md.push_str("| 序号 | 步骤 | 状态 | 说明 |\n|---|---|---|---|\n");
+        for analysis in analyses.iter() {
+            let note = analysis.note.as_deref().unwrap_or("");
+            md.push_str(&format!(
+                "| {} | {} | {} {} | {} |\n",
+                analysis.num,
+                escape_md_cell(&analysis.title),
+                analysis.status.icon(),
+                analysis.status.label(),
+                escape_md_cell(note)
+            ));
+        }
+    } else {
+        md.push_str("\n## 步骤检查结果\n\n未能从脚本中解析出带编号的步骤清单，请参考下方原始输出确认执行情况。\n");
+    }
+
+    md.push_str("\n## 原始输出\n\n");
+    if !result.stderr.trim().is_empty() {
+        md.push_str("### stderr\n\n```text\n");
+        md.push_str(&trim_run_output(result.stderr.trim(), 6000));
+        md.push_str("\n```\n");
+    }
+    if !result.stdout.trim().is_empty() {
+        md.push_str("### stdout\n\n```text\n");
+        md.push_str(&trim_run_output(result.stdout.trim(), 8000));
+        md.push_str("\n```\n");
+    }
+    if let Some(error) = result.error.as_deref() {
+        if !error.trim().is_empty() {
+            md.push_str(&format!(
+                "\n### 错误摘要\n\n```text\n{}\n```\n",
+                error.trim()
+            ));
+        }
+    }
+    md
+}
+
+/// Everything needed to render one replay test report.
+struct ReportBuildContext<'a> {
+    id: &'a str,
+    script_name: &'a str,
+    start_url: &'a str,
+    script_path: &'a str,
+    ok: bool,
+    stopped_by_user: bool,
+    duration_label: String,
+    timestamp_label: String,
+    analyses: &'a [StepAnalysis],
+    totals: &'a StepTotals,
+    summary: &'a str,
+    result: &'a ReplayRunResult,
+}
+
+/// Directory holding per-script Markdown test reports.
+pub fn reports_root(scripts_dir_path: &Path) -> PathBuf {
+    scripts_dir_path.join("reports")
+}
+
+fn script_reports_dir(scripts_dir_path: &Path, id: &str) -> PathBuf {
+    reports_root(scripts_dir_path).join(id)
+}
+
+fn format_timestamp_label(millis: i64) -> String {
+    chrono::DateTime::<chrono::Local>::from(
+        std::time::UNIX_EPOCH + std::time::Duration::from_millis(millis.max(0) as u64),
+    )
+    .format("%Y-%m-%d %H:%M:%S")
+    .to_string()
+}
+
+async fn list_reports_in(dir: &Path) -> Vec<ReplayReportMeta> {
+    let mut metas = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return metas;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let created_at = stem.parse::<i64>().unwrap_or_else(|_| {
+            tokio::task::block_in_place(|| {
+                std::fs::metadata(&path)
+            })
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        });
+        // The sidecar json is optional; fall back to scanning the markdown.
+        let mut ok = false;
+        let mut summary = String::new();
+        if let Ok(content) =
+            tokio::fs::read_to_string(path.with_extension("json")).await
+        {
+            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
+                ok = meta
+                    .get("ok")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                summary = meta
+                    .get("summary")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+            }
+        }
+        if summary.is_empty() {
+            if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                for line in content.lines() {
+                    if let Some(rest) = line.trim().strip_prefix("- **步骤统计**：") {
+                        summary = rest.trim().to_string();
+                    }
+                    let trimmed = line.trim_start_matches('-').trim_start();
+                    if trimmed.starts_with("**整体结果**") {
+                        ok = trimmed.contains("成功");
+                    }
+                }
+            }
+        }
+        metas.push(ReplayReportMeta {
+            id: stem.to_string(),
+            script_id: dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            path: normalize_display_path(&path),
+            created_at,
+            ok,
+            summary,
+        });
+    }
+    metas.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    metas
+}
+
+fn normalize_display_path(path: &Path) -> String {
+    let lossy = path.to_string_lossy().replace("\\\\?\\", "");
+    lossy
+}
+
+/// List persisted reports for one script, newest first.
+pub async fn list_reports(
+    recordings_dir: &Path,
+    id: &str,
+) -> Result<Vec<ReplayReportMeta>, String> {
+    validate_script_id(id)?;
+    let dir = script_reports_dir(&scripts_dir(recordings_dir), id);
+    Ok(list_reports_in(&dir).await)
 }
 
 pub fn scripts_dir(recordings_dir: &Path) -> PathBuf {
@@ -580,6 +1210,10 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
             }
         }
 
+        let reports = list_reports_in(&script_reports_dir(&dir, &id)).await;
+        let report_count = reports.len();
+        let last_report_at = reports.first().map(|report| report.created_at);
+
         let modified = tokio::fs::metadata(&path)
             .await
             .ok()
@@ -603,6 +1237,8 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
             last_status,
             last_error,
             last_run_at,
+            report_count,
+            last_report_at,
         });
     }
 
@@ -624,6 +1260,32 @@ pub async fn read_script(recordings_dir: &Path, id: &str) -> Result<ReplayReadRe
     })
 }
 
+/// Read one persisted Markdown report by script and report id.
+pub async fn read_report(
+    recordings_dir: &Path,
+    id: &str,
+    report_id: &str,
+) -> Result<ReplayReadResult, String> {
+    validate_script_id(id)?;
+    if report_id.is_empty()
+        || !report_id
+            .chars()
+            .all(|ch| ch.is_ascii_digit())
+    {
+        return Err("Invalid report id".to_string());
+    }
+    let dir = script_reports_dir(&scripts_dir(recordings_dir), id);
+    let path = dir.join(format!("{report_id}.md"));
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Failed to read replay report {id}/{report_id}: {e}"))?;
+    Ok(ReplayReadResult {
+        id: format!("{id}/{report_id}"),
+        path: normalize_display_path(&path),
+        content,
+    })
+}
+
 /// Delete a script (and its last-run sidecar) by id.
 pub async fn delete_script(recordings_dir: &Path, id: &str) -> Result<(), String> {
     validate_script_id(id)?;
@@ -631,6 +1293,7 @@ pub async fn delete_script(recordings_dir: &Path, id: &str) -> Result<(), String
     let py_path = dir.join(format!("{id}.py"));
     let last_path = last_run_path(&dir, id);
     let custom_meta_path = meta_path(&dir, id);
+    let reports_path = script_reports_dir(&dir, id);
 
     if py_path.exists() {
         tokio::fs::remove_file(&py_path)
@@ -642,6 +1305,9 @@ pub async fn delete_script(recordings_dir: &Path, id: &str) -> Result<(), String
     }
     if custom_meta_path.exists() {
         let _ = tokio::fs::remove_file(&custom_meta_path).await;
+    }
+    if reports_path.exists() {
+        let _ = tokio::fs::remove_dir_all(&reports_path).await;
     }
     Ok(())
 }
@@ -768,7 +1434,7 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
                 if replay_stop_requested(id).await {
                     let _ = finish_replay(id).await;
                     let result = stopped_result(started, String::new(), String::new(), None);
-                    persist_last_run(&dir, id, &result).await;
+                    let result = persist_last_run(&dir, id, result).await;
                     return Ok(result);
                 }
                 continue;
@@ -788,7 +1454,7 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
                     format!("Failed to get process ID for {exe}"),
                 )
             };
-            persist_last_run(&dir, id, &result).await;
+            let result = persist_last_run(&dir, id, result).await;
             return Ok(result);
         };
 
@@ -823,7 +1489,7 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
                         format!("Replay script timed out after {RUN_TIMEOUT_SECS}s"),
                     )
                 };
-                persist_last_run(&dir, id, &result).await;
+                let result = persist_last_run(&dir, id, result).await;
                 return Ok(result);
             }
             Ok(Err(e)) => {
@@ -833,7 +1499,7 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
                 } else {
                     failed_result(started, String::new(), e.to_string(), None, e.to_string())
                 };
-                persist_last_run(&dir, id, &result).await;
+                let result = persist_last_run(&dir, id, result).await;
                 return Ok(result);
             }
             Ok(Ok(output)) => {
@@ -859,7 +1525,7 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
                     if clear_replay_pid(id).await {
                         let _ = finish_replay(id).await;
                         let result = stopped_result(started, stdout, stderr, output.status.code());
-                        persist_last_run(&dir, id, &result).await;
+                        let result = persist_last_run(&dir, id, result).await;
                         return Ok(result);
                     }
                     continue;
@@ -883,9 +1549,10 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
                     duration_ms,
                     error,
                     fixable,
+                    report: None,
                 };
 
-                persist_last_run(&dir, id, &result).await;
+                let result = persist_last_run(&dir, id, result).await;
                 return Ok(result);
             }
         }
@@ -898,7 +1565,7 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
     } else {
         failed_result(started, String::new(), String::new(), None, error)
     };
-    persist_last_run(&dir, id, &result).await;
+    let result = persist_last_run(&dir, id, result).await;
     Ok(result)
 }
 
@@ -916,6 +1583,7 @@ fn stopped_result(
         duration_ms: started.elapsed().as_millis() as u64,
         error: Some("Replay script stopped by user".to_string()),
         fixable: false,
+        report: None,
     }
 }
 
@@ -934,6 +1602,7 @@ fn failed_result(
         duration_ms: started.elapsed().as_millis() as u64,
         error: Some(error),
         fixable: true,
+        report: None,
     }
 }
 
@@ -1092,7 +1761,19 @@ fn extract_error(
     None
 }
 
-async fn persist_last_run(dir: &Path, id: &str, result: &ReplayRunResult) {
+async fn persist_last_run(dir: &Path, id: &str, mut result: ReplayRunResult) -> ReplayRunResult {
+    // Every run outcome gets a Markdown test report with per-step checks.
+    if let Some(report) = persist_replay_report(
+        dir.parent().unwrap_or(dir),
+        dir,
+        id,
+        &result,
+    )
+    .await
+    {
+        result.report = Some(report);
+    }
+
     let payload = json!({
         "last_status": if result.ok { "success" } else { "failed" },
         "last_error": result.error.clone(),
@@ -1101,6 +1782,93 @@ async fn persist_last_run(dir: &Path, id: &str, result: &ReplayRunResult) {
     if let Ok(json) = serde_json::to_string(&payload) {
         let _ = tokio::fs::write(last_run_path(dir, id), json).await;
     }
+    result
+}
+
+/// Build the per-step check table, render the Markdown report and persist it.
+async fn persist_replay_report(
+    recordings_dir: &Path,
+    dir: &Path,
+    id: &str,
+    result: &ReplayRunResult,
+) -> Option<ReplayReportMeta> {
+    let report_dir = script_reports_dir(dir, id);
+    if let Err(e) = tokio::fs::create_dir_all(&report_dir).await {
+        eprintln!("Failed to create replay reports dir for {id}: {e}");
+        return None;
+    }
+
+    let (script_name, start_url) = load_trace_info(recordings_dir, id).await;
+    let script_path_lossy = dir.join(format!("{id}.py")).to_string_lossy().to_string();
+    let parsed = parse_structured_output(&result.stdout);
+    let overall_ok = result.ok;
+    // `stopped_by_user` is already signalled through fixable=false + error text;
+    // keep the nuance in the summary line rather than parsing internals again.
+    let stopped_by_user = !result.ok
+        && !result.fixable
+        && result
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("stopped by user"));
+    let scan = scan_output_steps(&result.stdout);
+    let expected_labels = extract_script_steps(
+        &tokio::fs::read_to_string(dir.join(format!("{id}.py")))
+            .await
+            .unwrap_or_default(),
+    );
+    let analyses = analyze_step_results(
+        &expected_labels,
+        &scan,
+        parsed.as_ref().filter(|_| !overall_ok),
+        overall_ok,
+    );
+    let totals = count_step_statuses(&analyses);
+    let summary = build_report_summary(&analyses, &totals, overall_ok);
+
+    let created_at = now_millis();
+    let context = ReportBuildContext {
+        id,
+        script_name: &script_name,
+        start_url: &start_url,
+        script_path: &script_path_lossy,
+        ok: overall_ok,
+        stopped_by_user,
+        duration_label: format_duration_ms(result.duration_ms),
+        timestamp_label: format_timestamp_label(created_at),
+        analyses: &analyses,
+        totals: &totals,
+        summary: &summary,
+        result,
+    };
+    let markdown = render_report_markdown(&context);
+    let md_path = report_dir.join(format!("{created_at}.md"));
+    if let Err(e) = tokio::fs::write(&md_path, markdown.as_bytes()).await {
+        eprintln!("Failed to write replay report for {id}: {e}");
+        return None;
+    }
+    let sidecar = json!({
+        "ok": overall_ok,
+        "summary": summary,
+        "createdAt": created_at,
+        "durationMs": result.duration_ms,
+        "stepsTotal": totals.total,
+        "stepsPassed": totals.passed,
+        "stepsFailed": totals.failed,
+        "stepsSkipped": totals.skipped,
+        "stepsUnknown": totals.unknown,
+    });
+    if let Ok(encoded) = serde_json::to_string_pretty(&sidecar) {
+        let _ = tokio::fs::write(md_path.with_extension("json"), encoded).await;
+    }
+
+    Some(ReplayReportMeta {
+        id: created_at.to_string(),
+        script_id: id.to_string(),
+        path: normalize_display_path(&md_path),
+        created_at,
+        ok: overall_ok,
+        summary,
+    })
 }
 
 #[cfg(test)]
@@ -1269,5 +2037,54 @@ with sync_playwright() as p:
 "#;
         let error = validate_browser_automation_script(script).unwrap_err();
         assert!(error.contains("headless=True"));
+    }
+
+    #[test]
+    fn scan_output_steps_marks_done_and_reports_success_marker() {
+        let stdout = "步骤 1：打开页面……\n步骤 1：打开页面 —— 完成\n步骤 2：点击登录\n[OK] 回放成功\n";
+        let scan = scan_output_steps(stdout);
+        assert_eq!(scan.started_nums(), vec![1, 2]);
+        assert!(scan.contains_done(1));
+        // final success marker promotes the trailing unfinished step too
+        assert!(scan.all_completed());
+        assert!(scan.final_success);
+    }
+
+    #[test]
+    fn analyze_step_results_attributes_failure_to_unfinished_step() {
+        let labels = vec![
+            "步骤 1：打开入口页面".to_string(),
+            "步骤 2：输入账号".to_string(),
+            "步骤 3：勾选协议".to_string(),
+        ];
+        let stdout = "步骤 1：打开入口页面 —— 完成\n步骤 2：输入账号……\n";
+        let parsed = serde_json::json!({"ok": false, "step": 2, "error": "未找到账号输入框"});
+        let scan = scan_output_steps(stdout);
+        let analyses = analyze_step_results(&labels, &scan, Some(&parsed), false);
+        assert_eq!(analyses[0].status, StepStatus::Passed);
+        assert_eq!(analyses[1].status, StepStatus::Failed);
+        assert_eq!(analyses[2].status, StepStatus::Skipped);
+    }
+
+    #[test]
+    fn analyze_step_results_all_pass_on_success_marker() {
+        let labels = vec!["步骤 1：打开入口页面".to_string(), "步骤 2：提交表单".to_string()];
+        let stdout = "步骤 1：打开入口页面 —— 完成\n步骤 2：提交表单 —— 完成\n[OK] 回放成功：已完成全部流程\n";
+        let scan = scan_output_steps(stdout);
+        let analyses = analyze_step_results(&labels, &scan, None, true);
+        assert!(analyses.iter().all(|a| a.status == StepStatus::Passed));
+    }
+
+    #[test]
+    fn parse_expected_step_label_handles_spaces_and_colon_variants() {
+        assert_eq!(
+            parse_expected_step_label("步骤 3: 勾选协议"),
+            Some((3, "勾选协议".to_string()))
+        );
+        assert_eq!(
+            parse_expected_step_label("步骤12：填写验证码"),
+            Some((12, "填写验证码".to_string()))
+        );
+        assert_eq!(parse_expected_step_label("其他内容"), None);
     }
 }

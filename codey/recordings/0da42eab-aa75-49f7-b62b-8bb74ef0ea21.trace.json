@@ -1,0 +1,681 @@
+{
+  "sessionId": "0da42eab-aa75-49f7-b62b-8bb74ef0ea21",
+  "sessionName": "测试脚本",
+  "startUrl": "chrome://newtab/",
+  "startedAt": "2026-08-27T06:15:43.752507+00:00",
+  "stoppedAt": "2026-08-27T06:20:22.707415200+00:00",
+  "events": [
+    {
+      "type": "hover",
+      "timestamp": 1787811349423,
+      "url": "chrome://new-tab-page/",
+      "selector": "html.focus-outline-visible",
+      "selectorCandidates": [
+        "html.focus-outline-visible",
+        "html.focus-outline-visible ntp-app"
+      ],
+      "tagName": "ntp-app"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811400886,
+      "url": "chrome-error://chromewebdata/",
+      "selector": "#main-frame-error",
+      "selectorCandidates": [
+        "#main-frame-error",
+        "div.interstitial-wrapper",
+        "body.neterror",
+        "body.neterror div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787811405503,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "cause": "redirect"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811407167,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811407419,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811408241,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811408695,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "nav.navbar.navbar-inverse",
+      "selectorCandidates": [
+        "nav.navbar.navbar-inverse"
+      ],
+      "tagName": "nav"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787811409260,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input",
+      "value": "yi",
+      "inputType": "insertText",
+      "previousValue": "y",
+      "data": "i"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787811409486,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input",
+      "value": "yii",
+      "inputType": "insertText",
+      "previousValue": "yi",
+      "data": "i"
+    },
+    {
+      "type": "key",
+      "timestamp": 1787811409934,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input",
+      "value": "yii",
+      "key": "Backspace",
+      "previousValue": "yii"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787811409935,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input",
+      "value": "yi",
+      "inputType": "deleteContentBackward",
+      "previousValue": "yii",
+      "data": ""
+    },
+    {
+      "type": "type",
+      "timestamp": 1787811410772,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input",
+      "value": "yiyu",
+      "inputType": "insertText",
+      "previousValue": "yiy",
+      "data": "u"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787811411017,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input",
+      "value": "yiyuh",
+      "inputType": "insertText",
+      "previousValue": "yiyu",
+      "data": "h"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811412362,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "text=\"Login\"",
+      "selectorCandidates": [
+        "text=\"Login\"",
+        "div.container.body-content",
+        "div.container.body-content button"
+      ],
+      "tagName": "button"
+    },
+    {
+      "type": "submit",
+      "timestamp": 1787811412363,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "div.container.body-content",
+      "selectorCandidates": [
+        "div.container.body-content",
+        "div.container.body-content form"
+      ],
+      "tagName": "form"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811412378,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "text=\"Login\"",
+      "selectorCandidates": [
+        "text=\"Login\"",
+        "div.container.body-content",
+        "div.container.body-content button"
+      ],
+      "tagName": "button"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811412817,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3d582fb9ceabf66698c4c1752aac97e5be%26state%3d532d27ac2abe53445ef9318427ba2570",
+      "selector": "div.container.body-content",
+      "selectorCandidates": [
+        "div.container.body-content"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787811413849,
+      "url": "http://10.136.0.123:33372/Oidc",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "http://10.136.0.123:33372/Oidc",
+      "cause": "redirect",
+      "navigationReason": "formSubmissionPost"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787811414290,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "http://10.136.0.123:33372/preaudit",
+      "cause": "redirect",
+      "navigationReason": "scriptInitiated"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811419385,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "text=\"1-技术开发协议（软通为受托方）-V4.1-2020 (2).docx\"",
+      "selectorCandidates": [
+        "text=\"1-技术开发协议（软通为受托方）-V4.1-2020 (2).docx\"",
+        "table.setting-table",
+        "table.setting-table td"
+      ],
+      "tagName": "td"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811422633,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "div.preaudit-upload",
+      "selectorCandidates": [
+        "div.preaudit-upload",
+        "main.app-main",
+        "main.app-main div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811423228,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "div.file-area",
+      "selectorCandidates": [
+        "div.file-area",
+        "#preaudit-form",
+        "#preaudit-form div",
+        "div.preaudit-form-inner",
+        "div.preaudit-form-inner div",
+        "div.preaudit-upload",
+        "div.preaudit-upload div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811423753,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#biz-group",
+      "selectorCandidates": [
+        "#biz-group",
+        "[name=\"biz_group\"]",
+        "div.preaudit-row",
+        "div.preaudit-row select",
+        "#preaudit-form",
+        "#preaudit-form select"
+      ],
+      "tagName": "select"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811423779,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#biz-group",
+      "selectorCandidates": [
+        "#biz-group",
+        "[name=\"biz_group\"]",
+        "div.preaudit-row",
+        "div.preaudit-row select",
+        "#preaudit-form",
+        "#preaudit-form select"
+      ],
+      "tagName": "select"
+    },
+    {
+      "type": "select",
+      "timestamp": 1787811424532,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#biz-group",
+      "selectorCandidates": [
+        "#biz-group",
+        "[name=\"biz_group\"]",
+        "div.preaudit-row",
+        "div.preaudit-row select",
+        "#preaudit-form",
+        "#preaudit-form select"
+      ],
+      "tagName": "select",
+      "value": "CORP"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811424532,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#biz-group",
+      "selectorCandidates": [
+        "#biz-group",
+        "[name=\"biz_group\"]",
+        "div.preaudit-row",
+        "div.preaudit-row select",
+        "#preaudit-form",
+        "#preaudit-form select"
+      ],
+      "tagName": "select"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811424978,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "div.file-icon",
+      "selectorCandidates": [
+        "div.file-icon",
+        "text=\"📁\"",
+        "div.file-area",
+        "div.file-area div",
+        "#preaudit-form",
+        "#preaudit-form div",
+        "div.preaudit-form-inner",
+        "div.preaudit-form-inner div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811424979,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#file-input",
+      "selectorCandidates": [
+        "#file-input",
+        "[name=\"file\"]",
+        "#preaudit-form",
+        "#preaudit-form input",
+        "div.preaudit-form-inner",
+        "div.preaudit-form-inner input",
+        "div.preaudit-upload",
+        "div.preaudit-upload input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811425013,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "div.file-icon",
+      "selectorCandidates": [
+        "div.file-icon",
+        "text=\"📁\"",
+        "div.file-area",
+        "div.file-area div",
+        "#preaudit-form",
+        "#preaudit-form div",
+        "div.preaudit-form-inner",
+        "div.preaudit-form-inner div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "upload",
+      "timestamp": 1787811433105,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#file-input",
+      "selectorCandidates": [
+        "#file-input",
+        "[name=\"file\"]",
+        "#preaudit-form",
+        "#preaudit-form input",
+        "div.preaudit-form-inner",
+        "div.preaudit-form-inner input",
+        "div.preaudit-upload",
+        "div.preaudit-upload input"
+      ],
+      "tagName": "input",
+      "value": "1-技术开发协议（软通为受托方）-V4.1-2020 (2).docx",
+      "files": [
+        {
+          "name": "1-技术开发协议（软通为受托方）-V4.1-2020 (2).docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "size": 83924,
+          "path": "\\\\?\\E:\\work\\RustWorks\\cn-codex\\codey\\recordings\\uploads\\0da42eab-aa75-49f7-b62b-8bb74ef0ea21\\0029-00-1-技术开发协议（软通为受托方）-V4.1-2020 (2).docx"
+        }
+      ]
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811433937,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#submit-btn",
+      "selectorCandidates": [
+        "#submit-btn",
+        "button.btn.primary",
+        "text=\"🔍 开始预审\"",
+        "#preaudit-form",
+        "#preaudit-form button",
+        "div.preaudit-form-inner",
+        "div.preaudit-form-inner button"
+      ],
+      "tagName": "button"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811433953,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#submit-btn",
+      "selectorCandidates": [
+        "#submit-btn",
+        "button.btn.primary",
+        "text=\"🔍 开始预审\"",
+        "#preaudit-form",
+        "#preaudit-form button",
+        "div.preaudit-form-inner",
+        "div.preaudit-form-inner button"
+      ],
+      "tagName": "button"
+    },
+    {
+      "type": "submit",
+      "timestamp": 1787811433954,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#preaudit-form",
+      "selectorCandidates": [
+        "#preaudit-form",
+        "div.preaudit-form-inner",
+        "div.preaudit-form-inner form",
+        "div.preaudit-upload",
+        "div.preaudit-upload form",
+        "main.app-main",
+        "main.app-main form"
+      ],
+      "tagName": "form"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811434802,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "#preaudit-form",
+      "selectorCandidates": [
+        "#preaudit-form",
+        "#preaudit-form div",
+        "div.preaudit-form-inner",
+        "div.preaudit-form-inner div",
+        "div.preaudit-upload",
+        "div.preaudit-upload div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787811435042,
+      "url": "http://10.136.0.123:33372/preaudit/107",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "http://10.136.0.123:33372/preaudit/107",
+      "cause": "redirect",
+      "navigationReason": "scriptInitiated"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811449586,
+      "url": "http://10.136.0.123:33372/preaudit/107",
+      "selector": "div.progress-track",
+      "selectorCandidates": [
+        "div.progress-track",
+        "div.loading-area",
+        "div.loading-area div",
+        "main.app-main",
+        "main.app-main div"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811453360,
+      "url": "http://10.136.0.123:33372/preaudit/107",
+      "selector": "footer.app-footer",
+      "selectorCandidates": [
+        "footer.app-footer"
+      ],
+      "tagName": "footer"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787811497343,
+      "url": "http://10.136.0.123:33372/preaudit/107",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "http://10.136.0.123:33372/preaudit/107",
+      "cause": "reload",
+      "navigationReason": "reload"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811613951,
+      "url": "http://10.136.0.123:33372/preaudit/107",
+      "selector": "[name=\"frameEditor\"]",
+      "selectorCandidates": [
+        "[name=\"frameEditor\"]",
+        "#doc-office",
+        "#doc-office iframe",
+        "div.doc-oo-wrap",
+        "div.doc-oo-wrap iframe",
+        "#doc-left",
+        "#doc-left iframe",
+        "div.doc-left",
+        "div.doc-left iframe",
+        "div.doc-stage",
+        "div.doc-stage iframe"
+      ],
+      "tagName": "iframe"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811615423,
+      "url": "http://10.136.0.123:33372/preaudit/107",
+      "selector": "a.tab",
+      "selectorCandidates": [
+        "a.tab",
+        "text=\"规则库配置\"",
+        "div.tabs",
+        "div.tabs a",
+        "div.toolbar",
+        "div.toolbar a"
+      ],
+      "tagName": "a"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787811615515,
+      "url": "http://10.136.0.123:33372/preaudit/107",
+      "selector": "a.tab",
+      "selectorCandidates": [
+        "a.tab",
+        "text=\"规则库配置\"",
+        "div.tabs",
+        "div.tabs a",
+        "div.toolbar",
+        "div.toolbar a"
+      ],
+      "tagName": "a"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787811615721,
+      "url": "http://10.136.0.123:33372/rules",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "http://10.136.0.123:33372/rules",
+      "cause": "link",
+      "navigationReason": "anchorClick"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811616834,
+      "url": "http://10.136.0.123:33372/rules",
+      "selector": "a.tab.active",
+      "selectorCandidates": [
+        "a.tab.active",
+        "text=\"规则库配置\"",
+        "div.tabs",
+        "div.tabs a",
+        "div.toolbar",
+        "div.toolbar a"
+      ],
+      "tagName": "a"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811618054,
+      "url": "http://10.136.0.123:33372/rules",
+      "selector": "div.toolbar",
+      "selectorCandidates": [
+        "div.toolbar"
+      ],
+      "tagName": "div"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811620217,
+      "url": "http://10.136.0.123:33372/rules",
+      "selector": "text=\"需要软通垫付的客户支付费用（如差旅、奖金、员工福利等），客户需要支付6%~6.72%（包含6%的增值\"",
+      "selectorCandidates": [
+        "text=\"需要软通垫付的客户支付费用（如差旅、奖金、员工福利等），客户需要支付6%~6.72%（包含6%的增值\"",
+        "#rules-tbody",
+        "#rules-tbody td",
+        "#rules-table",
+        "#rules-table td",
+        "table.setting-table",
+        "table.setting-table td"
+      ],
+      "tagName": "td"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811620680,
+      "url": "http://10.136.0.123:33372/rules",
+      "selector": "text=\"30万及以上需经双方授权代表或者法人代表签字并盖章后生效；30万以下使用软通合同模板的盖章生效，非软\"",
+      "selectorCandidates": [
+        "text=\"30万及以上需经双方授权代表或者法人代表签字并盖章后生效；30万以下使用软通合同模板的盖章生效，非软\"",
+        "#rules-tbody",
+        "#rules-tbody td",
+        "#rules-table",
+        "#rules-table td",
+        "table.setting-table",
+        "table.setting-table td"
+      ],
+      "tagName": "td"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787811622015,
+      "url": "http://10.136.0.123:33372/rules",
+      "selector": "text=\"时间资源类无免费维护期。外包合同检查是否含有免费维护期。\"",
+      "selectorCandidates": [
+        "text=\"时间资源类无免费维护期。外包合同检查是否含有免费维护期。\"",
+        "#rules-tbody",
+        "#rules-tbody td",
+        "#rules-table",
+        "#rules-table td",
+        "table.setting-table",
+        "table.setting-table td"
+      ],
+      "tagName": "td"
+    }
+  ]
+}
