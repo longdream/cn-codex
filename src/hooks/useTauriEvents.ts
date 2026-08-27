@@ -25,6 +25,8 @@ import {
   normalizeReportedFileChanges,
   normalizeReportedFilePath,
 } from "../utils/reportedFilePath";
+import { formatDuration } from "../utils/formatDuration";
+import { notifyTaskDone } from "../utils/taskDoneNotify";
 import {
   shouldAcceptAgentMessageDelta,
   type AgentTurnPhase,
@@ -886,6 +888,26 @@ export function useTauriEvents() {
             if (!isActive) {
               void autoSendNextQueuedForBackgroundThread(threadId);
             }
+
+            // 任务完成系统通知：右下角 Toast + 提示音（含后台线程）。
+            const turnDurationMs = e.payload.turn?.durationMs;
+            const durationText = formatDuration(turnDurationMs);
+            const status = e.payload.status ?? "completed";
+            const notifyTitle =
+              status === "failed"
+                ? intl.formatMessage({ id: "notify.taskFailed" })
+                : status === "cancelled"
+                  ? intl.formatMessage({ id: "notify.taskCancelled" })
+                  : intl.formatMessage({ id: "notify.taskCompleted" });
+            const notifyBody =
+              durationText !== "n/a"
+                ? intl.formatMessage({ id: "notify.taskDuration" }, { duration: durationText })
+                : "";
+            void notifyTaskDone({
+              status,
+              title: notifyTitle,
+              body: notifyBody,
+            });
           },
         ),
 

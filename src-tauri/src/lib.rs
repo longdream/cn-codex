@@ -441,6 +441,8 @@ pub fn run() {
             commands::get_server_status,
             commands::get_log_dir,
             commands::frontend_log,
+            // 任务完成系统通知（Toast + 提示音）
+            commands::notify_task_done,
             // Thread archive (standalone)
             commands::thread_archive,
             commands::hook_list,
@@ -608,6 +610,11 @@ pub fn run() {
             commands::replay_run_script,
             commands::replay_stop_script,
             commands::replay_delete_script,
+            commands::replay_read_input_document,
+            commands::replay_save_input_document,
+            commands::replay_parse_csv,
+            commands::replay_save_csv,
+            commands::replay_delete_input_document,
             commands::replay_rename_script,
             commands::replay_get_dir,
             // SmartBrain

@@ -1,9 +1,10 @@
 import {
+  IconFileText,
+  IconFileImport,
   IconAlertTriangle,
   IconArrowLeft,
   IconEye,
   IconFolderOpen,
-  IconLoader2,
   IconMessage2,
   IconPencil,
   IconPlayerPlay,
@@ -11,6 +12,7 @@ import {
   IconPlayerStop,
   IconRefresh,
   IconTrash,
+  IconLoader2,
 } from "@tabler/icons-react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -24,10 +26,15 @@ import {
 } from "../../api/recording";
 import {
   replayDeleteScript,
+  replayDeleteInputDocument,
   replayGetDir,
   replayListScripts,
+  replayParseCsv,
   replayReadScript,
+  replayReadInputDocument,
   replayRenameScript,
+  replaySaveInputDocument,
+  replaySaveCsv,
   replayRunScript,
   replayStopScript,
   type ReplayRunResult,
@@ -56,6 +63,14 @@ function isRunning(state: RunState | undefined): state is { running: true } {
   return Boolean(state && "running" in state);
 }
 
+/** 输入文档卡片：随脚本自动生成的 `<id>.input.json` 或 CSV 导入的独立卡片。 */
+type InputDocCard = {
+  id: string;
+  name: string;
+  fromImport: boolean;
+  fieldCount: number;
+};
+
 function shouldAutoFix(result: ReplayRunResult): boolean {
   if (result.ok) {
     return false;
@@ -75,6 +90,7 @@ function buildGenerateMessage(sessionId: string, sessionName: string): string {
     `【生成回放脚本】`,
     `请根据录制记录生成一个 Playwright Python 回放脚本。`,
     `- 录制文件：../${sessionId}.trace.json（用 read_file 读取）`,
+    `- 输入文档：${sessionId}.input.json（当前目录，用 read_file 读取；里面是回放时要输入的最终值，逐条对应 fields 数组）`,
     `- 输出脚本：${sessionId}.py（当前目录，用 write_file 创建；若已存在请传 overwrite=true 覆盖）`,
     `- 录制名称：${sessionName}`,
     ``,
@@ -113,6 +129,9 @@ function buildGenerateMessage(sessionId: string, sessionName: string): string {
     `10. 写入完成后必须重新读取脚本并做 Python 语法自检（至少确认 try/for/函数缩进完整；环境可用时运行 py_compile）；发现 SyntaxError 或 IndentationError 必须先修复并覆盖写入。`,
     `11. 自检脚本必须同时包含：sync_playwright、chromium.launch(headless=False)、browser.new_context、context.new_page，以及至少一个真实 page.goto/click/fill/press/hover/select_option；缺少任一项都不算生成完成。`,
     `12. trace 出现 upload 事件时，必须生成真实的 set_input_files/set_files 操作并使用 files[].path；禁止根据点击文件框自行猜测或生成临时示例文件。`,
+    `13. 输入值必须在运行时从输入文档读取，禁止把值硬编码进脚本：脚本开头用 INPUT_FILE = os.environ.get("REPLAY_INPUT_FILE") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "${sessionId}.input.json") 定位文件，用 json.load 读取 fields 数组；`,
+    `14. fields[] 的 type/selector/selectorCandidates/value 描述每个输入动作（type=fill、select=select_option、key=press、click=点击、navigate=goto），按顺序对应脚本步骤；value 是最终稳定值，禁止使用录制 trace 里的中间编辑值；fields 里没有的动作（hover、等待、断言）可从 trace 补充，但所有 fill/select_option/press 的实际值必须取自 fields；`,
+    `15. fields 里 selector 为空时，根据上下文和相邻事件推断目标；找不到时跳过并 print 提示，不得中断整个回放；fields 缺项或文件不存在时打印明确错误并以非 0 退出，禁止回退到示例数据。`,
     ``,
     `写完脚本后请自行测试并修复（不要只写完就结束）：`,
     `1. 用 recording_control 工具的 run_replay 动作运行脚本（script_id 传 ${sessionId}），拿到返回的 ok/error/stderr/stdout；`,
@@ -147,8 +166,9 @@ function buildFixMessage(
     `要求：`,
     `1. 优先用 read_file 读取脚本，用 apply_patch 修改脚本（保留完善的选择器回退、等待与断言容错）。检查所有 type 前是否有 click/focus，不能只修复报错行。`,
     `2. 如需了解页面当前状态，可用 browser_run 打开相关 URL 查看，或检查输出中的 url/screenshot。`,
-    `3. 修复完成后我会立即重新运行该脚本验证，无需你执行。`,
-    `4. 如果错误是 SyntaxError 或 IndentationError，先检查并修复整个脚本的缩进和代码块，再用 py_compile（或等价方式）确认语法有效。`,
+    `3. 该脚本运行时通过 REPLAY_INPUT_FILE 环境变量或脚本同目录的 <id>.input.json 读取输入值：若错误提示缺字段/JSON 解析失败，让用户在右侧面板的输入文档详情里修改，不要把值硬编码回脚本。`,
+    `4. 修复完成后我会立即重新运行该脚本验证，无需你执行。`,
+    `5. 如果错误是 SyntaxError 或 IndentationError，先检查并修复整个脚本的缩进和代码块，再用 py_compile（或等价方式）确认语法有效。`,
   ].join("\n");
 }
 
@@ -184,6 +204,8 @@ function buildExhaustedMessage(
 export function ReplaySidePanel() {
   const intl = useIntl();
   const [scripts, setScripts] = useState<ReplayScriptMeta[]>([]);
+  /** CSV 导入生成的独立输入文档卡片（无对应 .py 脚本）。 */
+  const [inputDocs, setInputDocs] = useState<InputDocCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -206,6 +228,14 @@ export function ReplaySidePanel() {
   const [selectedScript, setSelectedScript] = useState<ReplayScriptMeta | null>(null);
   const [scriptContent, setScriptContent] = useState<string | null>(null);
   const [scriptContentLoading, setScriptContentLoading] = useState(false);
+  const [selectedInputDoc, setSelectedInputDoc] = useState<InputDocCard | null>(null);
+  // 输入文档详情里允许直接编辑 JSON 并保存（便于改数据后回放）。
+  const [inputDocDraft, setInputDocDraft] = useState("");
+  const [inputDocDirty, setInputDocDirty] = useState(false);
+  const [inputDocSaving, setInputDocSaving] = useState(false);
+  // CSV 导入：<input type=file> 读文本 → replay_parse_csv 预览 → 落盘。
+  const csvInputRef = useRef<HTMLInputElement>(null);
+  const [csvImporting, setCsvImporting] = useState(false);
   // 步骤列表展开：点击「步骤数」才显示，避免 hover 时展开遮挡操作按钮
   const [expandedStepsId, setExpandedStepsId] = useState<string | null>(null);
 
@@ -215,6 +245,18 @@ export function ReplaySidePanel() {
     try {
       const list = await replayListScripts();
       setScripts(list);
+      // 脚本自带的 `<id>.input.json` 直接跟随脚本卡片展示；CSV 导入的
+      // 独立 .input.json（无对应 .py）以后端 `importedOnly` 伪条目返回。
+      setInputDocs(
+        list
+          .filter((script) => script.importedOnly)
+          .map((script) => ({
+            id: script.id,
+            name: script.name,
+            fromImport: true,
+            fieldCount: script.inputFieldCount ?? 0,
+          })),
+      );
       setSelectedScript((prev) =>
         prev ? list.find((s) => s.id === prev.id) ?? prev : prev,
       );
@@ -589,15 +631,126 @@ export function ReplaySidePanel() {
     async (script: ReplayScriptMeta) => {
       setSelectedScript(script);
       setScriptContent(null);
+      setSelectedInputDoc(null);
+      setInputDocDraft("");
+      setInputDocDirty(false);
       await loadScriptContent(script);
     },
     [loadScriptContent],
   );
 
+  /** 打开输入文档详情：展示（并允许编辑）`<id>.input.json` 的 JSON 内容。 */
+  const openInputDocDetail = useCallback(async (doc: InputDocCard) => {
+    setSelectedScript(null);
+    setSelectedInputDoc(doc);
+    setScriptContent(null);
+    setInputDocDraft("");
+    setInputDocDirty(false);
+      setScriptContentLoading(true);
+    try {
+      const res = await replayReadInputDocument(doc.id);
+      setInputDocDraft(res.content);
+    } catch (err) {
+      setInputDocDraft(
+        `${intl.formatMessage({ id: "replay.readFailed" })}: ${
+          typeof err === "string" ? err : (err as Error).message
+        }`,
+      );
+    } finally {
+      setScriptContentLoading(false);
+    }
+  }, [intl]);
+
+  /** 保存编辑后的输入文档 JSON。 */
+  const saveInputDoc = useCallback(async () => {
+    const doc = selectedInputDoc;
+    if (!doc || !inputDocDirty) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(inputDocDraft);
+    } catch {
+      setError(intl.formatMessage({ id: "replay.input.invalidJson" }));
+      return;
+    }
+    setInputDocSaving(true);
+    setError(null);
+    try {
+      // 结构上仅要求 fields 数组；id 以当前卡片为准，防止误改指向别的脚本。
+      const payload = {
+        ...(typeof parsed === "object" && parsed !== null ? parsed : {}),
+        id: doc.id,
+        fields: Array.isArray((parsed as { fields?: unknown }).fields)
+          ? (parsed as { fields: unknown[] }).fields
+          : [],
+      } as Parameters<typeof replaySaveInputDocument>[1];
+      await replaySaveInputDocument(doc.id, payload);
+      setInputDocDirty(false);
+      await load();
+    } catch (err) {
+      setError(typeof err === "string" ? err : (err as Error).message);
+    } finally {
+      setInputDocSaving(false);
+    }
+  }, [inputDocDirty, inputDocDraft, intl, load, selectedInputDoc]);
+
+  /** 触发 CSV 导入文件选择框。 */
+  const pickCsvFile = useCallback(() => {
+    csvInputRef.current?.click();
+  }, []);
+
+  /** CSV 导入：读文本 → 后端转换 → 写入 `<stem>.input.json` 并刷新卡片。 */
+  const handleCsvFile = useCallback(
+    async (file: File | null | undefined) => {
+      if (!file) return;
+      if (!/\.csv$/i.test(file.name)) {
+        setError(intl.formatMessage({ id: "replay.input.notCsv" }));
+        return;
+      }
+      setCsvImporting(true);
+      setError(null);
+      try {
+        const text = await file.text();
+        await replayParseCsv(text); // 预览校验（空文件 / 无数据行会在此报错）
+        const stem = file.name.replace(/\.csv$/i, "");
+        await replaySaveCsv(stem, text);
+        window.dispatchEvent(new CustomEvent("cn-codex:replay-updated"));
+        await load();
+      } catch (err) {
+        setError(typeof err === "string" ? err : (err as Error).message);
+      } finally {
+        setCsvImporting(false);
+      }
+    },
+    [intl, load],
+  );
+
   const backToList = useCallback(() => {
     setSelectedScript(null);
     setScriptContent(null);
+    setSelectedInputDoc(null);
+    setInputDocDraft("");
+    setInputDocDirty(false);
   }, []);
+
+  const deleteInputDocCard = useCallback(
+    async (doc: InputDocCard) => {
+      const ok = window.confirm(
+        intl.formatMessage({ id: "replay.input.deleteConfirm" }, { name: doc.name }),
+      );
+      if (!ok) return;
+      setError(null);
+      try {
+        await replayDeleteInputDocument(doc.id);
+        if (selectedInputDoc?.id === doc.id) {
+          backToList();
+        }
+        await load();
+      } catch (err) {
+        setError(typeof err === "string" ? err : (err as Error).message);
+      }
+    },
+    [backToList, intl, load, selectedInputDoc?.id],
+  );
 
   const openConversation = useCallback(
     async (script: ReplayScriptMeta) => {
@@ -726,6 +879,16 @@ export function ReplaySidePanel() {
           <IconMessage2 size={12} stroke={1.8} />
           {intl.formatMessage({ id: "replay.conversation" })}
         </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void openInputDocDetail({ id: script.id, name: script.name, fromImport: false, fieldCount: script.inputFieldCount ?? 0 })}
+          className="app-button-secondary flex items-center gap-1 text-[11px] disabled:opacity-50"
+          title={intl.formatMessage({ id: "replay.input.view" })}
+        >
+          <IconFileText size={12} stroke={1.8} />
+          {intl.formatMessage({ id: "replay.input.view" })}
+        </button>
         {!compact && (
           <button
             type="button"
@@ -756,7 +919,7 @@ export function ReplaySidePanel() {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex items-center gap-1.5 border-b border-[var(--border-subtle)] px-3 py-2">
-        {selectedScript ? (
+        {selectedScript || selectedInputDoc ? (
           <>
             <button
               type="button"
@@ -766,39 +929,50 @@ export function ReplaySidePanel() {
             >
               <IconArrowLeft size={14} stroke={1.8} />
             </button>
-            {renamingId === selectedScript.id ? (
-              <input
-                autoFocus
-                value={renameDraft}
-                maxLength={80}
-                onChange={(event) => setRenameDraft(event.target.value)}
-                onBlur={() => void commitRename(selectedScript)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void commitRename(selectedScript);
-                  } else if (event.key === "Escape") {
-                    event.preventDefault();
-                    cancelRename();
-                  }
-                }}
-                className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--surface-elevated)] px-1.5 py-0.5 text-xs font-semibold text-[var(--text-strong)] outline-none"
-                aria-label={intl.formatMessage({ id: "replay.rename" })}
-              />
-            ) : (
+            {selectedInputDoc ? (
               <div className="flex min-w-0 flex-1 items-center gap-1">
+                <IconFileText size={13} stroke={1.8} className="shrink-0 text-[var(--accent-strong)]" />
                 <span className="min-w-0 truncate text-xs font-semibold text-[var(--text-strong)]">
-                  {selectedScript.name}
+                  {intl.formatMessage({ id: "replay.input.title" })}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => beginRename(selectedScript)}
-                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
-                  title={intl.formatMessage({ id: "replay.rename" })}
-                >
-                  <IconPencil size={11} stroke={1.8} />
-                </button>
               </div>
+            ) : (
+              <>
+                {renamingId === selectedScript!.id ? (
+                  <input
+                    autoFocus
+                    value={renameDraft}
+                    maxLength={80}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onBlur={() => selectedScript && void commitRename(selectedScript)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        if (selectedScript) void commitRename(selectedScript);
+                      } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        cancelRename();
+                      }
+                    }}
+                    className="min-w-0 flex-1 rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--surface-elevated)] px-1.5 py-0.5 text-xs font-semibold text-[var(--text-strong)] outline-none"
+                    aria-label={intl.formatMessage({ id: "replay.rename" })}
+                  />
+                ) : (
+                  <div className="flex min-w-0 flex-1 items-center gap-1">
+                    <span className="min-w-0 truncate text-xs font-semibold text-[var(--text-strong)]">
+                      {selectedScript!.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => selectedScript && beginRename(selectedScript)}
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
+                      title={intl.formatMessage({ id: "replay.rename" })}
+                    >
+                      <IconPencil size={11} stroke={1.8} />
+                    </button>
+                  </div>
+                )}
+              </>
             )}
             {automationActive && (
               <button
@@ -862,6 +1036,20 @@ export function ReplaySidePanel() {
             </button>
             <button
               type="button"
+              disabled={csvImporting}
+              onClick={pickCsvFile}
+              className="flex h-6 items-center gap-1 rounded-[var(--radius-sm)] px-1.5 text-[11px] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)] disabled:opacity-50"
+              title={intl.formatMessage({ id: "replay.input.importCsvHint" })}
+            >
+              {csvImporting ? (
+                <IconLoader2 size={13} stroke={1.8} className="animate-spin" />
+              ) : (
+                <IconFileImport size={13} stroke={1.8} />
+              )}
+              {intl.formatMessage({ id: "replay.input.importCsv" })}
+            </button>
+            <button
+              type="button"
               onClick={() => void load()}
               className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-elevated)] hover:text-[var(--text-strong)]"
               title={intl.formatMessage({ id: "replay.refresh" })}
@@ -878,7 +1066,73 @@ export function ReplaySidePanel() {
         </div>
       )}
 
-      {selectedScript ? (
+      {selectedInputDoc ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="space-y-2 border-b border-[var(--border-subtle)] px-3 py-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="truncate text-xs font-semibold text-[var(--text-strong)]">
+                  {selectedInputDoc.name}
+                </div>
+                <div className="truncate font-mono text-[10px] text-[var(--text-faint)]">
+                  {selectedInputDoc.id}.input.json ·{" "}
+                  {intl.formatMessage(
+                    { id: "replay.input.fieldCount" },
+                    { count: selectedInputDoc.fieldCount },
+                  )}
+                </div>
+              </div>
+              {selectedInputDoc.fromImport ? (
+                <button
+                  type="button"
+                  disabled={inputDocSaving}
+                  onClick={() => void deleteInputDocCard(selectedInputDoc)}
+                  className="flex h-6 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-1.5 text-[11px] text-red-300 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+                  title={intl.formatMessage({ id: "replay.delete" })}
+                >
+                  <IconTrash size={12} stroke={1.8} />
+                  {intl.formatMessage({ id: "replay.delete" })}
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "replay.input.contentTitle" })}
+              </span>
+              {inputDocDirty ? (
+                <button
+                  type="button"
+                  disabled={inputDocSaving}
+                  onClick={() => void saveInputDoc()}
+                  className="app-button-secondary flex items-center gap-1 text-[11px] disabled:opacity-50"
+                >
+                  {inputDocSaving ? (
+                    <IconLoader2 size={11} stroke={1.8} className="animate-spin" />
+                  ) : null}
+                  {intl.formatMessage({ id: "replay.input.save" })}
+                </button>
+              ) : null}
+            </div>
+            {scriptContentLoading ? (
+              <div className="text-xs text-[var(--text-faint)]">
+                {intl.formatMessage({ id: "replay.loading" })}
+              </div>
+            ) : (
+              <textarea
+                value={inputDocDraft}
+                spellCheck={false}
+                onChange={(event) => {
+                  setInputDocDraft(event.target.value);
+                  setInputDocDirty(true);
+                }}
+                className="thin-scrollbar min-h-0 w-full flex-1 resize-none whitespace-pre break-words rounded-md border border-[var(--border-subtle)] bg-[var(--surface-main)] p-2.5 font-mono text-[11px] leading-relaxed text-[var(--text-base)] outline-none"
+              />
+            )}
+          </div>
+        </div>
+      ) : selectedScript ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="space-y-2 border-b border-[var(--border-subtle)] px-3 py-2.5">
             <div className="flex items-start justify-between gap-2">
@@ -982,7 +1236,8 @@ export function ReplaySidePanel() {
               <div>{intl.formatMessage({ id: "replay.emptyHint" })}</div>
             </div>
           ) : (
-            scripts.map((script) => {
+            <>
+            {scripts.map((script) => {
               const { running, status, statusError } = renderStatus(script);
               const steps = script.steps ?? [];
               const renaming = renamingId === script.id;
@@ -1090,6 +1345,27 @@ export function ReplaySidePanel() {
                       {script.startUrl}
                     </div>
                   ) : null}
+                  {script.hasInputDocument ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void openInputDocDetail({
+                          id: script.id,
+                          name: script.name,
+                          fromImport: false,
+                          fieldCount: script.inputFieldCount ?? 0,
+                        })
+                      }
+                      className="flex w-fit items-center gap-1 rounded-full border border-[var(--accent-border)] bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] text-[var(--accent-strong)] transition-colors hover:bg-[var(--surface-elevated)]"
+                      title={intl.formatMessage({ id: "replay.input.view" })}
+                    >
+                      <IconFileText size={11} stroke={1.8} />
+                      {intl.formatMessage(
+                        { id: "replay.input.badge" },
+                        { count: script.inputFieldCount ?? 0 },
+                      )}
+                    </button>
+                  ) : null}
                   {statusError ? (
                     <div className="flex items-start gap-1 text-[11px] text-red-300">
                       <IconAlertTriangle size={12} stroke={1.8} className="mt-0.5 shrink-0" />
@@ -1100,7 +1376,65 @@ export function ReplaySidePanel() {
                 </div>
               );
             })
+            }
+            {inputDocs.map((doc) => (
+              <div
+                key={`input-doc-${doc.id}`}
+                className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-main)] p-2.5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <IconFileText size={13} stroke={1.8} className="shrink-0 text-[var(--accent-strong)]" />
+                      <span className="min-w-0 truncate text-xs font-semibold text-[var(--text-strong)]">
+                        {doc.name}
+                      </span>
+                    </div>
+                    <div className="truncate font-mono text-[10px] text-[var(--text-faint)]">
+                      {doc.id}.input.json
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void deleteInputDocCard(doc)}
+                    className="flex h-6 shrink-0 items-center justify-center rounded-[var(--radius-sm)] px-1.5 text-[11px] text-red-300 transition-colors hover:bg-red-500/10"
+                    title={intl.formatMessage({ id: "replay.delete" })}
+                  >
+                    <IconTrash size={12} stroke={1.8} />
+                  </button>
+                </div>
+                <div className="mt-0.5 text-[11px] text-[var(--text-faint)]">
+                  {intl.formatMessage(
+                    { id: "replay.input.fieldCount" },
+                    { count: doc.fieldCount },
+                  )}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void openInputDocDetail(doc)}
+                    className="app-button-secondary flex items-center gap-1 text-[11px]"
+                    title={intl.formatMessage({ id: "replay.input.viewHint" })}
+                  >
+                    <IconFileText size={12} stroke={1.8} />
+                    {intl.formatMessage({ id: "replay.input.viewDetail" })}
+                  </button>
+                </div>
+              </div>
+            ))}
+            </>
           )}
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              void handleCsvFile(file);
+            }}
+          />
         </div>
       )}
     </div>

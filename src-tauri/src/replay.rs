@@ -163,6 +163,16 @@ pub struct ReplayScriptMeta {
     pub report_count: usize,
     #[serde(default)]
     pub last_report_at: Option<i64>,
+    /// Whether a `<id>.input.json` sidecar exists (show the JSON badge).
+    #[serde(default)]
+    pub has_input_document: bool,
+    /// Number of fields inside the input document, when present.
+    #[serde(default)]
+    pub input_field_count: Option<usize>,
+    /// True for CSV-imported documents without a generated `.py` sibling;
+    /// the frontend renders these as standalone input-document cards.
+    #[serde(default)]
+    pub imported_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -190,6 +200,552 @@ pub struct ReplayReadResult {
     pub id: String,
     pub path: String,
     pub content: String,
+}
+
+/// Input document for a replay script.
+///
+/// The generated script and the main pipeline read this file to know which
+/// concrete values to type/select/upload, so the same recording can be replayed
+/// with different data by editing (or re-importing) this JSON only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayInputDocument {
+    /// Matches the script / trace session id.
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    /// Ordered field list derived from recorded fill/select actions or CSV rows.
+    #[serde(default)]
+    pub fields: Vec<ReplayInputField>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+/// One input slot: `page.fill(selectorCandidates[0], value)` etc. Actions map
+/// 1:1 onto the recorded event types the generator understands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayInputField {
+    /// Recorded event type: type | select | upload | key | click | navigate.
+    #[serde(rename = "type", default)]
+    pub action_type: String,
+    /// Step number of the corresponding replay step.
+    #[serde(default)]
+    pub step: u32,
+    /// Short Chinese description shown on cards.
+    #[serde(default)]
+    pub label: String,
+    /// Primary selector (may be empty; then use selectorCandidates).
+    #[serde(default)]
+    pub selector: String,
+    /// Fallback selectors captured with the event.
+    #[serde(default)]
+    pub selector_candidates: Vec<String>,
+    /// Final stable value to fill / option to select / key to press.
+    #[serde(default)]
+    pub value: String,
+}
+
+/// Result of importing a CSV as an input document.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayCsvImportResult {
+    /// Suggested display name (first non-empty value) for the card.
+    #[serde(default)]
+    pub suggested_name: Option<String>,
+    /// Converted field count.
+    #[serde(default)]
+    pub field_count: usize,
+    /// Fields in document order; saved via save_input_document afterwards.
+    pub fields: Vec<ReplayInputField>,
+    /// True when the first CSV row was detected as a header and skipped.
+    pub header_detected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayCsvSaveResult {
+    /// Script id matching `<imported-stem>` (`<stem>.input.json`).
+    pub id: String,
+    /// Path of the written `.input.json` file.
+    pub path: String,
+    /// Field count written into the input document.
+    pub field_count: usize,
+}
+
+/// Best-effort header-cell normalizer (case folding only).
+fn normalize_header_cell(cell: &str) -> String {
+    cell.trim().trim_start_matches('\u{feff}').to_ascii_lowercase()
+}
+
+const HEADER_FIRST_COLUMN_KEYS: &[&str] = &[
+    "selector",
+    "selectors",
+    "target",
+    "page",
+    "url",
+    "field",
+    "选择器",
+    "定位",
+    "页面",
+];
+
+const HEADER_SECOND_COLUMN_KEYS: &[&str] = &[
+    "value",
+    "text",
+    "data",
+    "password",
+    "content",
+    "input",
+    "值",
+    "内容",
+    "输入",
+    "数据",
+];
+
+/// Build one field from a recorded event; returns None for irrelevant actions
+/// (deletions inside a typing sequence, auto redirects, …).
+fn build_input_field_from_event(event: &RecordingEvent) -> Option<ReplayInputField> {
+    let action_type = match event.event_type.as_str() {
+        "type" => {
+            if event
+                .input_type
+                .as_deref()
+                .is_some_and(|value| value.starts_with("delete"))
+            {
+                return None;
+            }
+            "type"
+        }
+        "select" | "upload" | "key" | "click" | "navigate" => event.event_type.as_str(),
+        _ => return None,
+    };
+
+    // navigate：只保留用户主动打开的起始页。
+    if action_type == "navigate" && !matches!(event.cause.as_deref(), Some("user")) {
+        return None;
+    }
+
+    // 首选 selector 排最前，与录制语义一致；其余候选按录制顺序去重追加。
+    let mut candidates = Vec::new();
+    if !event.selector.trim().is_empty() {
+        push_unique_candidate(&mut candidates, event.selector.clone());
+    }
+    for candidate in &event.selector_candidates {
+        push_unique_candidate(&mut candidates, candidate.clone());
+    }
+    if !event.tag_name.is_empty() {
+        push_unique_candidate(&mut candidates, format!("css={}", event.tag_name.to_lowercase()));
+    }
+
+    let raw_value = match action_type {
+        "select" | "type" | "key" => event.value.clone().unwrap_or_default(),
+        "navigate" => event.url.clone(),
+        _ => String::new(),
+    };
+    let value = raw_value.trim().to_string();
+
+    if matches!(action_type, "type" | "select" | "navigate") && value.is_empty() {
+        return None;
+    }
+
+    let label = match action_type {
+        "type" => format!("输入 {value}"),
+        "select" => format!("选择 {value}"),
+        "key" => format!("按键 {value}"),
+        "click" => {
+            let target = if event.selector.is_empty() {
+                event.tag_name.as_str()
+            } else {
+                event.selector.as_str()
+            };
+            if target.is_empty() {
+                "点击元素".to_string()
+            } else {
+                format!("点击 {target}")
+            }
+        }
+        "upload" => {
+            let names = event
+                .files
+                .iter()
+                .map(|file| file.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if names.is_empty() {
+                "选择上传文件".to_string()
+            } else {
+                format!("上传 {names}")
+            }
+        }
+        _ => format!("打开 {value}"),
+    };
+
+    Some(ReplayInputField {
+        action_type: action_type.to_string(),
+        step: 0,
+        label,
+        selector: event.selector.clone(),
+        selector_candidates: candidates,
+        value,
+    })
+}
+
+/// Heuristic: whether the first CSV row looks like a header instead of data.
+/// Only common aliases are detected; a plain `account,password` style CSV can
+/// simply put data on every row without headers.
+fn csv_row_is_header(row: &[String]) -> bool {
+    if row.len() < 2 {
+        return false;
+    }
+    let first = normalize_header_cell(&row[0]);
+    let second = normalize_header_cell(&row[1]);
+    HEADER_FIRST_COLUMN_KEYS.contains(&first.as_str())
+        || HEADER_SECOND_COLUMN_KEYS.contains(&second.as_str())
+}
+
+/// Parse RFC4180-ish CSV text into rows. Handles quoted cells with embedded
+/// commas/newlines and escaped double quotes (`""`).
+fn parse_csv_rows(content: &str) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut field = String::new();
+    let mut row: Vec<String> = Vec::new();
+    let mut in_quotes = false;
+    let mut chars = content.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                field.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '"' if field.is_empty() => in_quotes = true,
+            ',' => row.push(std::mem::take(&mut field)),
+            '\r' => {}
+            '\n' => {
+                row.push(std::mem::take(&mut field));
+                rows.push(std::mem::take(&mut row));
+            }
+            _ => field.push(ch),
+        }
+    }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(std::mem::take(&mut field));
+        rows.push(row);
+    }
+    rows.retain(|current| current.iter().any(|cell| !cell.trim().is_empty()));
+    rows
+}
+
+/// Convert an imported file stem into a safe script id. Non-ASCII characters
+/// (e.g. Chinese file names) are preserved so distinct files keep distinct ids;
+/// filesystem-hostile characters and whitespace collapse into `-`.
+fn sanitize_import_script_id(raw: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for ch in raw.trim().chars() {
+        // 文件系统非法字符与空白折叠为 `-`；其余字符原样保留并小写化。
+        if ch.is_whitespace() || ch.is_control() || "\\/:*?\"<>|".contains(ch) {
+            pending_dash = true;
+        } else {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        format!("csv-import-{}", now_millis())
+    } else {
+        trimmed.chars().take(80).collect()
+    }
+}
+
+pub fn input_document_path(scripts_dir_path: &Path, id: &str) -> PathBuf {
+    scripts_dir_path.join(format!("{id}.input.json"))
+}
+
+/// Fields converted from one CSV data row. `headers` may be empty (plain data).
+///
+/// Row shape (2 columns minimum):
+/// - col 0: selector (optional; may be empty)
+/// - col 1: value (typed / selected / pressed…)
+/// - col 2+: optional second/third value reused as select options or keys.
+fn csv_row_to_input_fields(row: &[String], index: usize) -> Vec<ReplayInputField> {
+    if row.len() < 2 {
+        return Vec::new();
+    }
+    let selector = row[0].trim().to_string();
+    let mut fields = Vec::new();
+    for cell in &row[1..] {
+        let value = cell.trim().to_string();
+        if value.is_empty() {
+            continue;
+        }
+        fields.push(ReplayInputField {
+            action_type: "type".to_string(),
+            step: (index + 1) as u32,
+            label: format!("输入 {value}"),
+            selector: selector.clone(),
+            selector_candidates: if selector.is_empty() {
+                Vec::new()
+            } else {
+                vec![selector.clone()]
+            },
+            value,
+        });
+    }
+    fields
+}
+
+/// Derive an input document from a recorded trace. Fields keep recording order;
+/// step numbers are assigned by document position (`步骤 N`).
+pub fn derive_input_document_from_trace(trace: &TraceFile) -> ReplayInputDocument {
+    let mut fields = Vec::new();
+    for event in &trace.events {
+        // 同一输入框连续的 type/key 事件合并为最终稳定值（与生成提示一致）。
+        if matches!(event.event_type.as_str(), "type" | "key")
+            && !fields.is_empty()
+            && fields.last().is_some_and(|last: &ReplayInputField| {
+                last.action_type == "type"
+                    && !last.selector.trim().is_empty()
+                    && last.selector == event.selector
+            })
+            && event.value.as_deref().is_some_and(|value| !value.trim().is_empty())
+        {
+            let last = fields.last_mut().expect("checked non-empty");
+            last.value = event.value.clone().unwrap_or_default().trim().to_string();
+            last.label = format!("输入 {}", last.value);
+            continue;
+        }
+        if let Some(mut field) = build_input_field_from_event(event) {
+            field.step = (fields.len() + 1) as u32;
+            fields.push(field);
+        }
+    }
+
+    ReplayInputDocument {
+        id: trace.session_id.clone(),
+        name: trace.session_name.clone(),
+        created_at: now_millis(),
+        updated_at: now_millis(),
+        fields,
+    }
+    .with_renumbered_steps()
+}
+
+impl ReplayInputDocument {
+    /// Keep only meaningful fields and renumber steps 1..N in order.
+    fn with_renumbered_steps(mut self) -> Self {
+        self.fields.retain(|field| {
+            !(matches!(field.action_type.as_str(), "type" | "select" | "navigate")
+                && field.value.trim().is_empty()
+                && field.action_type != "upload")
+        });
+        for (index, field) in self.fields.iter_mut().enumerate() {
+            field.step = (index + 1) as u32;
+        }
+        self
+    }
+}
+
+/// Ensure the script's input document exists; derive it from the trace when the
+/// script was generated before this feature (or the file got deleted).
+async fn ensure_input_document(
+    recordings_dir: &Path,
+    dir: &Path,
+    id: &str,
+) -> Result<(), String> {
+    let path = input_document_path(dir, id);
+    if tokio::fs::try_exists(&path)
+        .await
+        .map_err(|e| format!("Failed to inspect input document {id}: {e}"))?
+    {
+        return Ok(());
+    }
+    let trace_path = recordings_dir.join(format!("{id}.trace.json"));
+    let content = tokio::fs::read_to_string(&trace_path).await.map_err(|e| {
+        format!(
+            "Missing both {id}.input.json and its recording trace: {e}"
+        )
+    })?;
+    let trace = serde_json::from_str::<TraceFile>(&content)
+        .map_err(|e| format!("Failed to parse trace {id}: {e}"))?;
+    // 旧脚本目录可能还没建 scripts 子目录，写入前确保存在。
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create scripts dir: {e}"))?;
+    }
+    write_input_document(&path, &derive_input_document_from_trace(&trace))
+        .await
+        .map(|_| ())
+}
+
+pub async fn write_input_document(
+    path: &Path,
+    doc: &ReplayInputDocument,
+) -> Result<String, String> {
+    let encoded = serde_json::to_string_pretty(doc)
+        .map_err(|e| format!("Failed to serialize input document: {e}"))?;
+    tokio::fs::write(path, encoded)
+        .await
+        .map(|_| normalize_display_path(path))
+        .map_err(|e| format!("Failed to write input document {}: {e}", path.display()))
+}
+
+/// Write or replace a script's input document.
+pub async fn save_input_document(
+    recordings_dir: &Path,
+    id: &str,
+    mut doc: ReplayInputDocument,
+) -> Result<String, String> {
+    validate_script_id(id)?;
+    let dir = scripts_dir(recordings_dir);
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Failed to create scripts dir: {e}"))?;
+    doc.id = id.to_string();
+    doc.updated_at = now_millis();
+    if doc.created_at <= 0 {
+        doc.created_at = doc.updated_at;
+    }
+    write_input_document(&input_document_path(&dir, id), &doc).await
+}
+
+/// Read an existing `.input.json`; returns Ok(None) when the file is absent so
+/// callers can fall back to deriving it from the trace.
+pub async fn load_input_document(
+    recordings_dir: &Path,
+    id: &str,
+) -> Result<Option<ReplayInputDocument>, String> {
+    validate_script_id(id)?;
+    let dir = scripts_dir(recordings_dir);
+    let path = input_document_path(&dir, id);
+    if !tokio::fs::try_exists(&path)
+        .await
+        .map_err(|e| format!("Failed to inspect input document {id}: {e}"))?
+    {
+        return Ok(None);
+    }
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Failed to read input document {id}: {e}"))?;
+    match serde_json::from_str::<ReplayInputDocument>(&content) {
+        Ok(mut doc) => {
+            doc.id = id.to_string();
+            Ok(Some(doc))
+        }
+        Err(e) => Err(format!("Failed to parse input document {id}: {e}")),
+    }
+}
+
+/// Read an input document for display; derives one from the trace on demand.
+pub async fn read_input_document(
+    recordings_dir: &Path,
+    id: &str,
+) -> Result<ReplayReadResult, String> {
+    ensure_input_document(recordings_dir, &scripts_dir(recordings_dir), id).await?;
+    let path = input_document_path(&scripts_dir(recordings_dir), id);
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Failed to read input document {id}: {e}"))?;
+    Ok(ReplayReadResult {
+        id: id.to_string(),
+        path: normalize_display_path(&path),
+        content,
+    })
+}
+
+/// Delete the input document sidecar together with its script.
+fn cleanup_input_document(dir: &Path, id: &str) {
+    let _ = std::fs::remove_file(input_document_path(dir, id));
+}
+
+/// Parse CSV text into input-document fields without touching disk.
+///
+/// CSV shape (2 columns minimum; extra columns become additional steps):
+/// `selector,value[,value2…]` per row — selector may be empty for values the
+/// generator must locate from context or candidates.
+pub fn parse_csv_input_document(csv_content: &str) -> Result<ReplayCsvImportResult, String> {
+    let rows = parse_csv_rows(csv_content);
+    if rows.is_empty() {
+        return Err("CSV 文件为空或没有可用的数据行".to_string());
+    }
+
+    let mut data_rows: &[Vec<String>] = &rows;
+    if csv_row_is_header(&rows[0]) {
+        data_rows = &rows[1..];
+        if data_rows.is_empty() {
+            return Err("CSV 只有表头，没有数据行".to_string());
+        }
+    }
+
+    let mut fields = Vec::new();
+    for (index, row) in data_rows.iter().enumerate() {
+        fields.extend(csv_row_to_input_fields(row, index));
+    }
+    if fields.is_empty() {
+        return Err("CSV 数据行里没有可用的输入值（每行至少 2 列：选择器,值）".to_string());
+    }
+
+    // 名字取第一个非空值，作为卡片标题的默认建议；id 由前端传入的文件名决定。
+    let first_value = fields[0].value.trim().to_string();
+
+    Ok(ReplayCsvImportResult {
+        suggested_name: (!first_value.is_empty()).then_some(first_value),
+        field_count: fields.len(),
+        fields,
+        header_detected: rows.len() != data_rows.len(),
+    })
+}
+
+/// Validate then persist an uploaded CSV document as `<stem>.input.json` next
+/// to the replay scripts, where it appears as its own card in the panel.
+pub async fn save_csv_input_document(
+    recordings_dir: &Path,
+    stem: &str,
+    csv_content: &str,
+) -> Result<ReplayCsvSaveResult, String> {
+    let id = sanitize_import_script_id(stem);
+    let dir = scripts_dir(recordings_dir);
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Failed to create scripts dir: {e}"))?;
+
+    let parsed = parse_csv_input_document(csv_content)?;
+    let mut doc = ReplayInputDocument {
+        id: String::new(),
+        name: parsed
+            .suggested_name
+            .clone()
+            .unwrap_or_else(|| stem.to_string()),
+        created_at: now_millis(),
+        updated_at: now_millis(),
+        fields: parsed.fields,
+    };
+    doc.id = id.clone();
+    let output_path = input_document_path(&dir, &id);
+    write_input_document(&output_path, &doc).await?;
+
+    Ok(ReplayCsvSaveResult {
+        id,
+        path: normalize_display_path(&output_path),
+        field_count: doc.fields.len(),
+    })
 }
 
 /// Metadata for one persisted replay test report (`*.md` + sidecar json).
@@ -833,7 +1389,16 @@ fn validate_script_id(id: &str) -> Result<(), String> {
     if id.is_empty()
         || !id
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+            .all(|ch| {
+                // 除 ASCII 字母数字/`-`/`_` 外，允许非 ASCII 可见字符
+                //（如中文文件名导入的输入文档 id）；路径分隔符、控制字符
+                // 与空白仍然拒绝，防止目录穿越。
+                ch.is_ascii_alphanumeric()
+                    || ch == '-'
+                    || ch == '_'
+                    || (!ch.is_ascii() && !ch.is_control() && !ch.is_whitespace())
+            })
+        || id.contains(['\\', '/'])
     {
         return Err("Invalid script id".to_string());
     }
@@ -896,7 +1461,14 @@ fn parse_step_heading(line: &str) -> Option<(u32, String)> {
         }
     }
     let num = digits.parse().ok()?;
-    let title = strip_step_title_noise(&chars.collect::<String>());
+    let collected: String = chars.collect();
+    // 截断 print 调用尾巴（如 `……", flush=True)` / `……")`）：在首个引号处切分。
+    let cleaned = collected
+        .split('"')
+        .next()
+        .and_then(|part| part.split('\'').next())
+        .unwrap_or_default();
+    let title = strip_step_title_noise(cleaned);
     if title.is_empty() {
         return None;
     }
@@ -1160,6 +1732,15 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
         let mut trace_session_id = id.clone();
         let mut start_url = String::new();
         let mut steps = Vec::new();
+        // Input document presence + step preview for the panel card.
+        let input_doc_path = input_document_path(&dir, &id);
+        let has_input_document = tokio::fs::try_exists(&input_doc_path).await.unwrap_or(false);
+        let mut input_field_count: Option<usize> = None;
+        if let Ok(content) = tokio::fs::read_to_string(&input_doc_path).await {
+            if let Ok(doc) = serde_json::from_str::<ReplayInputDocument>(&content) {
+                input_field_count = Some(doc.fields.len());
+            }
+        }
 
         // Derive human-friendly metadata from the original recording trace.
         if let Ok(trace_content) =
@@ -1239,11 +1820,78 @@ pub async fn list_scripts(recordings_dir: &Path) -> Result<Vec<ReplayScriptMeta>
             last_run_at,
             report_count,
             last_report_at,
+            has_input_document,
+            input_field_count,
+            imported_only: false,
         });
     }
 
     metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(metas)
+    // CSV 导入的独立输入文档（无同名 .py）：作为 `imported_only` 伪条目返回，
+    // 让前端可以像脚本卡片一样展示、打开详情与删除。
+    let mut all_metas = metas;
+    let mut seen_ids: HashSet<String> = all_metas.iter().map(|meta| meta.id.clone()).collect();
+    let mut entries = tokio::fs::read_dir(&dir)
+        .await
+        .map_err(|e| format!("Failed to read scripts dir: {e}"))?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json")
+            || !path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| name.ends_with(".input.json"))
+        {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let id = stem.strip_suffix(".input").unwrap_or(stem);
+        if id.is_empty() || seen_ids.contains(id) {
+            continue;
+        }
+        let Ok(content) = tokio::fs::read_to_string(&path).await else {
+            continue;
+        };
+        let Ok(doc) = serde_json::from_str::<ReplayInputDocument>(&content) else {
+            continue;
+        };
+        seen_ids.insert(id.to_string());
+        let modified = tokio::fs::metadata(&path)
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or_else(now_millis);
+        all_metas.push(ReplayScriptMeta {
+            id: id.to_string(),
+            name: if doc.name.trim().is_empty() {
+                id.to_string()
+            } else {
+                doc.name.trim().to_string()
+            },
+            path: path.to_string_lossy().to_string(),
+            trace_session_id: String::new(),
+            created_at: doc.created_at,
+            updated_at: modified,
+            step_count: 0,
+            steps: Vec::new(),
+            start_url: String::new(),
+            last_status: None,
+            last_error: None,
+            last_run_at: None,
+            report_count: 0,
+            last_report_at: None,
+            has_input_document: true,
+            input_field_count: Some(doc.fields.len()),
+            imported_only: true,
+        });
+    }
+
+    all_metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(all_metas)
 }
 
 /// Read a script by id, returning its path and content.
@@ -1309,6 +1957,24 @@ pub async fn delete_script(recordings_dir: &Path, id: &str) -> Result<(), String
     if reports_path.exists() {
         let _ = tokio::fs::remove_dir_all(&reports_path).await;
     }
+    cleanup_input_document(&dir, &id);
+    Ok(())
+}
+
+/// Delete an imported input document card (`.input.json` sidecar only).
+pub async fn delete_input_document(recordings_dir: &Path, id: &str) -> Result<(), String> {
+    validate_script_id(id)?;
+    let dir = scripts_dir(recordings_dir);
+    let path = input_document_path(&dir, id);
+    if !tokio::fs::try_exists(&path)
+        .await
+        .map_err(|e| format!("Failed to inspect input document {id}: {e}"))?
+    {
+        return Err(format!("Input document not found: {id}"));
+    }
+    tokio::fs::remove_file(&path)
+        .await
+        .map_err(|e| format!("Failed to delete input document {id}: {e}"))?;
     Ok(())
 }
 
@@ -1405,6 +2071,10 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
         .map_err(|e| format!("Failed to read replay script {id}: {e}"))?;
     validate_browser_automation_script(&content)?;
 
+    // 运行前确保输入文档存在（脚本启动时会按文件名加载它作为输入数据），
+    // 老脚本也能自动补建；以当前磁盘上的 JSON 为准，改动后无需重新生成脚本。
+    ensure_input_document(recordings_dir, &dir, id).await?;
+
     begin_replay(id).await?;
 
     let candidates = python_candidates(recordings_dir);
@@ -1423,6 +2093,8 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
             // Right-panel replay must be visible. Explicitly override any
             // REPLAY_HEADLESS=1 inherited from the app/terminal environment.
             .env("REPLAY_HEADLESS", "0")
+            // 输入文档路径：脚本统一从该环境变量读取输入数据。
+            .env("REPLAY_INPUT_FILE", input_document_path(&dir, id))
             .arg(&script_path);
         #[cfg(windows)]
         command.no_console();
@@ -1998,6 +2670,10 @@ run_step(3, "勾选协议", fn)
     fn validate_script_id_rejects_path_fragments() {
         assert!(validate_script_id("../secret").is_err());
         assert!(validate_script_id("e708fc40-fb28-40f0-b811-5151cced293a").is_ok());
+        // 非 ASCII id（中文 CSV 文件名）应被接受；路径片段仍被拒绝。
+        assert!(validate_script_id("测试-用户").is_ok());
+        assert!(validate_script_id("a/b").is_err());
+        assert!(validate_script_id("a\\b").is_err());
     }
 
     #[test]
@@ -2086,5 +2762,121 @@ with sync_playwright() as p:
             Some((12, "填写验证码".to_string()))
         );
         assert_eq!(parse_expected_step_label("其他内容"), None);
+    }
+
+    fn sample_trace() -> TraceFile {
+        serde_json::from_str::<TraceFile>(
+            r##"{
+                "sessionId": "sess-1",
+                "sessionName": "登录门户",
+                "startUrl": "https://example.test",
+                "startedAt": "2024-01-01T00:00:00Z",
+                "stoppedAt": "2024-01-01T00:01:00Z",
+                "events": [
+                    {
+                        "type": "navigate",
+                        "timestamp": 1,
+                        "url": "https://example.test",
+                        "cause": "user",
+                        "selector": "",
+                        "selectorCandidates": [],
+                        "tagName": ""
+                    },
+                    {
+                        "type": "type",
+                        "timestamp": 2,
+                        "url": "https://example.test/login",
+                        "selector": "#account",
+                        "selectorCandidates": ["#account", "input[name=user]"],
+                        "tagName": "input",
+                        "value": "ju",
+                        "previousValue": "",
+                        "inputType": "insertText"
+                    },
+                    {
+                        "type": "type",
+                        "timestamp": 3,
+                        "url": "https://example.test/login",
+                        "selector": "#account",
+                        "selectorCandidates": ["#account"],
+                        "tagName": "input",
+                        "value": "junlong@example.com",
+                        "previousValue": "ju",
+                        "inputType": "insertText"
+                    },
+                    {
+                        "type": "select",
+                        "timestamp": 4,
+                        "url": "https://example.test/login",
+                        "selector": "#role",
+                        "selectorCandidates": ["#role"],
+                        "tagName": "select",
+                        "value": "admin"
+                    },
+                    {
+                        "type": "click",
+                        "timestamp": 5,
+                        "url": "https://example.test/login",
+                        "selector": "#submit",
+                        "selectorCandidates": ["#submit"],
+                        "tagName": "button"
+                    }
+                ]
+            }"##,
+        )
+        .expect("sample trace should parse")
+    }
+
+    #[test]
+    fn derive_input_document_merges_typing_and_renumbers_steps() {
+        let doc = derive_input_document_from_trace(&sample_trace());
+        assert_eq!(doc.id, "sess-1");
+        // navigate(user) + 合并后的最终输入 + select + click = 4 个字段。
+        assert_eq!(doc.fields.len(), 4);
+        assert_eq!(doc.fields[0].action_type, "navigate");
+        assert_eq!(doc.fields[0].value, "https://example.test");
+        assert_eq!(
+            doc.fields[1].action_type,
+            "type"
+        );
+        assert_eq!(doc.fields[1].value, "junlong@example.com");
+        assert_eq!(doc.fields[1].selector, "#account");
+        assert_eq!(doc.fields[1].step, 2);
+        assert_eq!(doc.fields[2].action_type, "select");
+        assert_eq!(doc.fields[2].value, "admin");
+        assert_eq!(doc.fields[3].action_type, "click");
+    }
+
+    #[test]
+    fn parse_csv_input_document_skips_header_and_builds_fields() {
+        let parsed = parse_csv_input_document("#comment not real csv\n").unwrap_err();
+        assert!(parsed.contains("为空") || parsed.contains("数据行"));
+
+        let result = parse_csv_input_document("selector,value\n#user,alice\n,secret123\n")
+            .expect("csv should parse");
+        assert!(result.header_detected);
+        assert_eq!(result.field_count, 2);
+        assert_eq!(result.fields[0].selector, "#user");
+        assert_eq!(result.fields[0].value, "alice");
+        assert_eq!(result.fields[0].step, 1);
+        assert_eq!(result.fields[1].selector, "");
+        assert_eq!(result.fields[1].value, "secret123");
+        assert_eq!(result.suggested_name.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn parse_csv_rows_supports_quoted_commas_and_crlf() {
+        let rows = parse_csv_rows("a,\"b,c\"\r\n\"say \"\"hi\"\"\",d\r\n");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec!["a".to_string(), "b,c".to_string()]);
+        assert_eq!(rows[1], vec!["say \"hi\"".to_string(), "d".to_string()]);
+    }
+
+    #[test]
+    fn sanitize_import_script_id_keeps_safe_characters_only() {
+        assert_eq!(sanitize_import_script_id("测试 用户"), "测试-用户");
+        assert_eq!(sanitize_import_script_id("2025-08 Login"), "2025-08-login");
+        let fallback = sanitize_import_script_id("***");
+        assert!(fallback.starts_with("csv-import-"));
     }
 }
