@@ -262,6 +262,43 @@ const RECORDER_INJECT_JS: &str = r#"
     var el = e.target;
     if (!el || !el.tagName) return;
     var tag = el.tagName.toLowerCase();
+    if (tag === 'input' && (el.type || '').toLowerCase() === 'file') {
+      var selected = Array.prototype.slice.call(el.files || []);
+      var maxBytes = 25 * 1024 * 1024;
+      var totalBytes = selected.reduce(function(sum, file) {
+        return sum + (file.size || 0);
+      }, 0);
+      var reads = selected.map(function(file) {
+        var metadata = {
+          name: file.name || 'upload.bin',
+          mimeType: file.type || '',
+          size: file.size || 0
+        };
+        if (file.size > maxBytes || totalBytes > maxBytes) {
+          metadata.captureError = '文件或本次选择总大小超过 25MB，仅记录元数据';
+          return Promise.resolve(metadata);
+        }
+        return new Promise(function(resolve) {
+          var reader = new FileReader();
+          reader.onload = function() {
+            metadata.dataUrl = typeof reader.result === 'string' ? reader.result : '';
+            resolve(metadata);
+          };
+          reader.onerror = function() {
+            metadata.captureError = '读取上传文件失败';
+            resolve(metadata);
+          };
+          reader.readAsDataURL(file);
+        });
+      });
+      Promise.all(reads).then(function(files) {
+        rec('upload', el, {
+          value: files.map(function(file) { return file.name; }).join(', '),
+          files: files
+        });
+      });
+      return;
+    }
     if (tag === 'select') {
       rec('select', el, { value: el.value || '' });
       return;
@@ -340,6 +377,27 @@ pub struct RecordingEvent {
     /// InputEvent.data: inserted characters, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    /// Files selected by an input[type=file] change event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<RecordedFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordedFile {
+    pub name: String,
+    #[serde(default)]
+    pub mime_type: String,
+    #[serde(default)]
+    pub size: u64,
+    /// Local evidence copy used by generated replay scripts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Temporary browser payload; removed before the trace is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -502,10 +560,11 @@ impl Recorder {
         let stopped_at = chrono::Utc::now();
 
         // Collect all accumulated events
-        let events = {
+        let mut events = {
             let guard = session.events.lock().await;
             guard.clone()
         };
+        persist_uploaded_files(recordings_dir, &session.session_id, &mut events).await;
 
         let trace = TraceFile {
             session_id: session.session_id.clone(),
@@ -1072,7 +1131,10 @@ fn is_http_url(url: &str) -> bool {
 }
 
 fn is_interactive_recording_event(event_type: &str) -> bool {
-    matches!(event_type, "click" | "type" | "key" | "submit" | "select")
+    matches!(
+        event_type,
+        "click" | "type" | "key" | "submit" | "select" | "upload"
+    )
 }
 
 fn strip_trailing_slash(url: &str) -> &str {
@@ -1135,6 +1197,86 @@ fn classify_navigation_cause(
 
 fn now_millis() -> u64 {
     chrono::Utc::now().timestamp_millis() as u64
+}
+
+fn sanitize_upload_filename(name: &str) -> String {
+    let basename = Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("upload.bin");
+    let sanitized = basename
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>();
+    if sanitized.trim_matches(['.', ' ']).is_empty() {
+        "upload.bin".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn decode_upload_data_url(data_url: &str) -> Result<Vec<u8>, String> {
+    let (header, payload) = data_url
+        .split_once(',')
+        .ok_or_else(|| "上传文件内容不是有效的 data URL".to_string())?;
+    if !header.ends_with(";base64") {
+        return Err("上传文件内容不是 base64 data URL".to_string());
+    }
+    general_purpose::STANDARD
+        .decode(payload.as_bytes())
+        .map_err(|e| format!("上传文件 base64 解码失败: {e}"))
+}
+
+async fn persist_uploaded_files(
+    recordings_dir: &Path,
+    session_id: &str,
+    events: &mut [RecordingEvent],
+) {
+    let upload_dir = recordings_dir.join("uploads").join(session_id);
+    let mut dir_ready = false;
+
+    for (event_index, event) in events.iter_mut().enumerate() {
+        for (file_index, file) in event.files.iter_mut().enumerate() {
+            let Some(data_url) = file.data_url.take() else {
+                continue;
+            };
+            let bytes = match decode_upload_data_url(&data_url) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    file.capture_error = Some(error);
+                    continue;
+                }
+            };
+            if !dir_ready {
+                if let Err(error) = tokio::fs::create_dir_all(&upload_dir).await {
+                    file.capture_error = Some(format!("创建上传文件证据目录失败: {error}"));
+                    continue;
+                }
+                dir_ready = true;
+            }
+            let filename = format!(
+                "{event_index:04}-{file_index:02}-{}",
+                sanitize_upload_filename(&file.name)
+            );
+            let path = upload_dir.join(filename);
+            match tokio::fs::write(&path, bytes).await {
+                Ok(()) => {
+                    file.path = Some(path.to_string_lossy().to_string());
+                    file.capture_error = None;
+                }
+                Err(error) => {
+                    file.capture_error = Some(format!("保存上传文件证据失败: {error}"));
+                }
+            }
+        }
+    }
 }
 
 async fn capture_and_save_screenshot(

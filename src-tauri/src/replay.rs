@@ -17,6 +17,19 @@ use tokio::sync::Mutex;
 
 use crate::recording::{RecordingEvent, TraceFile};
 
+#[cfg(windows)]
+trait CommandNoConsole {
+    fn no_console(&mut self) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl CommandNoConsole for Command {
+    fn no_console(&mut self) -> &mut Self {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+}
+
 /// How long a single replay script run is allowed to take before it is killed.
 const RUN_TIMEOUT_SECS: u64 = 180;
 
@@ -346,6 +359,19 @@ fn summarize_trace_steps(events: &[RecordingEvent]) -> Vec<String> {
                 format!("按键 {key}")
             }
             "select" => format!("选择 {}", event.value.as_deref().unwrap_or("")),
+            "upload" => {
+                let names = event
+                    .files
+                    .iter()
+                    .map(|file| file.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if names.is_empty() {
+                    "选择上传文件".to_string()
+                } else {
+                    format!("上传 {names}")
+                }
+            }
             "submit" => "提交表单".to_string(),
             _ => continue,
         };
@@ -660,6 +686,46 @@ pub async fn rename_script(
     Ok(name)
 }
 
+fn validate_browser_automation_script(content: &str) -> Result<(), String> {
+    let compact = content
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if compact.contains("headless=true") {
+        return Err(
+            "生成的脚本启用了 headless=True，右侧回放将看不到浏览器和模拟操作。请将其改为 headless=False 后再运行。"
+                .to_string(),
+        );
+    }
+
+    let has_playwright =
+        content.contains("sync_playwright") || content.contains("async_playwright");
+    let has_browser_launch = content.contains(".chromium.launch(")
+        || content.contains(".firefox.launch(")
+        || content.contains(".webkit.launch(");
+    let has_page = content.contains(".new_page(") || content.contains(".pages[");
+    let has_browser_action = [
+        ".goto(",
+        ".click(",
+        ".fill(",
+        ".press(",
+        ".hover(",
+        ".select_option(",
+    ]
+    .iter()
+    .any(|needle| content.contains(needle));
+
+    if has_playwright && has_browser_launch && has_page && has_browser_action {
+        return Ok(());
+    }
+
+    Err(
+        "生成的脚本不包含完整的 Playwright 浏览器启动和页面操作，已拒绝运行，避免只打印步骤却不执行回放。请重新生成脚本。"
+            .to_string(),
+    )
+}
+
 /// Run a saved replay script via a Python interpreter, capturing stdout/stderr.
 pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResult, String> {
     let dir = scripts_dir(recordings_dir);
@@ -667,6 +733,11 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
     if !path.exists() {
         return Err(format!("Replay script not found: {id}"));
     }
+
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Failed to read replay script {id}: {e}"))?;
+    validate_browser_automation_script(&content)?;
 
     begin_replay(id).await?;
 
@@ -677,14 +748,20 @@ pub async fn run_script(recordings_dir: &Path, id: &str) -> Result<ReplayRunResu
 
     for exe in candidates {
         let script_path = path.clone();
-        let child = match Command::new(&exe)
+        let mut command = Command::new(&exe);
+        command
             .kill_on_drop(true)
             .env("PYTHONIOENCODING", "utf-8")
             .env("PYTHONUTF8", "1")
             .env("PYTHONUNBUFFERED", "1")
-            .arg(&script_path)
-            .spawn()
-        {
+            // Right-panel replay must be visible. Explicitly override any
+            // REPLAY_HEADLESS=1 inherited from the app/terminal environment.
+            .env("REPLAY_HEADLESS", "0")
+            .arg(&script_path);
+        #[cfg(windows)]
+        command.no_console();
+
+        let child = match command.spawn() {
             Ok(child) => child,
             Err(e) => {
                 last_spawn_error = Some(format!("Failed to launch {exe}: {e}"));
@@ -1153,5 +1230,44 @@ run_step(3, "勾选协议", fn)
     fn validate_script_id_rejects_path_fragments() {
         assert!(validate_script_id("../secret").is_err());
         assert!(validate_script_id("e708fc40-fb28-40f0-b811-5151cced293a").is_ok());
+    }
+
+    #[test]
+    fn browser_automation_validation_accepts_real_playwright_script() {
+        let script = r##"
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=False)
+    context = browser.new_context()
+    page = context.new_page()
+    page.goto("https://example.test")
+    page.click("#login")
+"##;
+        assert!(validate_browser_automation_script(script).is_ok());
+    }
+
+    #[test]
+    fn browser_automation_validation_rejects_print_only_script() {
+        let script = r#"
+print("步骤 1：打开页面")
+print("步骤 2：点击登录")
+print('REPLAY_RESULT {"ok": true}')
+"#;
+        let error = validate_browser_automation_script(script).unwrap_err();
+        assert!(error.contains("不包含完整的 Playwright"));
+    }
+
+    #[test]
+    fn browser_automation_validation_rejects_headless_script() {
+        let script = r#"
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    context = browser.new_context()
+    page = context.new_page()
+    page.goto("https://example.test")
+"#;
+        let error = validate_browser_automation_script(script).unwrap_err();
+        assert!(error.contains("headless=True"));
     }
 }

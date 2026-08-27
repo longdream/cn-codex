@@ -30,6 +30,15 @@ export interface RecordingEvent {
   previousValue?: string;
   modifiers?: string;
   data?: string;
+  files?: RecordedFile[];
+}
+
+export interface RecordedFile {
+  name: string;
+  mimeType: string;
+  size: number;
+  path?: string;
+  captureError?: string;
 }
 
 export interface TraceFile {

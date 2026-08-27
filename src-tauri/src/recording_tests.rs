@@ -292,6 +292,64 @@ fn recorder_inject_js_is_well_formed() {
     assert!(RECORDER_INJECT_JS.contains("deleteContentBackward") || RECORDER_INJECT_JS.contains("previousValue"));
     assert!(RECORDER_INJECT_JS.contains("isTextField"));
     assert!(RECORDER_INJECT_JS.contains("compositionend"));
+    assert!(RECORDER_INJECT_JS.contains("toLowerCase() === 'file'"));
+    assert!(RECORDER_INJECT_JS.contains("FileReader"));
+    assert!(RECORDER_INJECT_JS.contains("rec('upload'"));
+}
+
+#[test]
+fn recording_event_deserializes_upload_files() {
+    let json_value = serde_json::json!({
+        "type": "upload",
+        "timestamp": 1750000002500u64,
+        "url": "https://example.com/upload",
+        "selector": "#file-input",
+        "selectorCandidates": ["#file-input", "[name='file']"],
+        "tagName": "input",
+        "value": "contract.docx",
+        "files": [{
+            "name": "contract.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "size": 1234,
+            "dataUrl": "data:application/octet-stream;base64,aGVsbG8="
+        }]
+    });
+    let event: RecordingEvent = serde_json::from_value(json_value).unwrap();
+    assert_eq!(event.event_type, "upload");
+    assert_eq!(event.files.len(), 1);
+    assert_eq!(event.files[0].name, "contract.docx");
+    assert_eq!(event.files[0].size, 1234);
+    assert!(event.files[0].data_url.is_some());
+}
+
+#[tokio::test]
+async fn persist_uploaded_files_writes_evidence_and_removes_payload() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let mut events = vec![RecordingEvent {
+        event_type: "upload".to_string(),
+        timestamp: 1750000002500,
+        url: "https://example.com/upload".to_string(),
+        selector: "#file-input".to_string(),
+        tag_name: "input".to_string(),
+        files: vec![RecordedFile {
+            name: r#"..\contract?.docx"#.to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            size: 5,
+            data_url: Some("data:application/octet-stream;base64,aGVsbG8=".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+
+    persist_uploaded_files(temp_dir.path(), "session-123", &mut events).await;
+
+    let file = &events[0].files[0];
+    assert!(file.data_url.is_none());
+    assert!(file.capture_error.is_none());
+    let path = Path::new(file.path.as_deref().expect("evidence path"));
+    assert!(path.starts_with(temp_dir.path().join("uploads").join("session-123")));
+    assert_eq!(std::fs::read(path).unwrap(), b"hello");
+    assert!(!path.file_name().unwrap().to_string_lossy().contains('?'));
 }
 
 #[test]
