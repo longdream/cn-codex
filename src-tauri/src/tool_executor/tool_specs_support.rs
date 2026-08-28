@@ -1762,14 +1762,18 @@ impl ToolExecutor {
             "type": "function",
             "function": {
                 "name": "recording_control",
-                "description": "Control browser recording and replay for the Record & Replay workflow. Use action='launch_browser' to open an external Chrome, 'show_toggle' to display the recording UI so the user can start/stop recording, 'read_trace' to read a completed recording trace, 'list_traces' to list all saved recordings, or 'run_replay' to run a saved replay script and get its pass/fail result for self-testing and fixing.",
+                "description": "Control browser recording and replay for the Record & Replay workflow. Use action='launch_browser' to open an external Chrome, 'start_recording' to begin recording user actions, 'stop_recording' to save the trace, 'list_traces' to list saved recordings, 'read_trace' to read one trace, 'list_scripts' to list replay script cards, 'read_script' to read one replay script, 'delete_script' to delete a replay script card, or 'run_replay' to run a saved replay script and get its pass/fail result for self-testing and fixing.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["launch_browser", "show_toggle", "hide_toggle", "status", "read_trace", "list_traces", "run_replay"],
+                            "enum": ["launch_browser", "start_recording", "stop_recording", "show_toggle", "hide_toggle", "status", "read_trace", "list_traces", "list_scripts", "read_script", "delete_script", "run_replay"],
                             "description": "The recording control action to perform."
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Optional session name for start_recording action."
                         },
                         "session_id": {
                             "type": "string",

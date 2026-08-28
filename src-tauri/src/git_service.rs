@@ -7,6 +7,8 @@ use tokio::process::Command;
 
 use crate::error::{AppError, AppResult};
 
+const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 30;
+
 #[cfg(windows)]
 trait CommandNoConsole {
     fn no_console(&mut self) -> &mut Self;
@@ -74,7 +76,25 @@ impl GitService {
     }
 
     pub async fn run(&self, args: &[&str], max_output_bytes: usize) -> AppResult<GitCommandOutput> {
-        let output = self.run_allow_failure(args, max_output_bytes).await?;
+        self.run_with_timeout(
+            args,
+            max_output_bytes,
+            Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS),
+        )
+        .await
+    }
+
+    /// Run a git command with a custom timeout. Non-zero exit codes are
+    /// converted into errors carrying stderr details.
+    pub async fn run_with_timeout(
+        &self,
+        args: &[&str],
+        max_output_bytes: usize,
+        timeout: Duration,
+    ) -> AppResult<GitCommandOutput> {
+        let output = self
+            .run_allow_failure_with_timeout(args, max_output_bytes, timeout)
+            .await?;
         if output.exit_code == 0 {
             return Ok(output);
         }
@@ -95,6 +115,20 @@ impl GitService {
         &self,
         args: &[&str],
         max_output_bytes: usize,
+    ) -> AppResult<GitCommandOutput> {
+        self.run_allow_failure_with_timeout(
+            args,
+            max_output_bytes,
+            Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS),
+        )
+        .await
+    }
+
+    pub async fn run_allow_failure_with_timeout(
+        &self,
+        args: &[&str],
+        max_output_bytes: usize,
+        timeout: Duration,
     ) -> AppResult<GitCommandOutput> {
         let mut command = Command::new("git");
         command
@@ -119,9 +153,10 @@ impl GitService {
             Ok(Err(err)) => Err(AppError::Custom(format!(
                 "Failed waiting git process: {err}"
             ))),
-            Err(_) => Err(AppError::Custom(
-                "Git command timed out after 30 seconds".to_string(),
-            )),
+            Err(_) => Err(AppError::Custom(format!(
+                "Git command timed out after {} seconds",
+                timeout.as_secs()
+            ))),
         }
     }
 }

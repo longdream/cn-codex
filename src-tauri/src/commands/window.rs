@@ -1137,7 +1137,12 @@ fn open_browser_in_window(
             webview.navigate(browser_url)?;
         }
         // 分离窗口场景下，忽略主窗口/automation 的 offscreen 隐藏坐标，避免布局被挤坏。
-        if !should_preserve_popup_browser_geometry(app, x, y, width, height) {
+        // 同时忽略 automation 的 offscreen 坐标（如 browser_run 传入的 -9999）：
+        // CDP 自动化不依赖可见位置，把用户正在看的 WebView 拖到屏幕外会造成
+        // 面板闪黑/位置竞态；已隐藏的 WebView 保持隐藏即可。
+        if !should_preserve_popup_browser_geometry(app, x, y, width, height)
+            && !is_offscreen_browser_geometry(x, y, width, height)
+        {
             webview.set_position(LogicalPosition::new(x, y))?;
             webview.set_size(LogicalSize::new(width, height))?;
         }

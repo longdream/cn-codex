@@ -560,6 +560,10 @@ pub async fn git_pull(
     Ok(action_ok("Pull completed.", output))
 }
 
+/// Timeout for network-bound git commands (push/pull/fetch). Large pushes
+/// over slow or proxied networks can legitimately take several minutes.
+const NETWORK_COMMAND_TIMEOUT_SECS: u64 = 300;
+
 #[tauri::command]
 pub async fn git_push(
     state: State<'_, AppState>,
@@ -585,8 +589,79 @@ pub async fn git_push(
     {
         args.push(branch);
     }
-    let output = run_git_vec(&service, &args, DEFAULT_MAX_OUTPUT_BYTES).await?;
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let output = service
+        .run_with_timeout(
+            &refs,
+            DEFAULT_MAX_OUTPUT_BYTES,
+            std::time::Duration::from_secs(NETWORK_COMMAND_TIMEOUT_SECS),
+        )
+        .await?;
+
+    // Defensive check: reject results whose output contains explicit failure
+    // markers even when git exits 0, so silent push failures surface to the UI.
+    let combined = format!("{}{}", output.stdout, output.stderr);
+    if combined.contains("[rejected]") || combined.contains("rejected") && combined.contains("non-fast-forward") {
+        return Err(AppError::Custom(format!(
+            "Push was rejected by the remote:\n{}",
+            combined.trim()
+        )));
+    }
+
     Ok(action_ok("Push completed.", output))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitConflictResolveResponse {
+    pub resolved_paths: Vec<String>,
+    pub remaining_conflicts: usize,
+}
+
+/// Resolve conflicted files wholesale with `--ours` / `--theirs`, then stage
+/// the result. Works for both merge conflicts (MERGE_HEAD present) and
+/// cherry-pick/rebase conflicts.
+#[tauri::command]
+pub async fn git_conflict_resolve(
+    state: State<'_, AppState>,
+    cwd: Option<String>,
+    paths: Vec<String>,
+    strategy: String,
+) -> AppResult<GitConflictResolveResponse> {
+    let service = git_service_from_state(&state, cwd).await?;
+    let normalized_paths = normalize_paths(paths)?;
+    let strategy_normalized = strategy.trim().to_ascii_lowercase();
+    if !matches!(strategy_normalized.as_str(), "ours" | "theirs") {
+        return Err(AppError::Custom(format!(
+            "Unsupported conflict strategy: {strategy}. Use ours/theirs."
+        )));
+    }
+
+    for path in &normalized_paths {
+        let output = service
+            .run(
+                &[
+                    "checkout",
+                    &format!("--{}", strategy_normalized),
+                    "--",
+                    path,
+                ],
+                DEFAULT_MAX_OUTPUT_BYTES,
+            )
+            .await?;
+        let _ = output;
+    }
+
+    let mut stage_args = vec!["add".to_string(), "--".to_string()];
+    stage_args.extend(normalized_paths.iter().cloned());
+    let refs = stage_args.iter().map(String::as_str).collect::<Vec<_>>();
+    service.run(&refs, DEFAULT_MAX_OUTPUT_BYTES).await?;
+
+    let remaining = count_conflicted_paths(&service).await?;
+    Ok(GitConflictResolveResponse {
+        resolved_paths: normalized_paths,
+        remaining_conflicts: remaining,
+    })
 }
 
 #[tauri::command]

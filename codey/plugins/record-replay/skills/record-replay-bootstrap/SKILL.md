@@ -10,56 +10,65 @@ This skill enables two modes:
 1. **Record mode** — 启动外部 Chrome 浏览器，让用户操作并录制。用户点击「停止录制」后，系统自动把录制记录转换成 Playwright Python 回放脚本（带选择器回退、等待与断言容错）。
 2. **Replay mode** — 在右侧「回放」面板查看并运行回放脚本；运行失败时自动接入主链路修复（最多重试 5 次，最后一次总结失败原因）。
 
+所有操作都可以通过对话完成：录制、查看、运行、修复、删除脚本，全部通过 `recording_control` 工具走主链路，右侧「回放」面板会实时同步刷新。
+
 ## 录制用户操作
 
-### Step 1: 启动浏览器并显示录制按钮
+### Step 1: 启动浏览器并开始录制
 
 当用户说"录制" / "record" / "帮我录制操作" / "record my workflow" 时：
 
 ```
 recording_control: {"action": "launch_browser"}
+recording_control: {"action": "start_recording"}
 ```
 
-这会启动外部 Chrome 窗口，并在 CN-Codex 界面显示录制按钮。告诉用户：
+`start_recording` 可以传可选的 `name` 作为录制名称。启动后会触发右侧面板的录制状态（计时器显示）。告诉用户：
 
-> "已打开 Chrome 浏览器，请在 CN-Codex 界面点击「开始录制」，然后在 Chrome 中执行您的操作。操作完成后点击「停止录制」。"
+> "已打开 Chrome 浏览器并开始录制。请直接在 Chrome 中执行您的操作，完成后告诉我，或点击界面上的「停止录制」。"
 
 ### Step 2: 等待用户完成录制
 
-等待用户告诉你录制完成。录制由 CN-Codex 界面上的悬浮按钮控制：用户点击「开始录制」→ 在 Chrome 中操作 → 点击「停止录制」。
-
 录制过程中不要执行任何 `browser_run` 操作，用户直接在 Chrome 中操作。
 
-### Step 3: 停止录制后回放脚本已自动生成
+### Step 3: 停止录制，脚本自动生成
 
-用户点击「停止录制」后，系统会自动生成 Playwright Python 回放脚本，无需你手动生成。如需确认，可列出录制记录：
+用户说"停止录制/录完了"，或点击界面「停止录制」后，系统自动把录制记录交给主链路生成 Playwright Python 回放脚本，无需你手动生成。
+
+如需在对话中主动结束录制：
+
+```
+recording_control: {"action": "stop_recording"}
+```
+
+如需查看录制记录：
 
 ```
 recording_control: {"action": "list_traces"}
-```
-
-如需查看某次录制内容：
-
-```
 recording_control: {"action": "read_trace", "session_id": "<session-id>"}
 ```
 
 回放脚本存放在 `codey/recordings/scripts/` 目录下，文件名与录制 session 对应。
 
-### Step 4: 让用户在右侧「回放」面板运行脚本
+### Step 4: 汇报结果
 
 告诉用户：
 
-> "录制已停止，回放脚本已自动生成。请在右侧面板点击「回放」图标，找到对应脚本，点击「运行」即可回放。"
+> "录制已停止，回放脚本已自动生成。可以在右侧面板点击「运行」回放，也可以随时在对话里让我运行、修改或删除脚本。"
 
-不要再说"生成技能/skill"——正确的产物是回放脚本，且在右侧面板使用。
+不要再说"生成技能/skill"——正确的产物是回放脚本。
 
-### Step 5: 汇报结果
+## 通过对话管理回放脚本
 
-向用户说明：
-- 回放脚本已自动生成（位置：`codey/recordings/scripts/`）
-- 脚本可在右侧「回放」面板查看并点击「运行」
-- 如果运行失败，会自动接入主链路修复（最多 5 次）
+右侧面板里能做的所有操作，对话里都能做：
+
+- 列出脚本卡片：`recording_control: {"action": "list_scripts"}`（返回 id、名称、步骤数、最近运行状态）
+- 查看脚本内容：`recording_control: {"action": "read_script", "script_id": "<id>"}`
+- 运行回放：`recording_control: {"action": "run_replay", "script_id": "<id>"}`（返回 ok/error/stdout/stderr；右侧面板同步刷新状态与报告）
+- 删除脚本卡片：`recording_control: {"action": "delete_script", "script_id": "<id>"}`（删除前必须先跟用户确认）
+- 面板刷新：以上操作后右侧「回放」面板会通过 `cn-codex:replay-updated` 事件自动刷新
+
+修改脚本时用 `read_script` 读取内容，用 `apply_patch` 直接修改 `codey/recordings/scripts/<id>.py`，再用 `run_replay` 验证。
 
 ## 回放脚本失败时的自动修复
 

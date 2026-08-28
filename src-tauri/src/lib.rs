@@ -580,6 +580,7 @@ pub fn run() {
             commands::git_merge,
             commands::git_merge_abort,
             commands::git_merge_continue,
+            commands::git_conflict_resolve,
             // File review (pre-apply gate)
             commands::file_review_get,
             commands::file_review_update,
@@ -610,12 +611,9 @@ pub fn run() {
             commands::replay_run_script,
             commands::replay_stop_script,
             commands::replay_delete_script,
-            commands::replay_read_input_document,
-            commands::replay_save_input_document,
-            commands::replay_parse_csv,
-            commands::replay_save_csv,
-            commands::replay_delete_input_document,
             commands::replay_rename_script,
+            commands::replay_list_reports,
+            commands::replay_read_report,
             commands::replay_get_dir,
             // SmartBrain
             smartbrain::commands::smartbrain_list_experiences,

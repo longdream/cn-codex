@@ -490,6 +490,20 @@ export function ChatPage() {
     handleSend(target.text, target.mode, target.attachments, target.options);
   }, [handleInterrupt, handleSend, intl]);
 
+  // 外部面板（如 Git 面板“AI 解决冲突”）请求把一条消息送进主聊天链路。
+  // 请求在 ChatPage 就绪前到达时保留在 store，挂载后仍然会被消费。
+  const chatSendRequest = useAppStore((s) => s.chatSendRequest);
+  useEffect(() => {
+    if (!chatSendRequest) {
+      return;
+    }
+    const request = useAppStore.getState().consumeChatSendRequest();
+    if (!request) {
+      return;
+    }
+    handleSend(request.text, request.mode);
+  }, [chatSendRequest, handleSend]);
+
   // 注意：所有 Hook 必须在任何条件 return 之前声明，避免项目切换时触发 Hook 顺序错误。
   const [copyDone, setCopyDone] = useState(false);
 

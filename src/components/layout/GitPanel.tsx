@@ -4,6 +4,7 @@ import {
   IconArrowUp,
   IconCheck,
   IconChevronDown,
+  IconCopy,
   IconFiles,
   IconGitBranch,
   IconGitCherryPick,
@@ -14,12 +15,14 @@ import {
   IconPlus,
   IconRefresh,
   IconRotateClockwise2,
+  IconSparkles,
   IconX,
 } from "@tabler/icons-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import {
   gitBranchList,
+  gitConflictResolve,
   gitCherryPick,
   gitCheckout,
   gitCommit,
@@ -48,6 +51,7 @@ import {
   type GitStatusEntry,
   type GitStatusResponse,
 } from "../../api/git";
+import { useAppStore } from "../../stores/appStore";
 import { windowOpenRunSummaryDiff } from "../../api/window";
 
 type GitSection = "changes" | "branches" | "history" | "danger";
@@ -131,6 +135,8 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
   const [actionPhase, setActionPhase] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [noticeText, setNoticeText] = useState<string | null>(null);
+  const [resolveStrategy, setResolveStrategy] = useState<"ours" | "theirs">("theirs");
+  const [errorCopied, setErrorCopied] = useState(false);
 
   const currentBranch = useMemo(() => branches.find((item) => item.current)?.name ?? "", [branches]);
   const changes = status?.changes ?? [];
@@ -172,7 +178,6 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
     }
 
     setLoading(true);
-    setErrorText(null);
     try {
       const [statusResp, logResp, branchResp] = await Promise.all([
         gitStatus(workspaceCwd),
@@ -190,11 +195,15 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
         return branchResp.current || branchResp.branches[0]?.name || "";
       });
     } catch (error) {
-      setErrorText(normalizeError(error));
+      // 不清空已有错误：refreshAll 也被用作失败后的刷新路径，
+      // 无条件覆盖会把推送失败等提示吞掉（历史 BUG：提交成功推送失败无提示）。
+      if (!errorText) {
+        setErrorText(normalizeError(error));
+      }
     } finally {
       setLoading(false);
     }
-  }, [workspaceCwd]);
+  }, [errorText, workspaceCwd]);
 
   const refreshStatusOnly = useCallback(async () => {
     if (!workspaceCwd) {
@@ -560,6 +569,89 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
     }
   }, [conflictedEntries]);
 
+  const handleResolveConflicts = useCallback(async (targets?: string[], strategy?: "ours" | "theirs") => {
+    if (!workspaceCwd || conflictedEntries.length === 0) {
+      return;
+    }
+    const paths = targets ?? conflictedEntries.map((entry) => entry.path);
+    const effectiveStrategy = strategy ?? resolveStrategy;
+    const strategyLabel = intl.formatMessage({
+      id: effectiveStrategy === "ours" ? "git.resolveOurs" : "git.resolveTheirs",
+    });
+    // 行内单文件按钮直接执行，避免高频弹确认打断操作；批量入口仍保留确认。
+    const skipConfirm = targets !== undefined && targets.length === 1;
+    if (
+      !skipConfirm &&
+      !window.confirm(
+        intl.formatMessage(
+          { id: "git.confirmResolveConflicts" },
+          { count: paths.length, strategy: strategyLabel },
+        ),
+      )
+    ) {
+      return;
+    }
+    setBusyAction(intl.formatMessage({ id: "git.resolveConflicts" }));
+    setErrorText(null);
+    setNoticeText(null);
+    try {
+      const result = await gitConflictResolve(
+        paths,
+        effectiveStrategy,
+        workspaceCwd,
+      );
+      setNoticeText(
+        intl.formatMessage({ id: "git.resolveConflictsDone" }, { count: result.resolvedPaths.length }),
+      );
+      await refreshAll();
+    } catch (error) {
+      setErrorText(normalizeError(error));
+      try {
+        await refreshStatusOnly();
+      } catch {
+        // ignore secondary refresh failures
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  }, [conflictedEntries, intl, refreshAll, refreshStatusOnly, resolveStrategy, workspaceCwd]);
+
+  const handleCopyErrorDetails = useCallback(() => {
+    const details = errorText ?? "";
+    if (!details) {
+      return;
+    }
+    void navigator.clipboard.writeText(details).then(() => {
+      setErrorCopied(true);
+      window.setTimeout(() => setErrorCopied(false), 2000);
+    });
+  }, [errorText]);
+
+  const handleAskAiResolveConflicts = useCallback((targets?: string[]) => {
+    if (!workspaceCwd || conflictedEntries.length === 0) {
+      return;
+    }
+    const branch = currentBranch || status?.branch || "HEAD";
+    const paths = targets ?? conflictedEntries.map((entry) => entry.path);
+    const intro =
+      paths.length === 1
+        ? intl.formatMessage({ id: "git.aiResolvePrompt.introSingle" }, { branch, path: paths[0] })
+        : intl.formatMessage({ id: "git.aiResolvePrompt.intro" }, { branch, count: paths.length });
+    const conflictList = paths.map((path) => `- ${path}`).join("\n");
+    const prompt = [
+      intro,
+      "",
+      conflictList,
+      "",
+      intl.formatMessage({ id: "git.aiResolvePrompt.requirements" }),
+      intl.formatMessage({ id: "git.aiResolvePrompt.step1" }),
+      intl.formatMessage({ id: "git.aiResolvePrompt.step2" }),
+      intl.formatMessage({ id: "git.aiResolvePrompt.step3" }),
+    ].join("\n");
+    useAppStore.getState().requestChatSend(prompt, "chat");
+    setNoticeText(intl.formatMessage({ id: "git.aiResolveSent" }));
+  }, [conflictedEntries, currentBranch, intl, status?.branch, workspaceCwd]);
+
   const handleCommit = useCallback(
     async (mode: CommitMode) => {
       if (!workspaceCwd) {
@@ -840,6 +932,40 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
           >
             {actionType === "stage" ? <IconPlus size={12} stroke={2} /> : <IconMinus size={12} stroke={2} />}
           </button>
+          {entry.status === "conflicted" && (
+            <>
+              <button
+                type="button"
+                onClick={() => handleAskAiResolveConflicts([entry.path])}
+                disabled={busyAction !== null}
+                className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.45)] text-amber-200 transition-colors hover:bg-[rgba(245,158,11,0.14)] disabled:opacity-35"
+                title={intl.formatMessage({ id: "git.aiResolveFile" })}
+                aria-label={intl.formatMessage({ id: "git.aiResolveFile" })}
+              >
+                <IconSparkles size={11} stroke={2} />
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleResolveConflicts([entry.path], "theirs")}
+                disabled={busyAction !== null}
+                className="flex h-6 shrink-0 items-center rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.45)] px-1.5 text-[9px] font-semibold text-amber-200 transition-colors hover:bg-[rgba(245,158,11,0.14)] disabled:opacity-35"
+                title={intl.formatMessage({ id: "git.resolveFileTheirs" })}
+                aria-label={intl.formatMessage({ id: "git.resolveFileTheirs" })}
+              >
+                {intl.formatMessage({ id: "git.resolveTheirsShort" })}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleResolveConflicts([entry.path], "ours")}
+                disabled={busyAction !== null}
+                className="flex h-6 shrink-0 items-center rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.45)] px-1.5 text-[9px] font-semibold text-amber-200 transition-colors hover:bg-[rgba(245,158,11,0.14)] disabled:opacity-35"
+                title={intl.formatMessage({ id: "git.resolveFileOurs" })}
+                aria-label={intl.formatMessage({ id: "git.resolveFileOurs" })}
+              >
+                {intl.formatMessage({ id: "git.resolveOursShort" })}
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={() => void handleDiscardPath(entry)}
@@ -1080,7 +1206,25 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
               : "border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
           }`}
         >
-          <pre className="thin-scrollbar max-h-24 select-text overflow-auto whitespace-pre-wrap">{errorText ?? noticeText}</pre>
+          <div className="flex items-start gap-1">
+            <pre className="thin-scrollbar min-w-0 flex-1 max-h-24 select-text overflow-auto whitespace-pre-wrap">{errorText ?? noticeText}</pre>
+            {errorText && (
+              <button
+                type="button"
+                onClick={handleCopyErrorDetails}
+                className="flex h-6 shrink-0 items-center gap-1 rounded-[var(--radius-sm)] border border-[rgba(239,68,68,0.35)] px-1.5 text-[10px] text-[var(--danger)] transition-colors hover:bg-[var(--danger-soft)]"
+                title={intl.formatMessage({ id: "git.copyErrorDetails" })}
+                aria-label={intl.formatMessage({ id: "git.copyErrorDetails" })}
+              >
+                {errorCopied
+                  ? <IconCheck size={11} stroke={2} />
+                  : <IconCopy size={11} stroke={2} />}
+                {errorCopied
+                  ? intl.formatMessage({ id: "git.errorCopied" })
+                  : intl.formatMessage({ id: "git.copyErrorDetails" })}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -1093,15 +1237,27 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
           </span>
           <div className="flex shrink-0 items-center gap-1">
             {conflictedCount > 0 ? (
-              <button
-                type="button"
-                onClick={handleFocusConflicts}
-                className={iconButtonClass}
-                title={intl.formatMessage({ id: "git.viewConflicts" })}
-                aria-label={intl.formatMessage({ id: "git.viewConflicts" })}
-              >
-                <IconFiles size={14} stroke={1.8} />
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleAskAiResolveConflicts()}
+                  disabled={busyAction !== null}
+                  className={iconButtonClass}
+                  title={intl.formatMessage({ id: "git.aiResolveConflicts" })}
+                  aria-label={intl.formatMessage({ id: "git.aiResolveConflicts" })}
+                >
+                  <IconSparkles size={14} stroke={1.8} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleFocusConflicts}
+                  className={iconButtonClass}
+                  title={intl.formatMessage({ id: "git.viewConflicts" })}
+                  aria-label={intl.formatMessage({ id: "git.viewConflicts" })}
+                >
+                  <IconFiles size={14} stroke={1.8} />
+                </button>
+              </>
             ) : (
               <button
                 type="button"
@@ -1147,6 +1303,49 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                 </span>
               ) : null}
             </div>
+
+            {conflictedCount > 0 && (
+              <div className="rounded-[var(--radius-sm)] border border-[rgba(245,158,11,0.4)] bg-[rgba(245,158,11,0.08)] p-2.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-200">
+                  <IconAlertTriangle size={13} stroke={1.8} />
+                  {intl.formatMessage({ id: "git.resolveCardTitle" })}
+                </div>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  <select
+                    value={resolveStrategy}
+                    onChange={(event) => setResolveStrategy(event.target.value as "ours" | "theirs")}
+                    className="rounded-[var(--radius-sm)] border border-[var(--border-subtle)] bg-[var(--surface-soft)] px-2 py-1 text-[11px] text-[var(--text-base)]"
+                    title={intl.formatMessage({ id: "git.resolveStrategyHint" })}
+                  >
+                    <option value="theirs">{intl.formatMessage({ id: "git.resolveTheirs" })}</option>
+                    <option value="ours">{intl.formatMessage({ id: "git.resolveOurs" })}</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void handleResolveConflicts()}
+                    disabled={busyAction !== null}
+                    className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border-subtle)] px-2 text-[11px] text-[var(--text-base)] transition-colors hover:bg-[var(--surface-elevated)] disabled:opacity-40"
+                    title={intl.formatMessage({ id: "git.resolveConflicts" })}
+                  >
+                    <IconCheck size={13} stroke={1.8} />
+                    {intl.formatMessage({ id: "git.resolveConflicts" })}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleAskAiResolveConflicts()}
+                    disabled={busyAction !== null}
+                    className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--accent-border)] bg-[var(--accent-soft)] px-2 text-[11px] text-[var(--accent-strong)] transition-colors hover:bg-[rgba(34,197,94,0.18)] disabled:opacity-40"
+                    title={intl.formatMessage({ id: "git.aiResolveConflicts" })}
+                  >
+                    <IconSparkles size={13} stroke={1.8} />
+                    {intl.formatMessage({ id: "git.aiResolveConflicts" })}
+                  </button>
+                </div>
+                <div className="mt-1.5 text-[10px] text-[var(--text-faint)]">
+                  {intl.formatMessage({ id: "git.resolveStrategyHint" })}
+                </div>
+              </div>
+            )}
 
             <div className="min-h-0 overflow-auto rounded-[var(--radius-sm)] border border-[var(--border-subtle)]">
               {changes.length === 0 ? (
@@ -1226,15 +1425,27 @@ function GitPanelComponent({ workspaceCwd }: GitPanelProps) {
                 </div>
                 <div className="flex flex-wrap items-center gap-1">
                   {conflictedCount > 0 ? (
-                    <button
-                      type="button"
-                      onClick={handleFocusConflicts}
-                      className={iconButtonClass}
-                      title={intl.formatMessage({ id: "git.viewConflicts" })}
-                      aria-label={intl.formatMessage({ id: "git.viewConflicts" })}
-                    >
-                      <IconFiles size={14} stroke={1.8} />
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleAskAiResolveConflicts()}
+                    disabled={busyAction !== null}
+                        className={iconButtonClass}
+                        title={intl.formatMessage({ id: "git.aiResolveConflicts" })}
+                        aria-label={intl.formatMessage({ id: "git.aiResolveConflicts" })}
+                      >
+                        <IconSparkles size={14} stroke={1.8} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleFocusConflicts}
+                        className={iconButtonClass}
+                        title={intl.formatMessage({ id: "git.viewConflicts" })}
+                        aria-label={intl.formatMessage({ id: "git.viewConflicts" })}
+                      >
+                        <IconFiles size={14} stroke={1.8} />
+                      </button>
+                    </>
                   ) : (
                     <button
                       type="button"

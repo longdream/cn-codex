@@ -250,3 +250,16 @@ export async function gitMergeContinue(
     message: options?.message,
   });
 }
+
+export interface GitConflictResolveResponse {
+  resolvedPaths: string[];
+  remainingConflicts: number;
+}
+
+export async function gitConflictResolve(
+  paths: string[],
+  strategy: "ours" | "theirs",
+  cwd?: string,
+): Promise<GitConflictResolveResponse> {
+  return invoke("git_conflict_resolve", { cwd, paths, strategy });
+}

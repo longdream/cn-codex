@@ -259,6 +259,8 @@ impl ToolExecutor {
             session_id: Option<String>,
             #[serde(default)]
             script_id: Option<String>,
+            #[serde(default)]
+            name: Option<String>,
         }
 
         let args: Args = match serde_json::from_str(arguments) {
@@ -308,6 +310,44 @@ impl ToolExecutor {
                             "ok": true,
                             "cdpEndpoint": endpoint,
                             "message": "External Chrome launched. The recording toggle is now visible. Tell the user to click 'Start Recording', perform their actions in Chrome, then click 'Stop Recording'."
+                        })
+                        .to_string()
+                    }
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+                }
+            }
+            "start_recording" => {
+                match state
+                    .recorder
+                    .start_recording(
+                        args.name.as_deref().unwrap_or(""),
+                        &state.external_browser,
+                        &http,
+                    )
+                    .await
+                {
+                    Ok(session_id) => {
+                        app_handle.emit("recording-started", &session_id).ok();
+                        serde_json::json!({
+                            "ok": true,
+                            "sessionId": session_id,
+                            "message": "Recording started. Tell the user to perform the workflow in the external Chrome window now; call stop_recording when done."
+                        })
+                        .to_string()
+                    }
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+                }
+            }
+            "stop_recording" => {
+                let recordings_dir = self.workspace_config_dir.join("recordings");
+                match state.recorder.stop_recording(&http, &recordings_dir).await {
+                    Ok(trace) => {
+                        app_handle.emit("recording-completed", &trace).ok();
+                        serde_json::json!({
+                            "ok": true,
+                            "sessionId": trace.session_id,
+                            "sessionName": trace.session_name,
+                            "message": "Recording stopped and saved. The Replay panel will auto-generate the Playwright script via the main pipeline."
                         })
                         .to_string()
                     }
@@ -376,6 +416,62 @@ impl ToolExecutor {
                     Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
                 }
             }
+            "list_scripts" => {
+                let recordings_dir = self.workspace_config_dir.join("recordings");
+                match crate::replay::list_scripts(&recordings_dir).await {
+                    Ok(scripts) => serde_json::json!({ "ok": true, "scripts": scripts }).to_string(),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+                }
+            }
+            "read_script" => {
+                let Some(script_id) = args.script_id.clone() else {
+                    let msg = "script_id is required for read_script action";
+                    self.emit_tool_end(
+                        app_handle,
+                        thread_id,
+                        call_id,
+                        "recording_control",
+                        -1,
+                        msg,
+                    );
+                    return Ok(msg.to_string());
+                };
+                let recordings_dir = self.workspace_config_dir.join("recordings");
+                match crate::replay::read_script(&recordings_dir, &script_id).await {
+                    Ok(result) => serde_json::to_string(&result).unwrap_or_else(|_| {
+                        serde_json::json!({ "ok": false, "error": "Failed to serialize script" })
+                            .to_string()
+                    }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+                }
+            }
+            "delete_script" => {
+                let Some(script_id) = args.script_id.clone() else {
+                    let msg = "script_id is required for delete_script action";
+                    self.emit_tool_end(
+                        app_handle,
+                        thread_id,
+                        call_id,
+                        "recording_control",
+                        -1,
+                        msg,
+                    );
+                    return Ok(msg.to_string());
+                };
+                let recordings_dir = self.workspace_config_dir.join("recordings");
+                match crate::replay::delete_script(&recordings_dir, &script_id).await {
+                    Ok(()) => {
+                        // 通知右侧回放面板刷新卡片列表。
+                        let _ = app_handle.emit("cn-codex:replay-updated", ());
+                        serde_json::json!({
+                            "ok": true,
+                            "message": format!("Replay script deleted: {script_id}")
+                        })
+                        .to_string()
+                    }
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+                }
+            }
             "run_replay" => {
                 let script_id = match &args.script_id {
                     Some(id) => id.clone(),
@@ -394,10 +490,14 @@ impl ToolExecutor {
                 };
                 let recordings_dir = self.workspace_config_dir.join("recordings");
                 match crate::replay::run_script(&recordings_dir, &script_id).await {
-                    Ok(result) => serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
-                        serde_json::json!({ "ok": false, "error": "Failed to serialize run result" })
-                            .to_string()
-                    }),
+                    Ok(result) => {
+                        // 运行后同步最新状态（报告/最近运行结果）到右侧面板。
+                        let _ = app_handle.emit("cn-codex:replay-updated", ());
+                        serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
+                            serde_json::json!({ "ok": false, "error": "Failed to serialize run result" })
+                                .to_string()
+                        })
+                    }
                     Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
                 }
             }

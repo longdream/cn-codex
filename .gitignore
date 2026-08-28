@@ -63,7 +63,3 @@ mobile-dist/
 # Portable release artifacts (can exceed Gitee size limits)
 .tmp/
 CN-Codex-portable-*.zip
-
-# Private skills (not for public repo)
-codey/skills/tender-document-parsing/
-codey/skills/bid-review/

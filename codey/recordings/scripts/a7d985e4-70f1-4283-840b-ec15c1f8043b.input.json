@@ -1,0 +1,49 @@
+{
+  "id": "a7d985e4-70f1-4283-840b-ec15c1f8043b",
+  "name": "recording-a7d985e4",
+  "fields": [
+    {
+      "type": "click",
+      "step": 1,
+      "label": "点击 #userName",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input",
+        "css=input"
+      ],
+      "value": ""
+    },
+    {
+      "type": "type",
+      "step": 2,
+      "label": "输入 yiyuh",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input",
+        "css=input"
+      ],
+      "value": "yiyuh"
+    },
+    {
+      "type": "click",
+      "step": 3,
+      "label": "点击 text=\"Login\"",
+      "selector": "text=\"Login\"",
+      "selectorCandidates": [
+        "text=\"Login\"",
+        "div.container.body-content",
+        "div.container.body-content button",
+        "css=button"
+      ],
+      "value": ""
+    }
+  ],
+  "createdAt": 1787883159377,
+  "updatedAt": 1787883159377
+}

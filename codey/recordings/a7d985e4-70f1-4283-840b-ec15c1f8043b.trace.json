@@ -1,0 +1,185 @@
+{
+  "sessionId": "a7d985e4-70f1-4283-840b-ec15c1f8043b",
+  "sessionName": "recording-a7d985e4",
+  "startUrl": "chrome://newtab/",
+  "startedAt": "2026-08-28T02:11:33.776746+00:00",
+  "stoppedAt": "2026-08-28T02:12:39.374430300+00:00",
+  "events": [
+    {
+      "type": "hover",
+      "timestamp": 1787883095412,
+      "url": "chrome://new-tab-page/",
+      "selector": "html.focus-outline-visible",
+      "selectorCandidates": [
+        "html.focus-outline-visible",
+        "html.focus-outline-visible ntp-app"
+      ],
+      "tagName": "ntp-app"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787883133446,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "cause": "redirect"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787883134854,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "div.container.body-content",
+      "selectorCandidates": [
+        "div.container.body-content",
+        "div.container.body-content form"
+      ],
+      "tagName": "form"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787883135152,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787883135223,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787883136173,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input",
+      "value": "yi",
+      "inputType": "insertText",
+      "previousValue": "y",
+      "data": "i"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787883137597,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input",
+      "value": "yiyu",
+      "inputType": "insertText",
+      "previousValue": "yiy",
+      "data": "u"
+    },
+    {
+      "type": "type",
+      "timestamp": 1787883137835,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "#userName",
+      "selectorCandidates": [
+        "#userName",
+        "[name=\"userName\"]",
+        "div.container.body-content",
+        "div.container.body-content input"
+      ],
+      "tagName": "input",
+      "value": "yiyuh",
+      "inputType": "insertText",
+      "previousValue": "yiyu",
+      "data": "h"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787883139145,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "text=\"Login\"",
+      "selectorCandidates": [
+        "text=\"Login\"",
+        "div.container.body-content",
+        "div.container.body-content button"
+      ],
+      "tagName": "button"
+    },
+    {
+      "type": "click",
+      "timestamp": 1787883139248,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "text=\"Login\"",
+      "selectorCandidates": [
+        "text=\"Login\"",
+        "div.container.body-content",
+        "div.container.body-content button"
+      ],
+      "tagName": "button"
+    },
+    {
+      "type": "submit",
+      "timestamp": 1787883139248,
+      "url": "https://ipsademo.isoftstone.com/passport/?returnUrl=%2fids%2fconnect%2fauthorize%2fcallback%3fclient_id%3dfdc3621b-bba3-4f61-bea3-d8e5272c0454%26redirect_uri%3dhttp%3a%2f%2f10.136.0.123%3a33372%2fOidc%26response_type%3did_token+token%26scope%3dopenid+profile+Media+Message+MasterData+MasterData2+iDaas+BIDApi%26nonce%3df052bc5565853603b0964bfd8ec393f8%26state%3d13c1dba9062894c3d7c874790e5d6961",
+      "selector": "div.container.body-content",
+      "selectorCandidates": [
+        "div.container.body-content",
+        "div.container.body-content form"
+      ],
+      "tagName": "form"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787883139473,
+      "url": "http://10.136.0.123:33372/Oidc",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "http://10.136.0.123:33372/Oidc",
+      "cause": "redirect",
+      "navigationReason": "formSubmissionPost"
+    },
+    {
+      "type": "navigate",
+      "timestamp": 1787883139642,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "",
+      "selectorCandidates": [],
+      "tagName": "",
+      "value": "http://10.136.0.123:33372/preaudit",
+      "cause": "redirect",
+      "navigationReason": "scriptInitiated"
+    },
+    {
+      "type": "hover",
+      "timestamp": 1787883141391,
+      "url": "http://10.136.0.123:33372/preaudit",
+      "selector": "div.toolbar",
+      "selectorCandidates": [
+        "div.toolbar"
+      ],
+      "tagName": "div"
+    }
+  ]
+}

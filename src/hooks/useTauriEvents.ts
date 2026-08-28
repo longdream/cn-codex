@@ -1049,35 +1049,43 @@ export function useTauriEvents() {
             displayLabel: toolDisplayLabel(c.name, c.arguments),
           }));
 
-          // 浏览器面板仅活跃线程触发 UI
+          // 浏览器面板状态同步仅对活跃线程生效。
+          // 注意：绝不能在这里强制切换 rightPanelTab —— web_search / browser_run
+          // 是对话里高频调用的工具，一旦抢占页签，右侧原生 WebView 会覆盖
+          // 文件树等其它面板，整个工具执行期间用户无法交互（表现为“卡死”）。
           const browserCall = e.payload.calls.find((c) => c.name === "browser_run" || c.name === "web_search");
           if (browserCall && isActive) {
             const latestStore = useAppStore.getState();
-            if (!latestStore.showSettings) {
-              latestStore.setRightPanelTab("browser");
-            }
             try {
               const parsed = JSON.parse(browserCall.arguments) as Record<string, unknown>;
               const url = typeof parsed.url === "string" && parsed.url.trim()
                 ? parsed.url.trim()
                 : null;
-              latestStore.setBrowserPanelState({
-                url,
-                title: null,
-                status: "running",
-                canGoBack: false,
-                canGoForward: false,
-              });
+              // 仅在浏览器面板本来就处于 browser 页签时同步状态；
+              // 其它页签（文件树/Git/终端）完全不受影响。
+              if (latestStore.rightPanelTab === "browser") {
+                latestStore.setBrowserPanelState({
+                  url,
+                  title: null,
+                  status: "running",
+                  canGoBack: false,
+                  canGoForward: false,
+                });
+              }
             } catch {
-              latestStore.setBrowserPanelState({
-                status: "running",
-                canGoBack: false,
-                canGoForward: false,
-              });
+              if (latestStore.rightPanelTab === "browser") {
+                latestStore.setBrowserPanelState({
+                  status: "running",
+                  canGoBack: false,
+                  canGoForward: false,
+                });
+              }
             }
             // 独立浏览器窗口模式下，WebView 已挂在 popup 上。
             // 这里如果再把 browserActive 设为 true，主窗口会错误地重定位并挤坏布局。
-            if (!latestStore.browserDetached) {
+            // 且只有在 browser 页签已可见时才激活内嵌 WebView，
+            // 避免后台工具调用把子窗口叠到其它面板上拦截鼠标事件。
+            if (!latestStore.browserDetached && latestStore.rightPanelTab === "browser") {
               latestStore.setBrowserActive(true);
               latestStore.triggerBrowserSync();
             }

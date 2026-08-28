@@ -3,7 +3,9 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::error::AppResult;
 use crate::recording::{RecordingStatus, TraceFile, TraceListEntry};
-use crate::replay::{ReplayReadResult, ReplayRunResult, ReplayScriptMeta};
+use crate::replay::{
+    ReplayReadResult, ReplayReportMeta, ReplayRunResult, ReplayScriptMeta,
+};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,16 +101,6 @@ pub async fn recording_stop(
         .await
         .map_err(|e| crate::error::AppError::Custom(e))?;
 
-    // 同时生成输入文档：回放脚本按 `<id>.input.json` 逐项填入录制值。
-    let dir = crate::replay::scripts_dir(&recordings_dir);
-    let doc = crate::replay::derive_input_document_from_trace(&trace);
-    if let Err(e) =
-        crate::replay::write_input_document(&crate::replay::input_document_path(&dir, &doc.id), &doc)
-            .await
-    {
-        eprintln!("Failed to write replay input document {}: {e}", doc.id);
-    }
-
     app_handle.emit("recording-completed", &trace).ok();
 
     Ok(trace)
@@ -190,61 +182,14 @@ pub async fn replay_read_script(
         .map_err(crate::error::AppError::Custom)
 }
 
-/// Read a script's input document (`<id>.input.json`), deriving one from the
-/// original trace when missing.
+/// List persisted Markdown test reports for one replay script.
 #[tauri::command]
-pub async fn replay_read_input_document(
+pub async fn replay_list_reports(
     state: State<'_, AppState>,
     id: String,
-) -> AppResult<ReplayReadResult> {
+) -> AppResult<Vec<ReplayReportMeta>> {
     let recordings_dir = state.workspace_config_dir.join("recordings");
-    crate::replay::read_input_document(&recordings_dir, &id)
-        .await
-        .map_err(crate::error::AppError::Custom)
-}
-
-/// Overwrite a script's input document (edited JSON content).
-#[tauri::command]
-pub async fn replay_save_input_document(
-    state: State<'_, AppState>,
-    id: String,
-    document: crate::replay::ReplayInputDocument,
-) -> AppResult<String> {
-    let recordings_dir = state.workspace_config_dir.join("recordings");
-    crate::replay::save_input_document(&recordings_dir, &id, document)
-        .await
-        .map_err(crate::error::AppError::Custom)
-}
-
-/// Convert uploaded CSV text into input-document fields without saving.
-#[tauri::command]
-pub async fn replay_parse_csv(
-    csv_content: String,
-) -> AppResult<crate::replay::ReplayCsvImportResult> {
-    crate::replay::parse_csv_input_document(&csv_content).map_err(crate::error::AppError::Custom)
-}
-
-/// Persist converted CSV fields as `<stem>.input.json` in the scripts dir.
-#[tauri::command]
-pub async fn replay_save_csv(
-    state: State<'_, AppState>,
-    stem: String,
-    csv_content: String,
-) -> AppResult<crate::replay::ReplayCsvSaveResult> {
-    let recordings_dir = state.workspace_config_dir.join("recordings");
-    crate::replay::save_csv_input_document(&recordings_dir, &stem, &csv_content)
-        .await
-        .map_err(crate::error::AppError::Custom)
-}
-
-/// Delete an imported CSV input document card.
-#[tauri::command]
-pub async fn replay_delete_input_document(
-    state: State<'_, AppState>,
-    id: String,
-) -> AppResult<()> {
-    let recordings_dir = state.workspace_config_dir.join("recordings");
-    crate::replay::delete_input_document(&recordings_dir, &id)
+    crate::replay::list_reports(&recordings_dir, &id)
         .await
         .map_err(crate::error::AppError::Custom)
 }
@@ -300,4 +245,17 @@ pub async fn replay_get_dir(state: State<'_, AppState>) -> AppResult<String> {
     Ok(crate::commands::normalize_windows_verbatim_prefix(
         &dir.to_string_lossy(),
     ))
+}
+
+/// Read one persisted replay test report (by script and report id).
+#[tauri::command]
+pub async fn replay_read_report(
+    state: State<'_, AppState>,
+    id: String,
+    report_id: String,
+) -> AppResult<ReplayReadResult> {
+    let recordings_dir = state.workspace_config_dir.join("recordings");
+    crate::replay::read_report(&recordings_dir, &id, &report_id)
+        .await
+        .map_err(crate::error::AppError::Custom)
 }

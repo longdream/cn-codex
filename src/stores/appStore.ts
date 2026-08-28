@@ -1979,6 +1979,14 @@ interface AppState {
   queueComposerInsert: (text: string) => void;
   consumeComposerInsert: () => string | null;
 
+  /**
+   * 外部面板请求主聊天链路自动发送一条消息（例如 Git 面板“AI 解决冲突”）。
+   * ChatPage 监听该信号并调用 handleSend，未就绪时请求保留待消费。
+   */
+  chatSendRequest: { id: string; text: string; mode: ChatMode } | null;
+  requestChatSend: (text: string, mode?: ChatMode) => void;
+  consumeChatSendRequest: () => { id: string; text: string; mode: ChatMode } | null;
+
   /** 消息排队：在 AI 回复期间将消息加入待发送队列 */
   enqueueMessage: (msg: QueuedMessage) => void;
   dequeueMessage: () => QueuedMessage | null;
@@ -2254,6 +2262,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   attachedFiles: [],
   pendingComposerInsert: null,
   pendingMessageQueue: [],
+  chatSendRequest: null,
   pendingFileReviews: {},
   threadRuntimeStates: {},
   workspaceCwd: null,
@@ -2345,6 +2354,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       robotCreateMode: false,
       pendingComposerInsert: null,
       pendingMessageQueue: [],
+      chatSendRequest: null,
       pendingFileReviews: {},
       liveSubagents: {},
       browserPanelUrl: null,
@@ -2392,6 +2402,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activePlan: null,
       pendingComposerInsert: null,
       pendingMessageQueue: [],
+      chatSendRequest: null,
       pendingFileReviews: {},
       browserPanelUrl: null,
       browserPanelTitle: null,
@@ -2864,6 +2875,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     const current = get().pendingComposerInsert;
     if (current) {
       set({ pendingComposerInsert: null });
+    }
+    return current;
+  },
+
+  requestChatSend: (text, mode) => {
+    const payload = text.trim();
+    if (!payload) {
+      return;
+    }
+    set({
+      chatSendRequest: {
+        id: crypto.randomUUID(),
+        text: payload,
+        mode: mode ?? "chat",
+      },
+    });
+  },
+  consumeChatSendRequest: () => {
+    const current = get().chatSendRequest;
+    if (current) {
+      set({ chatSendRequest: null });
     }
     return current;
   },

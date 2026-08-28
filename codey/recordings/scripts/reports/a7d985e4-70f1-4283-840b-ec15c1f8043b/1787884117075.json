@@ -1,0 +1,11 @@
+{
+  "createdAt": 1787884117075,
+  "durationMs": 27737,
+  "ok": true,
+  "stepsFailed": 0,
+  "stepsPassed": 12,
+  "stepsSkipped": 0,
+  "stepsTotal": 12,
+  "stepsUnknown": 0,
+  "summary": "12 个步骤：全部通过"
+}
