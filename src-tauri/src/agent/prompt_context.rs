@@ -274,6 +274,68 @@ fn render_smartbrain_database_prompt_for_config_dir(workspace_config_dir: &Path)
     sections.join("\n\n")
 }
 
+fn render_smartbrain_ssh_prompt_for_config_dir(workspace_config_dir: &Path) -> String {
+    let sources = crate::smartbrain::ssh::load_enabled_ssh_sources(workspace_config_dir);
+    if sources.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = Vec::new();
+    let mut exec_servers = Vec::new();
+    let mut readonly_servers = Vec::new();
+    for source in &sources {
+        let mut line = format!(
+            "- `{}`: 目标=`{}`；认证=`{}`；{}",
+            source.display_name(),
+            source.target(),
+            source.auth_label(),
+            source.exec_label()
+        );
+        if !source.allow_exec {
+            line.push_str("（仅允许只读探测：uname -a / df -h / uptime 等）");
+            readonly_servers.push(source.display_name());
+        } else {
+            exec_servers.push(source.display_name());
+        }
+        lines.push(line);
+    }
+
+    let mut sections = Vec::new();
+    sections.push(
+        "你已经有一组通过本地知识库配置好的 SSH 服务器。它们属于“本地知识库”上下文的一部分，\
+         不要把它们当作缺失信息，也不要向用户索要已保存的密码、私钥或口令。"
+            .to_string(),
+    );
+    sections.push(format!("### 已启用服务器\n{}", lines.join("\n")));
+    sections.push(
+        "远程执行必须使用内置工具 `smartbrain_ssh_exec`（参数：command，可选 server/timeout_sec）。\
+         不要用 Python/shell 自行拼接 ssh/plink/putty 命令，也不要让用户再次提供凭据；\
+         密码与私钥已保存在本地知识库 SSH 配置中，不会出现在提示词或输出里。"
+            .to_string(),
+    );
+    if !readonly_servers.is_empty() {
+        sections.push(format!(
+            "只读服务器（{}）仅允许探测类命令（uname -a、df -h、free -h、uptime、whoami、pwd、hostname、id、echo ok）；\
+             其他命令会被拒绝，应先建议用户在设置中开启 allowExec。",
+            readonly_servers.join("、")
+        ));
+    }
+    if !exec_servers.is_empty() {
+        sections.push(format!(
+            "可远程执行的服务器（{}）仍禁止高危命令：rm -rf /、shutdown、reboot、mkfs、dd if=、\
+             curl|sh、wget|bash 等会被后端直接拒绝，不要尝试或绕过。",
+            exec_servers.join("、")
+        ));
+    }
+    sections.push(
+        "输出超过 8000 字符会被截断；长输出优先用管道（如 `| tail -n 200`）缩小结果，\
+         但注意：只读服务器禁止管道。"
+            .to_string(),
+    );
+
+    sections.join("\n\n")
+}
+
 pub(crate) fn render_smartbrain_runtime_prompt(
     workspace_config_dir: &Path,
     smartbrain_config: &SmartBrainConfig,
@@ -323,6 +385,11 @@ pub(crate) fn render_smartbrain_runtime_prompt(
             render_smartbrain_database_prompt_for_config_dir(workspace_config_dir);
         if !database_prompt.trim().is_empty() {
             parts.push(database_prompt);
+        }
+
+        let ssh_prompt = render_smartbrain_ssh_prompt_for_config_dir(workspace_config_dir);
+        if !ssh_prompt.trim().is_empty() {
+            parts.push(ssh_prompt);
         }
     }
 

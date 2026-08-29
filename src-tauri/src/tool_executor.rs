@@ -977,6 +977,7 @@ impl ToolExecutor {
                 | "view_image"
                 | "code_review"
                 | "smartbrain_search"
+                | "smartbrain_ssh_exec"
                 | "browser_run"
                 // Optional web tools are only present in `tool_specs` when enabled.
                 | "web_search"
@@ -1347,6 +1348,10 @@ impl ToolExecutor {
             }
             "smartbrain_sql_query" => {
                 self.exec_smartbrain_sql_query(arguments, call_id, app_handle, thread_id)
+                    .await
+            }
+            "smartbrain_ssh_exec" => {
+                self.exec_smartbrain_ssh_exec(arguments, call_id, app_handle, thread_id)
                     .await
             }
             "memory_write" => {

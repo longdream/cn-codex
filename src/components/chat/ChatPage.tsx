@@ -21,6 +21,7 @@ import {
 } from "../../stores/appStore";
 import type { BinaryAttachedFile } from "../../types/provider";
 import { ChatInput, type ParsedGoalCommand, type ChatSendExtendedOptions } from "./ChatInput";
+import { VoiceModeOverlay } from "../voice";
 import { MessageList } from "./MessageList";
 import { TokenUsageBadge } from "./TokenUsageBadge";
 import { resolveApproval } from "../../api/approval";
@@ -701,6 +702,8 @@ export function ChatPage() {
       <RobotWaitBanner />
 
       <ActiveSubagentsBar />
+
+      <VoiceModeOverlay />
 
       <ChatInput
         onSend={handleSend}

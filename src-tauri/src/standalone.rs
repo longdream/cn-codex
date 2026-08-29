@@ -1976,6 +1976,7 @@ pub async fn fortune_llm_call(
     model: String,
     wire_api: String,
     prompt: String,
+    system_prompt: Option<String>,
 ) -> AppResult<String> {
     info!(
         "[fortune_llm_call] base_url={base_url}, model={model}, wire_api={wire_api}, prompt_len={}",
@@ -1996,7 +1997,12 @@ pub async fn fortune_llm_call(
     let messages = vec![
         InternalMessage {
             role: "system".to_string(),
-            content: text_content(FORTUNE_SYSTEM_PROMPT),
+            content: text_content(
+                system_prompt
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or(FORTUNE_SYSTEM_PROMPT),
+            ),
             tool_calls: None,
             tool_call_id: None,
             name: None,

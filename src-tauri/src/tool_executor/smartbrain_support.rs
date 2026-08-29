@@ -342,6 +342,154 @@ impl ToolExecutor {
     }
 
 
+    pub(crate) async fn exec_smartbrain_ssh_exec(
+        &self,
+        arguments: &str,
+        call_id: &str,
+        app_handle: &AppHandle,
+        thread_id: &str,
+    ) -> AppResult<String> {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            server: Option<String>,
+            command: String,
+            #[serde(default)]
+            timeout_sec: Option<u64>,
+        }
+
+        let args: Args = serde_json::from_str(arguments).map_err(|e| {
+            crate::error::AppError::Custom(format!("Invalid smartbrain_ssh_exec args: {e}"))
+        })?;
+        let command = args.command.trim().to_string();
+        let server = args.server.as_deref().map(str::trim).filter(|v| !v.is_empty());
+        let display = match server {
+            Some(name) => format!("{name} :: {}", truncate_output(&command, 120)),
+            None => truncate_output(&command, 160),
+        };
+        self.emit_tool_start(
+            app_handle,
+            thread_id,
+            call_id,
+            "smartbrain_ssh_exec",
+            &display,
+        );
+
+        if !self.smartbrain_is_active() {
+            let msg = "Local Knowledge Base is disabled for this chat. Enable it in the composer (本地知识库) to use smartbrain_ssh_exec."
+                .to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_ssh_exec",
+                -1,
+                &msg,
+            );
+            return Ok(msg);
+        }
+        if command.is_empty() {
+            let msg = "Error: empty command".to_string();
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_ssh_exec",
+                -1,
+                &msg,
+            );
+            return Ok(msg);
+        }
+
+        // Resolve the saved source (never trust credentials from the model).
+        let source = match crate::smartbrain::ssh::resolve_ssh_source(
+            &self.workspace_config_dir,
+            server,
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                self.emit_tool_end(
+                    app_handle,
+                    thread_id,
+                    call_id,
+                    "smartbrain_ssh_exec",
+                    -1,
+                    &error,
+                );
+                return Ok(error);
+            }
+        };
+
+        if let Err(error) = crate::smartbrain::ssh::check_command_allowed(&source, &command) {
+            self.emit_tool_end(
+                app_handle,
+                thread_id,
+                call_id,
+                "smartbrain_ssh_exec",
+                -1,
+                &error,
+            );
+            return Ok(error);
+        }
+
+        let timeout_sec = args
+            .timeout_sec
+            .unwrap_or(crate::smartbrain::ssh::SSH_DEFAULT_TIMEOUT_SEC);
+        let result =
+            crate::smartbrain::ssh::ssh_exec(&source, &command, timeout_sec).await;
+
+        let output = if result.ok {
+            let mut text = result.output.clone();
+            if text.trim().is_empty() {
+                text = "(no output)".to_string();
+            }
+            format!(
+                "exit=0{}{}",
+                if result.truncated {
+                    " (output truncated)"
+                } else {
+                    ""
+                },
+                if text == "(no output)" {
+                    text
+                } else {
+                    format!("\n{text}")
+                }
+            )
+        } else {
+            let detail = result.error.clone().unwrap_or_default();
+            if result.exit_status.is_some() {
+                format!(
+                    "exit={}{}{}",
+                    result.exit_status.unwrap_or(1),
+                    if result.truncated {
+                        " (output truncated)"
+                    } else {
+                        ""
+                    },
+                    if result.output.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n{}", result.output)
+                    }
+                )
+            } else {
+                format!("SSH 执行失败：{detail}")
+            }
+        };
+
+        self.emit_tool_end(
+            app_handle,
+            thread_id,
+            call_id,
+            "smartbrain_ssh_exec",
+            if result.ok { 0 } else { -1 },
+            &output,
+        );
+        Ok(output)
+    }
+
+
     pub(crate) fn render_chunk_context_bridge(
         &self,
         result: &crate::smartbrain::search::SmartBrainSearchResult,

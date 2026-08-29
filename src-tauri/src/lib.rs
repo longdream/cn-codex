@@ -33,6 +33,7 @@ pub mod thread_store;
 pub mod tool_executor;
 pub mod usage;
 pub mod utf8_stream;
+pub mod voice;
 pub mod workflow;
 
 use state::AppState;
@@ -307,6 +308,11 @@ pub fn run() {
         .manage(AppState::new())
         .manage(std::sync::Arc::new(terminal::TerminalManager::new()))
         .setup(|app| {
+            // 语音状态依赖 AppState 的工作目录，在 setup 内注册。
+            app.manage(voice::VoiceState::from_app_state(
+                app.state::<AppState>().inner(),
+            ));
+
             // 启动后台预热：把线程索引加载放到异步任务，避免阻塞窗口出现。
             let preload_store = app.state::<AppState>().thread_store.clone();
             tauri::async_runtime::spawn(async move {
@@ -317,6 +323,50 @@ pub fn run() {
                     preload_started_at.elapsed().as_millis()
                 );
             });
+
+            // 语音模式：启动自动检查模型，缺失则后台自动下载（需求 3.1）。
+            {
+                let voice_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Manager;
+                    let state: tauri::State<voice::VoiceState> = voice_app.state();
+                    let defs = state.defs().to_vec();
+                    let missing = state.manager.find_missing(&defs);
+                    info!("[startup][rust] voice models missing: {}", missing.len());
+                    let models_dir = state.manager.models_dir().to_path_buf();
+                    let eng = voice::engine::init_engine(models_dir);
+                    eng.autoload(&defs);
+                    for def in missing {
+                        let app_handle = voice_app.clone();
+                        let def = def.clone();
+                        tauri::async_runtime::spawn(async move {
+                            use tauri::Manager;
+                            let voice_state: tauri::State<voice::VoiceState> =
+                                app_handle.state();
+                            if let Err(err) = voice_state
+                                .manager
+                                .download_model(app_handle.clone(), def.clone())
+                                .await
+                            {
+                                warn!("[startup][rust] voice model {} download failed: {err}", def.id);
+                            } else {
+                                let eng = voice::engine::engine();
+                                if let Some(eng) = eng {
+                                    let load_result = match def.id.as_str() {
+                                        "asr" => eng.load_asr(&def),
+                                        "tts" => eng.load_tts(&def),
+                                        "vad" => eng.load_vad(&def),
+                                        _ => Ok(()),
+                                    };
+                                    if let Err(err) = load_result {
+                                        warn!("[startup][rust] voice engine {} load failed: {err}", def.id);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+            }
 
             // 启动后台 SmartBrain 流水线：经验提取/合并 + 知识扫描 + BM25 索引。
             {
@@ -441,6 +491,14 @@ pub fn run() {
             commands::get_server_status,
             commands::get_log_dir,
             commands::frontend_log,
+            // 语音模式（本地 ASR/TTS/VAD）
+            voice::commands::voice_startup_check,
+            voice::commands::voice_get_model_statuses,
+            voice::commands::voice_download_model,
+            voice::commands::voice_start_listening,
+            voice::commands::voice_stop_listening,
+            voice::commands::voice_get_listen_state,
+            voice::commands::voice_tts_generate,
             // 任务完成系统通知（Toast + 提示音）
             commands::notify_task_done,
             // Thread archive (standalone)
@@ -631,6 +689,7 @@ pub fn run() {
             smartbrain::commands::smartbrain_parse_database_connection,
             smartbrain::commands::smartbrain_list_databases,
             smartbrain::commands::smartbrain_test_database_connection,
+            smartbrain::commands::smartbrain_test_ssh_connection,
             smartbrain::commands::smartbrain_rebuild_index,
             smartbrain::commands::smartbrain_migrate_to_okf,
             // MiniApp

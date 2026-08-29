@@ -18,6 +18,11 @@ import { FortuneBubble } from "./components/common/FortuneBubble";
 import { RecordingToggle } from "./components/common/RecordingToggle";
 import { UpdateModal } from "./components/common/UpdateModal";
 import { ComputerUseOverlay } from "./components/common/ComputerUseOverlay";
+import {
+  VoiceDownloadList,
+  VoiceModeController,
+  VoiceNotReadyToast,
+} from "./components/voice";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { WorkflowExtractModal } from "./components/workflow/WorkflowExtractModal";
 import { useTauriEvents } from "./hooks/useTauriEvents";
@@ -487,6 +492,10 @@ function App() {
                 <RightPanel />
               </div>
             </div>
+            {/* 语音模式：全局控制器 + 右下角下载列表/未就绪提示 */}
+            <VoiceModeController />
+            <VoiceDownloadList />
+            <VoiceNotReadyToast />
             <StatusBar />
           </div>
         </div>

@@ -12,6 +12,7 @@ pub mod postgres_native;
 pub mod prompts;
 pub mod search;
 pub mod sqlserver_native;
+pub mod ssh;
 pub mod summarizer;
 
 use std::path::{Path, PathBuf};

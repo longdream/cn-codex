@@ -24,7 +24,7 @@ export interface FortuneDetail {
 export type FortuneResult = FortuneSummary & FortuneDetail;
 export const FORTUNE_DETAIL_CACHE_TTL_MS = 60 * 60 * 1000;
 
-interface FortuneLlmResolvedConfig {
+export interface FortuneLlmResolvedConfig {
   baseUrl: string;
   apiKey: string;
   modelName: string;
@@ -522,6 +522,7 @@ async function callLlmDirect(prompt: string): Promise<string> {
     model: resolved.modelName,
     wireApi: resolved.wireApi,
     prompt,
+    systemPrompt: null,
   };
   console.log("[fortune] invoking fortune_llm_call with baseUrl:", params.baseUrl, "model:", params.model, "wireApi:", params.wireApi);
 

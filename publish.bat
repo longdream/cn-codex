@@ -361,6 +361,30 @@ copy /Y "%ARTIFACTS_DIR%\latest.json" "%PUBLISH_DIR%\latest.json" >nul
 echo   - latest.json
 echo   - update-artifacts\update-upload\ ^(server overwrite package^)
 
+:: ---------------------------------------------------------------------------
+:: [10/10] Auto-upload the update-server package over SSH.
+:: - Uploads update-artifacts\update-upload\ (latest.json + files\*.zip)
+::   to root@47.113.221.244:/opt/cn-codex-update/public/
+:: - Uses scripts\upload-update-server.ps1 (pscp/plink auto-downloaded & cached)
+:: - Set DEPLOY_SKIP_UPLOAD=1 to skip, or override DEPLOY_HOST / DEPLOY_PORT /
+::   DEPLOY_USER / DEPLOY_PASSWORD / DEPLOY_REMOTE_DIR to retarget.
+:: ---------------------------------------------------------------------------
+echo [10/10] Uploading update package to update server via SSH...
+if /I "%DEPLOY_SKIP_UPLOAD%"=="1" (
+    echo   - DEPLOY_SKIP_UPLOAD=1, skipping upload.
+    goto :after_upload
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_DIR%scripts\upload-update-server.ps1" ^
+  -UploadDir "%ARTIFACTS_DIR%\update-upload"
+if %errorlevel% neq 0 (
+    echo [ERROR] SSH upload failed. Artifacts are ready for manual upload:
+    echo   scp -r "%ARTIFACTS_DIR%\update-upload\*" root@47.113.221.244:/opt/cn-codex-update/public/
+    pause
+    exit /b 1
+)
+
+:after_upload
+
 echo.
 echo Build complete!
 echo.
@@ -381,8 +405,9 @@ echo   server: publish\update-artifacts\update-upload\
 echo     - latest.json
 echo     - files\CN-Codex-%APP_VERSION%.zip
 echo.
-echo Upload example:
-echo   scp -r publish\update-artifacts\update-upload\* root@47.113.221.244:/opt/cn-codex-update/public/
+echo SSH upload: already pushed by step [10/10] ^(set DEPLOY_SKIP_UPLOAD=1 to skip^).
+echo Manual re-upload:
+echo   powershell -File scripts\upload-update-server.ps1 -UploadDir publish\update-artifacts\update-upload
 echo.
 echo NOTE: Users need to configure their model provider
 echo       via Settings on first launch.

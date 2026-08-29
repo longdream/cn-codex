@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::adapter;
 use crate::adapter::types::{InternalMessage, text_content};
@@ -1391,5 +1391,80 @@ pub async fn smartbrain_migrate_to_okf(state: State<'_, AppState>) -> AppResult<
         "status": "ok",
         "migrated_knowledge": migrated_knowledge,
         "migrated_experiences": migrated_experiences,
+    }))
+}
+
+#[tauri::command]
+pub async fn smartbrain_test_ssh_connection(
+    host: String,
+    port: Option<u16>,
+    username: String,
+    auth_method: String,
+    password: Option<String>,
+    private_key: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
+    timeout_sec: Option<u64>,
+) -> AppResult<serde_json::Value> {
+    // Accept both camelCase (authMethod) and snake_case from the frontend by
+    // declaring the parameter as auth_method; Tauri v2 matches JS `authMethod`
+    // to `auth_method` automatically. Explicitly declared options below keep
+    // the draft-based test flow (no persistence required).
+    let source = super::ssh::SmartbrainSshSource {
+        id: String::new(),
+        name: String::new(),
+        enabled: true,
+        host: host.trim().to_string(),
+        port,
+        username: username.trim().to_string(),
+        auth_method: auth_method.trim().to_string(),
+        password: password.unwrap_or_default(),
+        private_key: private_key.unwrap_or_default(),
+        private_key_path: private_key_path.unwrap_or_default(),
+        passphrase: passphrase.unwrap_or_default(),
+        allow_exec: true,
+        updated_at: 0,
+    };
+
+    let timeout = timeout_sec.unwrap_or(10).clamp(1, super::ssh::SSH_MAX_TIMEOUT_SEC);
+
+    // Run the blocking connect/exec inside a bounded async task with an extra
+    // safety margin so a hung TCP connect cannot stall the IPC thread pool.
+    let result =
+        tokio::time::timeout(
+            std::time::Duration::from_secs(timeout + 5),
+            super::ssh::test_ssh_connection(&source, timeout),
+        )
+        .await;
+
+    let message = match result {
+        Ok(Ok(message)) => message,
+        Ok(Err(error)) => {
+            warn!("smartbrain test ssh connection failed: {error}");
+            return Err(AppError::Custom(error));
+        }
+        Err(_) => {
+            let error = format!("连接测试整体超时（{timeout} 秒）");
+            warn!("smartbrain test ssh connection timed out");
+            return Err(AppError::Custom(error));
+        }
+    };
+
+    info!(
+        "smartbrain test ssh connection ok: host={:?} port={:?} username={:?} auth_method={:?} timeout_sec={}",
+        source.host,
+        source.port,
+        source.username,
+        source.auth_method,
+        timeout
+    );
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "message": message,
+        "host": source.host,
+        "port": source.effective_port(),
+        "username": source.username,
+        "timeoutSec": timeout,
     }))
 }

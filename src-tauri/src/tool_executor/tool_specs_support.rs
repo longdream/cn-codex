@@ -1755,6 +1755,39 @@ impl ToolExecutor {
                     }
                 }
             }));
+
+            // Only expose the SSH tool when at least one enabled server is saved.
+            if !crate::smartbrain::ssh::load_enabled_ssh_sources(&self.workspace_config_dir)
+                .is_empty()
+            {
+                tools.push(serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": "smartbrain_ssh_exec",
+                        "description": "Execute a command on a Local Knowledge Base-configured SSH server using saved credentials. Short-lived non-interactive session; output merged stdout/stderr (max 8000 chars). Prefer this over Python/shell ssh/plink scripts. Do not ask the user for password or private key when the server is already configured. Servers without allowExec only permit read-only probe commands (uname -a, df -h, uptime, etc.). Dangerous commands (rm -rf /, shutdown, reboot, mkfs, etc.) are always rejected.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "server": {
+                                    "type": "string",
+                                    "description": "SSH server display name, host, or user@host from Local Knowledge Base settings. Optional when only one enabled server is configured."
+                                },
+                                "command": {
+                                    "type": "string",
+                                    "description": "A single non-interactive command to execute on the remote server."
+                                },
+                                "timeout_sec": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 60,
+                                    "description": "Command timeout in seconds. Defaults to 15."
+                                }
+                            },
+                            "required": ["command"]
+                        }
+                    }
+                }));
+            }
         }
 
         // Recording tools

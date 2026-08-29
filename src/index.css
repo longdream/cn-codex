@@ -1506,3 +1506,377 @@ code,
   word-break: break-word;
 }
 
+/* ===== Voice Mode（语音模式）===== */
+
+/* 右下角下载列表（需求 3.3：小而简便） */
+.voice-download-list {
+  position: fixed;
+  right: 14px;
+  bottom: 40px;
+  z-index: 60;
+  width: 260px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  background: var(--surface-raised, rgba(24, 24, 28, 0.96));
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  padding: 8px 10px 10px;
+  font-size: 11px;
+}
+
+.voice-download-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.voice-download-list-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint, #8b8b92);
+}
+
+.voice-download-collapse-btn,
+.voice-download-retry,
+.voice-notready-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  color: var(--text-muted, #9a9aa2);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.voice-download-collapse-btn:hover,
+.voice-download-retry:hover,
+.voice-notready-close:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-strong, #eee);
+}
+
+.voice-download-items {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.voice-download-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.voice-download-item-name {
+  font-weight: 600;
+  color: var(--text-secondary, #b6b6bd);
+}
+
+.voice-download-item-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary, #b6b6bd);
+}
+
+.voice-download-bar {
+  height: 3px;
+  margin: 3px 0 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.voice-download-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #5b8cff, #7c5bff);
+  transition: width 0.25s ease;
+}
+
+.voice-download-bar-fill.is-failed {
+  background: #ef4444;
+}
+
+.voice-download-item-meta {
+  font-size: 10px;
+  color: var(--text-faint, #77777e);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.voice-download-badge {
+  position: fixed;
+  right: 14px;
+  bottom: 40px;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  background: var(--surface-raised, rgba(24, 24, 28, 0.96));
+  color: var(--text-secondary, #b6b6bd);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.voice-download-badge-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5b8cff;
+}
+
+.voice-spin {
+  animation: voice-rotate 1.6s linear infinite;
+}
+
+@keyframes voice-rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 未就绪提示（需求 3.4） */
+.voice-notready-toast {
+  position: fixed;
+  right: 14px;
+  bottom: 40px;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 340px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(38, 22, 24, 0.97);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  font-size: 11.5px;
+  color: #f3c1c1;
+}
+
+.voice-notready-icon {
+  flex-shrink: 0;
+  color: #ef4444;
+}
+
+.voice-notready-text {
+  flex: 1;
+  line-height: 1.45;
+}
+
+.voice-notready-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  color: #ffd9d9;
+  font-size: 11px;
+  transition: background 0.15s ease;
+}
+
+.voice-notready-retry:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.voice-notready-retry:disabled {
+  opacity: 0.5;
+}
+
+/* 语音模式开关 + 声波 */
+.voice-mode-overlay {
+  position: absolute;
+  right: 16px;
+  bottom: 116px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.voice-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  background: var(--surface-raised, rgba(28, 28, 32, 0.95));
+  color: var(--text-secondary, #b6b6bd);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  transition: background 0.2s ease, color 0.2s ease, transform 0.15s ease;
+}
+
+.voice-mode-toggle:hover {
+  transform: scale(1.05);
+  color: var(--text-strong, #fff);
+}
+
+.voice-mode-toggle.is-on {
+  background: linear-gradient(135deg, #ef4444, #d92b2b);
+  border-color: transparent;
+  color: #fff;
+}
+
+.voice-wave-wrap {
+  display: flex;
+  align-items: flex-end;
+  gap: 2.5px;
+  height: 20px;
+}
+
+.voice-wave-bar {
+  width: 3px;
+  border-radius: 2px;
+  background: #5b8cff;
+  animation: voice-wave 1s ease-in-out infinite;
+}
+
+.voice-wave-bar:nth-child(1) { animation-delay: 0s; height: 8px; }
+.voice-wave-bar:nth-child(2) { animation-delay: 0.12s; height: 14px; }
+.voice-wave-bar:nth-child(3) { animation-delay: 0.24s; height: 18px; }
+.voice-wave-bar:nth-child(4) { animation-delay: 0.36s; height: 12px; }
+.voice-wave-bar:nth-child(5) { animation-delay: 0.48s; height: 7px; }
+
+@keyframes voice-wave {
+  0%, 100% { transform: scaleY(0.5); opacity: 0.65; }
+  50% { transform: scaleY(1.15); opacity: 1; }
+}
+
+/* solve 确认卡片（需求 4.3） */
+.voice-confirm-card {
+  position: absolute;
+  right: 16px;
+  bottom: 116px;
+  z-index: 40;
+  width: min(380px, calc(100% - 32px));
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  background: var(--surface-raised, rgba(26, 26, 30, 0.98));
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.45);
+  padding: 12px 14px;
+}
+
+.voice-confirm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.voice-confirm-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #c9c9cf);
+}
+
+.voice-confirm-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--text-muted, #9a9aa2);
+}
+
+.voice-confirm-close:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.voice-confirm-summary {
+  max-height: 140px;
+  overflow-y: auto;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-strong, #ececf1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.voice-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.voice-confirm-cancel,
+.voice-confirm-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.voice-confirm-cancel {
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  color: var(--text-secondary, #b6b6bd);
+}
+
+.voice-confirm-cancel:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.voice-confirm-send {
+  background: linear-gradient(135deg, #5b8cff, #4a6ef5);
+  color: #fff;
+}
+
+.voice-confirm-send:hover {
+  opacity: 0.92;
+}
+
+/* 设置页模型状态徽标 */
+.voice-model-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.voice-model-status.is-ready {
+  background: rgba(34, 197, 94, 0.14);
+  color: #4ade80;
+}
+
+.voice-model-status.is-downloading,
+.voice-model-status.is-loading {
+  background: rgba(91, 140, 255, 0.14);
+  color: #7ea1ff;
+}
+
+.voice-model-status.is-failed,
+.voice-model-status.is-engine_failed {
+  background: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+}
+
+.voice-model-status.is-not_installed {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-faint, #8b8b92);
+}
+

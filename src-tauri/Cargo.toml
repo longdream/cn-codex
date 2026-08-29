@@ -1,6 +1,6 @@
 [package]
 name = "cn-codex"
-version = "1.2.9"
+version = "1.3.0"
 edition = "2024"
 rust-version = "1.85"
 default-run = "cn-codex"
@@ -47,6 +47,9 @@ async-trait = "0.1"
 rusqlite = { version = "0.34", features = ["bundled"] }
 tokio-postgres = "0.7"
 tiberius = { version = "0.12", default-features = false, features = ["chrono", "rustls", "tds73"] }
+
+# Native SSH client (Local Knowledge Base SSH servers)
+russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
@@ -81,6 +84,12 @@ socket2 = "0.5"
 clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
 hex = "0.4"
+
+# 语音模式：模型打包解压 + 本地推理（CPU） + 麦克风采集
+bzip2 = "0.5"
+tar = "0.4"
+cpal = "0.16"
+sherpa-onnx = "1.13.6"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
